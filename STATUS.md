@@ -156,6 +156,16 @@ Arealer: BYA 235,50 m² (bygg 178,33 + terrasse 57,18; eks. 102,18 / nytt 133,32
 BRA 170,07 m² (underetasje 27,33, hovedplan 130,21, hems 12,54 målbart av 26,34 brutto; eks. 103,51 / nytt 66,56).
 Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-rommet 101 Korridor 10,1 m².
 
+## Fase 2 – klar til start (kveld 11. okt 2026)
+
+- Nettsiden er publisert: https://robinharald.github.io/hytte-planlegger/ (GitHub Pages, deployes automatisk ved push til `main`).
+- Planen for fase 2 ligger i `docs/phase2-plan.md` (revisjon 2 etter kritikk fra tre granskere): redigering av vegger, dører/vinduer, rom,
+  bygningsdeler og nye bygg på terrassen (terrassen tilpasser seg automatisk), lås på hytta i dag, møbler, lagring/deling og offline (PWA).
+- Kjøreplanen ligger i `docs/workflows/phase2a-editor.workflow.js` (skjema v2 + editor) og `phase2b-furniture-offline.workflow.js`
+  (møbler + lagring/offline). De kjøres i rekkefølge; hver har integrasjon og gransking til slutt.
+- Spørsmål til Robin før start: hvilke bygg-maler (vedskjul, bod, badstue, anneks), om riving av eksisterende innervegger/åpninger skal
+  være lov, hvilke enheter familien bruker (iPad/telefon/PC), prioritering hvis tiden blir knapp, og om lenker + filer er nok som lagring.
+
 ## Neste
 
 1. Slå på GitHub Pages i repoet (Settings → Pages → Source: GitHub Actions), pushe `main` og verifisere den publiserte
