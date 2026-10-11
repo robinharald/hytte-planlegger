@@ -7,9 +7,18 @@ Axis lines: 1=x0, 2=x5, 3=x9, 4=x12; A=y10.1, B=y6.2, C=y0, D=y-2. Axes sit at t
 main [0,12]x[0,6.2]; glass bump [5,9]x[-2,0]; bod wing [5,9]x[6.2,10.1].
 Exterior wall build-up (west gable, Plan 2): cladding -0.11..-0.07, battens -0.07..-0.01, wind board -0.01..0, frame 0..0.15, gips 0.15..0.16.
 => exterior wall total 0.27 m, 0.11 m OUTSIDE the axis line, inner face 0.16 inside. Cladding outline 12.22 x 6.42 etc.
-=> BYA to cladding: main 78.45 + glass 8.90 + bodwing 16.92 = 104.3 m2 (spec says 98.0 on frame lines).
+=> BYA to cladding today = area of the UNION of the cladding outlines ≈ 103.35 m2 (spec says 98.0 on frame lines):
+   main box 12.22 x 6.42 = 78.45, minus the two cladding strips x 5..9 where the glass bump (y -0.11..0) and the bod wing
+   (y 6.2..6.31) join the house, which lie inside the building (2 x 4.0 x 0.11 = 0.88); plus glass bump 4.22 x 2.11 = 8.90
+   and bod wing 4.22 x 4.01 = 16.92 (their joining edges have no cladding); minus the four 0.11 x 0.11 corner squares that
+   are counted twice (0.05). 78.45 - 0.88 + 8.90 + 16.92 - 0.05 = 103.35. (An earlier note said 104.3: it counted the main
+   house as a full box and double counted the junction strips.)
+   In Forslag D the existing part is 102.18: the east-gable cladding (0.11 x 6.42 = 0.71) goes with the living-room
+   extension and the bod-wing gable cladding (4.22 x 0.11 = 0.46) falls in the new part. Forslag D in total: union of the
+   outer outlines main 102.55 + glass 8.90 + bod wing 25.36 + new wing 41.57 - 0.06 corner overlaps ≈ 178.33 (= BYA buildings).
 Mellombygg exterior walls only 0.11 thick (inner faces 5.11/8.89); bod-wing walls 0.16 (inner 9.94 north, 8.84 east, 5.16 west).
-Interior walls 0.12.
+Interior walls 0.12. Main-level interior walls run H 0..2.5 (top of the tie beams), e.g. 21947 / 21882 / 21819
+(y 4.17..4.30, x 5..9), 19821 / 19854 / 19887 (x 8.29..8.41), 23812 / 23878 (y 2.12..2.24), 19920, 19952, 22140.
 
 ## SPLIT LEVEL (new finding)
 Slab tops: west part (x 0.2..5.55) at H=-1.0 (kote 98.85); main + bod wing at H=0 (kote 99.85). "Plate pa mark" PDF confirms.
@@ -20,6 +29,7 @@ Hems floor top H=1.47 (slab 1.3..1.47, 173 mm). Ceiling height in lower bedrooms
 ## Roof
 Pitch 28 deg (section PDF + geometry). Ridge main at y=3.1 (E-W); wing ridges at x=7.0 (N-S).
 Eave: top of wall at outer face H=2.22 (Plan 2 eave walls 1.55..2.22). Roof underside at overhang edge H=1.96, overhang 0.51 beyond the axis line.
+Gables overhang 0.51 as well: main roof slabs (24333…25018) X -0.51..12.51, glass bump (24286…24923) Y -2.51..2.0, bod wing (24378…24971) Y 4.2..10.61.
 Main ridge: underside 3.87, top of turf 4.18. Wing ridge: beam top 3.26, top of turf 3.59. Roof build-up ~0.31 vertical (5 layers: tro, derbigum/vortepapp, oppforing, torvtak).
 Glass-bump roof extends to y=2.0 (meets main slope); bod-wing roof from y=4.2 (meets main slope) to 10.61.
 Ridge beam main: X 0.03..11.97, H 3.5..3.86; posts (0.11 sq) at x=5.1, 8.95, 11.9 on y=3.1, H 0..3.5. Tie beams H 2.3..2.5: x 5.04..7.01 and 8.89..11.97 at y=3.1, plus x=8.95 from y 0.07..3.15.
@@ -35,7 +45,7 @@ Chimney X 7.08..7.63, Y 2.48..3.03.
 108 Bod X 7.67..8.84 Y 7.76..9.94 (2.55) | 109 Bod X 6.26..7.54 (2.79) | 110 Do X 5.16..6.15 (2.16)
 200 Hems01 X 0.16..5.04 Y 0.15..2.12 + X 0.16..2.6 Y 2.12..3.04 (11.8) | 201 Hems02 X 0.16..3.73 Y 3.16..6.04 + X 3.73..4.99 Y 4.3..6.04 (12.5)
 Hems partition at y 3.04..3.16 (x 0.15..3.85); landing wall x 2.6..2.71 (y 2.13..3.04); hems doors: x=2.62 wall (y 2.31..3.0, 0.71) and y=3.14 wall (x 2.84..3.63, 0.81).
-Interior wall centres: x=3.05 (104|103), x=5.05 (103|102), x=8.35 (102|stue), y=4.235 (korridor|103/102), y=2.18 (106/stue|korridor), x=5.1 (106|stue), x=6.2, x=7.6 (bod wing), y=7.62 (mellombygg|boder, 0.27 thick), fireplace wall y~3.1 x 7.08..9.
+Interior wall centres: x=3.05 (104|103), x=5.05 (103|102), x=8.35 (102|stue), y=4.235 (korridor|103/102, runs to x 9: the kitchen starts at y 4.30 for x 8.41..9), y=2.18 (106/stue|korridor), x=5.1 (106|stue), x=6.2, x=7.6 (bod wing), y=7.62 (mellombygg|boder, 0.27 thick), fireplace wall y~3.1 x 7.08..9.
 
 ## Openings (centre, w x h, sill H above main floor)
 Windows lower level (sill 0.8 above lower floor = H -0.2): W wall y=3.81 1.11x1.21; S wall x=1.73 1.11x1.21; N wall x=3.51 0.61x1.21 (bad)
@@ -43,13 +53,13 @@ Main level: glass bump 1.61x1.61 sill 0.4: W y=-0.96; S x=6.07, 7.94; E y=-0.96.
 Hems W gable: y=2.44 and y=3.76, 1.11x1.01, sill H 2.0.
 Doors: W green x=5 y=6.89 0.91x2.01; E green x=9 y=6.89 0.91; E gable white x=12 y=2.59 0.81 (H 0..2.01); S door from 106 x=3.68 0.91 (lower level H -1..1.01!).
 Interior: mellombygg->Do x=5.64 (0.81) on y=7.62; mellombygg->VF x=7.01 (0.91) on y=6.2; mellombygg->bod109 x=7.01 (0.91) on y=7.62; no door to 108.
-korridor->bad x=3.61 (0.81) on y=4.24; korridor->106 x=3.68 (0.81) on y=2.18; diagonal doors to 104 (centre 2.55,3.54) and 105 (2.65,2.73) 0.81; VF->korridor opening 1.2 ("12x20") ~x 6.9.
+korridor->bad x=3.61 (0.81) on y=4.24; korridor->106 x=3.68 (0.81) on y=2.18; diagonal doors to 104 (21439, centre 2.555,3.535 = 0.53 along (2.25,3.1)->(3.05,4.24)) and 105 (20780, centre 2.645,2.725 = 0.71 along (3.1,2.18)->(2.25,3.1)) 0.81; VF->korridor opening 1.2 ("12x20") ~x 6.9.
 Swing: IFC door types single swing L/R; exterior doors swing out? (check drawing arcs: east gable door swings OUT; green doors swing OUT; 106 south door swings OUT).
 
 ## Spec deviations to report
 - split level -1.0 m for west part (spec/old model assume one level)
 - pitch 28 (spec ~30.8), eave 2.22/ridge 4.18 above floor (spec 2.5/4.35 above floor = 2.9/4.75 above ground)
-- exterior wall 0.27 thick with 0.11 cladding outside axis; BYA 104.3 vs 98
+- exterior wall 0.27 thick with 0.11 cladding outside axis; BYA to the cladding ≈ 103.35 today vs 98 on the axis lines
 - hems windows 1.11x1.01 at y 2.44/3.76, sill H 2.0 (spec 0.9x0.8 at 2.3/4.0, sill 2.8)
 - room 106 has exterior S door (x 3.68), no window; spec D removes door, adds nothing
 - east gable: white door y=2.59 + windows y=1.53/4.68 removed by extension; ridge post at x=11.9 in that wall
@@ -79,7 +89,8 @@ Rule: the IFC wins for the existing building; the spec wins for the new parts; R
   -1.0 m (`zone-lower`, kind replace), the hems slab at +1.47 with thickness 0.17 (`zone-loft`, kind add) and the lower ceiling at
   2.3. The spec and the old model assumed one floor at 0.
 - Eave / ridge / pitch (IFC wins): eave underside 2.22 at the axis line, main ridge 3.87, wing ridges 3.28, pitch 28 deg, roof
-  build-up 0.31, overhang 0.51 / 0.35. The spec's 2.5 / 4.35 above floor and ~30.8 deg are not used. The new wing keeps the
+  build-up 0.31, overhang 0.51 at the eaves and at every gable (an earlier seed used 0.35 at the gables, which the IFC does not
+  support). The spec's 2.5 / 4.35 above floor and ~30.8 deg are not used. The new wing keeps the
   spec's rule "ridge at the main ridge height" (3.87, drive 'height'), so its pitch follows from the 4.8 m width (~34.5 deg).
 - Wall build-up (IFC wins, applied to new blocks too): exterior walls 0.27 thick with 0.11 (cladding + battens) OUTSIDE the axis
   line, so the room sizes of the spec (measured to the axis) hold. The spec's 0.22 is not used. BYA to the cladding is therefore
@@ -108,3 +119,21 @@ Rule: the IFC wins for the existing building; the spec wins for the new parts; R
   "Teknisk / vask".
 - Sauna door swing: stored as { hinge 'start', side 'right' } on `w-wc-bad` (a->b runs +y, so the bathroom side +x is the RIGHT
   side); the brief's prose says 'left' but describes the same +x side. It opens OUT of the sauna.
+
+Added after the geometry review of 2026-10-11 (`SEED_REVISION` 2):
+
+- Gable overhang 0.51 on ALL blocks (IFC wins for the existing roofs: X -0.51 / Y -2.51 / Y 10.61); the new wing, the
+  living-room extension and the new bod end follow the existing style.
+- Existing main-level partitions (`w-korr-stue`, `w-peis-w`, `w-peis-n`, `w-vf-korr`, `w-vf-kjk`) are `fixed` 2.5 = the top
+  of the tie beams, as in the IFC (H 0..2.5), not 2.3.
+- Corridor | vindfang wall (IFC wins): `w-vf-korr` runs (5.05,4.24)->(9,4.24) as in the IFC; the divider `dv-korr-ne` is
+  gone. `dv-kjk-w` (9,2.2)->(9,4.24) still splits the corridor/stue from the kitchen and ends on the wall's end.
+- Diagonal doors (IFC wins): `d-104` at offset 0.53 and `d-105` at offset 0.71 along their walls (IFC centres above); the
+  first seed had 0.70 / 0.62 (0.17 / 0.09 m off).
+- New wing: flat ceiling at 2.4 (`blk-wing.ceilingHeight`, cold loft above). Its partitions (`w-gang-s`, `w-gang-n`,
+  `w-pantry-wc`, `w-sauna-n`, `w-wc-bad`) are `auto` and stop at the ceiling, so the rooms are closed at the top. The wall
+  between the stue and the wing (`w-wing-w`, x = 16, the open junction) is `roof`: it runs up under the main ridge (3.87),
+  so the stue (open to the roof) is closed off from the wing's cold loft. Open question for Robin: the spec's two high gable
+  windows (`win-gavl-s/n`, sill 2.75) are now above the ceiling and light the cold loft only.
+- Terrace door `door-stue-s` (1.6 m glass door): two leaves (`leaves: 2`, 0.8 m each, hinged at both jambs), as the spec
+  describes.

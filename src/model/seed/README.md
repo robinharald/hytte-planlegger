@@ -28,18 +28,26 @@ Bump `SEED_REVISION` whenever the seed content changes; the app compares it with
 - Split level: the west part (lower bedrooms, bathroom, lower corridor) at −1.0 m, hems floor at +1.47 (slab 0.17),
   lower ceiling 2.3. Floor zones `zone-lower` (replace) and `zone-loft` (add) on `blk-main` encode this.
 - Roof: pitch 28°, eave underside 2.22 at the axis line, main ridge underside 3.87, wing ridges 3.28, build-up 0.31,
-  overhangs 0.51 (eave) / 0.35 (gable).
+  overhang 0.51 at the eaves AND at every gable (main roof X −0.51..12.51, glass bump Y −2.51.., bod wing ..10.61). The new
+  parts use the same 0.51.
 - All existing interior walls, the diagonal bedroom walls, the old exterior walls that are now inside
-  (`w-mellom-boder`, `w-bod-gavl`), the loft partitions, posts, ridge/tie beams, chimney and both stairs.
-- All existing openings: centre, size, sill (hems windows at sill 0.53 above the loft floor = +2.0), green doors.
+  (`w-mellom-boder`, `w-bod-gavl`), the loft partitions, posts, ridge/tie beams, chimney and both stairs. The existing
+  main-level partitions are `fixed` 2.5 (the IFC walls run H 0..2.5, the top of the tie beams); the corridor | vindfang
+  wall `w-vf-korr` runs to x 9 (no divider between the corridor and the kitchen).
+- All existing openings: centre, size, sill (hems windows at sill 0.53 above the loft floor = +2.0), green doors, the
+  diagonal bedroom doors at the IFC centres (`d-104` offset 0.53, `d-105` offset 0.71).
 
 **From the spec** (`forslag-D-spec.json`, Robin's proposal D):
 
 - Living-room extension `[12,16]×[0,6.2]` (part `part-stue-ext` of `blk-main`, same roof), new wing
   `[16,20.8]×[-2,6.2]` with its ridge at the main ridge height (pitch follows, ≈ 34.5°), new bod + woodshed
   `[5,9]×[10.1,12.1]` (part `part-bod-new` of `blk-bod`).
-- New interior walls, the corridor opening, the doors of the wing, all new windows and glass doors, the dividers that
-  split the open plan into Stue / Kjøkken / Passasje / Spiseplass.
+- New interior walls, the corridor opening, the doors of the wing, all new windows and glass doors (`door-stue-s` has two
+  leaves, `leaves: 2`), the dividers that split the open plan into Stue / Kjøkken / Passasje / Spiseplass.
+- The new wing has a flat ceiling at 2.4 (`blk-wing.ceilingHeight`, cold loft above); its partitions are `auto` and stop
+  there. The wall between the stue and the wing (`w-wing-w`, x = 16) is `roof`: it runs up under the main ridge (3.87)
+  and closes the stue's gable triangle. The two high gable windows (`win-gavl-s/n`, sill 2.75) therefore sit above the
+  ceiling and light the cold loft — an open question for Robin.
 - Terrace polygon, glass railing with three stair gaps, hot tub, tree positions.
 
 **Robin's decisions (2026-10-11)** — see "Seed decisions" in `docs/kalibrering-ifc.md` for the full list:
@@ -51,6 +59,9 @@ Bump `SEED_REVISION` whenever the seed content changes; the app compares it with
 - The east gable at x = 12 disappears with the extension; its openings are not stored. The ridge post at x 11.9 stays
   as a free post.
 - No area limiter (`areaLimit: null`).
+- Review fixes of 2026-10-11 (`SEED_REVISION` 2): gable overhang 0.51, existing partitions 2.5, `w-vf-korr` to x 9 (divider
+  `dv-korr-ne` removed), diagonal doors at the IFC centres, the wing ceiling 2.4 with `auto` partitions, `w-wing-w` to the
+  roof, the two-leaf terrace door.
 
 Small choices made while writing the seed (the brief is silent): every opening has an explicit `levelId`; outward
 swinging exterior doors hinge at the jamb nearer an adjacent wall corner, else at `start`; the sauna door opens out of

@@ -48,7 +48,7 @@ import type {
 } from '../types';
 
 /** Bump when the seed content changes; the app offers "Hent ny Forslag D" to projects with an older revision. */
-export const SEED_REVISION = 1;
+export const SEED_REVISION = 2;
 export const SEED_PROJECT_ID = 'hytte-merkesvatnet';
 export const SEED_VARIANT_ID = 'forslag-d';
 /** Id of the bundled terrain asset (src/model/seed/terrain-merkesvatnet.json). */
@@ -66,11 +66,11 @@ const MAIN_RIDGE = 3.87;
 const WING_RIDGE = 3.28;
 const ROOF_THICKNESS = 0.31;
 const OVERHANG_EAVE = 0.51;
-const OVERHANG_GABLE = 0.35;
+const OVERHANG_GABLE = 0.51; // the IFC overhangs 0.51 at every gable; the new parts follow
 const INTERIOR_THICKNESS = 0.12;
 const OLD_EXTERIOR_THICKNESS = 0.27;
-const OLD_PARTITION_HEIGHT = 2.3; // existing main-level partitions stop at tie-beam level
-const NEW_PARTITION_HEIGHT = 2.4; // new wing partitions
+const OLD_PARTITION_HEIGHT = 2.5; // existing main-level partitions run to the top of the tie beams (IFC H 0..2.5)
+const WING_CEILING = 2.4; // flat ceiling of the new wing; its 'auto' partitions stop there
 
 const exteriorWall = (): WallBuildUp => ({ thickness: 0.27, outerOffset: 0.11 });
 
@@ -286,6 +286,8 @@ function buildBlocks(): Block[] {
     floorZones: [],
     parts: [],
     isNew: true,
+    // Flat ceiling at 2.4 (cold loft above); the wing's 'auto' partitions stop there.
+    ceilingHeight: WING_CEILING,
     // Ridge at the main ridge height; the pitch follows from the 4.8 m width (≈ 34.5°).
     roof: gableRoof('y', MAIN_RIDGE, 'height', pitchOf(wingHalfWidth, EAVE_HEIGHT, MAIN_RIDGE)),
     junctions: [],
@@ -337,8 +339,8 @@ function buildWalls(): Wall[] {
     wall(id, a, b, 'main', { heightMode: 'fixed', height: OLD_PARTITION_HEIGHT, ...opts });
   const oldExterior = (id: Id, a: Vec2, b: Vec2, opts: WallOpts = {}): Wall =>
     wall(id, a, b, 'main', { kind: 'exterior-old', thickness: OLD_EXTERIOR_THICKNESS, heightMode: 'auto', ...opts });
-  const newMain = (id: Id, a: Vec2, b: Vec2, opts: WallOpts = {}): Wall =>
-    wall(id, a, b, 'main', { status: 'new', heightMode: 'fixed', height: NEW_PARTITION_HEIGHT, ...opts });
+  // New partitions: 'auto' = up to the block ceiling (the wing: 2.4), else to the roof.
+  const newMain = (id: Id, a: Vec2, b: Vec2, opts: WallOpts = {}): Wall => wall(id, a, b, 'main', { status: 'new', ...opts });
   const divider = (id: Id, a: Vec2, b: Vec2, status: ElementStatus = 'existing'): Wall =>
     wall(id, a, b, 'main', { kind: 'divider', thickness: 0, status });
   const loft = (id: Id, a: Vec2, b: Vec2): Wall => wall(id, a, b, 'loft');
@@ -359,7 +361,7 @@ function buildWalls(): Wall[] {
     oldMain('w-korr-stue', [5.1, 2.18], [6.97, 2.18]),
     oldMain('w-peis-w', [6.97, 2.18], [6.97, 3.1]),
     oldMain('w-peis-n', [6.97, 3.1], [9, 3.1]),
-    oldMain('w-vf-korr', [5.05, 4.24], [8.35, 4.24]),
+    oldMain('w-vf-korr', [5.05, 4.24], [9, 4.24]), // runs to x 9 as in the IFC (21947 / 21882 / 21819)
     oldMain('w-vf-kjk', [8.35, 4.24], [8.35, 6.2]),
     oldExterior('w-mellom-boder', [5, 7.62], [9, 7.62]),
     oldMain('w-do-109', [6.2, 7.62], [6.2, 10.1], { heightMode: 'auto' }),
@@ -370,14 +372,14 @@ function buildWalls(): Wall[] {
     // --- dividers (room-graph edges only) ---
     divider('dv-leseskrok', [5, 0], [9, 0]),
     divider('dv-kjk-w', [9, 2.2], [9, 4.24]),
-    divider('dv-korr-ne', [8.35, 4.24], [9, 4.24]),
     divider('dv-stue-n', [9, 2.2], [16, 2.2], 'new'),
     divider('dv-kjk-e', [12, 2.2], [12, 6.2], 'new'),
     divider('dv-pass-n', [12, 3.4], [16, 3.4], 'new'),
 
     // --- main level (new) ---
-    newMain('w-bod-ved', [5, 11.1], [9, 11.1], { heightMode: 'auto' }),
-    newMain('w-wing-w', [16, 0], [16, 6.2]),
+    newMain('w-bod-ved', [5, 11.1], [9, 11.1]),
+    // Stue | wing: runs to the roof envelope (peaks under the main ridge, 3.87) and closes the stue's gable triangle.
+    newMain('w-wing-w', [16, 0], [16, 6.2], { heightMode: 'roof' }),
     newMain('w-gang-s', [16, 2.2], [20.8, 2.2]),
     newMain('w-gang-n', [16, 3.4], [20.8, 3.4]),
     newMain('w-pantry-wc', [17.4, 0], [17.4, 2.2]),
@@ -412,6 +414,7 @@ interface OpeningOpts {
   style?: Partial<OpeningStyle>;
   swing?: Swing;
   fullHeight?: boolean;
+  leaves?: 2;
 }
 
 function opening(
@@ -439,6 +442,7 @@ function opening(
     status: opts.status ?? 'existing',
   };
   if (opts.fullHeight) o.fullHeight = true;
+  if (opts.leaves === 2) o.leaves = 2;
   if (opts.swing) o.swing = opts.swing;
   return o;
 }
@@ -479,7 +483,7 @@ function buildOpenings(walls: Wall[]): Opening[] {
     // Replaces the removed exterior door of room 106 (Robin's decision).
     win('win-106-s', onEdge('main', 'S', 3.68), 1.1, 1.2, 0.8, 'lower', NEW),
     // Two-leaf glass door out to the terrace; replaces the existing window at x 10.36.
-    glassDoor('door-stue-s', onEdge('main', 'S', 10.5), 1.6, 2.05, swingOut(), NEW),
+    glassDoor('door-stue-s', onEdge('main', 'S', 10.5), 1.6, 2.05, swingOut(), { ...NEW, leaves: 2 }),
     win('win-ext-s1', onEdge('main', 'S', 13.2), 1.1, 1.2, 0.8, 'main', NEW),
     win('win-ext-s2', onEdge('main', 'S', 14.8), 1.1, 1.2, 0.8, 'main', NEW),
     // --- main block, north edge (east → west) ---
@@ -524,8 +528,9 @@ function buildOpenings(walls: Wall[]): Opening[] {
 
     // --- on stored walls: lower level ---
     door('d-bad', onWallAt('w-103-korr', [3.61, 4.24]), 0.81, 2.01, 'lower', swing('start', 'left')), // into the bathroom (+y)
-    door('d-104', onWall('w-104-diag', 0.7), 0.81, 2.01, 'lower', swing('end', 'left')), // into room 104
-    door('d-105', onWall('w-105-diag', 0.62), 0.81, 2.01, 'lower', swing('start', 'left')), // into room 105
+    // Diagonal doors at the IFC centres: d-104 (2.555, 3.535) = 0.53 along w-104-diag, d-105 (2.645, 2.725) = 0.71.
+    door('d-104', onWall('w-104-diag', 0.53), 0.81, 2.01, 'lower', swing('end', 'left')), // into room 104
+    door('d-105', onWall('w-105-diag', 0.71), 0.81, 2.01, 'lower', swing('start', 'left')), // into room 105
     door('d-106', onWallAt('w-106-korr', [3.68, 2.18]), 0.81, 2.01, 'lower', swing('start', 'right')), // into room 106 (−y)
     // --- on stored walls: main level, existing ---
     passage('o-vf', onWallAt('w-vf-korr', [6.9, 4.24]), 1.2, 2.1, 'main'),

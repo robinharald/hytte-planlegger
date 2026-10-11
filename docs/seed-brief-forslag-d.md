@@ -9,7 +9,8 @@ Door swings use the host-line form `{ hinge: 'start' | 'end', side: 'left' | 'ri
 host line a→b that the leaf opens into (left = (−dy, dx) = inside for exterior edges).
 
 ## Project
-id `hytte-merkesvatnet`, name "Hytta ved Merkesvatnet", `seedRevision = SEED_REVISION` (start at 1), one variant
+id `hytte-merkesvatnet`, name "Hytta ved Merkesvatnet", `seedRevision = SEED_REVISION` (1 at the first build, 2 after the
+review fixes of 2026-10-11; bump on every content change), one variant
 `forslag-d` named "Forslag D" with settings `{ defaultExteriorWall: { thickness 0.27, outerOffset 0.11 },
 defaultInteriorThickness 0.12, areaLimit null }`.
 
@@ -20,13 +21,16 @@ defaultInteriorThickness 0.12, areaLimit null }`.
 | main | Hovedplan | ground | 0 | — (open to the roof; tie beams at 2.3–2.5) | 0 |
 | loft | Hems | loft | 1.47 | — | 0.17 |
 
-## Blocks (all: eaveHeight 2.22, roof thickness 0.31, overhangEave 0.51, overhangGable 0.35, turf, wall 0.27/0.11)
+## Blocks (all: eaveHeight 2.22, roof thickness 0.31, overhangEave 0.51, overhangGable 0.51, turf, wall 0.27/0.11)
+The IFC overhangs 0.51 at every gable (main roof X −0.51..12.51, glass bump Y −2.51.., bod wing ..10.61); the new parts
+follow the existing style. Only `blk-wing` has a flat ceiling: `ceilingHeight 2.4` (cold loft above; its `auto` partitions
+stop there). The other blocks are open to the roof (no `ceilingHeight`).
 | id | name | polygon (CCW) | level | roof | isNew | parts | junctions |
 |---|---|---|---|---|---|---|---|
 | blk-main | Hytta, hoveddel | (0,0) (16,0) (16,6.2) (0,6.2) | main | gable, ridgeAxis x, pitch 28, ridgeHeight 3.87, drive pitch | false | part-main-old "Eksisterende" [0,12]×[0,6.2] existing; part-stue-ext "Stue forlenget" [12,16]×[0,6.2] new | blk-glass: open; blk-bod: wall; blk-wing: open |
 | blk-glass | Glassutbygg (leseskrok) | (5,-2) (9,-2) (9,0) (5,0) | main | gable, ridgeAxis y, pitch 28, ridgeHeight 3.28, drive pitch | false | — | — |
 | blk-bod | Bod-fløy | (5,6.2) (9,6.2) (9,12.1) (5,12.1) | main | gable, ridgeAxis y, pitch 28, ridgeHeight 3.28, drive pitch | false | part-bod-old "Bod-fløy i dag" [5,9]×[6.2,10.1] existing; part-bod-new "Ny bod + ved" [5,9]×[10.1,12.1] new | — |
-| blk-wing | Ny tverrfløy | (16,-2) (20.8,-2) (20.8,6.2) (16,6.2) | main | gable, ridgeAxis y, pitch ≈34.5, ridgeHeight 3.87, drive height | true | — | — |
+| blk-wing | Ny tverrfløy | (16,-2) (20.8,-2) (20.8,6.2) (16,6.2) | main | gable, ridgeAxis y, pitch ≈34.5, ridgeHeight 3.87, drive height; ceilingHeight 2.4 | true | — | — |
 
 Floor zones on blk-main:
 - zone-lower (level lower, kind `replace`): (0,0) (5.1,0) (5.1,2.18) (4.3,2.18) (4.3,4.24) (5.05,4.24) (5.05,6.2) (0,6.2)
@@ -37,35 +41,40 @@ Vertex ids: `v-main-sw, v-main-se, v-main-ne, v-main-nw` (edge id = start vertex
 north = v-main-ne, west = v-main-nw); likewise `v-glass-*`, `v-bod-*`, `v-wing-*`.
 
 ## Stored walls (thickness 0.12 unless noted; status `existing` unless marked NEW)
-heightMode: lower-level partitions `auto` (stop under the loft floor); existing main-level partitions `fixed` 2.3;
-new wing partitions `fixed` 2.4; walls marked ROOF use `roof` (from their level floor to the roof envelope).
+heightMode: lower-level partitions `auto` (stop under the loft floor); existing main-level partitions `fixed` 2.5 (top of
+the tie beams; the IFC walls run H 0..2.5); new partitions `auto` (inside the new wing they stop at its ceiling 2.4, in the
+bod wing they run to the roof); walls marked ROOF use `roof` (from their level floor to the roof envelope, ignoring any
+ceiling).
 
 Lower level (existing):
 - w-104-103: (3.05,4.24)→(3.05,6.2)
 - w-103-korr: (3.05,4.24)→(5.05,4.24); door `d-bad` 0.81×2.01 at offset 0.56 (x 3.61), swing { hinge 'start', side 'left' } (into the bathroom, +y side)
 - w-103-102: (5.05,4.24)→(5.05,6.2) (bathroom / vindfang) ROOF
-- w-104-diag: (2.25,3.1)→(3.05,4.24); door `d-104` 0.81×2.01 at offset 0.7, swing { hinge 'end', side 'left' } (into room 104)
+- w-104-diag: (2.25,3.1)→(3.05,4.24); door `d-104` 0.81×2.01 at offset 0.53 (IFC centre (2.555, 3.535)), swing { hinge 'end', side 'left' } (into room 104)
 - w-104-s: (0,3.1)→(2.25,3.1)
-- w-105-diag: (3.1,2.18)→(2.25,3.1); door `d-105` 0.81×2.01 at offset 0.62, swing { hinge 'start', side 'left' } (into room 105)
+- w-105-diag: (3.1,2.18)→(2.25,3.1); door `d-105` 0.81×2.01 at offset 0.71 (IFC centre (2.645, 2.725)), swing { hinge 'start', side 'left' } (into room 105)
 - w-105-106: (3.1,0)→(3.1,2.18)
 - w-106-korr: (3.1,2.18)→(5.1,2.18) ROOF; door `d-106` 0.81×2.01 at offset 0.58 (x 3.68), swing { hinge 'start', side 'right' } (into room 106, −y side)
 - w-106-stue: (5.1,0)→(5.1,2.18) ROOF
 
-Main level (existing, fixed 2.3 unless noted):
+Main level (existing, fixed 2.5 unless noted):
 - w-korr-stue: (5.1,2.18)→(6.97,2.18)
 - w-peis-w: (6.97,2.18)→(6.97,3.1)
 - w-peis-n: (6.97,3.1)→(9,3.1)
-- w-vf-korr: (5.05,4.24)→(8.35,4.24); frameless `opening` `o-vf` 1.2 wide × 2.1 high at offset 1.85 (x 6.9)
-- w-vf-kjk: (8.35,4.24)→(8.35,6.2)
+- w-vf-korr: (5.05,4.24)→(9,4.24) (runs to x 9 as in the IFC, walls 21947 / 21882 / 21819; the kitchen starts at y 4.30 there);
+  frameless `opening` `o-vf` 1.2 wide × 2.1 high at offset 1.85 (x 6.9)
+- w-vf-kjk: (8.35,4.24)→(8.35,6.2) (T-junction on w-vf-korr)
 - w-mellom-boder: (5,7.62)→(9,7.62) kind `exterior-old`, thickness 0.27, heightMode auto; doors `d-do` 0.81×2.01 at offset 0.64 (x 5.64) swing { hinge 'start', side 'left' } (into Do), `d-bod109` 0.91×2.01 at offset 2.01 (x 7.01) swing { hinge 'start', side 'left' } (into the bod)
 - w-do-109: (6.2,7.62)→(6.2,10.1) auto; w-109-108: (7.6,7.62)→(7.6,10.1) auto
 - w-bod-gavl: (5,10.1)→(9,10.1) kind `exterior-old`, thickness 0.27, faceLeft 0.11 (ved side, +y), faceRight 0.16 (bod side), heightMode auto, no openings
-- Dividers (kind `divider`, thickness 0): dv-leseskrok (5,0)→(9,0); dv-kjk-w (9,2.2)→(9,4.24); dv-korr-ne (8.35,4.24)→(9,4.24);
-  dv-stue-n (9,2.2)→(16,2.2) NEW; dv-kjk-e (12,2.2)→(12,6.2) NEW; dv-pass-n (12,3.4)→(16,3.4) NEW
+- Dividers (kind `divider`, thickness 0): dv-leseskrok (5,0)→(9,0); dv-kjk-w (9,2.2)→(9,4.24) (ends on the end of w-vf-korr);
+  dv-stue-n (9,2.2)→(16,2.2) NEW; dv-kjk-e (12,2.2)→(12,6.2) NEW; dv-pass-n (12,3.4)→(16,3.4) NEW. (No divider between the
+  corridor and the kitchen: w-vf-korr is a real wall up to x 9.)
 
-Main level (new, fixed 2.4 unless noted):
-- w-bod-ved: (5,11.1)→(9,11.1) NEW, heightMode auto
-- w-wing-w: (16,0)→(16,6.2) NEW; frameless opening `o-stue-gang` 1.2 × 2.1 at offset 2.8 (gang, y 2.2–3.4)
+Main level (new, heightMode auto unless noted):
+- w-bod-ved: (5,11.1)→(9,11.1) NEW (the bod wing has no ceiling, so it runs to the roof)
+- w-wing-w: (16,0)→(16,6.2) NEW ROOF (stue | wing: peaks under the main ridge at 3.87 and closes the stue's gable triangle
+  above the wing's ceiling); frameless opening `o-stue-gang` 1.2 × 2.1 at offset 2.8 (gang, y 2.2–3.4)
 - w-gang-s: (16,2.2)→(20.8,2.2) NEW; doors `d-pantry` 0.7×2.0 at offset 0.7 swing { hinge 'start', side 'right' }, `d-wc` 0.7×2.0 at offset 2.0 swing { hinge 'start', side 'right' }, `d-bad2` 0.8×2.0 at offset 3.5 swing { hinge 'end', side 'right' } (all into the rooms on the −y side)
 - w-gang-n: (16,3.4)→(20.8,3.4) NEW; door `d-sov-ny` 0.8×2.0 at offset 1.3 swing { hinge 'start', side 'left' } (into the bedroom, +y side)
 - w-pantry-wc: (17.4,0)→(17.4,2.2) NEW; w-sauna-n: (16,0)→(18.6,0) NEW
@@ -86,7 +95,7 @@ Status `existing` unless marked NEW; white frames, window mullions [2,2] unless 
 |---|---|---|---|---|---|---|---|
 | win-105-s | main / south | 1.73 | window | 1.11×1.21 | 0.8 | lower | |
 | win-106-s | main / south | 3.68 | window | 1.1×1.2 | 0.8 | lower | NEW: replaces the removed exterior door of room 106 (Robin's decision) |
-| door-stue-s | main / south | 10.5 | glassDoor | 1.6×2.05 | 0 | main | NEW, two leaves, swings out; replaces the existing window at x 10.36 |
+| door-stue-s | main / south | 10.5 | glassDoor | 1.6×2.05 | 0 | main | NEW, two leaves (`leaves: 2`), swings out; replaces the existing window at x 10.36 |
 | win-ext-s1 | main / south | 13.2 | window | 1.1×1.2 | 0.8 | main | NEW |
 | win-ext-s2 | main / south | 14.8 | window | 1.1×1.2 | 0.8 | main | NEW |
 | win-bad-n | main / north | 12.49 (x 3.51) | window | 0.61×1.21 | 0.8 | lower | |
@@ -108,13 +117,13 @@ Status `existing` unless marked NEW; white frames, window mullions [2,2] unless 
 | door-green-w | bod / west | 5.21 (y 6.89) | door | 0.91×2.01 | 0 | main | frame + leaf green, swings out |
 | win-do-w | bod / west | 3.28 (y 8.82) | window | 0.61×1.21 | 0.8 | main | |
 | win-badstue-s | wing / south | 1.3 (x 17.3) | window | 1.2×0.9 | 0.7 | main | NEW |
-| win-gavl-s | wing / south | 2.4 (x 18.4) | window | 0.8×0.7 | 2.75 | main | NEW, high gable window |
+| win-gavl-s | wing / south | 2.4 (x 18.4) | window | 0.8×0.7 | 2.75 | main | NEW, high gable window (above the 2.4 ceiling: lights the cold loft; open question for Robin) |
 | win-bad-s | wing / south | 4.15 (x 20.15) | window | 0.6×0.6 | 1.1 | main | NEW |
 | win-bad-e1 | wing / east | 1.7 (y -0.3) | window | 0.6×0.6 | 1.1 | main | NEW |
 | win-bad-e2 | wing / east | 3.5 (y 1.5) | window | 0.5×0.6 | 1.3 | main | NEW |
 | door-gang-e | wing / east | 4.8 (y 2.8) | glassDoor | 1.0×2.05 | 0 | main | NEW, swings out |
 | win-sov-n | wing / north | 2.8 (x 18.0) | window | 1.6×1.3 | 0.5 | main | NEW |
-| win-gavl-n | wing / north | 2.4 (x 18.4) | window | 0.8×0.7 | 2.75 | main | NEW, high gable window |
+| win-gavl-n | wing / north | 2.4 (x 18.4) | window | 0.8×0.7 | 2.75 | main | NEW, high gable window (above the 2.4 ceiling, as win-gavl-s) |
 | win-badstue-w | wing / west | 7.2 (y -1.0) | window | 1.0×0.9 | 0.7 | main | NEW |
 
 Removed by the design, stored with status `removed` (plan shows them dashed as "rives"; no 3D): `win-stue-s-old`
@@ -167,4 +176,6 @@ grid B x −220…240, y −220…220, 10 m spacing; 2 decimals → `src/model/s
 Axis footprint: main 16×6.2 = 99.2 (existing 74.4 + new 24.8), glass 8.0, bod 23.6 (15.6 + 8.0), wing 39.36 → total 170.16
 (existing 98.0, new 72.16). Every opening offset ± width/2 lies within its host edge/wall (end-touch allowed). Every room
 anchor lies inside its block. All ids unique. Polygons CCW. Levels reference existing storeys; walls/rooms/openings reference
-existing levels; junction/railing/host ids resolve.
+existing levels; junction/railing/host ids resolve. 35 stored walls (5 dividers, 5 loft walls, 10 new); the only `fixed` walls
+are the five existing main-level partitions (2.5); every partition inside the new wing is `auto`; only `door-stue-s` has
+`leaves`; every gable overhang is 0.51; only `blk-wing` has a `ceilingHeight` (2.4).

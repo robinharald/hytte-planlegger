@@ -128,7 +128,7 @@ describe('createForslagD', () => {
     expect(project.id).toBe('hytte-merkesvatnet');
     expect(project.name).toBe('Hytta ved Merkesvatnet');
     expect(project.seedRevision).toBe(SEED_REVISION);
-    expect(SEED_REVISION).toBe(1);
+    expect(SEED_REVISION).toBe(2);
     expect(project.variants).toHaveLength(1);
     expect(project.activeVariantId).toBe(variant.id);
     expect(variant.id).toBe('forslag-d');
@@ -168,7 +168,7 @@ describe('blocks', () => {
       expect(b.roof.type).toBe('gable');
       expect(b.roof.thickness).toBe(0.31);
       expect(b.roof.overhangEave).toBe(0.51);
-      expect(b.roof.overhangGable).toBe(0.35);
+      expect(b.roof.overhangGable).toBe(0.51); // the IFC overhangs 0.51 at every gable
       expect(b.roof.material).toBe('turf');
       expect(b.levelId).toBe('main');
       // parts and zones lie inside the block polygon
@@ -185,6 +185,13 @@ describe('blocks', () => {
       { otherBlockId: 'blk-wing', policy: 'open' },
     ]);
     expect(blockById.get('blk-bod')!.parts.map((p) => [p.id, p.isNew])).toEqual([['part-bod-old', false], ['part-bod-new', true]]);
+    // only the new wing has a flat ceiling (2.4); the rest is open to the roof
+    expect(Object.fromEntries(variant.blocks.map((b) => [b.id, b.ceilingHeight]))).toEqual({
+      'blk-main': undefined,
+      'blk-glass': undefined,
+      'blk-bod': undefined,
+      'blk-wing': 2.4,
+    });
   });
 
   it('have the calibrated roofs', () => {
@@ -233,7 +240,7 @@ describe('axis areas (shoelace over blocks and parts)', () => {
 
 describe('walls', () => {
   it('are all present with existing levels and the brief heights', () => {
-    expect(variant.walls).toHaveLength(36);
+    expect(variant.walls).toHaveLength(35);
     for (const w of variant.walls) {
       expect(levelById.has(w.levelId), w.id).toBe(true);
       expect(dist(w.a, w.b), w.id).toBeGreaterThan(0.01);
@@ -251,16 +258,43 @@ describe('walls', () => {
     expect(byId['w-106-korr']).toMatchObject({ levelId: 'lower', heightMode: 'roof' });
     expect(byId['w-106-stue']).toMatchObject({ levelId: 'lower', heightMode: 'roof' });
     expect(byId['w-104-103']).toMatchObject({ levelId: 'lower', heightMode: 'auto', thickness: 0.12 });
-    expect(byId['w-korr-stue']).toMatchObject({ levelId: 'main', heightMode: 'fixed', height: 2.3, status: 'existing' });
-    expect(byId['w-gang-s']).toMatchObject({ levelId: 'main', heightMode: 'fixed', height: 2.4, status: 'new' });
+    expect(byId['w-korr-stue']).toMatchObject({ levelId: 'main', heightMode: 'fixed', height: 2.5, status: 'existing' });
+    expect(byId['w-gang-s']).toMatchObject({ levelId: 'main', heightMode: 'auto', status: 'new' });
+    // stue | wing runs to the roof envelope (closes the gable triangle under the main ridge)
+    expect(byId['w-wing-w']).toMatchObject({ levelId: 'main', heightMode: 'roof', status: 'new', a: [16, 0], b: [16, 6.2] });
     expect(byId['w-mellom-boder']).toMatchObject({ kind: 'exterior-old', thickness: 0.27, heightMode: 'auto' });
     expect(byId['w-bod-gavl']).toMatchObject({ kind: 'exterior-old', thickness: 0.27, faceLeft: 0.11, faceRight: 0.16 });
     expect(byId['w-bod-ved']).toMatchObject({ status: 'new', heightMode: 'auto' });
     expect(byId['dv-stue-n']).toMatchObject({ kind: 'divider', status: 'new', a: [9, 2.2], b: [16, 2.2] });
     expect(byId['lw-split']).toMatchObject({ levelId: 'loft', heightMode: 'auto' });
-    expect(variant.walls.filter((w) => w.kind === 'divider')).toHaveLength(6);
+    expect(variant.walls.filter((w) => w.kind === 'divider')).toHaveLength(5);
     expect(variant.walls.filter((w) => w.levelId === 'loft')).toHaveLength(5);
     expect(variant.walls.filter((w) => w.status === 'new')).toHaveLength(10);
+  });
+
+  it('existing main-level partitions run to the top of the tie beams (2.5)', () => {
+    const fixed = variant.walls.filter((w) => w.heightMode === 'fixed');
+    expect(fixed.map((w) => w.id).sort()).toEqual(['w-korr-stue', 'w-peis-n', 'w-peis-w', 'w-vf-kjk', 'w-vf-korr']);
+    for (const w of fixed) expect(w, w.id).toMatchObject({ levelId: 'main', status: 'existing', height: 2.5 });
+  });
+
+  it("partitions inside the new wing are 'auto' (they stop at its 2.4 ceiling)", () => {
+    const wing = blockPolygon(blockById.get('blk-wing')!);
+    const inside = variant.walls.filter((w) => {
+      if (w.kind === 'divider') return false;
+      const mid: Vec2 = [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
+      return pointInPolygon(mid, wing) && mid[0] > 16 + 1e-9; // x = 16 (w-wing-w) is the block edge
+    });
+    expect(inside.map((w) => w.id).sort()).toEqual(['w-gang-n', 'w-gang-s', 'w-pantry-wc', 'w-sauna-n', 'w-wc-bad']);
+    for (const w of inside) expect(w, w.id).toMatchObject({ heightMode: 'auto', status: 'new' });
+  });
+
+  it('the corridor | vindfang wall runs to x 9 and meets the kitchen divider there (no divider dv-korr-ne)', () => {
+    const byId = Object.fromEntries(variant.walls.map((w) => [w.id, w]));
+    expect(byId['w-vf-korr']).toMatchObject({ a: [5.05, 4.24], b: [9, 4.24], kind: 'interior' });
+    expect(byId['dv-korr-ne']).toBeUndefined();
+    expect(byId['dv-kjk-w']).toMatchObject({ kind: 'divider', a: [9, 2.2], b: [9, 4.24] });
+    expect(byId['w-vf-kjk'].a).toEqual([8.35, 4.24]); // T-junction on w-vf-korr
   });
 });
 
@@ -342,6 +376,8 @@ describe('openings', () => {
     expectOffset('win-bad-e1', 1.7);
     expectOffset('win-sov-n', 2.8);
     expectOffset('d-bad', 0.56);
+    expectOffset('d-104', 0.53); // IFC centre (2.555, 3.535)
+    expectOffset('d-105', 0.71); // IFC centre (2.645, 2.725)
     expectOffset('d-106', 0.58);
     expectOffset('o-vf', 1.85);
     expectOffset('d-do', 0.64);
@@ -356,7 +392,8 @@ describe('openings', () => {
     expectOffset('d-hems1', 0.48);
     expect(byId['win-hems-w1']).toMatchObject({ levelId: 'loft', sill: 0.53, width: 1.11, height: 1.01 });
     expect(byId['win-105-s']).toMatchObject({ levelId: 'lower', sill: 0.8, host: { kind: 'blockEdge', blockId: 'blk-main', edgeId: 'v-main-sw' } });
-    expect(byId['door-stue-s']).toMatchObject({ type: 'glassDoor', status: 'new', swing: { hinge: 'start', side: 'right' } });
+    expect(byId['door-stue-s']).toMatchObject({ type: 'glassDoor', status: 'new', leaves: 2, swing: { hinge: 'start', side: 'right' } });
+    expect(variant.openings.filter((o) => o.leaves !== undefined).map((o) => o.id)).toEqual(['door-stue-s']);
     expect(byId['door-green-e'].style).toEqual({ frameColour: 'green', leaf: 'green' });
     expect(byId['win-glass-s1'].style.mullions).toEqual([3, 2]);
     expect(byId['win-gavl-s']).toMatchObject({ sill: 2.75, height: 0.7 });

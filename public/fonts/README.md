@@ -12,5 +12,6 @@ Latin subsets as served by the Google Fonts CSS API (woff2). Declared with `@fon
 
 Barlow and Barlow Semi Condensed: Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow).
 Licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org). The fonts may be used,
-bundled and redistributed with this app; they may not be sold by themselves. The full licence text should sit
-next to the fonts as `OFL.txt` (from https://github.com/google/fonts/blob/main/ofl/barlow/OFL.txt).
+bundled and redistributed with this app; they may not be sold by themselves. The full licence text is in
+`OFL.txt` next to the fonts (the canonical OFL 1.1 text with the Barlow copyright line, as in
+https://github.com/google/fonts/blob/main/ofl/barlow/OFL.txt).

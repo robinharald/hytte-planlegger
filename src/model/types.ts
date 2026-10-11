@@ -250,7 +250,7 @@ export interface Roof {
   thickness: number;
   /** Horizontal overhang beyond the axis line at the eaves (m). 0.51. Mono: both low and high side; flat: all sides. */
   overhangEave: number;
-  /** Horizontal overhang beyond the axis line at the gable ends (m). 0.35. */
+  /** Horizontal overhang beyond the axis line at the gable ends (m). 0.51 on every block of Forslag D (IFC). */
   overhangGable: number;
   material: 'turf' | 'metal' | 'shingle';
   /**
