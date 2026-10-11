@@ -116,6 +116,9 @@ export interface DerivedRoom {
   floorMaterial: FloorMaterial;
   /** Centre-line polygon of the detected face (wall axis lines) — used by the editor. */
   facePolygon: Vec2[];
+  /** True for a zone (Room.zonePolygon) inside an open-plan face; `parentId` is the face's room id. */
+  isZone: boolean;
+  parentId?: Id;
 }
 
 export interface DerivedFloor {
@@ -123,6 +126,8 @@ export interface DerivedFloor {
   levelId: Id;
   polygon: Vec2[];
   z: number; // top of floor, absolute
+  /** Slab thickness below `z` (0.17 for the loft floor, 0 for ground floors on the slab). */
+  thickness: number;
   material: FloorMaterial;
   roomId?: Id;
 }

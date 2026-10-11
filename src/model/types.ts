@@ -156,6 +156,11 @@ export interface FloorZone {
   id: Id;
   polygon: Vec2[];
   levelId: Id;
+  /**
+   * 'replace': the block's base floor is removed here and replaced by a floor on `levelId` (the lower bedroom part).
+   * 'add': an additional floor on `levelId` above/below the base floor (the loft over the bedroom part).
+   */
+  kind: 'replace' | 'add';
 }
 
 export interface BlockPart {
@@ -290,6 +295,8 @@ export type RoomType =
   | 'pantry'
   | 'hems'
   | 'leseskrok'
+  /** Void / opening in a floor (stairwell). Not counted in BRA, no floor rendered. */
+  | 'apning'
   | 'annet';
 
 export type FloorMaterial = 'wood' | 'tile' | 'sauna' | 'concrete' | 'deck';
@@ -304,6 +311,12 @@ export interface Room {
   type: RoomType;
   levelId: Id;
   anchor: Vec2;
+  /**
+   * Zone inside an open-plan face (e.g. "Kjøkken" inside the big living-room face). The derived room is
+   * zonePolygon ∩ the containing face's inner polygon, and it is listed under the face's own room.
+   * `anchor` must lie inside the zone polygon. Zones never affect room detection.
+   */
+  zonePolygon?: Vec2[];
   /** Override of the floor material implied by `type`. */
   floorMaterial?: FloorMaterial;
   note?: string;

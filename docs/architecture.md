@@ -68,6 +68,17 @@ scripts/       build-terrain.mjs (data/geo → src/model/seed/terrain.json)
 - **Openings** are hosted on a block edge or a stored wall, positioned by `offset` (m from the host start to the
   opening centre). Sill is measured from the floor of `levelId` (default: the host's level). Doors have a swing.
 - **Rooms** are records with an anchor point; geometry comes from room detection (faces of the wall graph).
+  Open-plan areas use **zones**: a Room with `zonePolygon` is a sub-area of the face that contains it (Kjøkken,
+  Spiseplass, Stue, Leseskrok, Passasje inside the one big living-room face). Zones are listed under the face's room,
+  drawn with dashed outlines, and their areas are the zone polygon clipped to the face's inner polygon.
+- **Floor zones** have a kind: `replace` (the lower bedroom part replaces the main floor there) or `add` (the loft
+  floor above the bedroom part). Room detection for the "plan1" view uses exterior pieces + stored walls of levels
+  lower and main + the boundaries of `replace` zones as virtual zero-thickness lines (so the corridor splits at the
+  level step); each face gets the level of the zone containing its label point (else the block level). For the loft
+  view: exterior pieces + loft walls + the `add` zone boundary; faces whose label point is outside every loft zone
+  are discarded. Rooms of type `apning` are voids (no floor, excluded from BRA).
+- **Interior wall heights**: existing main-level interior walls are fixed at 2.3 m (tie-beam level, open roof above);
+  new wing walls fixed at 2.4 m; lower-level walls stop under the loft floor (ceilingHeight 2.3); loft walls go to the roof.
 
 ## Derivation pipeline (`geometry/derive.ts`)
 
