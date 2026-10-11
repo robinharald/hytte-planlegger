@@ -2,14 +2,18 @@
  * Project data model — the single JSON document that everything is generated from.
  *
  * Conventions (see docs/architecture.md):
- *  - Units: metres, degrees. Plan coordinates: x = "plan east", y = "plan north".
- *    The plan frame is rotated relative to true north: `Site.planNorthBearing` is the
- *    compass bearing of the plan +y axis (106° for Merkesvatnet).
- *  - Heights (z) are metres relative to the main floor (level "main" = 0), unless stated.
- *  - Block polygons are drawn on the AXIS LINE = outside face of the timber frame
- *    (the architect's grid lines). Cladding sits `WallBuildUp.outerOffset` outside it.
- *  - Polygons are counter-clockwise (CCW) in plan coordinates. Edge i runs from vertex i to i+1.
+ *  - Units: metres, degrees. Plan coordinates: x = "plan east", y = "plan north" (a right-handed frame, y up
+ *    when drawn). The plan frame is rotated relative to true north: `Site.planNorthBearing` is the compass
+ *    bearing of the plan +y axis (106° for Merkesvatnet).
+ *  - Heights (z) are metres relative to the main floor (level "main" = 0), unless stated. Structure and
+ *    outdoor heights are absolute in that sense (never relative to a level).
+ *  - Block polygons are drawn on the AXIS LINE = outside face of the timber frame (the architect's grid
+ *    lines). Cladding sits `WallBuildUp.outerOffset` outside it.
+ *  - Polygons are counter-clockwise (CCW). Edge i runs from vertex i to i+1. The LEFT side of a CCW edge
+ *    (normal (-dy, dx)) is the inside of the block.
  *  - Ids are stable strings. Seed data uses readable ids ("blk-main"); user-created ids use nanoid.
+ *  - The terrain heightmap is NOT part of the project document (too large for links/undo); the site only
+ *    references a bundled asset by id.
  */
 
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -17,6 +21,9 @@ export const CURRENT_SCHEMA_VERSION = 1;
 export type Vec2 = [number, number];
 export type Vec3 = [number, number, number];
 export type Id = string;
+
+/** Lifecycle of an element in the design: part of today's cabin, planned new work, or demolished. */
+export type ElementStatus = 'existing' | 'new' | 'removed';
 
 // ---------------------------------------------------------------------------
 // Project / site
@@ -28,6 +35,10 @@ export interface Project {
   name: string;
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
+  /** Revision of the bundled seed this project was created from (see seed/forslagD.ts SEED_REVISION). */
+  seedRevision: number;
+  /** Set when the project was created as "my own copy" of a shared link. */
+  basedOnProjectId?: Id;
   site: Site;
   variants: Variant[];
   activeVariantId: Id;
@@ -42,11 +53,29 @@ export interface Site {
   floorElevation: number;
   /** Lake surface, metres above sea level. Rendered where terrain is below it. */
   waterLevel?: number;
-  /** Terrain heightmap in the plan frame, z relative to the main floor. */
-  terrain?: TerrainGrid;
-  /** IANA time zone used for the sun study. */
+  /** Id of the bundled terrain asset (TerrainAsset.id). The asset itself is loaded by the app, never stored here. */
+  terrainId: string;
+  /** Terrain modifications: inside each polygon the terrain is CUT down to at most `maxZ` (relative to the main floor). */
+  groundWorks: GroundWork[];
+  /** IANA time zone used for the sun study (the instant is built from local wall-clock time here, never from the device zone). */
   timezone: string;
   trees: Tree[];
+}
+
+export interface GroundWork {
+  id: Id;
+  polygon: Vec2[];
+  /** Maximum terrain height inside the polygon, metres relative to the main floor. */
+  maxZ: number;
+}
+
+/**
+ * Bundled terrain asset (src/model/seed/terrain-<id>.json). Grids are in the plan frame, z in metres above
+ * sea level, ordered finest first; a point is sampled from the first grid that covers it (bilinear).
+ */
+export interface TerrainAsset {
+  id: string;
+  grids: TerrainGrid[];
 }
 
 export interface TerrainGrid {
@@ -56,7 +85,7 @@ export interface TerrainGrid {
   dy: number; // spacing in y (m)
   nx: number;
   ny: number;
-  /** Row-major: z[j * nx + i], metres relative to the main floor. */
+  /** Row-major: z[j * nx + i], metres above sea level. */
   z: number[];
 }
 
@@ -80,7 +109,7 @@ export interface Variant {
   basedOnId?: Id;
   levels: Level[];
   blocks: Block[];
-  /** Stored walls (interior walls, and old exterior walls that are now inside). Exterior walls are derived from blocks. */
+  /** Stored walls: interior walls, old exterior walls that are now inside, and zero-thickness dividers. Exterior walls are derived from blocks. */
   walls: Wall[];
   openings: Opening[];
   rooms: Room[];
@@ -90,16 +119,24 @@ export interface Variant {
   settings: VariantSettings;
 }
 
+/**
+ * A floor level. Levels are grouped into storeys: the architect's "Hovedplan" shows the lower bedroom level
+ * and the main level together (storey "ground"), the loft is storey "loft". Room detection runs per storey.
+ */
 export interface Level {
   id: Id;
   name: string;
+  storeyId: Id;
   /** Floor elevation relative to the main floor (m). main = 0, lower = -1.0, loft = 1.47 */
   elevation: number;
   /**
-   * Height of a flat ceiling above this level's floor, if the level has one.
-   * Undefined = open to the roof (walls are cut by the roof planes).
+   * Height of a flat ceiling above this level's floor, if the level has one (lower = 2.3, the underside of the
+   * loft floor). Undefined = open to the roof. Only affects stored walls with heightMode 'auto' and the
+   * measurable-area rule; exterior walls always run to the roof.
    */
   ceilingHeight?: number;
+  /** Thickness of this level's floor slab below its elevation (loft 0.17; 0 for floors on the ground slab). */
+  floorThickness: number;
 }
 
 export interface VariantSettings {
@@ -107,7 +144,7 @@ export interface VariantSettings {
   defaultExteriorWall: WallBuildUp;
   /** Default thickness for new interior walls (m). */
   defaultInteriorThickness: number;
-  /** Optional area limit (m² BYA) that triggers a warning. null = none. */
+  /** Optional BYA limit (m²). null = none. Robin asked for no limiter; kept for compatibility, no UI in phase 1. */
   areaLimit: number | null;
 }
 
@@ -130,17 +167,20 @@ export interface Block {
   polygon: BlockVertex[];
   /** Base level of the block floor. */
   levelId: Id;
-  /** Regions of the block whose floor is on another level (e.g. the lower bedroom part of the main block). */
+  /**
+   * Regions of the block whose floor is on another level. Polygons are clipped to the block polygon at derive time
+   * (no tiling invariant); the uncovered remainder is the base level.
+   */
   floorZones: FloorZone[];
   /**
-   * Sub-areas flagged existing/new for colouring and area split.
-   * If empty, the whole block has the block's `isNew` flag. Parts must tile the block polygon.
+   * Sub-areas flagged existing/new for colouring and the area split. Clipped to the block polygon at derive time;
+   * the uncovered remainder is an implicit part with the block's `isNew`. Empty = whole block is `isNew`.
    */
   parts: BlockPart[];
   isNew: boolean;
   /** Exterior wall build-up for this block. */
   wall: WallBuildUp;
-  /** Underside of the roof at the outer wall face (axis line), above the block's level floor. 2.22 for the existing cabin. */
+  /** Underside of the roof at the AXIS LINE (0.11 m inside the cladding face), above the block's level floor. 2.22 for the existing cabin. */
   eaveHeight: number;
   roof: Roof;
   /** How edges shared with other blocks are treated. Missing entry = 'wall'. */
@@ -157,8 +197,10 @@ export interface FloorZone {
   polygon: Vec2[];
   levelId: Id;
   /**
-   * 'replace': the block's base floor is removed here and replaced by a floor on `levelId` (the lower bedroom part).
-   * 'add': an additional floor on `levelId` above/below the base floor (the loft over the bedroom part).
+   * 'replace': the base floor is carved out and replaced by a floor on `levelId` (the lower bedroom part, -1.0).
+   *            Its boundary acts as a zero-thickness divider in room detection (the corridor splits at the step).
+   * 'add':     an additional floor on `levelId` stacked over the base (the loft over the bedroom part). Its boundary
+   *            bounds the room graph of that level's storey; faces outside every 'add' zone are discarded there.
    */
   kind: 'replace' | 'add';
 }
@@ -173,9 +215,12 @@ export interface BlockPart {
 export interface Junction {
   otherBlockId: Id;
   /**
-   * 'open'  = no wall where the two block polygons share an edge (one continuous room, e.g. glass bump / living room).
-   * 'wall'  = keep THIS block's exterior wall along the shared edge (e.g. the main house north wall against the bod wing).
-   * Only the block listed first in `Variant.blocks` needs the entry; if both have entries, 'open' wins.
+   * What happens where this block's polygon shares an edge segment with `otherBlockId`'s polygon
+   * (collinear within 1 cm / 0.5°, opposite directions, overlap > 1 cm):
+   *  'open' = no wall (one continuous room, e.g. glass bump / living room, living room / new wing).
+   *  'wall' = ONE exterior wall is kept there, owned by the block whose entry says 'wall' (if both or neither
+   *           say so, by the block listed first in `Variant.blocks`); the other block's coincident piece is removed.
+   *  'open' in either block's entry wins over 'wall'.
    */
   policy: 'open' | 'wall';
 }
@@ -185,26 +230,27 @@ export type Cardinal = 'N' | 'S' | 'E' | 'W';
 
 export interface Roof {
   type: RoofType;
-  /** Gable: axis the ridge runs along. Ridge is centred on the block's extent across that axis. */
-  ridgeAxis: 'x' | 'y';
+  /** Gable: axis the ridge runs along. Ridge is centred on the block's extent across that axis. Ignored for flat; for mono it is perpendicular to `slopeTo`. */
+  ridgeAxis?: 'x' | 'y';
   /** Mono-pitch: side the roof slopes DOWN towards (plan cardinal). */
   slopeTo?: Cardinal;
-  /** Which value drives the geometry: 'pitch' keeps pitchDeg when the block resizes, 'height' keeps ridgeHeight. */
+  /** Which value drives the geometry when the block resizes: 'pitch' keeps pitchDeg, 'height' keeps ridgeHeight. Derive always recomputes the other. */
   drive: 'pitch' | 'height';
   /** Roof pitch in degrees. 28 for the existing cabin. */
   pitchDeg: number;
-  /** Underside of the roof at the ridge, above the block's level floor (gable/mono). 3.87 for the main house. */
+  /** Underside of the roof at the ridge (gable) / at the high wall (mono), above the block's level floor. 3.87 for the main house. */
   ridgeHeight: number;
   /** Vertical thickness of the roof build-up (m). 0.31 (tro + papp + lekter + torv). */
   thickness: number;
-  /** Horizontal overhang beyond the axis line at the eaves (m). 0.51 */
+  /** Horizontal overhang beyond the axis line at the eaves (m). 0.51. Mono: both low and high side; flat: all sides. */
   overhangEave: number;
-  /** Horizontal overhang beyond the axis line at the gables (m). 0.35 */
+  /** Horizontal overhang beyond the axis line at the gable ends (m). 0.35. */
   overhangGable: number;
   material: 'turf' | 'metal' | 'shingle';
   /**
-   * Manual override of how far (m) the roof continues beyond the block polygon along the ridge axis,
-   * at the low (start) and high (end) coordinate ends. Undefined = automatic (extend until it meets the adjacent roof).
+   * Manual override of how far (m) the roof continues beyond the axis line along the ridge axis at the low (start)
+   * and high (end) coordinate ends. Replaces BOTH the automatic extension and overhangGable at that end.
+   * Undefined = automatic (extend until it meets the adjacent roof, else overhangGable).
    */
   extend?: { start?: number; end?: number };
 }
@@ -214,25 +260,41 @@ export interface Roof {
 // ---------------------------------------------------------------------------
 
 export type WallKind =
-  /** Ordinary interior partition, centred on the a→b line. */
+  /** Ordinary interior partition, centred on the a→b line (unless faceLeft/faceRight are given). */
   | 'interior'
-  /** A former exterior wall that is now inside (e.g. the bod wing's old north gable). Centred on a→b, but thick. */
-  | 'exterior-old';
+  /** A former exterior wall that is now inside (e.g. the bod wing's old north gable). Thick; may be asymmetric. */
+  | 'exterior-old'
+  /**
+   * Zero-thickness room boundary: an edge in the room graph (splits open-plan areas into Kjøkken / Stue / ...),
+   * dashed hairline in the plan, nothing in 3D, no openings, no area deduction.
+   */
+  | 'divider';
 
 export interface Wall {
   id: Id;
   a: Vec2;
   b: Vec2;
+  /** 0 for dividers. */
   thickness: number;
+  /** Level whose floor the wall stands on. */
   levelId: Id;
-  isNew: boolean;
+  status: ElementStatus;
   kind: WallKind;
   /**
-   * Height rule. Default 'auto': from the level floor up to the level ceiling if it has one, otherwise to the roof underside.
-   * 'fixed': from the level floor to `height` metres above it (e.g. a half-height wall).
+   * 'auto'  (default): from the level floor to the level's ceiling if it has one, otherwise to the roof envelope.
+   * 'roof': from the level floor to the roof envelope, ignoring the level ceiling (walls that run from the lower
+   *         floor up through the loft, e.g. x = 5.05 between the bathroom and the vindfang).
+   * 'fixed': from the level floor to `height` metres above it (still clipped by the roof envelope).
    */
-  heightMode?: 'auto' | 'fixed';
+  heightMode: 'auto' | 'fixed' | 'roof';
   height?: number;
+  /**
+   * Optional asymmetric faces: distance from the a→b line to the face on the LEFT ((-dy, dx)) side and on the
+   * RIGHT side, both positive. Default thickness/2 each. Used for 'exterior-old' walls whose body is not centred
+   * on the axis line.
+   */
+  faceLeft?: number;
+  faceRight?: number;
 }
 
 export type OpeningType =
@@ -256,22 +318,30 @@ export interface Opening {
   offset: number;
   width: number;
   height: number;
+  /** Cut the full wall height up to the top profile (open shed front); `height` is then ignored. */
+  fullHeight?: boolean;
   /** Sill/threshold height above the floor of `levelId` (0 for doors). */
   sill: number;
-  /** Level whose floor the sill is measured from. Default: the host wall's level / the block's level at that point. */
+  /**
+   * Level whose floor the sill is measured from. Default: the level of the floor zone containing the point 0.2 m
+   * inside the host at the opening centre, else the block/wall level. The loft windows set 'loft' explicitly.
+   */
   levelId?: Id;
   /**
-   * Door swing. `hinge` is the side of the hinge when you look at the door from the OUTSIDE of the block
-   * (exterior) or from the LEFT side of the host line a→b (interior walls, i.e. the side the normal (-dy, dx) points to).
-   * `direction`: 'out' = opens away from that viewpoint, 'in' = opens towards it.
+   * Door swing, defined on the host reference line only:
+   *  hinge: 'start' = hinge at the jamb nearer the host start, 'end' = nearer the host end.
+   *  side:  side of the host line a→b that the leaf opens INTO: 'left' = (-dy, dx) side (= inside the block for
+   *         exterior edges), 'right' = outside for exterior edges. Exterior doors that swing outwards are 'right'.
    */
-  swing?: { hinge: 'left' | 'right'; direction: 'in' | 'out' };
+  swing?: { hinge: 'start' | 'end'; side: 'left' | 'right' };
   style: OpeningStyle;
-  isNew: boolean;
+  status: ElementStatus;
 }
 
 export interface OpeningStyle {
   frameColour: 'white' | 'green' | 'wood' | 'black';
+  /** Door leaf. Default by type: door → 'white', glassDoor/saunaDoor → 'glass'. */
+  leaf?: 'white' | 'green' | 'wood' | 'glass';
   /** Window muntin grid: [columns, rows] of panes. */
   mullions?: [number, number];
 }
@@ -302,8 +372,9 @@ export type RoomType =
 export type FloorMaterial = 'wood' | 'tile' | 'sauna' | 'concrete' | 'deck';
 
 /**
- * A room record. Its geometry is NOT stored: rooms are detected as faces of the wall graph on a level,
- * and a Room is attached to the face that contains `anchor`.
+ * A room record. Its geometry is NOT stored: rooms are detected as faces of the wall graph of a storey,
+ * and a Room is attached to the face that contains `anchor`. Use dividers (WallKind 'divider') to split
+ * open-plan areas into separately named rooms.
  */
 export interface Room {
   id: Id;
@@ -311,12 +382,6 @@ export interface Room {
   type: RoomType;
   levelId: Id;
   anchor: Vec2;
-  /**
-   * Zone inside an open-plan face (e.g. "Kjøkken" inside the big living-room face). The derived room is
-   * zonePolygon ∩ the containing face's inner polygon, and it is listed under the face's own room.
-   * `anchor` must lie inside the zone polygon. Zones never affect room detection.
-   */
-  zonePolygon?: Vec2[];
   /** Override of the floor material implied by `type`. */
   floorMaterial?: FloorMaterial;
   note?: string;
@@ -359,12 +424,14 @@ export interface Deck {
 
 export interface Railing {
   id: Id;
+  /** Deck the railing stands on (gives its base height). */
+  deckId: Id;
   /** Open polyline along the deck edge. */
   path: Vec2[];
   height: number; // 1.05
   style: 'glass' | 'boards';
-  /** Gaps (steps) as distances along the path from its start: [from, to]. */
-  gaps: [number, number][];
+  /** Gaps as distances along the path from its start. `steps` = a stair down to the terrain is built in the gap. */
+  gaps: { from: number; to: number; steps: boolean }[];
   isNew: boolean;
 }
 
@@ -376,13 +443,13 @@ export interface HotTub {
 }
 
 // ---------------------------------------------------------------------------
-// Structure (decorative but informative: posts, beams, chimney, stairs)
+// Structure (posts, beams, chimney, stairs). All z values are absolute (relative to the main floor).
 // ---------------------------------------------------------------------------
 
 export type StructureElement =
-  | { id: Id; kind: 'post'; position: Vec2; size: number; levelId: Id; bottom: number; top: number; isNew: boolean }
-  | { id: Id; kind: 'beam'; a: Vec2; b: Vec2; width: number; bottom: number; top: number; levelId: Id; isNew: boolean }
-  | { id: Id; kind: 'chimney'; min: Vec2; max: Vec2; top: number; isNew: boolean }
+  | { id: Id; kind: 'post'; position: Vec2; size: number; bottom: number; top: number; isNew: boolean }
+  | { id: Id; kind: 'beam'; a: Vec2; b: Vec2; width: number; bottom: number; top: number; isNew: boolean }
+  | { id: Id; kind: 'chimney'; min: Vec2; max: Vec2; bottom: number; top: number; isNew: boolean }
   | {
       id: Id;
       kind: 'stair';
