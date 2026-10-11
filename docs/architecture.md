@@ -185,3 +185,117 @@ from the old model (Barlow / Barlow Semi Condensed, --accent #4f6b55, --new #c87
 - Never silently change Robin's design: if the spec is contradictory, keep the spec and add a `ModelWarning` or a note.
 - Norwegian in UI, comma decimals, `m²`. English in code.
 - Keep `STATUS.md` current: done / next / known issues.
+
+## Component contracts (fixed so modules can be built in parallel)
+
+```tsx
+// src/plan2d/PlanView.tsx
+export interface PlanViewProps {
+  derived: DerivedVariant;
+  site: Site;
+  /** Which levels to draw. 'plan1' = levels lower + main on one plan (as the architect's Hovedplan), 'loft' = level loft. */
+  planLevel: 'plan1' | 'loft';
+  selection: Selection | null;
+  onSelect: (sel: Selection | null) => void;
+  showLabels: boolean; showDims: boolean; showGrid: boolean; showRoof: boolean; highlightNew: boolean;
+  /** Optional: furniture layer etc. come in phase 3 via children. */
+}
+export function PlanView(props: PlanViewProps): JSX.Element   // root <svg data-testid="plan-view">, fills its container
+export interface PlanViewHandle { fitView(): void; getSvg(): SVGSVGElement | null }   // via forwardRef
+
+// src/view3d/View3D.tsx
+export interface View3DProps {
+  derived: DerivedVariant;
+  site: Site;
+  mode: 'ute' | 'inne';
+  cutHeight: number;              // metres above each level floor, interior mode (1.2–2.6)
+  showLabels: boolean; highlightNew: boolean; showTrees: boolean; showTerrain: boolean;
+  /** Unit vector pointing from the scene TOWARDS the sun, plan frame (x, y, z). Below horizon → dim ambient only. */
+  sunDir: Vec3;
+  /** Camera preset key; changing it animates the camera. */
+  preset: CameraPreset;
+  selection: Selection | null;
+  onSelect: (sel: Selection | null) => void;
+  onReady?: () => void;           // first frame rendered
+}
+export type CameraPreset = 'oversikt' | 'terrassen' | 'framsiden' | 'baksiden' | 'ovenfra' | 'naert-tilbygget' | 'inne-stua';
+export function View3D(props: View3DProps): JSX.Element   // root <div data-testid="view-3d"> containing the <Canvas>
+
+// src/state/selection.ts (shared type, owned by the UI/state task)
+export type Selection =
+  | { kind: 'room'; id: Id }
+  | { kind: 'wall'; id: Id }          // DerivedWall id
+  | { kind: 'opening'; id: Id }
+  | { kind: 'block'; id: Id }
+  | { kind: 'furniture'; id: Id }
+  | { kind: 'deck'; id: Id };
+```
+
+Test hooks the UI must provide: `data-testid` = `view-tab-plan`, `view-tab-3d`, `view-tab-split`, `mode-ute`, `mode-inne`,
+`preset-<CameraPreset>`, `plan-level-plan1`, `plan-level-loft`, `room-schedule`, `area-totals`, `toggle-labels`,
+`toggle-new`; and `window.__hytte = { ready: boolean; project: Project; derived: DerivedVariant }` kept current.
+
+## Geometry API (signatures the modules agree on)
+
+```ts
+// geometry/polygon.ts
+export const EPS: number;                                  // 1e-6
+export function signedArea(poly: Vec2[]): number;          // >0 for CCW
+export function area(poly: Vec2[]): number;
+export function isCCW(poly: Vec2[]): boolean;
+export function ensureCCW(poly: Vec2[]): Vec2[];
+export function centroid(poly: Vec2[]): Vec2;
+export function bbox(poly: Vec2[]): { min: Vec2; max: Vec2 };
+export function pointInPolygon(p: Vec2, poly: Vec2[]): boolean;   // boundary counts as inside
+export function offsetPolygon(poly: Vec2[], d: number): Vec2[];   // d > 0 = outward for a CCW polygon, mitre joins
+export function offsetPolygonPerEdge(poly: Vec2[], inward: number[]): Vec2[]; // inward[i] for edge i (vertex i → i+1)
+export function unionArea(polys: Vec2[][]): number;        // polygon-clipping union, holes respected
+export function unionPolygons(polys: Vec2[][]): Vec2[][][]; // MultiPolygon [poly][ring][pt], ring 0 = outer
+export function intersectPolygons(a: Vec2[][], b: Vec2[][]): Vec2[][][];
+export function differencePolygons(a: Vec2[][], b: Vec2[][]): Vec2[][][];
+export function segmentIntersection(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): { point: Vec2; ta: number; tb: number } | null;
+export function lineIntersection(p1: Vec2, d1: Vec2, p2: Vec2, d2: Vec2): Vec2 | null;
+export function distancePointSegment(p: Vec2, a: Vec2, b: Vec2): number;
+export function projectPointOnSegment(p: Vec2, a: Vec2, b: Vec2): { t: number; point: Vec2 };
+export function collinearOverlap(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2, eps?: number): [Vec2, Vec2] | null; // shared segment of two collinear segments
+export function labelPoint(poly: Vec2[]): Vec2;            // pole of inaccessibility (simplified)
+export function rectDims(poly: Vec2[]): { w: number; h: number; approx: boolean };
+export function simplifyCollinear(poly: Vec2[], eps?: number): Vec2[];
+
+// geometry/planarGraph.ts
+export interface GraphSegment { id: string; a: Vec2; b: Vec2 }
+export interface PlanarGraph { nodes: Vec2[]; edges: { from: number; to: number; segmentIds: string[] }[] }
+export function buildPlanarGraph(segments: GraphSegment[], eps?: number): PlanarGraph; // split at crossings/T-junctions/overlaps, merge nodes, drop dangling edges
+export interface Face { polygon: Vec2[]; nodeIndices: number[]; edgeIndices: number[]; area: number; isOuter: boolean }
+export function extractFaces(graph: PlanarGraph): Face[];
+
+// geometry/rooms.ts
+export interface WallLine { id: string; a: Vec2; b: Vec2; innerOffsetLeft: number; innerOffsetRight: number }
+// innerOffsetLeft = distance from the reference line to the wall face on the LEFT ((-dy, dx)) side, right likewise.
+export interface DetectedRoom { faceId: string; facePolygon: Vec2[]; innerPolygon: Vec2[]; area: number; labelPoint: Vec2; bbox: { min: Vec2; max: Vec2 }; dims: { w: number; h: number; approx: boolean } }
+export function detectRooms(lines: WallLine[], opts?: { minArea?: number; eps?: number }): DetectedRoom[];
+
+// geometry/areas.ts
+export function computeAreas(input: { blocks: DerivedBlock[]; rooms: DerivedRoom[]; levels: Level[]; variant: Variant }): AreaSummary;
+
+// geometry/roof.ts
+export function roofParams(block: Block, level: Level): { eaveZ: number; ridgeZ: number; pitchRad: number; ridgeLine: { a: Vec2; b: Vec2 }; halfWidth: number };
+export function ridgeExtension(block: Block, variant: Variant): { start: number; end: number };
+export function buildRoof(block: Block, variant: Variant): DerivedRoof;
+export function buildRoofs(variant: Variant): DerivedRoof[];
+export function roofUndersideAt(roof: DerivedRoof, x: number, y: number): number | null;
+
+// geometry/walls.ts
+export function deriveBlocks(variant: Variant): DerivedBlock[];
+export function deriveWalls(variant: Variant, blocks: DerivedBlock[], roofs: DerivedRoof[]): { walls: DerivedWall[]; warnings: ModelWarning[] };
+
+// geometry/geo.ts
+export function trueNorthInPlan(site: Site): Vec2;
+export function bearingToPlanDir(site: Site, bearingDeg: number): Vec2;   // (−sin(B−β), cos(B−β)) with B = planNorthBearing
+export function planToLatLon(site: Site, p: Vec2): { lat: number; lon: number };
+export function latLonToPlan(site: Site, lat: number, lon: number): Vec2;
+export function sunInPlan(site: Site, date: Date): { dir: Vec3; altitudeDeg: number; bearingDeg: number; isUp: boolean }; // dir = unit vector towards the sun
+
+// geometry/derive.ts
+export function deriveVariant(variant: Variant, site: Site): DerivedVariant;   // memoised per variant object identity
+```
