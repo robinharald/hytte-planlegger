@@ -1,0 +1,29 @@
+/** Room hit areas (inner polygons with holes); the selected room gets a light accent fill (outline: SelectionLayer). */
+import { memo } from 'react';
+import type { DerivedRoom } from '../../model/derived';
+import type { Selection } from '../../state/selection';
+import { polygonPath } from '../svg';
+import { isRoomSelected, selAttrs } from '../selection';
+import { ACCENT } from '../style';
+
+export const RoomLayer = memo(function RoomLayer({ rooms, selection }: { rooms: DerivedRoom[]; selection: Selection | null }) {
+  return (
+    <g data-layer="rooms">
+      {rooms.map((r) => {
+        const sel = isRoomSelected(selection, r);
+        return (
+          <path
+            key={`${r.levelId}/${r.id}`}
+            d={polygonPath(r.polygon, r.holes)}
+            fillRule="evenodd"
+            fill={sel ? ACCENT : 'none'}
+            fillOpacity={sel ? 0.12 : undefined}
+            pointerEvents="fill"
+            data-room-id={r.id}
+            {...selAttrs('room', r.id, r.levelId)}
+          />
+        );
+      })}
+    </g>
+  );
+});

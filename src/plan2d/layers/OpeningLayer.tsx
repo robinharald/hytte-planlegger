@@ -1,0 +1,129 @@
+/**
+ * Opening symbols: windows as a thin triple line across the wall (both faces + glass plane) with jambs; doors as
+ * jambs + open leaf + swing arc from DerivedOpening.swing (arc drawn as an SVG path); sliding doors as two
+ * offset leaves; frameless openings as a gap with thin jamb lines; removed openings as a dashed footprint over
+ * the (uncut) wall ("rives"). Every opening has an invisible footprint hit area for selection.
+ */
+import { memo } from 'react';
+import type { DerivedOpening, DerivedWall } from '../../model/derived';
+import type { Vec2 } from '../../model/types';
+import type { Selection } from '../../state/selection';
+import { faceLine, jambLine, openingFrame, polygonPath, slidingLines, swingArcPath, windowLines } from '../svg';
+import { isSelected, selAttrs } from '../selection';
+import { ACCENT, COLORS, NSS, STROKE } from '../style';
+import type { PlacedOpening } from '../storeyData';
+
+export interface OpeningLayerProps {
+  /** Openings of the current storey with their host walls (storeyData.ts). */
+  openings: PlacedOpening[];
+  highlightNew: boolean;
+  selection: Selection | null;
+}
+
+function Seg({ s, stroke, width }: { s: [Vec2, Vec2]; stroke: string; width: number }) {
+  return <line x1={s[0][0]} y1={s[0][1]} x2={s[1][0]} y2={s[1][1]} stroke={stroke} strokeWidth={width} strokeLinecap="butt" {...NSS} />;
+}
+
+function WindowSymbol({ wall, o, ink }: { wall: DerivedWall; o: DerivedOpening; ink: string }) {
+  const [left, right, glass, j0, j1] = windowLines(openingFrame(wall, o), o.glassPlane);
+  return (
+    <>
+      <Seg s={left} stroke={ink} width={STROKE.hair} />
+      <Seg s={right} stroke={ink} width={STROKE.hair} />
+      <Seg s={glass} stroke={COLORS.glass} width={STROKE.thin} />
+      <Seg s={j0} stroke={ink} width={STROKE.thin} />
+      <Seg s={j1} stroke={ink} width={STROKE.thin} />
+    </>
+  );
+}
+
+function SlidingSymbol({ wall, o, ink }: { wall: DerivedWall; o: DerivedOpening; ink: string }) {
+  const [a, b, j0, j1] = slidingLines(openingFrame(wall, o), o.glassPlane);
+  const leaf = o.leaf === 'glass' ? COLORS.glass : ink;
+  return (
+    <>
+      <Seg s={a} stroke={leaf} width={STROKE.medium} />
+      <Seg s={b} stroke={leaf} width={STROKE.medium} />
+      <Seg s={j0} stroke={ink} width={STROKE.thin} />
+      <Seg s={j1} stroke={ink} width={STROKE.thin} />
+    </>
+  );
+}
+
+function DoorSymbol({ wall, o, ink }: { wall: DerivedWall; o: DerivedOpening; ink: string }) {
+  const f = openingFrame(wall, o);
+  const leaf = o.leaf === 'glass' ? COLORS.glass : ink;
+  const sw = o.swing;
+  const arc = sw ? swingArcPath(sw) : '';
+  return (
+    <>
+      <Seg s={jambLine(f, 'start')} stroke={ink} width={STROKE.thin} />
+      <Seg s={jambLine(f, 'end')} stroke={ink} width={STROKE.thin} />
+      {sw ? (
+        <>
+          <Seg s={[sw.hinge, sw.open]} stroke={leaf} width={STROKE.medium} />
+          {arc && <path d={arc} fill="none" stroke={ink} strokeWidth={STROKE.hair} data-door-arc={o.id} {...NSS} />}
+        </>
+      ) : (
+        // No swing data: closed leaf in the glass plane.
+        <Seg s={faceLine(f, o.glassPlane)} stroke={leaf} width={STROKE.medium} />
+      )}
+    </>
+  );
+}
+
+function FramelessSymbol({ wall, o, ink }: { wall: DerivedWall; o: DerivedOpening; ink: string }) {
+  const f = openingFrame(wall, o);
+  return (
+    <>
+      <Seg s={jambLine(f, 'start')} stroke={ink} width={STROKE.hair} />
+      <Seg s={jambLine(f, 'end')} stroke={ink} width={STROKE.hair} />
+    </>
+  );
+}
+
+function OpeningSymbol(props: { wall: DerivedWall; o: DerivedOpening; ink: string }) {
+  switch (props.o.type) {
+    case 'window':
+      return <WindowSymbol {...props} />;
+    case 'slidingDoor':
+      return <SlidingSymbol {...props} />;
+    case 'opening':
+      return <FramelessSymbol {...props} />;
+    default:
+      return <DoorSymbol {...props} />;
+  }
+}
+
+export const OpeningLayer = memo(function OpeningLayer({ openings, highlightNew, selection }: OpeningLayerProps) {
+  return (
+    <g data-layer="openings">
+      {openings.map(({ wall, opening: o }) => {
+        const sel = isSelected(selection, 'opening', o.id);
+        const removed = o.status === 'removed';
+        const ink = o.isNew && highlightNew ? COLORS.openingNew : COLORS.opening;
+        const hit = o.footprint.length >= 3 ? polygonPath(o.footprint) : '';
+        return (
+          <g key={o.id} data-opening-id={o.id} data-opening-type={o.type} data-opening-status={o.status} {...selAttrs('opening', o.id, o.opening.levelId ?? wall.levelId)}>
+            <g pointerEvents="none">
+              {removed
+                ? hit && <path d={hit} fill="none" stroke={COLORS.wallRemoved} strokeWidth={STROKE.thin} strokeDasharray="3 3" {...NSS} />
+                : <OpeningSymbol wall={wall} o={o} ink={ink} />}
+            </g>
+            {hit && (
+              <path
+                d={hit}
+                fill={sel ? ACCENT : 'none'}
+                fillOpacity={sel ? 0.3 : undefined}
+                stroke={sel ? ACCENT : 'none'}
+                strokeWidth={STROKE.selected}
+                pointerEvents="fill"
+                {...NSS}
+              />
+            )}
+          </g>
+        );
+      })}
+    </g>
+  );
+});
