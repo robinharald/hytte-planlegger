@@ -1,15 +1,21 @@
-/** Dimension lines from `derived.dimensions`: offset line, extension lines, 45° ticks, text along the line. */
+/**
+ * Dimension lines from `derived.dimensions`: offset line, extension lines, 45° ticks, text along the line.
+ * Below 8 px/m nothing is drawn (no chains without numbers); the text uses the small size below 12 px/m
+ * (drawing.ts `dimensionStyle`).
+ */
 import { memo } from 'react';
 import type { DerivedDimension } from '../../model/derived';
+import { dimensionStyle } from '../drawing';
 import { dimensionGeometry, textAngleAlong } from '../svg';
-import { COLORS, FONT_PX, NSS, PAPER, STROKE } from '../style';
+import { COLORS, NSS, PAPER, STROKE } from '../style';
 import { ScreenText } from './ScreenText';
 
 export const DimensionLayer = memo(function DimensionLayer({ dimensions, scale }: { dimensions: DerivedDimension[]; scale: number }) {
+  const { show, fontPx } = dimensionStyle(scale);
+  if (!show) return <g data-layer="dimensions" pointerEvents="none" />;
   const tick = 7 / scale;
   const overshoot = 4 / scale;
-  const textGap = (6 + FONT_PX.dim / 2) / scale;
-  const showText = scale >= 12;
+  const textGap = (6 + fontPx / 2) / scale;
   return (
     <g data-layer="dimensions" pointerEvents="none">
       {dimensions.map((d, i) => {
@@ -28,13 +34,11 @@ export const DimensionLayer = memo(function DimensionLayer({ dimensions, scale }
             {g.ticks.map((t, j) => (
               <line key={`t${j}`} x1={t[0][0]} y1={t[0][1]} x2={t[1][0]} y2={t[1][1]} stroke={colour} strokeWidth={STROKE.medium} {...NSS} />
             ))}
-            {showText && (
-              <ScreenText x={tx} y={ty} scale={scale} rotate={angle}>
-                <text x={0} y={0} textAnchor="middle" dominantBaseline="central" fontSize={FONT_PX.dim} fill={colour} stroke={PAPER} strokeWidth={3} strokeLinejoin="round" paintOrder="stroke">
-                  {d.text}
-                </text>
-              </ScreenText>
-            )}
+            <ScreenText x={tx} y={ty} scale={scale} rotate={angle}>
+              <text x={0} y={0} textAnchor="middle" dominantBaseline="central" fontSize={fontPx} fill={colour} stroke={PAPER} strokeWidth={3} strokeLinejoin="round" paintOrder="stroke">
+                {d.text}
+              </text>
+            </ScreenText>
           </g>
         );
       })}

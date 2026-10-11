@@ -1,6 +1,7 @@
 /**
  * Opening symbols: windows as a thin triple line across the wall (both faces + glass plane) with jambs; doors as
- * jambs + open leaf + swing arc from DerivedOpening.swing (arc drawn as an SVG path); sliding doors as two
+ * jambs + open leaf + swing arc from DerivedOpening.swing (arc drawn as an SVG path), double doors with a second
+ * leaf and arc from DerivedOpening.swing2 (hinged at the other jamb); sliding doors as two
  * offset leaves; frameless openings as a gap with thin jamb lines; removed openings as a dashed footprint over
  * the (uncut) wall ("rives"). Every opening has an invisible footprint hit area for selection.
  */
@@ -50,19 +51,31 @@ function SlidingSymbol({ wall, o, ink }: { wall: DerivedWall; o: DerivedOpening;
   );
 }
 
+type Swing = NonNullable<DerivedOpening['swing']>;
+
+/** One door leaf in its open position plus its swing arc. */
+function Leaf({ sw, leaf, ink, doorId, n }: { sw: Swing; leaf: string; ink: string; doorId: string; n: 1 | 2 }) {
+  const arc = swingArcPath(sw);
+  return (
+    <>
+      <Seg s={[sw.hinge, sw.open]} stroke={leaf} width={STROKE.medium} />
+      {arc && <path d={arc} fill="none" stroke={ink} strokeWidth={STROKE.hair} data-door-arc={doorId} data-door-leaf={n} {...NSS} />}
+    </>
+  );
+}
+
 function DoorSymbol({ wall, o, ink }: { wall: DerivedWall; o: DerivedOpening; ink: string }) {
   const f = openingFrame(wall, o);
   const leaf = o.leaf === 'glass' ? COLORS.glass : ink;
   const sw = o.swing;
-  const arc = sw ? swingArcPath(sw) : '';
   return (
     <>
       <Seg s={jambLine(f, 'start')} stroke={ink} width={STROKE.thin} />
       <Seg s={jambLine(f, 'end')} stroke={ink} width={STROKE.thin} />
       {sw ? (
         <>
-          <Seg s={[sw.hinge, sw.open]} stroke={leaf} width={STROKE.medium} />
-          {arc && <path d={arc} fill="none" stroke={ink} strokeWidth={STROKE.hair} data-door-arc={o.id} {...NSS} />}
+          <Leaf sw={sw} leaf={leaf} ink={ink} doorId={o.id} n={1} />
+          {o.swing2 && <Leaf sw={o.swing2} leaf={leaf} ink={ink} doorId={o.id} n={2} />}
         </>
       ) : (
         // No swing data: closed leaf in the glass plane.

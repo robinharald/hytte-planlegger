@@ -11,10 +11,14 @@
  *  - Outdoor elements (decks, railings, steps, hot tubs, trees) belong to the storey containing the level at
  *    elevation 0 (the main floor); on other storeys they are drawn faint and are not selectable.
  *  - Dimensions without a levelId are shown on every storey; others only on the storey of their level.
+ *  - 'ceiling' floors (flat ceilings of blocks with Block.ceilingHeight) are above the plan cut: not drawn.
+ *  - Stairs are drawn where they cross the cut ('full') and on the storey they arrive at ('upper'), see
+ *    visibility.ts; the footprints of stairs, chimneys and posts on the storey are label obstacles.
  */
 import type { DerivedDimension, DerivedFloor, DerivedOpening, DerivedRoom, DerivedStructure, DerivedVariant, DerivedWall } from '../model/derived';
 import type { ElementStatus, Id, Vec2 } from '../model/types';
-import { storeyContext, structureOnStorey } from './visibility';
+import type { StairMode } from './drawing';
+import { stairModeOnStorey, storeyContext, structureOnStorey } from './visibility';
 import type { StoreyContext } from './visibility';
 
 export interface PlacedOpening {
@@ -38,6 +42,10 @@ export interface StoreyData {
   rooms: DerivedRoom[];
   floors: DerivedFloor[];
   structure: DerivedStructure[];
+  /** Drawing mode of every stair in `structure` (by id). */
+  stairModes: Record<Id, StairMode>;
+  /** Footprints room labels must keep clear of (stairs, chimneys, posts on this storey). */
+  labelObstacles: Vec2[][];
   dimensions: DerivedDimension[];
   /** False on storeys without the main floor: outdoor elements are drawn faint there. */
   outdoorActive: boolean;
@@ -56,6 +64,8 @@ const EMPTY: Omit<StoreyData, 'ctx'> = {
   rooms: [],
   floors: [],
   structure: [],
+  stairModes: {},
+  labelObstacles: [],
   dimensions: [],
   outdoorActive: true,
 };
@@ -82,6 +92,23 @@ export function openingCuts(openings: PlacedOpening[]): Vec2[][] {
 
 const isMainFloor = (elevation: number) => Math.abs(elevation) < 1e-6;
 
+/** Plan footprint of a structure element that labels must avoid (beams run overhead: none). */
+export function structureFootprint(el: DerivedStructure): Vec2[] | null {
+  switch (el.kind) {
+    case 'stair':
+      return el.footprint.length >= 3 ? el.footprint : null;
+    case 'chimney':
+      return [el.min, [el.max[0], el.min[1]], el.max, [el.min[0], el.max[1]]];
+    case 'post': {
+      const h = el.size / 2;
+      const [x, y] = el.position;
+      return [[x - h, y - h], [x + h, y - h], [x + h, y + h], [x - h, y + h]];
+    }
+    default:
+      return null;
+  }
+}
+
 export function storeyData(derived: DerivedVariant, planStorey: string): StoreyData {
   const ctx = storeyContext(derived, planStorey);
   if (!ctx) return { ctx, ...EMPTY };
@@ -94,6 +121,9 @@ export function storeyData(derived: DerivedVariant, planStorey: string): StoreyD
     derived.levels.map((l) => l.id),
   );
   const byStatus = (a: { status: ElementStatus }, b: { status: ElementStatus }) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+  const structure = derived.structure.filter((s) => structureOnStorey(s, ctx));
+  const stairModes: Record<Id, StairMode> = {};
+  for (const s of structure) if (s.kind === 'stair') stairModes[s.id] = stairModeOnStorey(s, ctx) ?? 'full';
   return {
     ctx,
     walls,
@@ -104,8 +134,10 @@ export function storeyData(derived: DerivedVariant, planStorey: string): StoreyD
     otherUnions: derived.wallUnion.filter((u) => u.storeyId !== storeyId && u.status !== 'removed'),
     cuts: openingCuts(openings),
     rooms: derived.rooms.filter((r) => r.storeyId === storeyId),
-    floors: derived.floors.filter((f) => levelIds.includes(f.levelId)),
-    structure: derived.structure.filter((s) => structureOnStorey(s, ctx)),
+    floors: derived.floors.filter((f) => f.kind !== 'ceiling' && levelIds.includes(f.levelId)),
+    structure,
+    stairModes,
+    labelObstacles: structure.map(structureFootprint).filter((p): p is Vec2[] => p !== null),
     dimensions: derived.dimensions.filter((d) => d.levelId === undefined || levelIds.includes(d.levelId)),
     outdoorActive: ctx.levels.some((l) => isMainFloor(l.elevation)) || !derived.levels.some((l) => isMainFloor(l.elevation)),
   };

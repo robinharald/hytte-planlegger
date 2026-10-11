@@ -40,14 +40,20 @@ export const COLORS = {
   scaleBar: '#1f2620',
 } as const;
 
-/** Very light floor tints by material. */
+/**
+ * Very light floor tints by material only. Kept close to neutral (no orange cast) so that nothing reads as new
+ * work unless `highlightNew` is on; then new floors are mixed with NEW by FLOOR_NEW_MIX (drawing.ts floorFill).
+ */
 export const FLOOR_TINT: Record<FloorMaterial, string> = {
-  wood: '#f5ecdb',
-  tile: '#e7ecee',
-  sauna: '#f3e4cc',
+  wood: '#f4f0e7',
+  tile: '#e6ebee',
+  sauna: '#f0eadf',
   concrete: '#ebebe8',
-  deck: '#ece0cd',
+  deck: '#ece7de',
 };
+
+/** Share of NEW mixed into a new floor's material tint when "Marker det som er nytt" is on. */
+export const FLOOR_NEW_MIX = 0.22;
 
 export const STROKE = {
   hair: 0.75,
@@ -59,7 +65,8 @@ export const STROKE = {
 
 /** Applied through `style` (custom properties work there, not in presentation attributes). */
 export const FONT = "var(--font-body, 'Barlow', 'Barlow Semi Condensed', system-ui, sans-serif)";
-export const FONT_PX = { name: 12, detail: 10.5, dim: 10.5, small: 10 } as const;
+/** Text sizes (px). The *Small sizes are used below 12 px/m (svg.ts SMALL_TEXT_BELOW). */
+export const FONT_PX = { name: 12, detail: 10.5, dim: 10.5, small: 10, nameSmall: 10, detailSmall: 9, dimSmall: 9 } as const;
 
 /** Opacity of outdoor elements on storeys other than the one with the main floor. */
 export const FAINT_OPACITY = 0.35;

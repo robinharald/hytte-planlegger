@@ -154,10 +154,19 @@ export function slidingLines(f: OpeningFrame, glassPlane: number): [Vec2, Vec2][
 
 export type LabelDensity = 'full' | 'name' | 'none';
 
-/** architecture.md: ≥ 25 px/m full label, 12–25 px/m name only, < 12 px/m none. */
+/** Room labels with name, dimensions and area from this zoom (px/m) on. */
+export const LABEL_FULL_MIN = 20;
+/** Room names (and dimension texts) from this zoom on; below it neither is drawn. */
+export const LABEL_NAME_MIN = 8;
+/** Below this zoom, room names and dimension texts use the small font sizes (style.ts FONT_PX.*Small). */
+export const SMALL_TEXT_BELOW = 12;
+/** Dimension chains (lines, ticks and text) are drawn from this zoom on, never without their text. */
+export const DIM_TEXT_MIN = LABEL_NAME_MIN;
+
+/** Room label density: ≥ 20 px/m full label, 8–20 px/m name only (small font below 12), < 8 px/m none. */
 export function labelDensity(pxPerM: number): LabelDensity {
-  if (pxPerM >= 25) return 'full';
-  if (pxPerM >= 12) return 'name';
+  if (pxPerM >= LABEL_FULL_MIN) return 'full';
+  if (pxPerM >= LABEL_NAME_MIN) return 'name';
   return 'none';
 }
 

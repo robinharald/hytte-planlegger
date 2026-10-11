@@ -1,24 +1,30 @@
 /**
  * Screen-space overlays (outside the flipped root, in CSS pixels): the north arrow from Site.planNorthBearing
- * (planDirOfBearing(0), see svg.ts northInPlan) and a scale bar with a "nice" length for the current zoom.
+ * (planDirOfBearing(0), see svg.ts northInPlan) on a small round backdrop of NORTH_ARROW_BOX px — PlanView puts
+ * it in the viewport corner that covers the least of the drawing (drawing.ts placeCornerOverlay) — and a scale
+ * bar with a "nice" length for the current zoom.
  */
 import { memo } from 'react';
-import { scaleBarLabel } from '../drawing';
+import { NORTH_ARROW_BOX, scaleBarLabel } from '../drawing';
 import { arrowHead, niceScaleLength, northOnScreen, ringPath } from '../svg';
 import { planStrings } from '../strings';
 import { COLORS, FONT_PX, PAPER } from '../style';
 
-export const NorthArrow = memo(function NorthArrow({ bearing, cx, cy, size = 34 }: { bearing: number; cx: number; cy: number; size?: number }) {
+/** Arrow length (px); the "N" sits beyond the tip, all inside the NORTH_ARROW_BOX backdrop. */
+const ARROW_PX = 24;
+
+export const NorthArrow = memo(function NorthArrow({ bearing, cx, cy }: { bearing: number; cx: number; cy: number }) {
   const [dx, dy] = northOnScreen(bearing);
-  const tail: [number, number] = [cx - (dx * size) / 2, cy - (dy * size) / 2];
-  const tip: [number, number] = [cx + (dx * size) / 2, cy + (dy * size) / 2];
-  const head = arrowHead(tail, tip, 10);
+  const half = ARROW_PX / 2;
+  const tail: [number, number] = [cx - dx * half, cy - dy * half];
+  const tip: [number, number] = [cx + dx * half, cy + dy * half];
+  const head = arrowHead(tail, tip, 8);
   return (
     <g data-overlay="north" pointerEvents="none" fill={COLORS.north} stroke={COLORS.north}>
-      <circle cx={cx} cy={cy} r={size / 2 + 17} fill={PAPER} fillOpacity={0.85} stroke="none" />
+      <circle cx={cx} cy={cy} r={NORTH_ARROW_BOX / 2} fill={PAPER} fillOpacity={0.85} stroke="none" />
       <line x1={tail[0]} y1={tail[1]} x2={tip[0]} y2={tip[1]} strokeWidth={1.5} />
       {head.length === 3 && <path d={ringPath(head)} stroke="none" />}
-      <text x={cx + dx * (size / 2 + 9)} y={cy + dy * (size / 2 + 9)} textAnchor="middle" dominantBaseline="central" fontSize={FONT_PX.name} fontWeight={600} stroke="none">
+      <text x={cx + dx * (half + 8)} y={cy + dy * (half + 8)} textAnchor="middle" dominantBaseline="central" fontSize={FONT_PX.name} fontWeight={600} stroke="none">
         {planStrings.north}
       </text>
     </g>

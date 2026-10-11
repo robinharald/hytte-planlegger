@@ -9,7 +9,8 @@ import { createPlanFixture, createPlanFixtureSite } from './fixture';
 import { PlanView } from './PlanView';
 import type { PlanViewHandle } from './PlanView';
 import { isRoomSelected, isWallHighlighted, selectionFromTarget, wallSelection } from './selection';
-import { ACCENT, COLORS } from './style';
+import { NORTH_ARROW_BOX, fitBounds, floorFill } from './drawing';
+import { ACCENT, COLORS, FLOOR_TINT } from './style';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -90,6 +91,7 @@ describe('PlanView rendering', () => {
     expect(lines[0]).toBe('Kjøkken');
     expect(lines[1]).toMatch(/^ca\. \d+,\d × \d+,\d m$/);
     expect(lines[2]).toMatch(/^\d+,\d m²$/);
+    expect(kitchen.getAttribute('data-label-kind')).toBe('full');
   });
 
   it('labels only the loft room on the Hems tab and switches openings', () => {
@@ -145,6 +147,76 @@ describe('PlanView rendering', () => {
     expect(svg.querySelector('[data-layer="roof-plan"]')).not.toBeNull();
     expect(svg.querySelector('[data-overlay="north"]')!.textContent).toBe('N');
     expect(svg.querySelector('[data-overlay="scale"] text')!.textContent).toMatch(/^\d+(,\d)? m$/);
+  });
+
+  it('tints floors by material only, and new floors orange only with "highlight new"', () => {
+    const svg = render(baseProps({ highlightNew: false }));
+    const fill = (id: string) => svg.querySelector(`[data-floor-id="${id}"]`)!.getAttribute('fill');
+    expect(fill('rom-soverom/floor')).toBe(FLOOR_TINT.wood); // new room
+    expect(fill('rom-stue/floor')).toBe(FLOOR_TINT.wood);
+    expect(fill('rom-bad/floor')).toBe(FLOOR_TINT.tile);
+    render(baseProps({ highlightNew: true }));
+    expect(fill('rom-soverom/floor')).toBe(floorFill('wood', true, true));
+    expect(fill('rom-soverom/floor')).not.toBe(FLOOR_TINT.wood);
+    expect(fill('rom-stue/floor')).toBe(FLOOR_TINT.wood);
+  });
+
+  it('draws both leaves of a double door', () => {
+    const derived = createPlanFixture();
+    const door = derived.walls.flatMap((w) => w.openings).find((o) => o.id === 'd-inng')!;
+    const sw = door.swing!;
+    door.swing2 = {
+      hinge: sw.closed,
+      closed: sw.hinge,
+      open: [sw.closed[0] + sw.open[0] - sw.hinge[0], sw.closed[1] + sw.open[1] - sw.hinge[1]],
+      sweep: sw.sweep === 1 ? -1 : 1,
+    };
+    const svg = render(baseProps({ derived }));
+    const arcs = [...svg.querySelectorAll('path[data-door-arc="d-inng"]')];
+    expect(arcs.map((a) => a.getAttribute('data-door-leaf'))).toEqual(['1', '2']);
+    expect(arcs[0].getAttribute('d')).not.toBe(arcs[1].getAttribute('d'));
+    expect(svg.querySelectorAll('path[data-door-arc]')).toHaveLength(4);
+  });
+
+  it('draws the stair arriving at the loft with a break line and its arrow', () => {
+    const svg = render(baseProps({ planStorey: 'loft' }));
+    const stair = svg.querySelector('[data-structure-kind="stair"]')!;
+    expect(stair).not.toBeNull();
+    expect(stair.querySelector('[data-stair-part="upper"]')).not.toBeNull();
+    expect(svg.querySelector('[data-stair-arrow="stair-1"]')).not.toBeNull();
+    expect(svg.querySelector('[data-stair-cut="stair-1"]')).not.toBeNull();
+    expect(stair.querySelectorAll('[stroke-dasharray]').length).toBeGreaterThan(0);
+    expect(svg.querySelector('[data-stair-label]')).toBeNull();
+    render(baseProps());
+    expect(svg.querySelector('[data-stair-part="full"]')).not.toBeNull();
+    expect(svg.querySelector('[data-stair-cut]')).toBeNull();
+  });
+
+  it('keeps the north arrow on a small backdrop in a corner clear of the drawing', () => {
+    const svg = render(baseProps());
+    const [s, , , , tx, ty] = rootMatrix(svg);
+    const d = createPlanFixture();
+    const r = fitBounds(d.bounds, d.dimensions);
+    const model = { x0: s * r.min[0] + tx, x1: s * r.max[0] + tx, y0: -s * r.max[1] + ty, y1: -s * r.min[1] + ty };
+    const disc = svg.querySelector('[data-overlay="north"] circle')!;
+    const cx = Number(disc.getAttribute('cx'));
+    const cy = Number(disc.getAttribute('cy'));
+    const half = NORTH_ARROW_BOX / 2;
+    expect(Number(disc.getAttribute('r'))).toBe(half);
+    expect(cx + half <= model.x0 || cx - half >= model.x1 || cy + half <= model.y0 || cy - half >= model.y1).toBe(true);
+  });
+
+  it('drops dimension chains and room labels when zoomed out below 8 px/m', () => {
+    const svg = render(baseProps());
+    expect(svg.querySelectorAll('[data-dimension-kind]').length).toBeGreaterThan(0);
+    for (let i = 0; i < 3; i++) {
+      act(() => {
+        svg.dispatchEvent(new WheelEvent('wheel', { deltaY: 2000, clientX: 500, clientY: 350, bubbles: true, cancelable: true }));
+      });
+    }
+    expect(rootMatrix(svg)[0]).toBeLessThan(8);
+    expect(svg.querySelectorAll('[data-layer="dimensions"] *')).toHaveLength(0);
+    expect(svg.querySelectorAll('[data-room-label]')).toHaveLength(0);
   });
 
   it('hides labels, dimensions, grid and roof plan when switched off', () => {

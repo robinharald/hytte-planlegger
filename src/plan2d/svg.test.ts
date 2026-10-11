@@ -204,13 +204,16 @@ describe('opening symbols', () => {
 });
 
 describe('label density', () => {
-  it('follows the 25 / 12 px per metre thresholds', () => {
+  it('follows the 20 / 8 px per metre thresholds', () => {
     expect(labelDensity(80)).toBe('full');
-    expect(labelDensity(25)).toBe('full');
-    expect(labelDensity(24.99)).toBe('name');
-    expect(labelDensity(12)).toBe('name');
-    expect(labelDensity(11.99)).toBe('none');
+    expect(labelDensity(24.7)).toBe('full'); // Plan only at 1400 × 900
+    expect(labelDensity(20)).toBe('full');
+    expect(labelDensity(19.99)).toBe('name');
+    expect(labelDensity(11.25)).toBe('name'); // Begge at 1400 × 900
+    expect(labelDensity(8)).toBe('name');
+    expect(labelDensity(7.99)).toBe('none');
     expect(labelDensity(0)).toBe('none');
+    expect(labelDensity(Number.NaN)).toBe('none');
   });
 });
 

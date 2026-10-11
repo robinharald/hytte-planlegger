@@ -8,7 +8,7 @@
  * - Layers bottom → top: grid, decks/hot tubs/trees, block hit areas, floors, room hit areas, other storeys'
  *   walls (faint), walls (union, opening cuts clipped out) + wall hit areas, dividers, openings, structure,
  *   railings/steps, selection outline (room/block), roof plan (optional), room labels, dimension lines;
- *   screen-space north arrow and scale bar.
+ *   screen-space north arrow (in the viewport corner that covers the least of the drawing) and scale bar.
  * - Selection: a tap resolves the nearest `data-sel-kind` ancestor (mapping in selection.ts) and calls
  *   `onSelect`; a tap on empty paper calls `onSelect(null)`. Esc is the app's job.
  * - View: fitted to `derived.bounds`, grown by the dimension lines when they are shown, plus a 1.5 m margin —
@@ -39,7 +39,7 @@ import { RoomLayer } from './layers/RoomLayer';
 import { SelectionLayer } from './layers/SelectionLayer';
 import { StructureLayer } from './layers/StructureLayer';
 import { WallLayer } from './layers/WallLayer';
-import { fitBounds } from './drawing';
+import { NORTH_ARROW_BOX, NORTH_ARROW_MARGIN, fitBounds, placeCornerOverlay, scaleBarBox } from './drawing';
 import { selectionFromTarget } from './selection';
 import { storeyData } from './storeyData';
 import { planStrings } from './strings';
@@ -48,7 +48,7 @@ import { useElementSize } from './useElementSize';
 import { usePanZoom } from './usePanZoom';
 import type { TapInfo } from './usePanZoom';
 import type { View } from './viewport';
-import { fitView, pan, rootTransform, snapRectOut, visiblePlanRect } from './viewport';
+import { fitView, pan, planToScreen, rootTransform, snapRectOut, visiblePlanRect } from './viewport';
 
 export interface PlanViewProps {
   derived: DerivedVariant;
@@ -131,6 +131,20 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   const gridRect = useMemo(() => ({ min: [gx0, gy0] as Vec2, max: [gx1, gy1] as Vec2 }), [gx0, gy0, gx1, gy1]);
   const outdoorActive = data.outdoorActive;
 
+  // North arrow: the corner whose box covers the least of the drawing (the fitted rectangle on screen) and never
+  // the scale bar.
+  const scaleBarAt: Vec2 = [16, h - 16];
+  const m0 = planToScreen(view, fitRect.min);
+  const m1 = planToScreen(view, fitRect.max);
+  const north = placeCornerOverlay(
+    { x0: Math.min(m0[0], m1[0]), y0: Math.min(m0[1], m1[1]), x1: Math.max(m0[0], m1[0]), y1: Math.max(m0[1], m1[1]) },
+    w,
+    h,
+    NORTH_ARROW_BOX,
+    NORTH_ARROW_MARGIN,
+    [scaleBarBox(view.s, scaleBarAt[0], scaleBarAt[1])],
+  );
+
   return (
     <div ref={wrapRef} data-plan-wrap style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0, overflow: 'hidden', background: PAPER }}>
       <svg
@@ -159,22 +173,22 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
             />
           </g>
           <BlockLayer blocks={derived.blocks} />
-          <FloorLayer floors={data.floors} />
+          <FloorLayer floors={data.floors} highlightNew={highlightNew} />
           <RoomLayer rooms={data.rooms} selection={selection} />
           <OtherStoreyLayer unions={data.otherUnions} />
           <WallLayer unions={data.unions} pieces={data.pieces} dividers={data.dividers} cuts={data.cuts} bounds={bounds} highlightNew={highlightNew} selection={selection} />
           <OpeningLayer openings={data.openings} highlightNew={highlightNew} selection={selection} />
-          <StructureLayer elements={data.structure} selection={selection} scale={view.s} />
+          <StructureLayer elements={data.structure} selection={selection} scale={view.s} stairModes={data.stairModes} />
           <g opacity={outdoorActive ? undefined : FAINT_OPACITY}>
             <RailingLayer railings={derived.outdoor.railings} selection={selection} selectable={outdoorActive} />
           </g>
           <SelectionLayer rooms={data.rooms} blocks={derived.blocks} selection={selection} />
           {showRoofPlan && <RoofPlanLayer roofs={derived.roofs} />}
-          {showLabels && <LabelLayer rooms={data.rooms} scale={view.s} highlightNew={highlightNew} />}
+          {showLabels && <LabelLayer rooms={data.rooms} scale={view.s} highlightNew={highlightNew} obstacles={data.labelObstacles} />}
           {showDims && <DimensionLayer dimensions={data.dimensions} scale={view.s} />}
         </g>
-        <NorthArrow bearing={site.planNorthBearing} cx={w - 48} cy={48} />
-        <ScaleBar scale={view.s} x={16} y={h - 16} />
+        <NorthArrow bearing={site.planNorthBearing} cx={north[0]} cy={north[1]} />
+        <ScaleBar scale={view.s} x={scaleBarAt[0]} y={scaleBarAt[1]} />
       </svg>
     </div>
   );

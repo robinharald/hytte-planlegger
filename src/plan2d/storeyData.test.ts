@@ -3,9 +3,9 @@ import { area, isCCW, pointInPolygon } from '../geometry/polygon';
 import type { DerivedStructure, DerivedVariant } from '../model/derived';
 import type { Level, Vec2 } from '../model/types';
 import { createPlanFixture } from './fixture';
-import { openingLevelId, storeyData } from './storeyData';
+import { openingLevelId, storeyData, structureFootprint } from './storeyData';
 import { sweptAngle } from './svg';
-import { crossesCut, storeyContext, structureOnStorey, zRangeOf } from './visibility';
+import { crossesCut, stairModeOnStorey, storeyContext, structureOnStorey, zRangeOf } from './visibility';
 
 const ids = (xs: { id: string }[]) => xs.map((x) => x.id).sort();
 
@@ -126,13 +126,35 @@ describe('storeyData', () => {
     expect(l.otherUnions.map((u) => `${u.storeyId}/${u.status}`).sort()).toEqual(['ground/existing', 'ground/new']);
   });
 
-  it('filters structure by the plan cut and dimensions by level', () => {
+  it('filters structure by the plan cut (stairs also where they arrive) and dimensions by level', () => {
     const g = storeyData(d, 'ground');
     const l = storeyData(d, 'loft');
     expect(ids(g.structure)).toEqual(['chimney-1', 'post-1', 'stair-1']);
-    expect(ids(l.structure)).toEqual(['chimney-1', 'post-1']);
+    expect(ids(l.structure)).toEqual(['chimney-1', 'post-1', 'stair-1']);
+    expect(g.stairModes).toEqual({ 'stair-1': 'full' });
+    expect(l.stairModes).toEqual({ 'stair-1': 'upper' });
     expect(g.dimensions).toHaveLength(6);
     expect(l.dimensions).toHaveLength(7);
+  });
+
+  it('lists the footprints of stairs, chimney and posts as label obstacles', () => {
+    const g = storeyData(d, 'ground');
+    expect(g.labelObstacles).toHaveLength(3);
+    const stair = d.structure.find((s) => s.kind === 'stair')!;
+    expect(g.labelObstacles).toContainEqual(stair.kind === 'stair' ? stair.footprint : []);
+    expect(g.labelObstacles).toContainEqual([[5, 1.2], [5.55, 1.2], [5.55, 1.75], [5, 1.75]]);
+    const post = g.labelObstacles.find((o) => Math.abs(o[0][0] - (14.6 - 0.075)) < 1e-9)!;
+    expect(area(post)).toBeCloseTo(0.15 * 0.15, 9);
+    expect(structureFootprint({ ...(d.structure.find((s) => s.kind === 'post')!), kind: 'beam', a: [0, 0], b: [1, 0], width: 0.1 } as DerivedStructure)).toBeNull();
+  });
+
+  it('leaves flat ceilings out of the plan floors', () => {
+    const withCeiling: DerivedVariant = {
+      ...d,
+      floors: [...d.floors, { id: 'blk-b/ceiling', levelId: 'main', polygon: d.blocks[1].inner, holes: [], z: 2.45, thickness: 0.05, material: 'wood', isNew: true, kind: 'ceiling' }],
+    };
+    expect(storeyData(withCeiling, 'ground').floors.some((f) => f.kind === 'ceiling')).toBe(false);
+    expect(storeyData(withCeiling, 'ground').floors).toHaveLength(storeyData(d, 'ground').floors.length);
   });
 
   it('marks outdoor elements active only on the storey with the main floor', () => {
@@ -180,8 +202,15 @@ describe('structure visibility', () => {
     const d = createPlanFixture();
     const stair = d.structure.find((s) => s.kind === 'stair') as Extract<DerivedStructure, { kind: 'stair' }>;
     expect(zRangeOf({ ...stair, fromZ: 1.47, toZ: 0 })).toEqual({ bottom: 0, top: 1.47 });
-    const ctx = storeyContext(d, 'loft')!;
-    expect(structureOnStorey(stair, ctx)).toBe(false);
-    expect(structureOnStorey(stair, storeyContext(d, 'ground')!)).toBe(true);
+    const loft = storeyContext(d, 'loft')!;
+    const ground = storeyContext(d, 'ground')!;
+    expect(structureOnStorey(stair, ground)).toBe(true);
+    expect(stairModeOnStorey(stair, ground)).toBe('full');
+    // It does not cross the loft's cut, but it arrives there (toLevelId 'loft').
+    expect(structureOnStorey(stair, loft)).toBe(true);
+    expect(stairModeOnStorey(stair, loft)).toBe('upper');
+    const toMain = { ...stair, element: { ...stair.element, toLevelId: 'main' } } as typeof stair;
+    expect(stairModeOnStorey(toMain, loft)).toBeNull();
+    expect(structureOnStorey(toMain, loft)).toBe(false);
   });
 });
