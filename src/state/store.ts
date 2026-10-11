@@ -1,0 +1,413 @@
+/**
+ * Application store: zustand + immer (drafts) + zundo (undo/redo of `project` only).
+ *
+ * `createAppStore(initialProject, initialUi?)` is a factory so tests can build a store from a fixture without the
+ * seed; the app-wide singleton and the bootstrap (autosave / link / seed) live in `appStore.ts`.
+ *
+ * History rules
+ *  - zundo tracks `{ project }` only (partialize), limit 200, equality by reference: a store update that leaves
+ *    `project` identical (every `setUi`) creates no history entry.
+ *  - `beginTransaction(label)` / `commitTransaction()` make a drag or slider ONE undo step: tracking is paused
+ *    in between and the pre-transaction project is pushed as a single past state on commit (when anything
+ *    changed). `cancelTransaction()` restores the pre-transaction project without a history entry.
+ *  - `updateVariant(id, recipe, { transaction })` is the lighter alternative for sliders without explicit
+ *    begin/commit: consecutive calls with the SAME label collapse into the entry created by the first call;
+ *    any other project action ends the group.
+ *  - `canUndo` / `canRedo` mirror the temporal store so components can subscribe to them like any field.
+ *  - While `ui.readOnly` (shared link) every project action, undo and redo is a no-op; `replaceProject` is the
+ *    one unguarded entry point (bootstrap, link, "Lag min egen kopi", "Hent endringene") and clears the history.
+ *    Documented exception: `setActiveVariant` still works while read-only, WITHOUT a history entry, so a viewer
+ *    of a link shared with "del alle varianter" can look at every variant (autosave is off while read-only, so
+ *    nothing is persisted).
+ *  - `duplicateVariant` deep-copies the variant and gives ONLY the variant a new id (blocks, walls, rooms keep
+ *    their ids — ids are unique per variant). The copy is inserted after the source and becomes active.
+ */
+import { create } from 'zustand';
+import { immer } from 'zustand/middleware/immer';
+import { temporal } from 'zundo';
+import { nanoid } from 'nanoid';
+import type { Id, Project, Variant } from '../model/types';
+import type { CameraPreset } from '../view3d/View3D';
+import type { Selection } from './selection';
+
+export const HISTORY_LIMIT = 200;
+
+export type ActiveView = 'plan' | '3d' | 'split';
+export type PlanStorey = 'ground' | 'loft';
+export type Mode3d = 'ute' | 'inne';
+export type Tool = 'select' | 'measure';
+export type ProjectSource = 'local' | 'link' | 'version';
+
+export interface UiState {
+  activeView: ActiveView;
+  planStorey: PlanStorey;
+  /** Storey whose levels the 3D interior mode shows (storeys above it are hidden). Kept in step with planStorey. */
+  activeStoreyId: Id;
+  mode3d: Mode3d;
+  cutHeight: number;
+  showLabels: boolean;
+  showDims: boolean;
+  showGrid: boolean;
+  showRoofPlan: boolean;
+  highlightNew: boolean;
+  showTrees: boolean;
+  showTerrain: boolean;
+  preset: CameraPreset;
+  selection: Selection | null;
+  tool: Tool;
+  /** Sun study: local date (YYYY-MM-DD) and minutes after local midnight at the site (Site.timezone). */
+  sun: { date: string; minutes: number };
+  readOnly: boolean;
+  source: ProjectSource;
+}
+
+export const DEFAULT_UI: UiState = {
+  activeView: 'split',
+  planStorey: 'ground',
+  activeStoreyId: 'ground',
+  mode3d: 'ute',
+  cutHeight: 1.6,
+  showLabels: true,
+  showDims: true,
+  showGrid: true,
+  showRoofPlan: false,
+  highlightNew: false,
+  showTrees: true,
+  showTerrain: true,
+  preset: 'oversikt',
+  selection: null,
+  tool: 'select',
+  sun: { date: '2026-06-21', minutes: 900 },
+  readOnly: false,
+  source: 'local',
+};
+
+export const CUT_HEIGHT_MIN = 1.2;
+export const CUT_HEIGHT_MAX = 2.6;
+
+/** Every camera preset, in button order (the type itself is contracted in view3d/View3D.tsx). */
+export const CAMERA_PRESET_KEYS = [
+  'oversikt',
+  'terrassen',
+  'framsiden',
+  'baksiden',
+  'ovenfra',
+  'naert-tilbygget',
+  'inne-stua',
+] as const satisfies readonly CameraPreset[];
+
+export type VariantRecipe = (draft: Variant) => void;
+
+export interface AppState {
+  project: Project;
+  ui: UiState;
+  canUndo: boolean;
+  canRedo: boolean;
+
+  // project actions (no-ops while ui.readOnly)
+  setProject(project: Project): void;
+  updateVariant(id: Id, recipe: VariantRecipe, opts?: { transaction?: string }): void;
+  updateActiveVariant(recipe: VariantRecipe, opts?: { transaction?: string }): void;
+  /** Returns the new variant id, or null when nothing was done. */
+  duplicateVariant(id: Id, name: string): Id | null;
+  addVariant(variant: Variant, opts?: { activate?: boolean; seedRevision?: number }): void;
+  setActiveVariant(id: Id): void;
+  renameVariant(id: Id, name: string): void;
+  deleteVariant(id: Id): void;
+  renameRoom(roomId: Id, name: string): void;
+
+  beginTransaction(label: string): void;
+  commitTransaction(): void;
+  cancelTransaction(): void;
+  inTransaction(): boolean;
+
+  undo(): void;
+  redo(): void;
+  clearHistory(): void;
+
+  /** System entry point, not guarded by readOnly: replaces the project (and patches ui), clears the history. */
+  replaceProject(project: Project, ui?: Partial<UiState>): void;
+
+  setUi(patch: Partial<UiState>): void;
+  select(selection: Selection | null): void;
+}
+
+function nowISO(): string {
+  return new Date().toISOString();
+}
+
+/** Default name for a duplicated variant: "Forslag D (kopi)". */
+export function copyName(name: string): string {
+  return `${name} (kopi)`;
+}
+
+export function selectActiveVariant(state: Pick<AppState, 'project'>): Variant {
+  const { variants, activeVariantId } = state.project;
+  return variants.find((v) => v.id === activeVariantId) ?? variants[0];
+}
+
+export function createAppStore(initialProject: Project, initialUi: Partial<UiState> = {}, opts: { historyLimit?: number } = {}) {
+  const limit = opts.historyLimit ?? HISTORY_LIMIT;
+  let tx: { label: string; start: Project } | null = null;
+  let mergeKey: string | null = null;
+
+  const store = create<AppState>()(
+    temporal(
+      immer((set, get) => {
+        const temporalApi = () => store.temporal.getState();
+        const readOnly = () => get().ui.readOnly;
+
+        /** Push `start` as one past state (used by commitTransaction). */
+        const pushPast = (start: Project) => {
+          store.temporal.setState((t) => ({
+            pastStates: [...t.pastStates, { project: start }].slice(-limit),
+            futureStates: [],
+          }));
+        };
+
+        /** Run `fn` with history tracking paused (no entry), unless something already paused it. */
+        const untracked = (fn: () => void) => {
+          const t = temporalApi();
+          const pause = t.isTracking;
+          if (pause) t.pause();
+          try {
+            fn();
+          } finally {
+            if (pause) t.resume();
+          }
+        };
+
+        const applyRecipe = (id: Id, recipe: VariantRecipe) => {
+          set((s) => {
+            const v = s.project.variants.find((x) => x.id === id);
+            if (!v) return;
+            recipe(v);
+            s.project.updatedAt = nowISO();
+          });
+        };
+
+        const clearSelection = () =>
+          untracked(() =>
+            set((s) => {
+              s.ui.selection = null;
+            }),
+          );
+
+        return {
+          project: initialProject,
+          ui: { ...DEFAULT_UI, ...initialUi },
+          canUndo: false,
+          canRedo: false,
+
+          setProject: (project) => {
+            if (readOnly()) return;
+            mergeKey = null;
+            set((s) => {
+              s.project = project;
+              s.ui.selection = null;
+            });
+          },
+
+          updateVariant: (id, recipe, o) => {
+            if (readOnly()) return;
+            const key = o?.transaction ?? null;
+            const merge = key !== null && key === mergeKey && tx === null;
+            if (merge) untracked(() => applyRecipe(id, recipe));
+            else applyRecipe(id, recipe);
+            mergeKey = key;
+          },
+
+          updateActiveVariant: (recipe, o) => {
+            get().updateVariant(get().project.activeVariantId, recipe, o);
+          },
+
+          duplicateVariant: (id, name) => {
+            if (readOnly()) return null;
+            const source = get().project.variants.find((v) => v.id === id);
+            if (!source) return null;
+            mergeKey = null;
+            const copy: Variant = structuredClone(source);
+            copy.id = nanoid(10);
+            copy.name = name.trim() || copyName(source.name);
+            copy.createdAt = nowISO();
+            copy.basedOnId = id;
+            set((s) => {
+              const i = s.project.variants.findIndex((v) => v.id === id);
+              s.project.variants.splice(i + 1, 0, copy);
+              s.project.activeVariantId = copy.id;
+              s.project.updatedAt = nowISO();
+              s.ui.selection = null;
+            });
+            return copy.id;
+          },
+
+          addVariant: (variant, o) => {
+            if (readOnly()) return;
+            if (get().project.variants.some((v) => v.id === variant.id)) return;
+            mergeKey = null;
+            set((s) => {
+              s.project.variants.push(variant);
+              if (o?.activate) {
+                s.project.activeVariantId = variant.id;
+                s.ui.selection = null;
+              }
+              if (o?.seedRevision !== undefined) s.project.seedRevision = o.seedRevision;
+              s.project.updatedAt = nowISO();
+            });
+          },
+
+          setActiveVariant: (id) => {
+            const p = get().project;
+            if (p.activeVariantId === id || !p.variants.some((v) => v.id === id)) return;
+            mergeKey = null;
+            const viewOnly = readOnly();
+            const apply = () =>
+              set((s) => {
+                s.project.activeVariantId = id;
+                if (!viewOnly) s.project.updatedAt = nowISO();
+                s.ui.selection = null;
+              });
+            if (viewOnly) untracked(apply);
+            else apply();
+          },
+
+          renameVariant: (id, name) => {
+            if (readOnly()) return;
+            const trimmed = name.trim();
+            const v = get().project.variants.find((x) => x.id === id);
+            if (!trimmed || !v || v.name === trimmed) return;
+            mergeKey = null;
+            set((s) => {
+              const draft = s.project.variants.find((x) => x.id === id);
+              if (draft) draft.name = trimmed;
+              s.project.updatedAt = nowISO();
+            });
+          },
+
+          deleteVariant: (id) => {
+            if (readOnly()) return;
+            const { variants } = get().project;
+            const i = variants.findIndex((v) => v.id === id);
+            if (variants.length <= 1 || i < 0) return;
+            mergeKey = null;
+            set((s) => {
+              s.project.variants.splice(i, 1);
+              if (s.project.activeVariantId === id) {
+                s.project.activeVariantId = s.project.variants[Math.max(0, i - 1)].id;
+                s.ui.selection = null;
+              }
+              s.project.updatedAt = nowISO();
+            });
+          },
+
+          renameRoom: (roomId, name) => {
+            if (readOnly()) return;
+            const trimmed = name.trim();
+            const variant = selectActiveVariant(get());
+            const room = variant.rooms.find((r) => r.id === roomId);
+            if (!trimmed || !room || room.name === trimmed) return;
+            mergeKey = null;
+            applyRecipe(variant.id, (v) => {
+              const r = v.rooms.find((x) => x.id === roomId);
+              if (r) r.name = trimmed;
+            });
+          },
+
+          beginTransaction: (label) => {
+            if (readOnly()) return;
+            if (tx) get().commitTransaction();
+            mergeKey = null;
+            tx = { label, start: get().project };
+            temporalApi().pause();
+          },
+
+          commitTransaction: () => {
+            if (!tx) return;
+            const { start } = tx;
+            tx = null;
+            temporalApi().resume();
+            if (get().project !== start) pushPast(start);
+          },
+
+          cancelTransaction: () => {
+            if (!tx) return;
+            const { start } = tx;
+            tx = null;
+            set((s) => {
+              s.project = start;
+            });
+            temporalApi().resume();
+          },
+
+          inTransaction: () => tx !== null,
+
+          undo: () => {
+            if (readOnly() || tx) return;
+            mergeKey = null;
+            temporalApi().undo();
+            clearSelection();
+          },
+
+          redo: () => {
+            if (readOnly() || tx) return;
+            mergeKey = null;
+            temporalApi().redo();
+            clearSelection();
+          },
+
+          clearHistory: () => {
+            mergeKey = null;
+            temporalApi().clear();
+          },
+
+          replaceProject: (project, ui) => {
+            if (tx) {
+              tx = null;
+              temporalApi().resume();
+            }
+            mergeKey = null;
+            untracked(() =>
+              set((s) => {
+                s.project = project;
+                s.ui = { ...s.ui, ...ui, selection: null };
+              }),
+            );
+            temporalApi().clear();
+          },
+
+          setUi: (patch) => {
+            set((s) => {
+              Object.assign(s.ui, patch);
+            });
+          },
+
+          select: (selection) => {
+            set((s) => {
+              s.ui.selection = selection;
+            });
+          },
+        };
+      }),
+      {
+        partialize: (s) => ({ project: s.project }),
+        limit,
+        equality: (a, b) => a.project === b.project,
+      },
+    ),
+  );
+
+  // Mirror history availability into the main store (no history entry: project is unchanged).
+  const syncFlags = () => {
+    const t = store.temporal.getState();
+    const canUndo = t.pastStates.length > 0;
+    const canRedo = t.futureStates.length > 0;
+    const s = store.getState();
+    if (s.canUndo !== canUndo || s.canRedo !== canRedo) store.setState({ canUndo, canRedo });
+  };
+  store.temporal.subscribe(syncFlags);
+  syncFlags();
+
+  return store;
+}
+
+export type AppStore = ReturnType<typeof createAppStore>;
