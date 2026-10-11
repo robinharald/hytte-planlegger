@@ -60,11 +60,13 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
   `<g transform="matrix(s 0 0 -s tx ty)">`; text/labels are placed in screen space (or in a counter-flipped
   group) so they read correctly. The result matches the architect's drawings: lake side at the bottom, new wing
   on the right. The north arrow uses `planDirOfBearing(0)` (points down-left).
-- **Sun** (`sunInPlan(site, instant)`): `const p = SunCalc.getPosition(instant, lat, lon)`; suncalc azimuth is
-  measured from SOUTH, positive towards WEST, so `bearing = p.azimuth + π`; `d = planDirOfBearing(bearing)`;
-  `dir = (d.x·cos(alt), d.y·cos(alt), sin(alt))` (unit vector towards the sun); `isUp = alt > 0`. The instant is
-  built from (date, local minutes) in `Site.timezone` via an Intl offset lookup (`localInstant`), never from the
-  device zone. Midnight sun / polar night: altitude ≤ 0 → light intensity 0, shadows off, note "under horisonten".
+- **Sun** (`sunInPlan(site, instant)`): `const p = SunCalc.getPosition(instant, lat, lon)`. The installed suncalc
+  is v2: it returns DEGREES, the azimuth is already a compass bearing (from north, clockwise) and the altitude is
+  refraction-corrected, so `bearing = p.azimuth` (the v1 convention "from south, `+ π`" does not apply);
+  `d = planDirOfBearing(bearing)`; `dir = (d.x·cos(alt), d.y·cos(alt), sin(alt))` (unit vector towards the sun);
+  `isUp = alt > 0`. The instant is built from (date, local minutes) in `Site.timezone` via an Intl offset lookup
+  (`localInstant`), never from the device zone. Midnight sun / polar night: altitude ≤ 0 → light intensity 0,
+  shadows off, note "under horisonten". (21 June 15:00 at Merkesvatnet: altitude ≈ 41°, bearing ≈ 217°.)
 
 ## Data model conventions (see types.ts for the fields)
 
@@ -119,29 +121,40 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
 3. `deriveWalls(variant, blocks, roofs)` (`walls.ts`) → exterior pieces (split at part + zone boundaries, junction
    handling, mitred corners at block vertices, butt ends elsewhere) + stored walls (interior, exterior-old,
    divider); each with footprint, `topProfile` (exact piecewise-linear upper envelope; level ceiling / fixed height
-   where applicable), `levelIds` (z range covers level.elevation + 1.0), openings resolved (sillZ/headZ, swing arc,
-   rendering hints, `opening-above-roof` when headZ > envelope − 0.05), patches for removed openings, validation
-   (fit inside host incl. the end-touch rule, overlaps).
+   where applicable), `levelIds` (stored walls: z range covers level.elevation + 1.0 where that level exists;
+   exterior pieces: the block's base level plus the level of every floor zone the piece runs along), openings
+   resolved (sillZ/headZ, swing arc, rendering hints, `opening-above-roof` when headZ > envelope − 0.05), patches
+   for removed openings, validation (fit inside host incl. the end-touch rule, overlaps in plan AND height).
 4. `detectRooms(...)` (`planarGraph.ts` + `rooms.ts`) per storey: ONE planar graph from the reference lines of all
-   walls whose `storeyIds` include the storey (exterior pieces take part in every storey of their block), plus the
-   `replace` zone boundaries (as dividers) and, for the loft storey, the `add` zone boundaries. Split segments at
-   crossings/T-junctions/overlaps, merge nodes within 1 cm, snap a free wall end onto any wall within 5 cm, then
-   drop remaining dangling edges with warning `wall-dangling`. Extract faces (half-edge walk, smallest left turn),
-   discard the outer face, faces < 0.3 m², and (loft) faces whose label point is outside every `add` zone. Each face
-   gets the level of the zone containing its label point, else the block level. A Room attaches to the face
-   containing its anchor (a face with several anchors keeps the first and warns). Inner polygon =
-   polygon-clipping difference(face polygon, union of the footprints of the walls on its boundary), largest ring,
-   holes kept; dividers subtract nothing. `areaExisting/areaNew` by clipping with part polygons.
-5. Floors: one `room` floor per room (type `apning` → none), `threshold` pieces under openings between rooms at the
-   lower room's z, `slab` per zone / level (with stair footprints as holes on the arrival level).
+   non-removed walls whose `storeyIds` include the storey (an exterior piece is in the storeys of its levels, so the
+   main block's walls beside the loft zone bound the loft, the rest of them do not), plus the floor-zone edges as
+   zero-thickness lines (`replace` zones on the zone's storey and the block base level's storey; `add` zones on the
+   zone's storey). Split segments at crossings/T-junctions/overlaps, merge nodes within 1 cm, snap a free wall end
+   onto any wall within 5 cm, then drop remaining dangling edges. Extract faces (half-edge walk, smallest left turn),
+   discard the outer face and faces < 0.3 m². Each face is located by its label point: the zone of the storey
+   containing it, else the block's base level when that is on the storey (and no `replace` zone carves the point
+   out); faces outside every block or without a floor on the storey are dropped (this removes the loft faces
+   outside every `add` zone). A Room attaches to the face of its storey whose inner polygon contains its anchor
+   (else whose face polygon does); a second anchor in the same face, or an anchor in no face → `room-anchor-lost`;
+   faces without a Room → `room-unnamed`; rooms < 0.5 m² → `room-small`. `wall-dangling` only for stored walls
+   that dangle and bound no room on any storey (a partition with a free end that still forms rooms is fine).
+   Inner polygon = polygon-clipping difference(face polygon, union of the footprints of the walls on its boundary),
+   largest ring, holes kept; dividers subtract nothing. `areaExisting/areaNew` by clipping with the parts' inner
+   polygons (`splitAreaByParts`).
+5. Floors: one `room` floor per room (type `apning` → none); a `threshold` under every door / glass door /
+   frameless opening with a room on at least one side (probed 5 cm beyond each wall face), at the lower room's z
+   and material; a `slab` per floor zone and block base level whose level has `floorThickness > 0` (zone ∩ block
+   inner outline), with the footprints of stairs arriving on that level cut out.
 6. `deriveOutdoor` (`outdoor.ts`): decks (skirt bottoms from terrain), railings (panels between gaps, posts at
    corners/gap ends/≤ 1.5 m), steps in gaps with `steps: true` (risers = ceil(drop / 0.18), going 0.3, drop from the
    deck top to the terrain 0.5 m outside the gap), hot tubs (z from the deck under the centre, else terrain).
 7. `deriveStructure`: posts/beams/chimney with absolute z (`roofExitZ` from the roof envelope + thickness), stairs
    as treads (n = ceil(dz / 0.18), going = length / n, arrow from bottom to top).
 8. `computeAreas` (`areas.ts`), foundations (outer outline, topZ = lowestFloorZ, bottomZ = groundZ − 0.3), site
-   trees with terrain baseZ, dimensions (one axis chain per cardinal side of the union of blocks + a total),
-   bounds, warnings.
+   trees with terrain baseZ, dimensions (one axis chain per cardinal side: the outermost block edges seen from that
+   side, broken at block and part vertices, pieces set back more than 6.5 m left out, chain 1.0 m and a total
+   1.8 m outside the outermost edge, running counter-clockwise so the offsets are negative), bounds (outer outlines
+   + decks), wall unions per storey and status, warnings (blocks, roofs, walls/openings, rooms, `area-limit`).
 
 `deriveVariant` is memoised on (variant, site, terrain) object identities (nested WeakMaps).
 
@@ -161,13 +174,14 @@ room: `face-<fnv1a hash of the sorted bounding wall ids>`; floors: `${roomId}/fl
 - **Automatic ridge extension**: for each ridge-axis end E of block B, if the midpoint of B's end edge lies within
   1 cm of another block's polygon edge, walk from the end edge along the ridge line and take the first distance d
   where the upper envelope of the OTHER roofs' undersides ≥ B's ridge underside (equal ridges → the other ridge
-  line). Examples (28°, heights above main floor): glass bump (ridge 3.28) runs north into the main roof (3.87) →
-  meets at y = 3.1 − (3.87−3.28)/tan 28° = 1.99; bod wing likewise to y = 4.21; the main roof (3.87) runs east to the
-  new wing's ridge at x = 18.4. The slab region beyond B's polygon is clipped in plan to the union of the other
-  roofs' outlines (polygon-clipping) and gets no overhang of its own; no barge board on extended ends; fascias only
-  on eave segments outside other roofs' outlines. If the envelope never reaches the ridge height, E is a free gable
-  (overhangGable) with warning `roof-no-meet`. `Roof.extend.start/end` = total distance beyond the axis line,
-  replacing both the automatic extension and overhangGable.
+  line). Examples (28°, heights above main floor): glass bump (ridge 3.283 from 28° over 2 m) runs north into the
+  main roof (3.868) → meets at y = 3.1 − (3.868−3.283)/tan 28° = 2.00; bod wing likewise to y = 4.20; the main roof
+  runs east to the new wing's ridge at x = 18.4 (equal ridges). The slab region beyond B's polygon is clipped in plan
+  to the union of the other roofed blocks' POLYGONS (axis lines, i.e. inside their walls — clipping to their roof
+  outlines let the main roof poke out under the wing's gable overhang) and gets no overhang of its own; no barge
+  board on extended ends; fascias only on eave segments outside other roofs' outlines. If the envelope never reaches
+  the ridge height, E is a free gable (overhangGable) with warning `roof-no-meet`. `Roof.extend.start/end` = total
+  distance beyond the axis line, replacing both the automatic extension and overhangGable.
 - Valleys are not computed as geometry: overlapping slabs render correctly from the outside.
 
 ### Areas (shown with an on-screen explanation, `AreaSummary`)
@@ -179,8 +193,10 @@ room: `face-<fnv1a hash of the sorted bounding wall ids>`; floors: `${roomId}/fl
   `perBlock` are per-block (not unioned) and documented as such.
 - **BRA** (bruksareal): per level, `gross` = area inside the union of block inner outlines restricted to that level
   (base polygon minus `replace` zones, or the zone / `add` zone polygon), `area` = measurable part: for levels
-  without a ceiling only where `combinedUndersideAt − level.elevation ≥ 1.9` expanded by a 0.6 m strip (per slope
-  a half-plane parallel to the ridge), minus `apning` rooms. Loft counts only its measurable part.
+  without a ceiling only where `combinedUndersideAt − level.elevation ≥ 1.9` expanded by a 0.6 m strip, minus
+  `apning` rooms. Loft counts only its measurable part. Implementation: free height sampled on a 0.25 m grid, the
+  strip resolved to the grid (0.375–0.625 m, 0.5 m on average), so the measurable loft area comes out slightly low
+  (test loft: 8.76 m² against an exact 9.34 m²). Levels with a ceiling count fully when it is ≥ 1.9 m.
 - **Aksemål**: the spec's convention (170.2 m²), for comparison only.
 - **Rom (netto)**: inner-face polygon area per room, split existing/new.
 - No area limiter in phase 1 (Robin's decision); `areaLimit` stays null and the `area-limit` warning is dormant.
@@ -209,8 +225,10 @@ openings, lintels, sills) over slices of the footprint with per-vertex top z fro
 volumes with coplanar faces. Materials ported from the old model (`materials.ts`: canvas textures for dark vertical
 boards, turf, deck boards, pine floor, tiles, logs; sage-green trim #6f8170; white/green frames; exterior glass
 #27313a with opacity 0.35, interior pane 0x9cc3dd 45 %). "Marker det som er nytt" tints new parts orange
-(emissive) using separate material sets. Labels via drei `<Html occlude>` (name + dims + area, ≤ 30 visible,
-same density rule by camera distance), toggleable. Camera presets defined in plan coords relative to `bounds`
+(emissive) using separate material sets. Labels are plain DOM tags in one layer over the canvas, positioned every
+rendered frame by projecting their anchors and hidden when the building is hit first by a ray from the camera (name
++ dims + area, ≤ 30 visible, same density rule by camera distance), toggleable. (drei `<Html>` was dropped: it
+creates a React root per label and unmounts it synchronously, which races with React 19 rendering.) Camera presets defined in plan coords relative to `bounds`
 (from the old model's Forslag D views): oversikt p(36,−25,26) t(11.5,4.5,1.5); terrassen p(29,19,8) t(14.5,8,1.2);
 framsiden p(38,2,4.5) t(16,2.5,2); baksiden p(−14,22,8) t(8,5,2); ovenfra p(12,4.49,54) t(12,4.5,0);
 naert-tilbygget p(26,−9,12) t(17.5,2.5,0.6); inne-stua p(9.5,1.2,1.6) t(15,2.5,1.3). OrbitControls damped,
@@ -351,24 +369,28 @@ export interface WallLine { id: string; a: Vec2; b: Vec2; footprint: Vec2[] /* [
 export interface DetectedRoom { faceId: string; facePolygon: Vec2[]; innerPolygon: Vec2[]; holes: Vec2[][]; area: number; labelPoint: Vec2; bbox: { min: Vec2; max: Vec2 }; dims: { w: number; h: number; approx: boolean }; wallIds: string[] }
 export function detectRooms(lines: WallLine[], opts?: { minArea?: number; eps?: number; snap?: number }): { rooms: DetectedRoom[]; dangling: string[] };
 
-// geometry/roof.ts
+// geometry/roof.ts  (everything is computed from `variant`; the `blocks` argument is accepted but unused)
 export function roofParams(block: Block, level: Level): { eaveZ: number; ridgeZ: number; pitchDeg: number; pitchRad: number; ridgeLine: { a: Vec2; b: Vec2 }; halfWidth: number };
-export function ridgeExtension(block: Block, variant: Variant): { start: number; end: number; startFree: boolean; endFree: boolean };
-export function buildRoof(block: Block, variant: Variant, blocks: DerivedBlock[]): DerivedRoof;
-export function buildRoofs(variant: Variant, blocks: DerivedBlock[]): DerivedRoof[];
+export function ridgeExtension(block: Block, variant: Variant): { start: number; end: number; startFree: boolean; endFree: boolean; startNoMeet: boolean; endNoMeet: boolean };
+export function buildRoof(block: Block, variant: Variant, blocks?: DerivedBlock[]): DerivedRoof;
+export function buildRoofs(variant: Variant, blocks?: DerivedBlock[]): DerivedRoof[];
+export function buildRoofsWithWarnings(variant: Variant): { roofs: DerivedRoof[]; warnings: ModelWarning[] };  // + roofWarnings(variant)
 export function roofUndersideAt(roof: DerivedRoof, x: number, y: number): number | null;
 export function combinedUndersideAt(roofs: DerivedRoof[], x: number, y: number): number | null;
 
-// geometry/walls.ts
-export function deriveBlocks(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedBlock[];
-export function deriveWalls(variant: Variant, blocks: DerivedBlock[], roofs: DerivedRoof[]): { walls: DerivedWall[]; warnings: ModelWarning[] };
+// geometry/walls.ts  (optional last `opts` replaces terrainZAt / combinedUndersideAt, for tests)
+export function deriveBlocks(variant: Variant, site: Site, terrain: TerrainAsset | null, opts?: { terrainZ?: TerrainZFn }): DerivedBlock[];
+export function deriveWalls(variant: Variant, blocks: DerivedBlock[], roofs: DerivedRoof[], opts?: { undersideAt?: UndersideFn }): { walls: DerivedWall[]; warnings: ModelWarning[] };
+export function deriveBlockWarnings(blocks: DerivedBlock[]): ModelWarning[];   // block-overlap, parts-overlap
 
 // geometry/outdoor.ts
-export function deriveOutdoor(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant['outdoor'];
-export function deriveStructure(variant: Variant, roofs: DerivedRoof[]): DerivedStructure[];
+export function deriveOutdoor(variant: Variant, site: Site, terrain: TerrainAsset | null, opts?: { terrainZ?: TerrainZFn }): DerivedVariant['outdoor'];
+export function deriveStructure(variant: Variant, roofs: DerivedRoof[], opts?: { undersideAt?: UndersideFn }): DerivedStructure[];
 
-// geometry/areas.ts
-export function computeAreas(input: { variant: Variant; blocks: DerivedBlock[]; rooms: DerivedRoom[]; roofs: DerivedRoof[]; decks: DerivedDeck[]; site: Site; terrain: TerrainAsset | null }): AreaSummary;
+// geometry/areas.ts  (callbacks instead of roofs / site / terrain, so areas.ts does not depend on roof.ts / terrain.ts)
+export function computeAreas(input: { variant: Variant; blocks: DerivedBlock[]; rooms: DerivedRoom[]; decks: DerivedDeck[];
+  undersideAt: (x: number, y: number) => number | null;   // combinedUndersideAt(roofs, x, y)
+  terrainZ: (x: number, y: number) => number }): AreaSummary;   // terrainZAt(terrain, site, x, y)
 
 // geometry/terrain.ts
 export function sampleTerrainAsl(terrain: TerrainAsset, x: number, y: number): number | null;   // finest grid covering the point, bilinear
@@ -389,11 +411,15 @@ export function deriveVariant(variant: Variant, site: Site, terrain: TerrainAsse
 
 ## Testing
 
-- `npm test` → Vitest (`src/**/*.test.ts`): geometry, room detection (incl. the seed: korridor nedre/øvre, bad,
-  vindfang, hems 1/2 all detected and named), roofs (extension distances 1.99 / 4.21 / 18.4; wall x = 16 profile
-  peaks at 3.87; wall y = 6.2 x 5–9 peaks at 3.26), areas (invariants above, axis total 170.16), migrations, seed invariants.
+- `npm test` → Vitest (`src/**/*.test.ts`): geometry, room detection (incl. the seed through the real pipeline,
+  `src/model/seed/forslagD.derive.test.ts`: all 27 rooms detected and named, no `wall-dangling` /
+  `opening-outside-host`, axis total 170.16, room areas within 0.15 m² of the IFC spaces; it prints the room
+  schedule and the area summary with `--silent=false`), roofs (extension ends y = 2.00 / 4.20 and x = 18.4; wall
+  x = 16 profile peaks at 3.87; wall y = 6.2 x 5–9 peaks at 3.28 — the wing ridge underside, the IFC's 3.26 is the
+  ridge beam top), areas (invariants above), migrations, seed invariants.
 - `npm run e2e` → Playwright (Chromium) loads the app, waits for `window.__hytte.ready`, screenshots plan, 3D
-  exterior (oversikt), 3D interior (inne-stua) and a 375 px phone view into `e2e/screenshots/`.
+  exterior (oversikt, framsiden), 3D interior (inne-stua), the loft plan and a 375 px phone view into
+  `e2e/screenshots/`.
 - `npm run build` must pass with zero TypeScript errors; `npm run lint` (oxlint) clean.
 
 ## Rules for contributors (humans and agents)
