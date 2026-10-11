@@ -6,12 +6,17 @@
  * underside. A zero-thickness room floor standing above its block's foundation top (the main floor next to the
  * lower bedroom zone) is filled down to it, so the step between the levels shows a riser instead of a void.
  * Room floors are selectable as { kind: 'room', id: roomId, levelId }.
+ *
+ * Flat ceilings (kind 'ceiling', `Block.ceilingHeight`): a thin pine slab (z = top of the board, `thickness` below
+ * it) seen from below in the exterior mode, where the roofs are on and the interior is only seen through the
+ * windows or from an eye-level preset; hidden in the interior mode, which looks down into the cut rooms.
  */
 import { memo, useMemo } from 'react';
 import type { DerivedFloor, DerivedFoundation, DerivedRoom } from '../model/derived';
 import { buildFloor } from './geometryBuilders';
 import { getMaterials, materialSet } from './materials';
 import { selectable, useGeometry } from './sceneUtils';
+import { floorIsDrawn } from './visibility';
 import type { Visibility } from './visibility';
 
 export interface FloorsProps {
@@ -23,6 +28,9 @@ export interface FloorsProps {
 }
 
 const LIFT: Record<DerivedFloor['kind'], number> = { room: 0.006, threshold: 0.003, slab: 0, ceiling: 0 };
+
+/** Ceilings are drawn at least this thick (m), so a zero-thickness one still has a face seen from below. */
+const MIN_CEILING_THICKNESS = 0.02;
 
 export const Floors = memo(function Floors({ floors, rooms, foundations, vis, highlightNew }: FloorsProps) {
   const fillByRoom = useMemo(() => {
@@ -37,7 +45,7 @@ export const Floors = memo(function Floors({ floors, rooms, foundations, vis, hi
   return (
     <group name="floors">
       {floors
-        .filter((f) => f.polygon.length >= 3 && vis.isLevelVisible(f.levelId))
+        .filter((f) => floorIsDrawn(f, vis))
         .map((f) => (
           <FloorMesh
             key={f.id}
@@ -51,14 +59,17 @@ export const Floors = memo(function Floors({ floors, rooms, foundations, vis, hi
 });
 
 const FloorMesh = memo(function FloorMesh({ floor, fillTo, highlightNew }: { floor: DerivedFloor; fillTo: number | undefined; highlightNew: boolean }) {
-  const data = useMemo(
-    () => buildFloor(floor, { lift: LIFT[floor.kind], bottomInset: floor.kind === 'slab' ? 0 : 0.01, fillTo }),
-    [floor, fillTo],
-  );
+  const data = useMemo(() => {
+    const f = floor.kind === 'ceiling' ? { ...floor, thickness: Math.max(floor.thickness, MIN_CEILING_THICKNESS) } : floor;
+    return buildFloor(f, { lift: LIFT[floor.kind], bottomInset: floor.kind === 'room' || floor.kind === 'threshold' ? 0.01 : 0, fillTo });
+  }, [floor, fillTo]);
   const geometry = useGeometry(data);
   const set = materialSet(getMaterials(), floor.isNew, highlightNew);
-  const materials = useMemo(() => [set.floor[floor.material] ?? set.floor.wood, set.pine], [set, floor.material]);
+  const materials = useMemo(
+    () => [floor.kind === 'ceiling' ? set.pine : (set.floor[floor.material] ?? set.floor.wood), set.pine],
+    [set, floor.material, floor.kind],
+  );
   if (!geometry) return null;
   const userData = floor.kind === 'room' && floor.roomId ? selectable({ kind: 'room', id: floor.roomId, levelId: floor.levelId }) : undefined;
-  return <mesh geometry={geometry} material={materials} castShadow={floor.thickness > 0} receiveShadow userData={userData} />;
+  return <mesh geometry={geometry} material={materials} castShadow={floor.thickness > 0 || floor.kind === 'ceiling'} receiveShadow userData={userData} />;
 });

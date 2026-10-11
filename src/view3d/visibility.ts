@@ -5,9 +5,10 @@
  *  - `inne`: roofs hidden; storeys ranked by the lowest elevation of their levels, storeys above the active one
  *    hidden; each remaining wall piece is cut at (elevation of its highest visible level) + cutHeight, so a
  *    wall that spans several storeys is cut relative to the storey being looked at. Floors, rooms and
- *    structure follow the same level set; structure above the cut plane is clipped.
+ *    structure follow the same level set; structure above the cut plane is clipped. Flat ceilings
+ *    (DerivedFloor kind 'ceiling') are hidden: the interior mode looks down into the cut rooms.
  */
-import type { DerivedVariant, DerivedWall } from '../model/derived';
+import type { DerivedFloor, DerivedVariant, DerivedWall } from '../model/derived';
 import type { Id } from '../model/types';
 
 export interface Visibility {
@@ -80,4 +81,10 @@ export function computeVisibility(derived: DerivedVariant, mode: 'ute' | 'inne',
 /** Walls that get a mesh: not dividers, not removed, with a footprint, on a visible level. */
 export function wallIsDrawn(w: DerivedWall, vis: Visibility): boolean {
   return !w.isDivider && w.status !== 'removed' && w.footprint.length >= 3 && vis.isWallVisible(w);
+}
+
+/** Floors that get a mesh: a real polygon on a visible level; flat ceilings only in the exterior mode. */
+export function floorIsDrawn(f: DerivedFloor, vis: Pick<Visibility, 'mode' | 'isLevelVisible'>): boolean {
+  if (f.polygon.length < 3 || !vis.isLevelVisible(f.levelId)) return false;
+  return f.kind !== 'ceiling' || vis.mode === 'ute';
 }

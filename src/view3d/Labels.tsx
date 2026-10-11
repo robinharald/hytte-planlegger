@@ -7,9 +7,11 @@
  * it synchronously from a layout effect; with React 19 that races with its own render when labels change —
  * "Attempted to synchronously unmount a root while React was already rendering" followed by an uncaught
  * removeChild error.) Every rendered frame (frameloop 'demand': camera moves, prop changes) each anchor is
- * projected to the screen, hidden when it is behind the camera or when the building group (`occluder`, never the
- * terrain) is hit by a ray from the camera before the anchor, and shown at the density of labelDensities(); nearest
- * first, a tag that would overlap an already placed one is hidden too (tag sizes are measured once per density).
+ * projected to the screen, hidden when it is behind the camera, when the building group (`occluder`, never the
+ * terrain) is hit by a ray from the camera before the anchor, or when its whole tag would not fit inside the layer,
+ * and shown at the density of labelDensities(). Tags claim space in labelOrder(): the room the camera stands in
+ * first (never hidden, see labelDefs.placeTag), then by importance (area, mildly weighted by distance); a tag that
+ * would overlap an already placed one is hidden (tag sizes are measured once per density).
  */
 import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useLayoutEffect, useMemo, useRef } from 'react';
@@ -18,9 +20,9 @@ import { PerspectiveCamera, Raycaster, Vector3 } from 'three';
 import type { Object3D } from 'three';
 import type { DerivedVariant } from '../model/derived';
 import type { Id } from '../model/types';
-import { toWorld } from './coords';
-import { blockLabels, labelDensities, roomLabels } from './labelDefs';
-import type { LabelDensity } from './labelDefs';
+import { fromWorld, toWorld } from './coords';
+import { blockLabels, cameraInRoom, labelDensities, labelOrder, placeTag, roomLabels } from './labelDefs';
+import type { LabelDef, LabelDensity, ScreenRect } from './labelDefs';
 
 type Style = Partial<Record<string, string>>;
 
@@ -63,6 +65,7 @@ function applyStyle(el: HTMLElement, style: Style): void {
 }
 
 interface LabelItem {
+  def: LabelDef;
   el: HTMLDivElement;
   detail: HTMLElement | null;
   world: Vector3;
@@ -74,15 +77,8 @@ interface LabelItem {
   size: Partial<Record<'full' | 'name', { w: number; h: number }>>;
 }
 
-/** Minimum gap (px) between two shown tags; a tag overlapping a nearer one is hidden. */
+/** Minimum gap (px) between two shown tags; a tag overlapping a more important one is hidden. */
 const LABEL_GAP = 2;
-
-interface ScreenRect {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-}
 
 const overlaps = (a: ScreenRect, b: ScreenRect): boolean =>
   a.x0 < b.x1 + LABEL_GAP && b.x0 < a.x1 + LABEL_GAP && a.y0 < b.y1 + LABEL_GAP && b.y0 < a.y1 + LABEL_GAP;
@@ -151,7 +147,7 @@ export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutH
         el.appendChild(detail);
       }
       layer.appendChild(el);
-      const item: LabelItem = { el, detail, world: toWorld(d.at[0], d.at[1], d.at[2]), shown: 'hidden', x: NaN, y: NaN, size: {} };
+      const item: LabelItem = { def: d, el, detail, world: toWorld(d.at[0], d.at[1], d.at[2]), shown: 'hidden', x: NaN, y: NaN, size: {} };
       return item;
     });
     invalidate();
@@ -170,37 +166,45 @@ export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutH
     camera.updateMatrixWorld();
     camera.getWorldPosition(tmp.cam);
     const fov = camera instanceof PerspectiveCamera ? camera.fov : 42;
+    const camPlan = fromWorld(tmp.cam);
     const distances = list.map((it) => it.world.distanceTo(tmp.cam));
-    const densities = labelDensities(distances, size.height, fov);
+    const pinned = list.map((it) => cameraInRoom(it.def, camPlan));
+    const order = labelOrder(list.map((it) => it.def.weight), distances, pinned);
+    const densities = labelDensities(distances, size.height, fov, order, pinned);
     const occ = occluder.current;
-    // Nearest first: a tag that would overlap a nearer one is hidden.
-    const order = list.map((_, i) => i).sort((a, b) => distances[a] - distances[b]);
+    const layerSize = { width: size.width, height: size.height };
     const placed: ScreenRect[] = [];
     for (const i of order) {
       const it = list[i];
+      const pin = pinned[i];
       let shown: LabelItem['shown'] = densities[i] === 'none' ? 'hidden' : densities[i];
-      const ndc = tmp.ndc.copy(it.world).project(camera);
-      if (shown !== 'hidden' && (ndc.z > 1 || ndc.z < -1 || Math.abs(ndc.x) > 1.2 || Math.abs(ndc.y) > 1.2)) shown = 'hidden';
-      if (shown !== 'hidden' && occ) {
-        tmp.dir.copy(it.world).sub(tmp.cam).normalize();
-        tmp.ray.set(tmp.cam, tmp.dir);
-        tmp.ray.far = Math.max(0, distances[i] - OCCLUSION_SLACK);
-        if (tmp.ray.intersectObject(occ, true).length > 0) shown = 'hidden';
-      }
-      const x = Math.round(((ndc.x + 1) / 2) * size.width);
-      const y = Math.round(((1 - ndc.y) / 2) * size.height);
+      let rect: ScreenRect | null = null;
       if (shown !== 'hidden') {
-        const s = measure(it, shown);
-        const r = { x0: x - s.w / 2, x1: x + s.w / 2, y0: y - s.h, y1: y };
-        if (s.w > 0 && placed.some((p) => overlaps(p, r))) shown = 'hidden';
-        else placed.push(r);
+        const ndc = tmp.ndc.copy(it.world).project(camera);
+        let anchor: { x: number; y: number } | null =
+          ndc.z <= 1 && ndc.z >= -1 ? { x: ((ndc.x + 1) / 2) * size.width, y: ((1 - ndc.y) / 2) * size.height } : null;
+        // the camera's own room is never hidden by occlusion (its label point may be behind a post or the chimney)
+        if (anchor && !pin && occ) {
+          tmp.dir.copy(it.world).sub(tmp.cam).normalize();
+          tmp.ray.set(tmp.cam, tmp.dir);
+          tmp.ray.far = Math.max(0, distances[i] - OCCLUSION_SLACK);
+          if (tmp.ray.intersectObject(occ, true).length > 0) anchor = null;
+        }
+        const r = placeTag(anchor, measure(it, shown), layerSize, pin);
+        if (!r || (!pin && placed.some((p) => overlaps(p, r)))) shown = 'hidden';
+        else {
+          placed.push(r);
+          rect = r;
+        }
       }
       if (shown !== it.shown) {
         it.el.style.display = shown === 'hidden' ? 'none' : 'block';
         if (it.detail) it.detail.style.display = shown === 'full' ? 'block' : 'none';
         it.shown = shown;
       }
-      if (shown === 'hidden') continue;
+      if (!rect) continue;
+      const x = Math.round((rect.x0 + rect.x1) / 2);
+      const y = Math.round(rect.y1);
       if (x !== it.x || y !== it.y) {
         it.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
         it.x = x;

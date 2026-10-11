@@ -21,6 +21,7 @@ import {
   buildWallPieces,
   createMeshData,
   DECK_MAT,
+  DOUBLE_LEAF_GAP,
   FLOOR_MAT,
   gridExtent,
   isEmpty,
@@ -33,6 +34,8 @@ import {
   sliceFootprint,
   STRUCT_MAT,
   swapUVs,
+  TERRAIN_PATCH_MAX_VERTICES,
+  terrainPatch,
   toBufferGeometry,
   triangleCentroids,
   triangleCount,
@@ -283,6 +286,37 @@ describe('buildOpening', () => {
     expect(meshBounds(solid).min[2]).toBeCloseTo(0, 9);
   });
 
+  // only its presence matters to the 3D builder (doors are drawn closed)
+  const swing2: DerivedOpening['swing2'] = { hinge: [0, 0], closed: [1, 0], open: [0, 1], sweep: 1 };
+
+  it('builds two closed leaves for a double door', () => {
+    const { solid, glass } = buildOpening({ ...door, swing2 }, south);
+    expect(isEmpty(glass)).toBe(true);
+    expect(triangleCount(solid, OPENING_MAT.leaf)).toBe(2 * 12);
+    expect(triangleCount(solid, OPENING_MAT.frame)).toBe(3 * 12);
+    // two leaves either side of the centre, together the clear width minus the seam
+    const single = buildOpening(door, south).solid;
+    const leafOnly = (d: typeof solid) => ({ ...d, indices: d.indices.map((list, slot) => (slot === OPENING_MAT.leaf ? list : [])) });
+    const xs = triangleCentroids(solid, OPENING_MAT.leaf).map((c) => c[0]);
+    const centre = south.a[0] + door.offset; // the south wall runs along +x
+    expect(xs.some((x) => x < centre - 0.1) && xs.some((x) => x > centre + 0.1)).toBe(true);
+    expect(xs.some((x) => Math.abs(x - centre) < DOUBLE_LEAF_GAP / 2)).toBe(false);
+    const clear = door.width - 2 * Math.min(0.06, door.width / 6, (door.headZ - door.sillZ) / 6);
+    expect(signedVolume(leafOnly(solid)) / signedVolume(leafOnly(single))).toBeCloseTo((clear - DOUBLE_LEAF_GAP) / clear, 9);
+  });
+
+  it('splits a glazed double door with a meeting stile and panes per leaf', () => {
+    const glazedDoor: DerivedOpening = { ...door, leaf: 'glass', leafColour: 'glass', glazed: true, panes: [1, 1] };
+    const one = buildOpening(glazedDoor, south);
+    const two = buildOpening({ ...glazedDoor, swing2 }, south);
+    expect(triangleCount(one.glass)).toBe(2);
+    expect(triangleCount(two.glass)).toBe(4);
+    expect(triangleCount(two.solid, OPENING_MAT.frame)).toBe(triangleCount(one.solid, OPENING_MAT.frame) + 12);
+    const withBars = buildOpening({ ...glazedDoor, swing2, panes: [2, 1] }, south);
+    // one vertical bar per leaf on top of the stile
+    expect(triangleCount(withBars.solid, OPENING_MAT.frame)).toBe(triangleCount(two.solid, OPENING_MAT.frame) + 2 * 12);
+  });
+
   it('gives interior openings no surround', () => {
     const w = fixtureWall('w-int');
     const { solid } = buildOpening(w.openings[0], w);
@@ -504,6 +538,34 @@ describe('terrain and conversion', () => {
     for (let i = 0; i < 8; i++) expect(triangleNormal(flipped, 0, i)[2]).toBeGreaterThan(0);
     expect(gridExtent({ ...grid, y0: 20, dy: -20 })).toEqual({ min: [-20, -20], max: [20, 20] });
     expect(isEmpty(buildTerrainGrid({ ...grid, nx: 1 }, () => 0))).toBe(true);
+  });
+
+  it('refines the terrain over the ground works with a patch aligned to the grid lines', () => {
+    const asset = { x0: -100, y0: -100, dx: 2, dy: 2, nx: 111, ny: 101 };
+    const p = terrainPatch(asset, [[[4.5, -5.1], [23.7, -5.1], [23.7, 12.6], [4.5, 12.6]], [[-0.11, -0.11], [16.11, -0.11], [16.11, 6.31], [-0.11, 6.31]]])!;
+    expect(p.extent).toEqual({ min: [-2, -6], max: [24, 14] });
+    expect(p.grid).toEqual({ x0: -2, y0: -6, dx: 0.25, dy: 0.25, nx: 105, ny: 81 });
+    // a cut lying exactly on a grid line still gets a cut-free border one cell further out
+    expect(terrainPatch(asset, [[[0, 0], [2, 0], [2, 2]]])!.extent).toEqual({ min: [-2, -2], max: [4, 4] });
+    // the coarse grid skips exactly the patch's cells
+    const coarse = buildTerrainGrid(asset, () => 0, p.extent);
+    expect(triangleCount(coarse)).toBe(110 * 100 * 2 - 13 * 10 * 2);
+  });
+
+  it('keeps the patch within the grid and its vertex budget, and skips it when there is nothing to refine', () => {
+    const asset = { x0: 0, y0: 0, dx: 2, dy: 2, nx: 11, ny: 11 };
+    expect(terrainPatch(asset, [[[-50, -50], [-40, -50], [-40, -40]]])).toBeNull(); // outside the grid
+    expect(terrainPatch(asset, [])).toBeNull();
+    expect(terrainPatch({ ...asset, dx: -2 }, [[[1, 1], [3, 1], [3, 3]]])).toBeNull();
+    expect(terrainPatch({ ...asset, dx: 0.2, dy: 0.2 }, [[[1, 1], [1.5, 1], [1.5, 1.5]]])).toBeNull(); // already fine
+    const clamped = terrainPatch(asset, [[[-5, -5], [25, -5], [25, 25], [-5, 25]]])!;
+    expect(clamped.extent).toEqual({ min: [0, 0], max: [20, 20] });
+    const big = terrainPatch({ x0: -500, y0: -500, dx: 2, dy: 2, nx: 501, ny: 501 }, [[[-100, -100], [100, -100], [100, 100]]])!;
+    expect(big.grid.nx * big.grid.ny).toBeLessThanOrEqual(TERRAIN_PATCH_MAX_VERTICES);
+    expect(big.grid.dx).toBeGreaterThan(0.25);
+    expect(big.grid.dx).toBeLessThan(2);
+    // so big that even the asset's own cells exceed the budget: no patch
+    expect(terrainPatch({ x0: -500, y0: -500, dx: 2, dy: 2, nx: 501, ny: 501 }, [[[-300, -300], [300, -300], [300, 300]]])).toBeNull();
   });
 
   it('builds a water rectangle facing up', () => {

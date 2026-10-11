@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aspectFactor, CAMERA_PRESETS, easeInOutQuad, presetScale, presetView, presetWorld, REF_ASPECT, REF_BOUNDS } from './cameras';
+import { aspectFactor, CAMERA_PRESETS, easeInOutQuad, EYE_HEIGHT, presetScale, presetView, presetWorld, REF_ASPECT, REF_BOUNDS } from './cameras';
 
 const close = (a: number[], b: number[], eps = 1e-9) => a.every((v, i) => Math.abs(v - b[i]) < eps);
 
@@ -12,8 +12,26 @@ describe('camera presets', () => {
     expect(close(t.position, [12, 4.49, 54])).toBe(true);
     expect(close(t.target, [12, 4.5, 0])).toBe(true);
     const i = presetView('inne-stua', REF_BOUNDS);
-    expect(close(i.position, [9.5, 1.2, 1.6])).toBe(true);
+    expect(close(i.position, [6.3, 0.9, 1.55])).toBe(true);
+    expect(close(i.target, [15.5, 4.5, 1.3])).toBe(true);
+    const l = presetView('langsiden', REF_BOUNDS);
+    expect(close(l.position, [11, -27, 5])).toBe(true);
+    expect(close(l.target, [12.5, 0, 2])).toBe(true);
     expect(presetScale(REF_BOUNDS)).toBeCloseTo(1, 12);
+  });
+
+  it('lists every preset once, with langsiden next to the other facade views', () => {
+    expect(new Set(CAMERA_PRESETS).size).toBe(CAMERA_PRESETS.length);
+    expect(CAMERA_PRESETS).toEqual(['oversikt', 'terrassen', 'framsiden', 'baksiden', 'langsiden', 'ovenfra', 'naert-tilbygget', 'inne-stua']);
+  });
+
+  it('looks east-north-east along the open plan from inside the stue', () => {
+    const i = presetView('inne-stua', REF_BOUNDS);
+    const bearing = (Math.atan2(i.target[1] - i.position[1], i.target[0] - i.position[0]) * 180) / Math.PI;
+    expect(bearing).toBeGreaterThan(10);
+    expect(bearing).toBeLessThan(35);
+    // slightly downwards, eye clearly above a 1.2–1.3 m cut and below the 2.3 m tie beams
+    expect(i.target[2]).toBeLessThan(i.position[2]);
   });
 
   it('translate with the bounds centre', () => {
@@ -46,7 +64,8 @@ describe('camera presets', () => {
     expect(Math.abs(top.position[0] - top.target[0])).toBeLessThan(1e-9);
     expect(top.position[2]).toBeGreaterThan(40);
     const inside = presetView('inne-stua', b);
-    expect(inside.position[2]).toBeCloseTo(1.6, 9);
+    expect(inside.position[2]).toBeCloseTo(EYE_HEIGHT, 9);
+    expect(EYE_HEIGHT).toBe(1.55);
   });
 
   it('presetWorld maps to the world frame', () => {

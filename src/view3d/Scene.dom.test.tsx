@@ -7,9 +7,12 @@ import { _roots, act, advance, createRoot, extend } from '@react-three/fiber';
 import type { ReconcilerRoot } from '@react-three/fiber';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import type { Group, Mesh, Object3D, Scene as ThreeScene } from 'three';
+import type { Group, Mesh, Object3D, Scene as ThreeScene, Vector3 } from 'three';
+import type { DerivedFloor } from '../model/derived';
 import type { Selection } from '../state/selection';
+import { toWorld } from './coords';
 import { FIXTURE_DERIVED, FIXTURE_SITE, FIXTURE_TERRAIN } from './fixture';
+import { PIN_MARGIN } from './labelDefs';
 import { Scene } from './Scene';
 import type { SceneProps } from './Scene';
 
@@ -31,6 +34,8 @@ interface Mounted {
   container: HTMLDivElement;
   scene: () => ThreeScene;
   render: ReturnType<typeof vi.fn>;
+  /** Puts the camera at a plan point looking at another (the orbit controls keep it there). */
+  look: (from: [number, number, number], to: [number, number, number]) => void;
 }
 
 const mounted: Mounted[] = [];
@@ -96,15 +101,25 @@ async function mount(props: SceneProps): Promise<Mounted> {
     });
     root.render(<Scene {...props} />);
   });
+  const state = () => {
+    const entry = _roots.get(canvas);
+    if (!entry) throw new Error('root missing');
+    return entry.store.getState();
+  };
   const m: Mounted = {
     root,
     canvas,
     container,
     render,
-    scene: () => {
-      const entry = _roots.get(canvas);
-      if (!entry) throw new Error('root missing');
-      return entry.store.getState().scene;
+    scene: () => state().scene,
+    look: (from, to) => {
+      const s = state();
+      const controls = s.controls as unknown as { target: Vector3; update(): void } | null;
+      s.camera.position.copy(toWorld(...from));
+      controls?.target.copy(toWorld(...to));
+      s.camera.lookAt(toWorld(...to));
+      controls?.update();
+      s.invalidate();
     },
   };
   mounted.push(m);
@@ -164,6 +179,57 @@ describe('Scene (R3F, stand-in renderer)', () => {
     });
     expect(maxY).toBeCloseTo(1.6, 5);
     await vi.waitFor(() => expect(m.container.querySelectorAll('[data-label]').length).toBe(3));
+  });
+
+  it('refines the terrain over derived.groundWorks (not the site list)', async () => {
+    const plain = await mount(baseProps());
+    await frames(1);
+    expect(byName(plain.scene(), 'terrain-patch')).toBeUndefined();
+    const cut = await mount(baseProps({ derived: { ...FIXTURE_DERIVED, groundWorks: FIXTURE_SITE.groundWorks } }));
+    await frames(1);
+    const patch = byName(cut.scene(), 'terrain-patch') as Mesh | undefined;
+    expect(patch).toBeDefined();
+    patch!.geometry.computeBoundingBox();
+    // the fixture's cut (maxZ −0.3) shows in the patch
+    expect(patch!.geometry.boundingBox!.min.y).toBeLessThanOrEqual(-0.3 + 1e-9);
+  });
+
+  it('draws flat ceilings in the exterior mode and hides them inside', async () => {
+    const ceiling: DerivedFloor = {
+      id: 'blk/ceiling',
+      levelId: 'main',
+      polygon: FIXTURE_DERIVED.rooms[0].polygon,
+      holes: [],
+      z: 2.4,
+      thickness: 0.05,
+      material: 'wood',
+      isNew: false,
+      kind: 'ceiling',
+    };
+    const derived = { ...FIXTURE_DERIVED, floors: [...FIXTURE_DERIVED.floors, ceiling] };
+    const ute = await mount(baseProps({ derived }));
+    await frames(1);
+    expect(meshCount(byName(ute.scene(), 'floors'))).toBe(FIXTURE_DERIVED.floors.length + 1);
+    const inne = await mount(baseProps({ derived, mode: 'inne' }));
+    await frames(1);
+    expect(meshCount(byName(inne.scene(), 'floors'))).toBe(4);
+  });
+
+  it('never hides the label of the room the camera stands in', async () => {
+    const m = await mount(baseProps({ mode: 'inne', showTerrain: false, showTrees: false }));
+    await frames(2);
+    // stand in the Stue (0.16…3.44 × 0.16…2) and look west, away from its label at (1.8, 1.08)
+    m.look([1, 1, 1.55], [-10, 1, 1.3]);
+    await frames(3);
+    const stue = m.container.querySelector<HTMLElement>('[data-label="room:main:rom-stue"]')!;
+    const kitchen = m.container.querySelector<HTMLElement>('[data-label="room:main:rom-kjokken"]')!;
+    expect(stue.style.display).toBe('block');
+    expect(stue.style.transform).toContain(`translate(400px, ${600 - PIN_MARGIN}px)`);
+    expect(kitchen.style.display).toBe('none'); // behind the camera too, but not the camera's room
+    // from above, nobody stands in a room: the Stue tag follows its anchor again
+    m.look([3, -12, 20], [3, 2, 0]);
+    await frames(3);
+    expect(stue.style.transform).not.toContain(`${600 - PIN_MARGIN}px)`);
   });
 
   it('selects by click and ignores drags', async () => {

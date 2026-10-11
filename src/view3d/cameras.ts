@@ -10,13 +10,22 @@ import { Vector3 } from 'three';
 import type { Vec2, Vec3 } from '../model/types';
 import { toWorld } from './coords';
 
-export type CameraPreset = 'oversikt' | 'terrassen' | 'framsiden' | 'baksiden' | 'ovenfra' | 'naert-tilbygget' | 'inne-stua';
+export type CameraPreset =
+  | 'oversikt'
+  | 'terrassen'
+  | 'framsiden'
+  | 'baksiden'
+  | 'langsiden'
+  | 'ovenfra'
+  | 'naert-tilbygget'
+  | 'inne-stua';
 
 export const CAMERA_PRESETS: readonly CameraPreset[] = [
   'oversikt',
   'terrassen',
   'framsiden',
   'baksiden',
+  'langsiden',
   'ovenfra',
   'naert-tilbygget',
   'inne-stua',
@@ -36,15 +45,25 @@ export interface PlanView {
 /** Forslag D: outer outlines (x −0.11 … 20.91, y −2.11 … 12.21) plus the deck (5 … 23.2, −4.6 … 12.1). */
 export const REF_BOUNDS: { min: Vec2; max: Vec2 } = { min: [-0.11, -4.6], max: [23.2, 12.21] };
 
-/** Doc values (plan coords, Forslag D). */
+/** Eye height (m above the main floor) of the eye-level presets. */
+export const EYE_HEIGHT = 1.55;
+
+/**
+ * Doc values (plan coords, Forslag D), from the old model's views. 'framsiden' is the old model's east view
+ * (the new wing's long side with the white glass door), 'langsiden' its lake facade (glass bump, stue door, the new
+ * wing's south gable). 'inne-stua' stands at eye height in the west end of the stue and looks east-north-east along
+ * the open plan, so the stue's own label point (8.0, 1.3), Passasje and Spiseplass are in frame (the stue's label
+ * point lies west of x = 9.5, so a camera further east would have it behind it).
+ */
 const PRESET_VIEWS: Record<CameraPreset, PlanView> = {
   oversikt: { position: [36, -25, 26], target: [11.5, 4.5, 1.5] },
   terrassen: { position: [29, 19, 8], target: [14.5, 8, 1.2] },
   framsiden: { position: [38, 2, 4.5], target: [16, 2.5, 2] },
   baksiden: { position: [-14, 22, 8], target: [8, 5, 2] },
+  langsiden: { position: [11, -27, 5], target: [12.5, 0, 2] },
   ovenfra: { position: [12, 4.49, 54], target: [12, 4.5, 0] },
   'naert-tilbygget': { position: [26, -9, 12], target: [17.5, 2.5, 0.6] },
-  'inne-stua': { position: [9.5, 1.2, 1.6], target: [15, 2.5, 1.3] },
+  'inne-stua': { position: [6.3, 0.9, EYE_HEIGHT], target: [15.5, 4.5, 1.3] },
 };
 
 /** Eye-level presets inside the building: translated with the bounds, never scaled. */

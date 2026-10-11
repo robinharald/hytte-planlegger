@@ -62,6 +62,8 @@ const MIN_HEIGHT = 0.005;
 
 /** Opening detail sizes (metres). */
 export const OPENING_DIMS = { frame: 0.06, mullion: 0.04, leaf: 0.045, trimWidth: 0.07, trimDepth: 0.025 } as const;
+/** Seam (m) between the two solid leaves of a double door. */
+export const DOUBLE_LEAF_GAP = 0.006;
 /** Railing detail sizes (metres). */
 export const RAILING_DIMS = { post: 0.08, capWidth: 0.12, capHeight: 0.04, bottomRail: 0.05, slat: 0.09, slatGap: 0.035, slatDepth: 0.022 } as const;
 
@@ -552,6 +554,9 @@ export interface OpeningBuild {
  * Frame boxes (frameDepth deep, centred on the glass plane), glass plane + mullion bars from `panes`, a closed
  * door leaf for solid leaves, and (exterior walls only) a surround on the outer face. Frameless openings
  * (type 'opening') give nothing. `cutZ` clips everything at the cut plane (head members are then omitted).
+ * A double door (`swing2` present) gets two closed leaves of half the clear width: solid leaves meet with a
+ * DOUBLE_LEAF_GAP seam; glazed leaves are split by a meeting stile (two frame widths) and each leaf gets the
+ * `panes` grid.
  */
 export function buildOpening(o: DerivedOpening, host: OpeningHostLine, cutZ: number | null = null): OpeningBuild {
   const solid = createMeshData(3);
@@ -598,13 +603,21 @@ export function buildOpening(o: DerivedOpening, host: OpeningHostLine, cutZ: num
   const iZ1full = o.headZ - ft;
   const iZ1 = headCut ? head : head - ft;
   if (iS1 - iS0 > 1e-3 && iZ1 - iZ0 > MIN_HEIGHT) {
+    // clear width per leaf: one span, or two halves either side of the seam / meeting stile of a double door
+    const double = isDoor && !!o.swing2;
+    const mid = (iS0 + iS1) / 2;
+    const half = o.leaf === 'solid' ? DOUBLE_LEAF_GAP / 2 : Math.min(ft, (iS1 - iS0) / 6);
+    const spans: [number, number][] = double ? [[iS0, mid - half], [mid + half, iS1]] : [[iS0, iS1]];
     if (o.leaf === 'solid') {
-      box(solid, OPENING_MAT.leaf, iS0, iS1, gp - OPENING_DIMS.leaf / 2, gp + OPENING_DIMS.leaf / 2, iZ0, iZ1);
+      for (const [a, b] of spans) box(solid, OPENING_MAT.leaf, a, b, gp - OPENING_DIMS.leaf / 2, gp + OPENING_DIMS.leaf / 2, iZ0, iZ1);
     } else {
-      appendQuad(glass, [P(iS0, gp, iZ0), P(iS1, gp, iZ0), P(iS1, gp, iZ1), P(iS0, gp, iZ1)], 0);
-      appendMullions(o.panes, iS0, iS1, iZ0, iZ1full, iZ1, (sA, sB, zA, zB) =>
-        box(solid, OPENING_MAT.frame, sA, sB, gp - fd / 4, gp + fd / 4, zA, zB),
-      );
+      if (double) box(solid, OPENING_MAT.frame, mid - half, mid + half, gp - fd / 2, gp + fd / 2, iZ0, iZ1);
+      for (const [a, b] of spans) {
+        appendQuad(glass, [P(a, gp, iZ0), P(b, gp, iZ0), P(b, gp, iZ1), P(a, gp, iZ1)], 0);
+        appendMullions(o.panes, a, b, iZ0, iZ1full, iZ1, (sA, sB, zA, zB) =>
+          box(solid, OPENING_MAT.frame, sA, sB, gp - fd / 4, gp + fd / 4, zA, zB),
+        );
+      }
     }
   }
 
@@ -953,6 +966,61 @@ export function buildTerrainGrid(
     d.uvs.push(p[0], p[1]);
   }
   return d;
+}
+
+type GridSpec = Pick<TerrainGrid, 'x0' | 'y0' | 'dx' | 'dy' | 'nx' | 'ny'>;
+
+/** Target cell size (m) of the fine terrain patch over the ground works. */
+export const TERRAIN_PATCH_CELL = 0.25;
+/** Vertex budget of the fine terrain patch (its cells grow when the ground works cover a large area). */
+export const TERRAIN_PATCH_MAX_VERTICES = 60000;
+
+/**
+ * Fine patch of a terrain grid over the ground works. Cuts are applied per vertex, so on the finest asset grid
+ * (2 m cells) a cut polygon's edge is smeared over a whole cell and the ground can rise through a floor next to it.
+ * The patch covers the bounding box of `cuts` snapped outwards to the grid's lines, strictly outside every cut (so
+ * its border carries no cut and its vertices there lie on the coarse cells' edges, where the bilinear terrain is
+ * linear — no cracks), clamped to the grid, with cells of at most `maxCell` metres (coarser when the vertex budget
+ * would be exceeded). Build the coarse grid with `extent` as its hole. Null when there is nothing to refine
+ * (no cuts over the grid, non-positive spacing, or a patch no finer than the grid).
+ */
+export function terrainPatch(
+  grid: GridSpec,
+  cuts: Vec2[][],
+  maxCell = TERRAIN_PATCH_CELL,
+  maxVertices = TERRAIN_PATCH_MAX_VERTICES,
+): { grid: GridSpec; extent: { min: Vec2; max: Vec2 } } | null {
+  const { x0, y0, dx, dy, nx, ny } = grid;
+  if (!(dx > 0) || !(dy > 0) || !Number.isFinite(dx) || !Number.isFinite(dy) || nx < 2 || ny < 2) return null;
+  const pts = cuts.flat().filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  if (pts.length === 0) return null;
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const clampI = (i: number, n: number) => Math.min(n - 1, Math.max(0, i));
+  const i0 = clampI(Math.ceil((Math.min(...xs) - x0) / dx) - 1, nx);
+  const i1 = clampI(Math.floor((Math.max(...xs) - x0) / dx) + 1, nx);
+  const j0 = clampI(Math.ceil((Math.min(...ys) - y0) / dy) - 1, ny);
+  const j1 = clampI(Math.floor((Math.max(...ys) - y0) / dy) + 1, ny);
+  if (i1 - i0 < 1 || j1 - j0 < 1) return null;
+  let k = Math.max(1, Math.ceil(dx / maxCell - 1e-9));
+  let m = Math.max(1, Math.ceil(dy / maxCell - 1e-9));
+  const verts = () => ((i1 - i0) * k + 1) * ((j1 - j0) * m + 1);
+  if (verts() > maxVertices) {
+    const f = Math.sqrt(verts() / maxVertices);
+    k = Math.max(1, Math.floor(k / f));
+    m = Math.max(1, Math.floor(m / f));
+    while (verts() > maxVertices && (k > 1 || m > 1)) {
+      if (k >= m) k--;
+      else m--;
+    }
+  }
+  if (k === 1 && m === 1) return null;
+  const min: Vec2 = [x0 + i0 * dx, y0 + j0 * dy];
+  const max: Vec2 = [x0 + i1 * dx, y0 + j1 * dy];
+  return {
+    grid: { x0: min[0], y0: min[1], dx: dx / k, dy: dy / m, nx: (i1 - i0) * k + 1, ny: (j1 - j0) * m + 1 },
+    extent: { min, max },
+  };
 }
 
 /** Extent of a grid in plan. */
