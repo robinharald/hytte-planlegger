@@ -27,6 +27,19 @@
  *  3. `Roof.extend.start/end` replaces the distance at that end. If the end is adjacent, the region beyond the axis
  *     line is still clipped to the other blocks and carries no barge board; otherwise it is a free gable.
  *
+ * Slabs never hang inside another block (review finding "roof slabs inside rooms")
+ *  - Overhang strips (eave and gable overhangs: the slope region beyond the block's own bbox, extensions excluded)
+ *    that fall inside another roofed block's axis polygon are dropped.
+ *  - Valleys: every slope region then keeps only where its roof is the upper envelope, i.e. where its underside is
+ *    ≥ the other roofs' undersides − ENVELOPE_TOL (1 cm). For planar slopes "another slope is higher" is a
+ *    half-plane bounded by the line where the two planes meet, so each slope region loses exactly
+ *    ∪ (other slope region ∩ that half-plane); both sides of a valley are cut along it (the extension slab and the
+ *    receiving roof alike). Points under several roofs keep the highest one, so `combinedUndersideAt` is unchanged
+ *    (up to the tolerance band) while no slab lies below another roof inside a room. Outlines follow the cut slabs.
+ *
+ * Robustness: every boolean operation has a local fallback (`withClipFallback`): unclipped other-block region,
+ * no extension strip, no dropped overhang, no valley cut, unsplit slope (part splits), largest ring as outline.
+ *
  * Decisions where the architecture is silent
  *  - The roof covers the block's axis-line BOUNDING BOX (+ overhangs/extensions); non-rectangular blocks get a
  *    rectangular roof (model L-shapes as two blocks).
@@ -59,6 +72,7 @@ import {
   segmentIntersection,
   simplifyCollinear,
   unionPolygons,
+  withClipFallback,
 } from './polygon';
 
 const DEG = Math.PI / 180;
@@ -78,6 +92,8 @@ const MIN_PIECE_AREA = 1e-4;
 const MIN_TRIM_LEN = 1e-3;
 /** Tolerance (m) for "a part edge lies on the block boundary". */
 const ON_EDGE_TOL = 1e-5;
+/** A slab is kept where its underside is at least the other roofs' undersides minus this (m). */
+export const ENVELOPE_TOL = 0.01;
 
 type Axis = 'x' | 'y';
 type End = 'start' | 'end';
@@ -502,10 +518,16 @@ function splitHoles(mp: Vec2[][][], depth = 0): Vec2[][] {
       [[min[0] - 1, min[1] - 1], [cut, min[1] - 1], [cut, max[1] + 1], [min[0] - 1, max[1] + 1]],
       [[cut, min[1] - 1], [max[0] + 1, min[1] - 1], [max[0] + 1, max[1] + 1], [cut, max[1] + 1]],
     ];
-    for (const half of halves) {
-      const pieces = intersectPolygons([outer], [half]).map((p) => p[0]);
-      if (pieces.length > 0) out.push(...splitHoles(differencePolygons(pieces, holes), depth + 1));
-    }
+    const split = withClipFallback(
+      'roof slab with a hole',
+      () =>
+        halves.flatMap((half) => {
+          const pieces = intersectPolygons([outer], [half]).map((p) => p[0]);
+          return pieces.length > 0 ? splitHoles(differencePolygons(pieces, holes), depth + 1) : [];
+        }),
+      () => [outer],
+    );
+    out.push(...split);
   }
   return out;
 }
@@ -520,29 +542,117 @@ function cleanRings(rings: Vec2[][]): Vec2[][] {
   return out;
 }
 
-/** Plan regions of each slope: the body over the block plus extension strips clipped to the other blocks. */
+/**
+ * Plan regions of each slope: the body over the block (overhang strips inside other blocks dropped) plus extension
+ * strips clipped to the other blocks. Not yet cut at valleys (`clipToEnvelope`).
+ */
 function slabRegions(m: RoofModel, e: RidgeExtension, otherFootprints: Vec2[][]): Vec2[][][] {
   if (m.degenerate) return m.slopes.map(() => []);
-  const { axis, uMin, uMax } = m.frame;
+  const { axis, uMin, uMax, vMin, vMax } = m.frame;
   const clipStart = !e.startFree && e.start > 0;
   const clipEnd = !e.endFree && e.end > 0;
   const bodyLo = clipStart ? uMin : uMin - e.start;
   const bodyHi = clipEnd ? uMax : uMax + e.end;
   let clip: Vec2[][] | null = null;
-  const clipRegion = (): Vec2[][] => (clip ??= otherFootprints.length === 0 ? [] : splitHoles(unionPolygons(otherFootprints)));
+  const clipRegion = (): Vec2[][] =>
+    (clip ??=
+      otherFootprints.length === 0
+        ? []
+        : withClipFallback('roof: union of the other blocks', () => splitHoles(unionPolygons(otherFootprints)), () => otherFootprints));
   const strip = (u0: number, u1: number, s: SlopeDef): Vec2[][] => {
     const region = clipRegion();
-    return region.length === 0 ? [] : splitHoles(intersectPolygons([rectRing(axis, u0, u1, s.vLo, s.vHi)], region));
+    if (region.length === 0) return [];
+    return withClipFallback('roof extension strip', () => splitHoles(intersectPolygons([rectRing(axis, u0, u1, s.vLo, s.vHi)], region)), () => []);
+  };
+  /** Body rectangle of a slope; its overhang strips (outside the block's bbox) lose what lies inside other blocks. */
+  const body = (s: SlopeDef): Vec2[][] => {
+    const rect = rectRing(axis, bodyLo, bodyHi, s.vLo, s.vHi);
+    const region = clipRegion();
+    const c0 = Math.max(bodyLo, uMin);
+    const c1 = Math.min(bodyHi, uMax);
+    const v0 = Math.max(s.vLo, vMin);
+    const v1 = Math.min(s.vHi, vMax);
+    if (region.length === 0) return [rect];
+    const core = c1 - c0 >= EPS && v1 - v0 >= EPS ? [rectRing(axis, c0, c1, v0, v1)] : [];
+    return withClipFallback(
+      'roof overhang inside another block',
+      () => [...core, ...splitHoles(differencePolygons([rect], [...core, ...region]))],
+      () => [rect],
+    );
   };
   return m.slopes.map((s) => {
     if (s.vHi - s.vLo < EPS) return [];
     const pieces: Vec2[][] = [];
-    if (bodyHi - bodyLo >= EPS) pieces.push(rectRing(axis, bodyLo, bodyHi, s.vLo, s.vHi));
+    if (bodyHi - bodyLo >= EPS) pieces.push(...body(s));
     if (clipStart) pieces.push(...strip(uMin - e.start, uMin, s));
     if (clipEnd) pieces.push(...strip(uMax, uMax + e.end, s));
     if (pieces.length <= 1) return cleanRings(pieces);
-    return cleanRings(splitHoles(unionPolygons(pieces)));
+    return withClipFallback('roof slab union', () => cleanRings(splitHoles(unionPolygons(pieces))), () => cleanRings(pieces));
   });
+}
+
+/** Plan rectangle around both boxes, grown by 1 m. */
+function boxRing(a: { min: Vec2; max: Vec2 }, b: { min: Vec2; max: Vec2 }): Vec2[] {
+  const x0 = Math.min(a.min[0], b.min[0]) - 1;
+  const y0 = Math.min(a.min[1], b.min[1]) - 1;
+  const x1 = Math.max(a.max[0], b.max[0]) + 1;
+  const y1 = Math.max(a.max[1], b.max[1]) + 1;
+  return [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+}
+
+/** Part of the convex ring where plane `p` is higher than plane `q` by more than `tol`; null when nowhere. */
+function aboveRegion(ring: Vec2[], p: Plane, q: Plane, tol: number): Vec2[] | null {
+  const f = (pt: Vec2): number => (p.a - q.a) * pt[0] + (p.b - q.b) * pt[1] + (p.c - q.c) - tol;
+  const out: Vec2[] = [];
+  for (let k = 0; k < ring.length; k++) {
+    const cur = ring[k];
+    const prev = ring[(k + ring.length - 1) % ring.length];
+    const fc = f(cur);
+    const fp = f(prev);
+    if (fc > 0 !== fp > 0) {
+      const t = fp / (fp - fc);
+      out.push([prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t]);
+    }
+    if (fc > 0) out.push(cur);
+  }
+  return out.length >= 3 && area(out) > MIN_PIECE_AREA ? out : null;
+}
+
+function boxesOverlap(a: { min: Vec2; max: Vec2 }, b: { min: Vec2; max: Vec2 }): boolean {
+  return a.min[0] <= b.max[0] + EPS && b.min[0] <= a.max[0] + EPS && a.min[1] <= b.max[1] + EPS && b.min[1] <= a.max[1] + EPS;
+}
+
+/**
+ * Valleys (see the header): each slope region minus the parts of the other roofs' slope regions whose underside
+ * plane lies more than ENVELOPE_TOL above its own plane there. All comparisons use the uncut regions.
+ */
+function clipToEnvelope(models: RoofModel[], regions: Vec2[][][][]): Vec2[][][][] {
+  const boxes = regions.map((slopes) => slopes.map((rings) => (rings.length === 0 ? null : bbox(rings.flat()))));
+  return regions.map((slopes, i) =>
+    slopes.map((rings, k) => {
+      const box = boxes[i][k];
+      if (box === null) return rings;
+      const own = models[i].slopes[k].plane;
+      const above: Vec2[][] = [];
+      regions.forEach((otherSlopes, j) => {
+        if (j === i) return;
+        otherSlopes.forEach((otherRings, l) => {
+          const ob = boxes[j][l];
+          if (ob === null || !boxesOverlap(box, ob)) return;
+          const half = aboveRegion(boxRing(box, ob), models[j].slopes[l].plane, own, ENVELOPE_TOL);
+          if (half === null) return;
+          above.push(...withClipFallback('roof valley', () => splitHoles(intersectPolygons(otherRings, [half])), () => []));
+        });
+      });
+      if (above.length === 0) return rings;
+      return withClipFallback('roof valley', () => cleanRings(splitHoles(differencePolygons(rings, above))), () => rings);
+    }),
+  );
 }
 
 /** Outer ring of the largest polygon of the union of all slope regions. */
@@ -551,7 +661,8 @@ function outlineOf(regions: Vec2[][][]): Vec2[] {
   if (rings.length === 0) return [];
   let best: Vec2[] = [];
   let bestArea = 0;
-  for (const poly of unionPolygons(rings)) {
+  const union = withClipFallback('roof outline', () => unionPolygons(rings), () => rings.map((r) => [r]));
+  for (const poly of union) {
     const a = area(poly[0]);
     if (a > bestArea) {
       best = poly[0];
@@ -564,13 +675,14 @@ function outlineOf(regions: Vec2[][][]): Vec2[] {
 function slabContext(blocks: Block[], levels: Level[]): SlabContext {
   const ctx = roofContext(blocks, levels);
   const footprints = blocks.map((b) => (b.polygon.length >= 3 ? ensureCCW(b.polygon.map((v): Vec2 => [v.p[0], v.p[1]])) : null));
-  const regions = ctx.models.map((m, i) =>
+  const uncut = ctx.models.map((m, i) =>
     slabRegions(
       m,
       ctx.ext[i],
       footprints.flatMap((f, j) => (j === i || f === null || ctx.base[j] === null ? [] : [f])),
     ),
   );
+  const regions = clipToEnvelope(ctx.models, uncut);
   return { ...ctx, regions, outlines: regions.map(outlineOf) };
 }
 
@@ -604,22 +716,33 @@ function growPart(ring: Vec2[], blockPoly: Vec2[]): Vec2[] {
 function partRegions(block: Block, points: Vec2[]): PartRegion[] | null {
   if (block.parts.length === 0) return null;
   const blockPoly = ensureCCW(points);
-  const regions: PartRegion[] = [];
-  for (const part of block.parts) {
-    for (const poly of intersectPolygons([part.polygon], [blockPoly])) {
-      regions.push({ poly: growPart(poly[0], blockPoly), isNew: part.isNew });
-    }
-  }
-  for (const poly of differencePolygons([blockPoly], block.parts.map((p) => p.polygon))) {
-    regions.push({ poly: growPart(poly[0], blockPoly), isNew: block.isNew });
-  }
-  return regions;
+  return withClipFallback(
+    'roof parts',
+    () => {
+      const regions: PartRegion[] = [];
+      for (const part of block.parts) {
+        for (const poly of intersectPolygons([part.polygon], [blockPoly])) {
+          regions.push({ poly: growPart(poly[0], blockPoly), isNew: part.isNew });
+        }
+      }
+      for (const poly of differencePolygons([blockPoly], block.parts.map((p) => p.polygon))) {
+        regions.push({ poly: growPart(poly[0], blockPoly), isNew: block.isNew });
+      }
+      return regions;
+    },
+    () => null,
+  );
 }
 
 /** Splits a slope region by part regions into hole-free pieces, merged per isNew (existing first). */
 function splitByParts(rings: Vec2[][], regions: PartRegion[] | null, blockIsNew: boolean): { ring: Vec2[]; isNew: boolean }[] {
   if (rings.length === 0) return [];
-  if (regions === null) return rings.map((ring) => ({ ring, isNew: blockIsNew }));
+  const unsplit = () => rings.map((ring) => ({ ring, isNew: blockIsNew }));
+  if (regions === null) return unsplit();
+  return withClipFallback('roof slope split by parts', () => splitRingsByParts(rings, regions, blockIsNew), unsplit);
+}
+
+function splitRingsByParts(rings: Vec2[][], regions: PartRegion[], blockIsNew: boolean): { ring: Vec2[]; isNew: boolean }[] {
   const byFlag: Record<'old' | 'new', Vec2[][]> = { old: [], new: [] };
   const claimed: Vec2[][] = [];
   for (const r of regions) {

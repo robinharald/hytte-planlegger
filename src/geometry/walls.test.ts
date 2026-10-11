@@ -6,12 +6,14 @@ import terrainJson from '../model/seed/terrain-merkesvatnet.json';
 import { area, unionArea, unionPolygons } from './polygon';
 import { buildRoofs } from './roof';
 import {
+  blockGroundZ,
   capProfile,
   deriveBlockWarnings,
   deriveBlocks,
   deriveWalls,
   envelopeProfile,
   openingHints,
+  patchMinusOpenings,
   profileAt,
   resolveJunctions,
   roofEvents,
@@ -331,6 +333,14 @@ describe('resolveJunctions', () => {
   });
 });
 
+describe('blockGroundZ', () => {
+  it('is the minimum terrain under the outer outline', () => {
+    const [db] = deriveBlocks(mkVariant({ blocks: [mkBlock('b', rect(0, 0, 4, 4))] }), SITE, null, { terrainZ: () => 0 });
+    expect(blockGroundZ(db, (x) => -x)).toBeCloseTo(-4.11, 9);
+    expect(blockGroundZ(db, () => -0.3)).toBe(-0.3);
+  });
+});
+
 describe('deriveBlockWarnings', () => {
   it('warns about overlapping blocks and parts, not about adjacent ones', () => {
     const A = mkBlock('A', rect(0, 0, 10, 6), {
@@ -346,6 +356,20 @@ describe('deriveBlockWarnings', () => {
       { kind: 'block-overlap', blockIds: ['A', 'C'] },
       { kind: 'parts-overlap', blockId: 'A' },
     ]);
+  });
+
+  it('warns about a self-intersecting block (two vertices swapped) and derives it without throwing', () => {
+    const bow = mkBlock('X', [
+      [0, 0],
+      [6, 0],
+      [0, 4],
+      [6, 4],
+    ]);
+    const ok = mkBlock('ok', rect(10, 0, 14, 4));
+    const v = mkVariant({ blocks: [bow, ok] });
+    const blocks = deriveBlocks(v, SITE, null, { terrainZ: () => 0 });
+    expect(deriveBlockWarnings(blocks)).toEqual([{ kind: 'block-self-intersecting', blockId: 'X' }]);
+    expect(() => deriveWalls(v, blocks, buildRoofs(v), {})).not.toThrow();
   });
 });
 
@@ -666,6 +690,42 @@ describe('deriveWalls: openings', () => {
     expect(inner.sweep).toBe(1);
   });
 
+  it('a double door (leaves 2): two half-width leaves hinged at both jambs, opening to the same side', () => {
+    const door = mkOpening('dd', edge('b', 0), 2, {
+      type: 'glassDoor',
+      width: 1.6,
+      height: 2.05,
+      sill: 0,
+      leaves: 2,
+      swing: { hinge: 'start', side: 'right' },
+    });
+    const [o] = derive(mkVariant({ blocks: [square()], openings: [door] })).walls[0].openings;
+    const a = o.swing;
+    const b = o.swing2;
+    if (!a || !b) throw new Error('missing leaf');
+    expectPts([a.hinge, a.closed, a.open], [
+      [1.2, -0.11],
+      [2, -0.11],
+      [1.2, -0.91],
+    ]);
+    expectPts([b.hinge, b.closed, b.open], [
+      [2.8, -0.11],
+      [2, -0.11],
+      [2.8, -0.91],
+    ]);
+    expect([a.sweep, b.sweep]).toEqual([-1, 1]);
+    // hinge 'end' only swaps which leaf is `swing`.
+    const [e] = derive(mkVariant({ blocks: [square()], openings: [{ ...door, swing: { hinge: 'end', side: 'right' } }] })).walls[0].openings;
+    expectPts([e.swing!.hinge, e.swing2!.hinge], [
+      [2.8, -0.11],
+      [1.2, -0.11],
+    ]);
+    // A single leaf has no swing2.
+    const [single] = derive(mkVariant({ blocks: [square()], openings: [{ ...door, leaves: 1 }] })).walls[0].openings;
+    expect(single.swing2).toBeUndefined();
+    expect(single.swing!.open).toEqual([1.2, expect.closeTo(-1.71, 9)]);
+  });
+
   it("a door on an interior wall with side 'left' and hinge 'end'", () => {
     const v = mkVariant({
       blocks: [square()],
@@ -794,6 +854,46 @@ describe('deriveWalls: openings', () => {
       ['far', 'removed'],
     ]);
     expect(walls[0].patches[0]).toEqual({ offset: 2, width: 1, sillZ: 0.8, headZ: 2.0 });
+  });
+
+  it('infill patches leave out the openings that stay or are new in the same piece', () => {
+    const v = mkVariant({
+      blocks: [square()],
+      openings: [
+        // Removed door 1.5 .. 2.5 × 0 .. 2.0 with a new window 1.4 .. 2.6 × 0.8 .. 2.0 in its place.
+        mkOpening('old-door', edge('b', 0), 2, { type: 'door', width: 1, height: 2.0, sill: 0, status: 'removed' }),
+        mkOpening('new-win', edge('b', 0), 2, { width: 1.2, height: 1.2, sill: 0.8, status: 'new' }),
+        // Removed window fully inside a new glass door: no patch left.
+        mkOpening('old-win', edge('b', 1), 1, { width: 0.8, status: 'removed' }),
+        mkOpening('new-door', edge('b', 1), 1, { type: 'glassDoor', width: 1.6, height: 2.05, sill: 0, status: 'new' }),
+      ],
+    });
+    const { walls } = derive(v);
+    const south = walls.find((w) => w.openings.some((o) => o.id === 'old-door'))!;
+    expect(south.patches).toHaveLength(1);
+    expect(south.patches[0].offset).toBeCloseTo(2, 9);
+    expect(south.patches[0].width).toBeCloseTo(1, 9);
+    expect(south.patches[0].sillZ).toBeCloseTo(0, 9);
+    expect(south.patches[0].headZ).toBeCloseTo(0.8, 9);
+    const east = walls.find((w) => w.openings.some((o) => o.id === 'old-win'))!;
+    expect(east.patches).toEqual([]);
+  });
+
+  it('patchMinusOpenings: rectangle difference in (offset, z)', () => {
+    const patch = { offset: 2, width: 2, sillZ: 0, headZ: 2 };
+    expect(patchMinusOpenings(patch, [])).toEqual([patch]);
+    expect(patchMinusOpenings(patch, [{ offset: 5, width: 1, sillZ: 0, headZ: 2 }])).toEqual([patch]);
+    const pieces = patchMinusOpenings(patch, [{ offset: 2, width: 1, sillZ: 0.5, headZ: 1.5 }]);
+    const sorted = pieces.map((p) => [p.offset, p.width, p.sillZ, p.headZ].map((x) => Math.round(x * 1000) / 1000));
+    expect(sorted).toEqual([
+      [1.25, 0.5, 0, 2],
+      [2.75, 0.5, 0, 2],
+      [2, 1, 0, 0.5],
+      [2, 1, 1.5, 2],
+    ]);
+    const area = pieces.reduce((acc, p) => acc + p.width * (p.headZ - p.sillZ), 0);
+    expect(area).toBeCloseTo(4 - 1, 9);
+    expect(patchMinusOpenings(patch, [{ offset: 2, width: 3, sillZ: -1, headZ: 3 }])).toEqual([]);
   });
 
   it('measures the sill from the replace zone 0.2 m inside the host by default', () => {
@@ -958,6 +1058,33 @@ describe('deriveWalls: stored walls', () => {
     expect(low.topZ).toBeCloseTo(1.3, 12);
     const ext = derive(mkVariant({ blocks: [block] }), none).walls[0];
     expect(ext.topZ).toBeCloseTo(2.22, 12); // block eaveZ
+  });
+
+  it("block ceilings: 'auto' walls inside a block with ceilingHeight stop there; roof, fixed and other blocks do not", () => {
+    const wing = mkBlock('wing', rect(20, 0, 25, 8), { ceilingHeight: 2.4 });
+    const v = mkVariant({
+      blocks: [block, wing],
+      walls: [
+        mkWall('in-auto', [21, 1], [21, 5]),
+        mkWall('in-roof', [22, 1], [22, 5], { heightMode: 'roof' }),
+        mkWall('in-fixed', [23, 1], [23, 5], { heightMode: 'fixed', height: 2.1 }),
+        mkWall('out-auto', [7, 1], [7, 5]),
+        mkWall('in-low', [21, 6], [24, 6], { levelId: 'lower' }), // the level ceiling (1.3) is lower: it wins
+      ],
+    });
+    const ws = derive(v, flat(3.5)).walls.filter((w) => !w.isExterior);
+    const top = (id: string) => byId(ws, id).topZ;
+    expect(top('in-auto')).toBeCloseTo(2.4, 12);
+    expect(top('in-roof')).toBeCloseTo(3.5, 12);
+    expect(top('in-fixed')).toBeCloseTo(2.1, 12);
+    expect(top('out-auto')).toBeCloseTo(3.5, 12);
+    expect(top('in-low')).toBeCloseTo(1.3, 12);
+    // A wall standing above the ceiling (loft level) is not capped by it.
+    const loftWing = mkBlock('lw', rect(20, 0, 25, 8), { ceilingHeight: 1.0 });
+    const [high] = derive(mkVariant({ blocks: [loftWing], walls: [mkWall('h', [21, 1], [21, 5], { levelId: 'loft' })] }), flat(3.5)).walls.filter(
+      (w) => !w.isExterior,
+    );
+    expect(high.topZ).toBeCloseTo(3.5, 12);
   });
 
   it('zero-length walls do not break anything', () => {

@@ -23,8 +23,17 @@
  *     opening that has a room on at least one side (probed 5 cm beyond each wall face at the opening centre on the
  *     opening's storey) at the lower room's z and with that room's material and level; 'slab' per floor zone and per
  *     block base level whose level has floorThickness > 0 (zone ∩ block inner outline, or the inner outline minus
- *     the 'replace' zones for the base), with the footprints of stairs arriving on that level cut out.
+ *     the 'replace' zones for the base). Stairwells: the footprint of every stair is cut out of all room floors,
+ *     thresholds and slabs whose z lies above the stair's bottom and at most at its top (the level stair leaves a
+ *     notch / hole in the upper corridor); a floor that falls apart keeps its id for the largest piece, the others
+ *     get `/2`, `/3`, …. Where nothing at or below the stair's bottom z covers the footprint, a 'slab' piece
+ *     `${stairId}/stairwell` is added at the bottom z (level = the stair's lower level). 'ceiling' per block with
+ *     `ceilingHeight`: the inner outline at block level + ceilingHeight + 0.05 (top of a 5 cm ceiling board), id
+ *     `${blockId}/ceiling`.
  *  6. Outdoor (`deriveOutdoor`), 7. structure (`deriveStructure`), both with the terrain / underside callbacks.
+ *     Terrain: `groundWorks` = the site's ground works plus one implicit cut per block (`gw-<blockId>`: its outer
+ *     outline, maxZ = lowestFloorZ − 0.1), applied by EVERY terrain query here (blocks' groundZ, deck skirts, steps,
+ *     hot tubs, trees, deck BYA) and by the renderers (`terrainZAt(…, derived.groundWorks)`).
  *  8. Areas (`computeAreas`), foundations (outer outline, top = lowest floor, bottom = groundZ − 0.3), site trees
  *     (terrain baseZ) and water (waterLevel − floorElevation), dimensions, bounds (outer outlines + decks), wall
  *     unions per storey and status, furniture (z = level elevation), `area-limit`.
@@ -37,17 +46,46 @@
  * 1.8 m outside (unless the chain is one piece covering it). Chains run counter-clockwise round the building
  * (S: west→east, E: south→north, …), so the offsets are negative (outside). Text: metres with a comma, one decimal
  * (two when the length is not a whole number of decimetres).
+ *
+ * Robustness: boolean operations that fail on every snap grid (`ClipError`) fall back locally (see polygon.ts,
+ * rooms.ts, roof.ts, walls.ts, areas.ts); each fallback taken becomes one 'generic' warning whose message starts
+ * with GEOMETRY_FALLBACK (rooms whose inner polygon fell back get one warning naming the room). Each pipeline stage
+ * is guarded as a last resort, so a failing operation never throws out of `deriveVariant`.
  */
-import type { DerivedBlock, DerivedDimension, DerivedFloor, DerivedFurniture, DerivedRoom, DerivedVariant, DerivedWall, ModelWarning } from '../model/derived';
-import type { FloorMaterial, Id, Level, Room, RoomType, Site, TerrainAsset, Variant, Vec2 } from '../model/types';
-import { blockPartRegions, computeAreas, splitAreaByParts } from './areas';
+import type {
+  AreaSummary,
+  DerivedBlock,
+  DerivedDimension,
+  DerivedFloor,
+  DerivedFurniture,
+  DerivedRoom,
+  DerivedVariant,
+  DerivedWall,
+  ModelWarning,
+} from '../model/derived';
+import type { FloorMaterial, GroundWork, Id, Level, Room, RoomType, Site, TerrainAsset, Variant, Vec2 } from '../model/types';
+import { blockPartRegions, computeAreas, partitionRough, splitAreaByParts } from './areas';
+import type { PartRegion } from './areas';
 import { deriveOutdoor, deriveStructure } from './outdoor';
-import { area, bbox, differencePolygons, ensureCCW, intersectPolygons, pointInPolygon, unionPolygons } from './polygon';
+import {
+  area,
+  bbox,
+  collectClipFallbacks,
+  differenceMulti,
+  differencePolygons,
+  ensureCCW,
+  intersectPolygons,
+  multiPolygonArea,
+  pointInPolygon,
+  unionPolygons,
+  withClipFallback,
+} from './polygon';
+import type { MultiPoly } from './polygon';
 import { buildRoofsWithWarnings, combinedUndersideAt } from './roof';
-import { detectRooms } from './rooms';
+import { ROOM_FACE_FALLBACK, detectRooms } from './rooms';
 import type { DetectedRoom, WallLine } from './rooms';
 import { terrainZAt } from './terrain';
-import { deriveBlockWarnings, deriveBlocks, deriveWalls } from './walls';
+import { blockGroundZ, deriveBlockWarnings, deriveBlocks, deriveWalls } from './walls';
 
 /** Graph-only lines (floor-zone edges) carry ids with this prefix; they are not derived walls. */
 const ZONE_LINE = 'zone:';
@@ -62,6 +100,16 @@ const TOTAL_GAP = 1.8;
 const MAX_SETBACK = 6.5;
 /** Coordinates closer than this (m) are one dimension breakpoint. */
 const DIM_TOL = 0.001;
+/** The implicit ground work under a block cuts the terrain to this far (m) below the block's lowest floor. */
+const UNDER_FLOOR = 0.1;
+/** Thickness (m) of the derived flat ceiling of a block with `ceilingHeight`. */
+const CEILING_THICKNESS = 0.05;
+/** Heights closer than this (m) count as equal (stair bottom / top against a floor). */
+const Z_EPS = 1e-6;
+/** Stairwell floor pieces and floor pieces cut by stairs smaller than this (m²) are dropped. */
+const MIN_FLOOR_PIECE = 0.01;
+/** Start of the message of every 'generic' warning about a geometry fallback. */
+export const GEOMETRY_FALLBACK = 'geometry fallback';
 
 const FLOOR_BY_TYPE: Record<RoomType, FloorMaterial> = {
   stue: 'wood',
@@ -106,6 +154,18 @@ export function dimensionText(length: number): string {
   const tenths = length * 10;
   const decimals = Math.abs(tenths - Math.round(tenths)) < 0.01 ? 1 : 2;
   return length.toFixed(decimals).replace('.', ',');
+}
+
+/** Existing / new split of a polygon by the parts; on a clipping failure the whole area goes to the part at its label point. */
+function splitSafe(polygon: Vec2[], holes: Vec2[][], parts: PartRegion[], where: string): { existing: number; new: number } {
+  return withClipFallback(
+    where,
+    () => splitAreaByParts(polygon, holes, parts),
+    () => {
+      const rough = partitionRough([[polygon, ...holes]], parts);
+      return { existing: multiPolygonArea(rough.existing), new: multiPolygonArea(rough.new) };
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +260,7 @@ function deriveRooms(variant: Variant, storeys: DerivedVariant['storeys'], block
   const innerParts = blockPartRegions(blocks, 'inner');
   const rooms: DerivedRoom[] = faces.map((f) => {
     const { det } = f;
-    const split = splitAreaByParts(det.innerPolygon, det.holes, innerParts);
+    const split = splitSafe(det.innerPolygon, det.holes, innerParts, 'existing / new split of a room');
     const derived: DerivedRoom = {
       id: f.room?.id ?? det.faceId,
       levelId: f.levelId,
@@ -223,6 +283,12 @@ function deriveRooms(variant: Variant, storeys: DerivedVariant['storeys'], block
     return derived;
   });
 
+  faces.forEach((f, i) => {
+    if (f.det.approximate) {
+      const name = f.room ? `"${f.room.name}"` : rooms[i].id;
+      warnings.push({ kind: 'generic', message: `${GEOMETRY_FALLBACK}: the floor of room ${name} follows the wall axes (polygon clipping failed)` });
+    }
+  });
   for (const r of rooms) {
     if (!r.room) warnings.push({ kind: 'room-unnamed', faceId: r.id, levelId: r.levelId, area: r.area });
     else if (r.room.type !== 'apning' && r.area < MIN_ROOM_AREA) warnings.push({ kind: 'room-small', roomId: r.room.id, area: r.area, min: MIN_ROOM_AREA });
@@ -302,21 +368,71 @@ function thresholdFloors(walls: DerivedWall[], rooms: DerivedRoom[], levels: Map
   return floors;
 }
 
-function stairFootprints(variant: Variant, levelId: Id): Vec2[][] {
-  const out: Vec2[][] = [];
+/** A stair as a vertical cut through the floors: footprint, bottom and top z, bottom level. */
+interface StairCut {
+  id: Id;
+  footprint: Vec2[];
+  bottomLevelId: Id;
+  bottomZ: number;
+  topZ: number;
+  isNew: boolean;
+}
+
+function stairCuts(variant: Variant, levels: Map<Id, Level>): StairCut[] {
+  const out: StairCut[] = [];
   for (const s of variant.structure) {
-    if (s.kind !== 'stair' || s.toLevelId !== levelId) continue;
-    out.push([
-      [s.min[0], s.min[1]],
-      [s.max[0], s.min[1]],
-      [s.max[0], s.max[1]],
-      [s.min[0], s.max[1]],
-    ]);
+    if (s.kind !== 'stair') continue;
+    const x0 = Math.min(s.min[0], s.max[0]);
+    const x1 = Math.max(s.min[0], s.max[0]);
+    const y0 = Math.min(s.min[1], s.max[1]);
+    const y1 = Math.max(s.min[1], s.max[1]);
+    if (!((x1 - x0) * (y1 - y0) > 1e-6)) continue;
+    const fromZ = levels.get(s.fromLevelId)?.elevation ?? 0;
+    const toZ = levels.get(s.toLevelId)?.elevation ?? 0;
+    out.push({
+      id: s.id,
+      footprint: [
+        [x0, y0],
+        [x1, y0],
+        [x1, y1],
+        [x0, y1],
+      ],
+      bottomLevelId: fromZ <= toZ ? s.fromLevelId : s.toLevelId,
+      bottomZ: Math.min(fromZ, toZ),
+      topZ: Math.max(fromZ, toZ),
+      isNew: s.isNew,
+    });
   }
   return out;
 }
 
-function slabFloors(variant: Variant, blocks: DerivedBlock[], levels: Map<Id, Level>): DerivedFloor[] {
+function boxesOverlap(a: { min: Vec2; max: Vec2 }, b: { min: Vec2; max: Vec2 }): boolean {
+  return a.min[0] < b.max[0] && b.min[0] < a.max[0] && a.min[1] < b.max[1] && b.min[1] < a.max[1];
+}
+
+/** Stairs passing through a floor at z (bottom < z ≤ top) whose footprint box overlaps the polygon's box. */
+function cutsThrough(cuts: StairCut[], z: number, polygon: Vec2[]): StairCut[] {
+  const box = bbox(polygon);
+  return cuts.filter((c) => z > c.bottomZ + Z_EPS && z <= c.topZ + Z_EPS && boxesOverlap(box, bbox(c.footprint)));
+}
+
+/** Pieces of a region minus the stair footprints, largest first (the region itself when the clipping fails). */
+function minusStairs(region: MultiPoly, cuts: StairCut[]): MultiPoly {
+  if (cuts.length === 0) return region;
+  const pieces = withClipFallback('stairwell cut-out', () => differenceMulti(region, ...cuts.map((c): MultiPoly => [[c.footprint]])), () => region);
+  return pieces.filter((p) => p.length > 0 && p[0].length >= 3).sort((a, b) => area(b[0]) - area(a[0]));
+}
+
+/** A room floor or threshold with the stairs passing through it cut out (one floor per remaining piece). */
+function cutFloor(floor: DerivedFloor, cuts: StairCut[]): DerivedFloor[] {
+  const through = cutsThrough(cuts, floor.z, floor.polygon);
+  if (through.length === 0) return [floor];
+  return minusStairs([[floor.polygon, ...floor.holes]], through)
+    .filter((p) => multiPolygonArea([p]) >= MIN_FLOOR_PIECE)
+    .map((p, i) => ({ ...floor, id: i === 0 ? floor.id : `${floor.id}/${i + 1}`, polygon: ensureCCW(p[0]), holes: p.slice(1) }));
+}
+
+function slabFloors(blocks: DerivedBlock[], levels: Map<Id, Level>, cuts: StairCut[]): DerivedFloor[] {
   const floors: DerivedFloor[] = [];
   const innerParts = blockPartRegions(blocks, 'inner');
   const push = (baseId: string, levelId: Id, region: Vec2[][][]) => {
@@ -324,12 +440,13 @@ function slabFloors(variant: Variant, blocks: DerivedBlock[], levels: Map<Id, Le
     if (!level || !(level.floorThickness > 0)) return;
     const outers = region.map((p) => p[0]).filter((r): r is Vec2[] => r !== undefined && r.length >= 3);
     if (outers.length === 0) return;
-    const pieces = differencePolygons(outers, stairFootprints(variant, levelId));
+    const through = cuts.filter((c) => level.elevation > c.bottomZ + Z_EPS && level.elevation <= c.topZ + Z_EPS);
+    const pieces = through.length === 0 ? outers.map((o): Vec2[][] => [o]) : minusStairs(outers.map((o): Vec2[][] => [o]), through);
     pieces.forEach((poly, i) => {
       if (poly.length === 0 || area(poly[0]) < 1e-6) return;
       const outer = ensureCCW(poly[0]);
       const holes = poly.slice(1);
-      const split = splitAreaByParts(outer, holes, innerParts);
+      const split = splitSafe(outer, holes, innerParts, 'existing / new split of a floor');
       floors.push({
         id: i === 0 ? `${baseId}/slab` : `${baseId}/slab/${i + 1}`,
         levelId,
@@ -346,16 +463,82 @@ function slabFloors(variant: Variant, blocks: DerivedBlock[], levels: Map<Id, Le
   for (const db of blocks) {
     if (db.inner.length < 3) continue;
     const replaced = db.zones.filter((z) => z.kind === 'replace' && z.polygon.length >= 3).map((z) => z.polygon);
-    push(`${db.block.id}/base`, db.block.levelId, replaced.length > 0 ? differencePolygons([db.inner], replaced) : [[db.inner]]);
+    const base =
+      replaced.length > 0
+        ? withClipFallback('slab of a block', () => differencePolygons([db.inner], replaced), () => [[db.inner]])
+        : [[db.inner]];
+    push(`${db.block.id}/base`, db.block.levelId, base);
     const seen = new Map<Id, number>();
     for (const z of db.zones) {
       if (z.polygon.length < 3) continue;
       const k = (seen.get(z.zoneId) ?? 0) + 1;
       seen.set(z.zoneId, k);
-      push(`${db.block.id}/${z.zoneId}${k > 1 ? `#${k}` : ''}`, z.levelId, intersectPolygons([z.polygon], [db.inner]));
+      const region = withClipFallback('slab of a floor zone', () => intersectPolygons([z.polygon], [db.inner]), () => [[z.polygon]]);
+      push(`${db.block.id}/${z.zoneId}${k > 1 ? `#${k}` : ''}`, z.levelId, region);
     }
   }
   return floors;
+}
+
+/** Floor at the bottom of every stair where nothing at or below that z covers its footprint. */
+function stairwellFloors(cuts: StairCut[], floors: DerivedFloor[], levels: Map<Id, Level>): DerivedFloor[] {
+  const out: DerivedFloor[] = [];
+  for (const c of cuts) {
+    const box = bbox(c.footprint);
+    const below = floors.filter((f) => f.kind !== 'ceiling' && f.z <= c.bottomZ + Z_EPS && f.polygon.length >= 3 && boxesOverlap(box, bbox(f.polygon)));
+    const open = withClipFallback(
+      'stairwell floor',
+      () => (below.length === 0 ? [[c.footprint]] : differenceMulti([[c.footprint]], ...below.map((f): MultiPoly => [[f.polygon, ...f.holes]]))),
+      () => [],
+    );
+    const pieces = open.filter((p) => p.length > 0 && p[0].length >= 3 && multiPolygonArea([p]) >= MIN_FLOOR_PIECE).sort((a, b) => area(b[0]) - area(a[0]));
+    pieces.forEach((p, i) => {
+      out.push({
+        id: i === 0 ? `${c.id}/stairwell` : `${c.id}/stairwell/${i + 1}`,
+        levelId: c.bottomLevelId,
+        polygon: ensureCCW(p[0]),
+        holes: p.slice(1),
+        z: c.bottomZ,
+        thickness: levels.get(c.bottomLevelId)?.floorThickness ?? 0,
+        material: 'wood',
+        isNew: c.isNew,
+        kind: 'slab',
+      });
+    });
+  }
+  return out;
+}
+
+/** Flat ceiling of every block with `ceilingHeight` (top of the ceiling board). */
+function ceilingFloors(blocks: DerivedBlock[], levels: Map<Id, Level>): DerivedFloor[] {
+  const out: DerivedFloor[] = [];
+  for (const db of blocks) {
+    const h = db.block.ceilingHeight;
+    if (h === undefined || !Number.isFinite(h) || db.inner.length < 3) continue;
+    out.push({
+      id: `${db.block.id}/ceiling`,
+      levelId: db.block.levelId,
+      polygon: ensureCCW(db.inner),
+      holes: [],
+      z: (levels.get(db.block.levelId)?.elevation ?? 0) + h + CEILING_THICKNESS,
+      thickness: CEILING_THICKNESS,
+      material: 'wood',
+      isNew: db.block.isNew,
+      kind: 'ceiling',
+    });
+  }
+  return out;
+}
+
+/** Step 5: slabs, room floors, thresholds (stairwells cut out), stairwell floors, block ceilings. */
+function deriveFloors(variant: Variant, blocks: DerivedBlock[], walls: DerivedWall[], rooms: DerivedRoom[], levels: Map<Id, Level>): DerivedFloor[] {
+  const cuts = stairCuts(variant, levels);
+  const floors = [
+    ...slabFloors(blocks, levels, cuts),
+    ...roomFloors(rooms, levels).flatMap((f) => cutFloor(f, cuts)),
+    ...thresholdFloors(walls, rooms, levels).flatMap((f) => cutFloor(f, cuts)),
+  ];
+  return [...floors, ...stairwellFloors(cuts, floors, levels), ...ceilingFloors(blocks, levels)];
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +657,9 @@ function wallUnions(walls: DerivedWall[], storeys: DerivedVariant['storeys']): D
       const fps = walls
         .filter((w) => !w.isDivider && w.status === status && w.footprint.length >= 3 && w.storeyIds.includes(s.id))
         .map((w) => w.footprint);
-      if (fps.length > 0) out.push({ storeyId: s.id, status, polygons: unionPolygons(fps) });
+      if (fps.length === 0) continue;
+      const polygons = withClipFallback('wall outlines', () => unionPolygons(fps), () => fps.map((f) => [ensureCCW(f)]));
+      out.push({ storeyId: s.id, status, polygons });
     }
   }
   return out;
@@ -490,20 +675,41 @@ function boundsOf(polys: Vec2[][]): { min: Vec2; max: Vec2 } {
 // deriveVariant
 // ---------------------------------------------------------------------------
 
-function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
-  const terrainZ = (x: number, y: number) => terrainZAt(terrain, site, x, y);
+/** One implicit cut per block: its outer outline (axis without one), maxZ = lowest floor − 0.1. */
+export function blockGroundWorks(blocks: DerivedBlock[]): GroundWork[] {
+  const out: GroundWork[] = [];
+  for (const db of blocks) {
+    const polygon = db.outer.length >= 3 ? db.outer : db.axis;
+    if (polygon.length < 3) continue;
+    out.push({ id: `gw-${db.block.id}`, polygon: polygon.map((p): Vec2 => [p[0], p[1]]), maxZ: db.lowestFloorZ - UNDER_FLOOR });
+  }
+  return out;
+}
+
+function emptyAreas(): AreaSummary {
+  const zero = { total: 0, existing: 0, new: 0 };
+  return { bya: { ...zero, buildings: 0, decks: 0, perBlock: [] }, bra: { ...zero, perLevel: [] }, axis: { ...zero }, rooms: [] };
+}
+
+function computeParts(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
   const levels = new Map(variant.levels.map((l) => [l.id, l]));
   const storeys = storeysOf(variant.levels);
+  const stage = <T>(name: string, fn: () => T, fallback: () => T): T => withClipFallback(`${name} (stage)`, fn, fallback);
 
-  const blocks = deriveBlocks(variant, site, terrain, { terrainZ });
-  const { roofs, warnings: roofWarnings } = buildRoofsWithWarnings(variant);
+  // Outlines do not depend on the terrain: blocks first, then the implicit cuts under them, then their ground height.
+  const outlines = deriveBlocks(variant, site, terrain, { terrainZ: () => 0 });
+  const implicit = blockGroundWorks(outlines);
+  const terrainZ = (x: number, y: number) => terrainZAt(terrain, site, x, y, implicit);
+  const blocks = outlines.map((db) => ({ ...db, groundZ: blockGroundZ(db, terrainZ) }));
+
+  const { roofs, warnings: roofWarnings } = stage('roofs', () => buildRoofsWithWarnings(variant), () => ({ roofs: [], warnings: [] }));
   const undersideAt = (x: number, y: number) => combinedUndersideAt(roofs, x, y);
-  const { walls, warnings: wallWarnings } = deriveWalls(variant, blocks, roofs, { undersideAt });
-  const { rooms, warnings: roomWarnings } = deriveRooms(variant, storeys, blocks, walls);
+  const { walls, warnings: wallWarnings } = stage('walls', () => deriveWalls(variant, blocks, roofs, { undersideAt }), () => ({ walls: [], warnings: [] }));
+  const { rooms, warnings: roomWarnings } = stage('rooms', () => deriveRooms(variant, storeys, blocks, walls), () => ({ rooms: [], warnings: [] }));
   const outdoor = deriveOutdoor(variant, site, terrain, { terrainZ });
   const structure = deriveStructure(variant, roofs, { undersideAt });
-  const floors = [...slabFloors(variant, blocks, levels), ...roomFloors(rooms, levels), ...thresholdFloors(walls, rooms, levels)];
-  const areas = computeAreas({ variant, blocks, rooms, decks: outdoor.decks, undersideAt, terrainZ });
+  const floors = stage('floors', () => deriveFloors(variant, blocks, walls, rooms, levels), () => []);
+  const areas = stage('areas', () => computeAreas({ variant, blocks, rooms, decks: outdoor.decks, undersideAt, terrainZ, roofs }), emptyAreas);
 
   const furniture: DerivedFurniture[] = variant.furniture.map((f) => ({
     id: f.id,
@@ -515,7 +721,8 @@ function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | nu
     isNew: f.isNew,
   }));
 
-  const warnings: ModelWarning[] = [...deriveBlockWarnings(blocks), ...roofWarnings, ...wallWarnings, ...roomWarnings];
+  const blockWarnings = stage('block checks', () => deriveBlockWarnings(blocks), () => []);
+  const warnings: ModelWarning[] = [...blockWarnings, ...roofWarnings, ...wallWarnings, ...roomWarnings];
   const limit = variant.settings.areaLimit;
   if (limit !== null && areas.bya.total > limit) warnings.push({ kind: 'area-limit', limit, actual: areas.bya.total });
 
@@ -542,11 +749,22 @@ function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | nu
       .map((db) => ({ blockId: db.block.id, polygon: db.outer, topZ: db.lowestFloorZ, bottomZ: db.groundZ - FOUNDATION_DEPTH })),
     dimensions: deriveDimensions(blocks),
     site: derivedSite,
-    groundWorks: site.groundWorks,
+    groundWorks: [...site.groundWorks, ...implicit],
     bounds: boundsOf([...blocks.map((db) => db.outer), ...outdoor.decks.map((d) => d.polygon)]),
     areas,
     warnings,
   };
+}
+
+function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
+  const { result, fallbacks } = collectClipFallbacks(() => computeParts(variant, site, terrain));
+  const seen = new Set<string>();
+  for (const f of fallbacks) {
+    if (f.where === ROOM_FACE_FALLBACK || seen.has(f.where)) continue;
+    seen.add(f.where);
+    result.warnings.push({ kind: 'generic', message: `${GEOMETRY_FALLBACK}: ${f.where} (polygon clipping failed)` });
+  }
+  return result;
 }
 
 /** Key for a null terrain in the identity memo. */

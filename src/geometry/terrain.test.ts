@@ -147,6 +147,16 @@ describe('terrainZAt (relative to the main floor, after ground works)', () => {
     expect(applyGroundWorks(site, 0.5, 10.5, 0.5)).toBe(0.5); // never fills
   });
 
+  it('extra ground works (e.g. the implicit cuts under the blocks) are applied with the site ones', () => {
+    const extra = [{ id: 'gw-blk', polygon: [[0, 10], [2, 10], [2, 14], [0, 14]] as [number, number][], maxZ: 3 }];
+    expect(terrainZAt(terrain, SITE, 1, 12, extra)).toBe(3);
+    expect(terrainZAt(terrain, SITE, 1, 12)).toBeCloseTo(11, 12);
+    expect(terrainZAt(terrain, SITE, -5, 5, extra)).toBeCloseTo(45, 12); // outside the extra cut
+    const site: Site = { ...SITE, groundWorks: [{ id: 's', polygon: extra[0].polygon, maxZ: 1 }] };
+    expect(terrainZAt(terrain, site, 1, 12, extra)).toBe(1); // the lowest cut wins, whichever list it is in
+    expect(applyGroundWorks(SITE, 1, 12, 9, extra)).toBe(3);
+  });
+
   it('the seed: the building plot is cut to −0.45, the bedroom gable is not', () => {
     const project = createForslagD();
     const t = terrainJson as TerrainAsset;

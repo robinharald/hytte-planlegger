@@ -9,6 +9,10 @@
  *  - `terrainZAt` = sample − `site.floorElevation`, then every ground work containing the point (boundary inclusive)
  *    cuts it to at most its `maxZ` (cuts only, never fills; overlapping works → the lowest maxZ). Without terrain
  *    data at the point the height is −0.5 (TERRAIN_FALLBACK_Z) before the cuts.
+ *  - The optional `extra` ground works are applied together with `site.groundWorks`: derive passes the implicit cut
+ *    under every block (`DerivedVariant.groundWorks` holds both lists; passing that whole list is fine too, a cut
+ *    applied twice is the same cut). Renderers must pass `derived.groundWorks` so the ground never shows inside a
+ *    building.
  *
  * Decisions where the architecture is silent:
  *  - A grid whose four surrounding samples are not all finite (missing / NaN values, short `z` array) does not
@@ -16,7 +20,7 @@
  *  - Grids with non-positive or non-finite spacing are ignored. A grid with nx = 1 (or ny = 1) covers only its
  *    single column (row) and is interpolated along the other axis.
  */
-import type { Site, TerrainAsset, TerrainGrid } from '../model/types';
+import type { GroundWork, Site, TerrainAsset, TerrainGrid } from '../model/types';
 import { pointInPolygon } from './polygon';
 
 /** Height (relative to the main floor) used where no terrain grid covers the point. */
@@ -76,18 +80,25 @@ export function sampleTerrainAsl(terrain: TerrainAsset, x: number, y: number): n
   return null;
 }
 
-/** Applies the site's ground works (cuts) at a point to a height relative to the main floor. */
-export function applyGroundWorks(site: Site, x: number, y: number, z: number): number {
+function cut(works: GroundWork[], x: number, y: number, z: number): number {
   let out = z;
-  for (const gw of site.groundWorks) {
+  for (const gw of works) {
     if (gw.maxZ < out && pointInPolygon([x, y], gw.polygon)) out = gw.maxZ;
   }
   return out;
 }
 
-/** Terrain height relative to the main floor after ground works; −0.5 (before cuts) where there is no terrain data. */
-export function terrainZAt(terrain: TerrainAsset | null, site: Site, x: number, y: number): number {
+/** Applies the site's ground works (cuts) and the `extra` ones at a point to a height relative to the main floor. */
+export function applyGroundWorks(site: Site, x: number, y: number, z: number, extra: GroundWork[] = []): number {
+  return cut(extra, x, y, cut(site.groundWorks, x, y, z));
+}
+
+/**
+ * Terrain height relative to the main floor after the site's ground works and the `extra` ones (e.g.
+ * `DerivedVariant.groundWorks`); −0.5 (before cuts) where there is no terrain data.
+ */
+export function terrainZAt(terrain: TerrainAsset | null, site: Site, x: number, y: number, extra: GroundWork[] = []): number {
   const asl = terrain === null ? null : sampleTerrainAsl(terrain, x, y);
   const z = asl === null ? TERRAIN_FALLBACK_Z : asl - site.floorElevation;
-  return applyGroundWorks(site, x, y, z);
+  return applyGroundWorks(site, x, y, z, extra);
 }

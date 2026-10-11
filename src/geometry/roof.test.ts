@@ -404,32 +404,68 @@ describe('buildRoofs (Forslag D)', () => {
   });
 
   it('roofUndersideAt: eave, overhang edge, ridge, correct side of the ridge, null outside', () => {
-    expect(roofUndersideAt(main, 8, 0)).toBeCloseTo(2.22, 9);
-    expect(roofUndersideAt(main, 8, -0.51)).toBeCloseTo(2.22 - 0.51 * TAN28, 9); // ≈ 1.95 (IFC: 1.96)
-    expect(roofUndersideAt(main, 8, 3.1)).toBeCloseTo(2.22 + 3.1 * TAN28, 9);
-    expect(roofUndersideAt(main, 8, 4.65)).toBeCloseTo(2.22 + 1.55 * TAN28, 9);
-    expect(roofUndersideAt(main, 8, 1.55)).toBeCloseTo(2.22 + 1.55 * TAN28, 9);
+    expect(roofUndersideAt(main, 11, 0)).toBeCloseTo(2.22, 9);
+    expect(roofUndersideAt(main, 11, -0.51)).toBeCloseTo(2.22 - 0.51 * TAN28, 9); // ≈ 1.95 (IFC: 1.96)
+    expect(roofUndersideAt(main, 11, 3.1)).toBeCloseTo(2.22 + 3.1 * TAN28, 9);
+    expect(roofUndersideAt(main, 7, 5.5)).toBeNull(); // under the bod wing's extension (it is higher there)
+    expect(roofUndersideAt(main, 11, 4.65)).toBeCloseTo(2.22 + 1.55 * TAN28, 9);
+    expect(roofUndersideAt(main, 11, 1.55)).toBeCloseTo(2.22 + 1.55 * TAN28, 9);
+    expect(roofUndersideAt(main, 8, -0.3)).toBeNull(); // eave overhang inside the glass bump: dropped
     expect(roofUndersideAt(main, 8, -0.6)).toBeNull();
     expect(roofUndersideAt(main, -0.5, 3)).toBeNull();
     expect(roofUndersideAt(main, 17, 6.3)).toBeNull(); // extension clipped to the wing block (y ≤ 6.2), not its roof
-    expect(roofUndersideAt(main, 17, 6.1)).toBeCloseTo(2.22 + (6.2 - 6.1) * TAN28, 9);
+    expect(roofUndersideAt(main, 17, 6.1)).toBeNull(); // the wing's slope is higher there (valley)
+    expect(roofUndersideAt(main, 17, 3.5)).toBeCloseTo(2.22 + (6.2 - 3.5) * TAN28, 9);
     expect(roofUndersideAt(wing, 18.4, 3.1)).toBeCloseTo(3.87, 9);
     expect(roofUndersideAt(glass, 7, 1.9)).toBeCloseTo(2.22 + 2 * TAN28, 9);
     expect(combinedUndersideAt(roofs, 50, 50)).toBeNull();
     expect(combinedUndersideAt([], 8, 3)).toBeNull();
   });
 
-  it('main roof: outline with the extension clipped to the wing block (inside its walls)', () => {
+  it('main roof: outline with the extension clipped to the wing block and cut at the valleys', () => {
     const bb = bbox(main.outline);
     expect(bb.min[0]).toBeCloseTo(-0.35, 9);
     expect(bb.max[0]).toBeCloseTo(18.4, 9);
     expect(bb.min[1]).toBeCloseTo(-0.51, 9);
     expect(bb.max[1]).toBeCloseTo(6.71, 9);
     expect(isCCW(main.outline)).toBe(true);
-    expect(main.outline).toHaveLength(6);
-    expect(area(main.outline)).toBeCloseTo(16.35 * 7.22 + 2.4 * 6.71, 6);
     expect(pointInPolygon([17, 6.55], main.outline)).toBe(false); // under the wing's gable overhang, outside its wall
-    expect(pointInPolygon([17, 6.15], main.outline)).toBe(true);
+    expect(pointInPolygon([17, 6.15], main.outline)).toBe(false); // the wing's slope is higher there
+    expect(pointInPolygon([17.5, 3.1], main.outline)).toBe(true); // near the ridge the main roof is on top
+    expect(pointInPolygon([7, 1], main.outline)).toBe(false); // glass bump extension on top (valley notch)
+    expect(pointInPolygon([7, 5.2], main.outline)).toBe(false); // bod wing extension on top
+    expect(pointInPolygon([7, -0.3], main.outline)).toBe(false); // eave overhang inside the glass bump dropped
+    expect(pointInPolygon([4.7, -0.1], main.outline)).toBe(true); // outside corner next to the glass bump stays
+  });
+
+  it('valleys: each slab only where its roof is the upper envelope (within 1 cm)', () => {
+    // Valley line glass W slope / main S slope (both 28°): y = x − 5; the glass slab ends at its ridge point (7, 2).
+    expect(bbox(glass.outline).max[1]).toBeCloseTo(2.0, 6);
+    expect(pointInPolygon([6, 0.5], glass.outline)).toBe(true);
+    expect(pointInPolygon([5.5, 1], glass.outline)).toBe(false);
+    expect(pointInPolygon([6, 0.5], main.outline)).toBe(false);
+    expect(pointInPolygon([5.5, 1], main.outline)).toBe(true);
+    // The wing's west eave overhang inside the living room (x 15.49 .. 16, y 0 .. 6.2) is gone.
+    expect(pointInPolygon([15.7, 3], wing.outline)).toBe(false);
+    expect(pointInPolygon([15.7, -1], wing.outline)).toBe(true);
+    // Sampled: wherever a slab covers a point, its underside is within 1 cm of the envelope.
+    for (let x = -0.4; x <= 21.4; x += 0.1) {
+      for (let y = -2.6; y <= 12.6; y += 0.1) {
+        const top = combinedUndersideAt(roofs, x, y);
+        for (const r of roofs) {
+          const z = roofUndersideAt(r, x, y);
+          if (z !== null) expect(z, `${r.blockId} at (${x.toFixed(2)}, ${y.toFixed(2)})`).toBeGreaterThanOrEqual(top! - 0.01 - 1e-9);
+        }
+      }
+    }
+  });
+
+  it('valleys keep the envelope: combinedUndersideAt matches the uncut roofs', () => {
+    // Uncut envelope = max over the blocks' own planes (main 28° gable, glass / bod 28° gables, wing 34.5°).
+    expect(combinedUndersideAt(roofs, 7, 1)).toBeCloseTo(2.22 + 2 * TAN28, 9); // glass ridge over the stue
+    expect(combinedUndersideAt(roofs, 5.5, 1)).toBeCloseTo(2.22 + 1 * TAN28, 9); // main slope
+    expect(combinedUndersideAt(roofs, 16, 3.1)).toBeCloseTo(2.22 + 3.1 * TAN28, 9);
+    expect(combinedUndersideAt(roofs, 15.7, 3)).toBeCloseTo(2.22 + 3 * TAN28, 9);
   });
 
   it('main roof: slopes split at x = 12 (existing / new), > 4 points where clipped, on the top surface', () => {
@@ -612,11 +648,22 @@ describe('buildRoof (types and edge cases)', () => {
   });
 
   it('override on an adjacent end: strip clipped to the other block, no barge board there', () => {
-    const big = block('big', [0, 0, 10, 10], gable({ ridgeAxis: 'x' }));
+    // A flat-ish big roof (5°), so the bump's slab stays on top all the way across it.
+    const big = block('big', [0, 0, 10, 10], gable({ ridgeAxis: 'x', pitchDeg: 5 }));
     const bump = block('bump', [3, -3, 7, 0], gable({ ridgeAxis: 'y', extend: { end: 20 } }));
     const r = roofOf(buildRoofs(variantOf([big, bump])), 'bump');
     expect(bbox(r.outline).max[1]).toBeCloseTo(10, 9); // clipped at the big block's north wall line
     expect(trimsOfKind(r, 'barge')).toHaveLength(2); // only the free south end
+  });
+
+  it('override into a steeper roof: the strip ends where the other roof rises above it (valley)', () => {
+    const big = block('big', [0, 0, 10, 10], gable({ ridgeAxis: 'x' }));
+    const bump = block('bump', [3, -3, 7, 0], gable({ ridgeAxis: 'y', extend: { end: 20 } }));
+    const [bigRoof, r] = buildRoofs(variantOf([big, bump]));
+    // Bump ridge 2.22 + 2·tan28 meets the big south slope at y = 2 (+ the 1 cm tolerance band).
+    expect(bbox(r.outline).max[1]).toBeCloseTo(2 + 0.01 / TAN28, 6);
+    expect(pointInPolygon([5, 1], bigRoof.outline)).toBe(false);
+    expect(pointInPolygon([5, 3], bigRoof.outline)).toBe(true);
   });
 
   it('parts: a part inside the block splits the slopes into hole-free pieces without overlap', () => {
@@ -631,6 +678,19 @@ describe('buildRoof (types and edge cases)', () => {
     expect(newArea).toBeCloseTo(2, 6);
     expect(south.filter((s) => !s.isNew).length).toBeGreaterThanOrEqual(2); // cut around the hole
     expect(r.slopes.filter((s) => s.facing === 'N').every((s) => !s.isNew)).toBe(true);
+  });
+
+  it('drops eave overhang strips inside another block, keeps them elsewhere', () => {
+    const left = block('left', [0, 0, 4, 4], gable({ ridgeAxis: 'x' }));
+    const right = block('right', [4, -2, 8, 6], gable({ ridgeAxis: 'y', pitchDeg: 10 }));
+    const [l, r] = buildRoofs(variantOf([left, right]));
+    // The right roof's west eave overhang (x 3.49 .. 4) lies inside the left block for y 0 .. 4.
+    expect(pointInPolygon([3.8, 2], r.outline)).toBe(false);
+    expect(pointInPolygon([3.8, -1], r.outline)).toBe(true);
+    expect(pointInPolygon([3.8, 2], l.outline)).toBe(true);
+    // The left roof never meets the lower right roof: its free gable overhang (x 4 .. 4.35) inside the right block goes.
+    expect(pointInPolygon([4.2, 2], l.outline)).toBe(false);
+    expect(pointInPolygon([4.2, 2], r.outline)).toBe(true);
   });
 
   it('parts: overhangs follow the part they continue; overlapping parts and the remainder never double-cover', () => {

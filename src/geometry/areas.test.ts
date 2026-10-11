@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { DerivedBlock, DerivedDeck, DerivedRoom } from '../model/derived';
+import type { DerivedBlock, DerivedDeck, DerivedRoof, DerivedRoom } from '../model/derived';
 import type { Block, Level, Room, Variant, Vec2 } from '../model/types';
-import { blockPartRegions, computeAreas, levelRegion, partitionByParts, splitAreaByParts } from './areas';
+import { blockPartRegions, computeAreas, levelRegion, measurableRegion, partitionByParts, partitionRough, splitAreaByParts } from './areas';
 import type { AreaInput } from './areas';
 import { area, multiPolygonArea } from './polygon';
 
@@ -161,6 +161,24 @@ function undersideAt(x: number, y: number): number | null {
   return 3.5 - 0.5 * Math.abs(y - 3);
 }
 
+/** The same gable as a DerivedRoof (top surface = underside + 0.3), for the exact measurable area. */
+function gableRoof(): DerivedRoof {
+  const t = 0.3;
+  const top = (x: number, y: number): [number, number, number] => [x, y, (undersideAt(x, y) ?? 0) + t];
+  const n = Math.hypot(0.5, 1);
+  return {
+    blockId: 'blk-a',
+    material: 'turf',
+    thickness: t,
+    slopes: [
+      { polygon: [top(-0.6, -0.5), top(14.6, -0.5), top(14.6, 3), top(-0.6, 3)], normal: [0, -0.5 / n, 1 / n], facing: 'S', isNew: false },
+      { polygon: [top(-0.6, 3), top(14.6, 3), top(14.6, 6.5), top(-0.6, 6.5)], normal: [0, 0.5 / n, 1 / n], facing: 'N', isNew: false },
+    ],
+    trims: [],
+    outline: rect([-0.6, -0.5, 14.6, 6.5]),
+  };
+}
+
 /** Terrain 1.0 m below the floor west of x = −1.5 and east of x = 7, else 0.3 m below. */
 const terrainZ = (x: number): number => (x < -1.5 || x >= 7 ? -1 : -0.3);
 
@@ -271,6 +289,25 @@ describe('computeAreas — BRA', () => {
     expect(low.area).toBe(0);
   });
 
+  it('measures the loft exactly when the roofs are given: the 1.9 m band ± the 0.6 m strip = 5.84 × 1.6', () => {
+    const input = { ...fixture(), roofs: [gableRoof()] };
+    const exact = computeAreas(input).bra;
+    const loft = exact.perLevel.find((l) => l.levelId === 'loft');
+    expect(loft?.area).toBeCloseTo(5.84 * 1.6, 6);
+    expect(exact.perLevel.find((l) => l.levelId === 'main')?.area).toBeCloseTo(10.84 * 5.68 - 1, 9);
+    expect(exact.existing + exact.new).toBeCloseTo(exact.total, 9);
+  });
+
+  it("measurableRegion: the strip follows the roof's 1.9 m line, also across a stairwell in the floor", () => {
+    // The free band y 2.8 .. 3.2 lies over a gap in the floor (y 2.9 .. 3.5); the strip still reaches 2.2 and 3.8.
+    const region = [[rect([0, 0, 6, 2.9])], [rect([0, 3.5, 6, 6])]];
+    const m = measurableRegion(region, 1.5, [gableRoof()]);
+    expect(multiPolygonArea(m)).toBeCloseTo(6 * 0.7 + 6 * 0.3, 6);
+    // Under no roof everything counts; under a roof that is high everywhere too.
+    expect(multiPolygonArea(measurableRegion(region, 1.5, []))).toBeCloseTo(multiPolygonArea(region), 9);
+    expect(multiPolygonArea(measurableRegion(region, -5, [gableRoof()]))).toBeCloseTo(multiPolygonArea(region), 9);
+  });
+
   it('treats points without a roof as full height', () => {
     const input = fixture();
     input.undersideAt = () => null;
@@ -372,5 +409,17 @@ describe('levelRegion', () => {
     expect(multiPolygonArea(levelRegion(LEVELS[1], [blockA, blockB]))).toBeCloseTo(10.84 * 5.68, 9);
     expect(multiPolygonArea(levelRegion(LEVELS[2], [blockA, blockB]))).toBeCloseTo(5.84 * 5.68, 9);
     expect(levelRegion({ ...LEVELS[1], id: 'none' }, [blockA, blockB])).toEqual([]);
+  });
+});
+
+describe('partitionRough (fallback without boolean operations)', () => {
+  it('gives each polygon whole to the part at its label point', () => {
+    const parts = [
+      { polygon: rect([0, 0, 6, 6]), isNew: false },
+      { polygon: rect([6, 0, 10, 6]), isNew: true },
+    ];
+    const split = partitionRough([[rect([1, 1, 3, 3])], [rect([5, 1, 9, 3])], [rect([20, 0, 21, 1])]], parts);
+    expect(multiPolygonArea(split.existing)).toBeCloseTo(4 + 1, 9); // the far piece is in no part: existing
+    expect(multiPolygonArea(split.new)).toBeCloseTo(8, 9);
   });
 });

@@ -394,6 +394,8 @@ export type ModelWarning =
   | { kind: 'door-blocked'; openingId: Id; by: Id }
   | { kind: 'wall-dangling'; wallId: Id }
   | { kind: 'block-overlap'; blockIds: [Id, Id] }
+  /** The block's axis polygon crosses or touches itself (e.g. two vertices swapped). */
+  | { kind: 'block-self-intersecting'; blockId: Id }
   | { kind: 'parts-overlap'; blockId: Id }
   | { kind: 'roof-no-meet'; blockId: Id; end: 'start' | 'end' }
   | { kind: 'area-limit'; limit: number; actual: number }

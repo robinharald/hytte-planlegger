@@ -33,6 +33,9 @@
  *    neighbouring lines, jumps by bisection), collinear points removed (1e-7 m). Where no roof covers the line:
  *    exterior → the block's eaveZ; stored walls → ceiling / fixed height / level + 2.4 m.
  *  - 'auto' walls on a level with a ceiling and 'fixed' walls are min(cap, roof envelope), with exact crossings.
+ *    Block ceilings: an 'auto' wall whose midpoint lies in the axis polygon of a block with `ceilingHeight` is also
+ *    capped at that block's level elevation + ceilingHeight (the lower of the two caps; ignored when the ceiling is
+ *    not above the wall's base).
  *  - levelIds: the wall's own level plus every level with baseZ < elevation + 1.0 < topZ that EXISTS where the wall
  *    stands (a block containing an end or the midpoint has it as base level or has a zone of it containing that
  *    point) — otherwise main-level walls of the bod wing would join the loft graph and dangle there. Dividers: only
@@ -51,7 +54,13 @@
  *  - opening-overlap: overlap along the host AND in height (> 1 mm), so a loft window above a lower window is fine.
  *  - opening-above-roof: headZ > (lowest point of topProfile over the opening span) − 0.05; skipped for fullHeight.
  *  - Swing: hinge on the face of the side the leaf opens into, at the jamb named by `hinge`; closed = the other
- *    jamb on that face; open = hinge + width × that side's normal; sweep from the turn closed → open.
+ *    jamb on that face; open = hinge + width × that side's normal; sweep from the turn closed → open. Double doors
+ *    (`leaves === 2`): `swing` is the half-width leaf at the `hinge` jamb, `swing2` the half-width leaf at the other
+ *    jamb; both close at the centre.
+ *  - Patches of removed openings are rectangles (along the piece × height) minus the rectangles of the non-removed
+ *    openings of the same piece (`patchMinusOpenings`), so new doors / windows are never marked as infill.
+ *  - Boolean operations fall back locally on `ClipError` (parts / zones unclipped, no implicit part, overlap checks
+ *    skipped). `deriveBlockWarnings` also reports `block-self-intersecting`.
  *  - Hints: glassPlane = mid-thickness ((faceLeft − faceRight) / 2); panes = mullions ?? [1, 1]; leaf colour
  *    default door → white, glazed types → glass, opening → white (leaf 'none').
  *  - DerivedBlock eaveZ / ridgeZ / pitchDeg come from roof.ts `roofParams` (one source of truth).
@@ -68,12 +77,14 @@ import {
   differencePolygons,
   distancePointSegment,
   intersectPolygons,
+  isSelfIntersecting,
   lineIntersection,
   offsetPolygonPerEdge,
   pointInPolygon,
   segmentIntersection,
   signedArea,
   simplifyCollinear,
+  withClipFallback,
 } from './polygon';
 import { combinedUndersideAt, roofParams } from './roof';
 import { terrainZAt } from './terrain';
@@ -100,6 +111,8 @@ const ON_LINE = 1e-4;
 const MIN_PIECE = 1e-4;
 const MIN_AREA = 1e-6;
 const DEFAULT_WALL_HEIGHT = 2.4;
+/** A block ceiling must be at least this (m) above a wall's base to cap it. */
+const LEVEL_EPS = 0.01;
 /** levelIds rule: the wall's z range must cover level.elevation + this. */
 const LEVEL_PROBE = 1.0;
 const FRAME_DEPTH = 0.1;
@@ -372,11 +385,13 @@ function outlinesOf(poly: Vec2[], segs: BoundarySeg[]): { outer: Vec2[]; inner: 
   return { outer: offsetOutline(r.pts, r.outer), inner: offsetOutline(r.pts, r.inner) };
 }
 
-/** Outer rings of `poly` ∩ `axis` with a non-trivial area. */
+/** Outer rings of `poly` ∩ `axis` with a non-trivial area (`poly` unclipped when the clipping fails). */
 function clipRings(poly: Vec2[], axis: Vec2[]): Vec2[][] {
-  return intersectPolygons([poly], [axis])
-    .map((p) => p[0])
-    .filter((r) => r !== undefined && r.length >= 3 && area(r) > MIN_AREA);
+  return withClipFallback(
+    'clip a part or floor zone to its block',
+    () => intersectPolygons([poly], [axis]).map((p) => p[0]),
+    () => [poly],
+  ).filter((r) => r !== undefined && r.length >= 3 && area(r) > MIN_AREA);
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +422,11 @@ function minTerrainUnder(poly: Vec2[], terrainZ: TerrainZFn): number {
     return terrainZ(c[0], c[1]);
   }
   return best;
+}
+
+/** Minimum terrain height under a derived block's outer outline (axis when there is none), as `DerivedBlock.groundZ`. */
+export function blockGroundZ(db: DerivedBlock, terrainZ: TerrainZFn): number {
+  return minTerrainUnder(db.outer.length >= 3 ? db.outer : db.axis, terrainZ);
 }
 
 /** eaveZ / ridgeZ / pitchDeg from roof.ts (a missing level counts as elevation 0). */
@@ -446,9 +466,11 @@ function deriveBlock(block: Block, junctions: EdgeJunction[][], levels: Levels, 
       ? axis.length >= 3 && area(axis) > MIN_AREA
         ? [axis.map(copy)]
         : []
-      : differencePolygons([axis], block.parts.map((p) => p.polygon))
-          .map((p) => p[0])
-          .filter((r) => r !== undefined && r.length >= 3 && area(r) > MIN_AREA);
+      : withClipFallback(
+          'implicit part of a block',
+          () => differencePolygons([axis], block.parts.map((p) => p.polygon)).map((p) => p[0]),
+          () => [],
+        ).filter((r) => r !== undefined && r.length >= 3 && area(r) > MIN_AREA);
   for (const ring of remainder) {
     const part = { id: `${block.id}-implicit`, name: implicitPartName(block), polygon: ring, isNew: block.isNew };
     parts.push({ part, ...outlinesOf(ring, segs), isImplicit: true });
@@ -460,7 +482,14 @@ function deriveBlock(block: Block, junctions: EdgeJunction[][], levels: Levels, 
   }
 
   const replace = zones.filter((z) => z.kind === 'replace');
-  const baseLeft = replace.length === 0 ? area(axis) : differencePolygons([axis], replace.map((z) => z.polygon)).reduce((s, p) => s + area(p[0] ?? []), 0);
+  const baseLeft =
+    replace.length === 0
+      ? area(axis)
+      : withClipFallback(
+          'base floor of a block',
+          () => differencePolygons([axis], replace.map((z) => z.polygon)).reduce((s, p) => s + area(p[0] ?? []), 0),
+          () => area(axis) - replace.reduce((s, z) => s + area(z.polygon), 0),
+        );
   const floors = replace.map((z) => levels.elevation(z.levelId));
   if (baseLeft > MIN_AREA || floors.length === 0) floors.push(elevation);
 
@@ -496,13 +525,21 @@ export function deriveBlocks(
   return variant.blocks.map((b) => deriveBlock(b, junctions.get(b.id) ?? [], levels, terrainZ));
 }
 
-/** `block-overlap` (blocks sharing area > 0.01 m²) and `parts-overlap` (explicit parts of a block overlapping). */
+/**
+ * `block-self-intersecting` (axis polygon whose boundary crosses or touches itself), `block-overlap` (blocks sharing
+ * area > 0.01 m²) and `parts-overlap` (explicit parts of a block overlapping). A pair whose overlap cannot be
+ * computed (`ClipError`) is skipped.
+ */
 export function deriveBlockWarnings(blocks: DerivedBlock[]): ModelWarning[] {
   const warnings: ModelWarning[] = [];
+  for (const db of blocks) {
+    if (db.axis.length >= 3 && isSelfIntersecting(db.axis)) warnings.push({ kind: 'block-self-intersecting', blockId: db.block.id });
+  }
+  const sharedArea = (a: Vec2[][], b: Vec2[][]): number =>
+    withClipFallback('overlap check', () => intersectPolygons(a, b).reduce((s, p) => s + area(p[0] ?? []), 0), () => 0);
   for (let i = 0; i < blocks.length; i++) {
     for (let j = i + 1; j < blocks.length; j++) {
-      const shared = intersectPolygons([blocks[i].axis], [blocks[j].axis]).reduce((s, p) => s + area(p[0] ?? []), 0);
-      if (shared > 0.01) warnings.push({ kind: 'block-overlap', blockIds: [blocks[i].block.id, blocks[j].block.id] });
+      if (sharedArea([blocks[i].axis], [blocks[j].axis]) > 0.01) warnings.push({ kind: 'block-overlap', blockIds: [blocks[i].block.id, blocks[j].block.id] });
     }
   }
   for (const db of blocks) {
@@ -510,9 +547,8 @@ export function deriveBlockWarnings(blocks: DerivedBlock[]): ModelWarning[] {
     let overlap = false;
     for (let i = 0; i < ps.length && !overlap; i++) {
       for (let j = i + 1; j < ps.length && !overlap; j++) {
-        const shared = intersectPolygons([ps[i].polygon], [ps[j].polygon]);
-        const inBlock = intersectPolygons(shared.map((p) => p[0]), [db.axis]);
-        if (inBlock.reduce((s, p) => s + area(p[0] ?? []), 0) > 0.01) overlap = true;
+        const shared = withClipFallback('overlap check', () => intersectPolygons([ps[i].polygon], [ps[j].polygon]), () => []);
+        if (shared.length > 0 && sharedArea(shared.map((p) => p[0]), [db.axis]) > 0.01) overlap = true;
       }
     }
     if (overlap) warnings.push({ kind: 'parts-overlap', blockId: db.block.id });
@@ -1039,18 +1075,35 @@ function exteriorWalls(bl: BlockLayout, ends: FreeEnd[], ctx: Ctx, usedIds: Set<
 // Stored walls
 // ---------------------------------------------------------------------------
 
+const mid = (a: Vec2, b: Vec2): Vec2 => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+/**
+ * Lowest flat block ceiling (absolute z: block level elevation + `Block.ceilingHeight`) of the blocks whose axis
+ * polygon contains p, ignoring ceilings not above `above` (a wall standing higher than the ceiling); null when none.
+ */
+function blockCeilingAt(ctx: Ctx, p: Vec2, above: number): number | null {
+  let best: number | null = null;
+  for (const db of ctx.blocks) {
+    const h = db.block.ceilingHeight;
+    if (h === undefined || !Number.isFinite(h) || db.axis.length < 3 || !pointInPolygon(p, db.axis)) continue;
+    const z = ctx.levels.elevation(db.block.levelId) + h;
+    if (z > above + LEVEL_EPS && (best === null || z < best)) best = z;
+  }
+  return best;
+}
+
 function storedTopProfile(w: Wall, ctx: Ctx): Profile {
   const elevation = ctx.levels.elevation(w.levelId);
-  const ceiling = ctx.levels.ceiling(w.levelId);
   let cap: number | null = null;
   if (w.heightMode === 'fixed') cap = elevation + (w.height ?? DEFAULT_WALL_HEIGHT);
-  else if (w.heightMode === 'auto' && ceiling !== null) cap = ceiling;
+  else if (w.heightMode === 'auto') {
+    const ceilings = [ctx.levels.ceiling(w.levelId), blockCeilingAt(ctx, mid(w.a, w.b), elevation)].filter((z): z is number => z !== null);
+    if (ceilings.length > 0) cap = Math.min(...ceilings);
+  }
   const fallback = cap ?? elevation + DEFAULT_WALL_HEIGHT;
   const envelope = envelopeProfile(w.a, w.b, ctx.undersideAt, fallback, ctx.events);
   return cap === null ? envelope : capProfile(envelope, cap);
 }
-
-const mid = (a: Vec2, b: Vec2): Vec2 => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 
 /** A level exists at p when a block containing p has it as its base level or has a zone of it containing p. */
 function levelExistsAt(blocks: DerivedBlock[], levelId: Id, p: Vec2): boolean {
@@ -1130,22 +1183,33 @@ export function openingHints(o: Opening): Hints {
 
 const SWINGING = new Set<Opening['type']>(['door', 'glassDoor', 'saunaDoor']);
 
-/** Door swing arc on the wall's reference line (see the header for the convention). */
-function swingOf(o: Opening, wall: DerivedWall, offset: number): DerivedOpening['swing'] {
+type Swing = NonNullable<DerivedOpening['swing']>;
+
+/**
+ * Door swing arcs on the wall's reference line (see the header for the convention). One leaf: hinged at the jamb
+ * named by `hinge`, as wide as the opening. Two leaves (`leaves === 2`): `first` is the half-width leaf hinged at
+ * that jamb, `second` the half-width leaf hinged at the other jamb; both close at the centre and open to the same side.
+ */
+function swingsOf(o: Opening, wall: DerivedWall, offset: number): { first: Swing; second?: Swing } | undefined {
   if (!o.swing || !SWINGING.has(o.type)) return undefined;
   const u = unit(sub(wall.b, wall.a));
   const nL = leftNormal(u);
   const intoLeft = o.swing.side === 'left';
   const face = intoLeft ? wall.faceLeft : -wall.faceRight;
   const sideN = intoLeft ? nL : scale(nL, -1);
+  const onFace = (s: number): Vec2 => along(along(wall.a, u, s), nL, face);
+  const leaf = (hingeS: number, freeS: number): Swing => {
+    const hinge = onFace(hingeS);
+    const closed = onFace(freeS);
+    const open = along(hinge, sideN, Math.abs(freeS - hingeS));
+    const sweep: 1 | -1 = cross(sub(closed, hinge), sub(open, hinge)) >= 0 ? 1 : -1;
+    return { hinge, closed, open, sweep };
+  };
   const jStart = offset - o.width / 2;
   const jEnd = offset + o.width / 2;
-  const [hingeS, freeS] = o.swing.hinge === 'start' ? [jStart, jEnd] : [jEnd, jStart];
-  const hinge = along(along(wall.a, u, hingeS), nL, face);
-  const closed = along(along(wall.a, u, freeS), nL, face);
-  const open = along(hinge, sideN, o.width);
-  const sweep: 1 | -1 = cross(sub(closed, hinge), sub(open, hinge)) >= 0 ? 1 : -1;
-  return { hinge, closed, open, sweep };
+  const [hingeS, otherS] = o.swing.hinge === 'start' ? [jStart, jEnd] : [jEnd, jStart];
+  if (o.leaves !== 2) return { first: leaf(hingeS, otherS) };
+  return { first: leaf(hingeS, offset), second: leaf(otherS, offset) };
 }
 
 function buildOpening(o: Opening, wall: DerivedWall, offset: number, levelId: Id, outward: Vec2 | undefined, levels: Levels): DerivedOpening {
@@ -1173,8 +1237,11 @@ function buildOpening(o: Opening, wall: DerivedWall, offset: number, levelId: Id
     ...openingHints(o),
     glassPlane: (wall.faceLeft - wall.faceRight) / 2,
   };
-  const swing = swingOf(o, wall, offset);
-  if (swing) d.swing = swing;
+  const swings = swingsOf(o, wall, offset);
+  if (swings) {
+    d.swing = swings.first;
+    if (swings.second) d.swing2 = swings.second;
+  }
   if (outward) d.outward = outward;
   return d;
 }
@@ -1256,9 +1323,39 @@ function overlapWarnings(spans: Map<string, Span[]>): ModelWarning[] {
   return warnings;
 }
 
+type Patch = DerivedWall['patches'][number];
+
+/**
+ * A patch rectangle (along the wall x height) minus the rectangles of openings, as a list of rectangles; pieces
+ * narrower or lower than 1 mm are dropped.
+ */
+export function patchMinusOpenings(patch: Patch, openings: { offset: number; width: number; sillZ: number; headZ: number }[]): Patch[] {
+  let rects = [{ s0: patch.offset - patch.width / 2, s1: patch.offset + patch.width / 2, z0: patch.sillZ, z1: patch.headZ }];
+  for (const o of openings) {
+    const o0 = o.offset - o.width / 2;
+    const o1 = o.offset + o.width / 2;
+    const next: typeof rects = [];
+    for (const r of rects) {
+      if (o1 <= r.s0 + TOUCH || o0 >= r.s1 - TOUCH || o.headZ <= r.z0 + TOUCH || o.sillZ >= r.z1 - TOUCH) {
+        next.push(r);
+        continue;
+      }
+      if (o0 > r.s0) next.push({ ...r, s1: o0 });
+      if (o1 < r.s1) next.push({ ...r, s0: o1 });
+      const s0 = Math.max(r.s0, o0);
+      const s1 = Math.min(r.s1, o1);
+      if (o.sillZ > r.z0) next.push({ s0, s1, z0: r.z0, z1: o.sillZ });
+      if (o.headZ < r.z1) next.push({ s0, s1, z0: o.headZ, z1: r.z1 });
+    }
+    rects = next.filter((r) => r.s1 - r.s0 > TOUCH && r.z1 - r.z0 > TOUCH);
+  }
+  return rects.map((r) => ({ offset: (r.s0 + r.s1) / 2, width: r.s1 - r.s0, sillZ: r.z0, headZ: r.z1 }));
+}
+
 function attachOpenings(variant: Variant, lookups: HostLookup[], levels: Levels): ModelWarning[] {
   const warnings: ModelWarning[] = [];
   const spans = new Map<string, Span[]>();
+  const patched = new Set<DerivedWall>();
   for (const o of variant.openings) {
     const removed = o.status === 'removed';
     const host = lookups.map((f) => f(o)).find((h) => h !== null);
@@ -1279,6 +1376,7 @@ function attachOpenings(variant: Variant, lookups: HostLookup[], levels: Levels)
     placed.wall.openings.push(d);
     if (removed) {
       placed.wall.patches.push({ offset: d.offset, width: d.width, sillZ: d.sillZ, headZ: d.headZ });
+      patched.add(placed.wall);
       continue;
     }
     const key = hostKey(o);
@@ -1290,6 +1388,11 @@ function attachOpenings(variant: Variant, lookups: HostLookup[], levels: Levels)
       const roofZ = profileMin(placed.wall.topProfile, Math.min(t0, t1), Math.max(t0, t1));
       if (d.headZ > roofZ - ABOVE_ROOF_MARGIN) warnings.push({ kind: 'opening-above-roof', openingId: o.id, headZ: d.headZ, roofZ });
     }
+  }
+  // Infill patches never cover the openings that stay or are new in the same piece.
+  for (const wall of patched) {
+    const kept = wall.openings.filter((o) => o.status !== 'removed');
+    wall.patches = wall.patches.flatMap((p) => patchMinusOpenings(p, kept));
   }
   return [...warnings, ...overlapWarnings(spans)];
 }

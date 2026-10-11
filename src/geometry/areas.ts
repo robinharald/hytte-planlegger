@@ -28,22 +28,40 @@
  *    gross = area(region).
  *  - measurable = region minus the polygons (with holes) of rooms of type 'apning' on this level, then:
  *     · level with ceilingHeight: all of it when ceilingHeight ≥ 1.9, else nothing;
- *     · level without ceiling: 0.25 m grid (as for decks). The rule "free height ≥ 1.9" — undersideAt(x, y) −
- *       elevation ≥ 1.9, or no roof at all (null) — is sampled at every cell centre. A cell counts when a
- *       satisfied sample lies within 0.6 m of the cell (distance from the sample to the cell square ≤ 0.6, i.e. the
- *       5 × 5 cells around it); it contributes the exact area of the region inside it. The strip is thereby
- *       resolved to the grid: it reaches 0.375–0.625 m (0.5 m on average) beyond the 1.9 m line.
+ *     · level without ceiling, EXACT when `roofs` are given (derive passes them): the free region is, per planar
+ *       roof slope, the part of the slope beyond its 1.9 m line (a half-plane bounded by a line parallel to the
+ *       ridge), taken inside and outside the floor region alike, plus the floor points under no roof. It is grown
+ *       by the 0.6 m strip (Minkowski sum with a 64-gon disc: edge rectangles + vertex discs, unioned) and
+ *       intersected with the region, so the strip also reaches the floor on the far side of a stairwell.
+ *     · without `roofs`, or when a boolean operation fails: 0.25 m grid (as for decks). The rule "free height ≥ 1.9"
+ *       — undersideAt(x, y) − elevation ≥ 1.9, or no roof at all (null) — is sampled at every cell centre. A cell
+ *       counts when a satisfied sample lies within 0.6 m of the cell (distance from the sample to the cell square
+ *       ≤ 0.6, i.e. the 5 × 5 cells around it); it contributes the exact area of the region inside it. The strip is
+ *       thereby resolved to the grid: it reaches 0.375–0.625 m (0.5 m on average) beyond the 1.9 m line.
  *    area = measurable existing + measurable new, from the region partitioned by the parts' `inner` polygons.
  *  - bra.total / existing / new = sums over levels (so the loft counts only its measurable part).
  * Axis (aksemål): union of the axis polygons; existing/new by the parts' polygons clipped to their block's axis.
  * Rooms: one row per derived room (room records and unnamed faces; name '' when there is no record — the UI shows
  * its own "Uten navn"), areas as derived.
+ * Robustness: every boolean operation has a fallback (`withClipFallback`, reported to derive's warning list):
+ * unions → the pieces side by side, existing/new partitions → each piece whole to the part at its label point,
+ * clipped regions → unclipped, exact BRA → grid.
  */
-import polygonClipping from 'polygon-clipping';
-import type { MultiPolygon as ClipMultiPolygon } from 'polygon-clipping';
-import type { AreaSplit, AreaSummary, DerivedBlock, DerivedDeck, DerivedRoom } from '../model/derived';
+import type { AreaSplit, AreaSummary, DerivedBlock, DerivedDeck, DerivedRoof, DerivedRoom } from '../model/derived';
 import type { Level, Variant, Vec2 } from '../model/types';
-import { EPS, area, bbox, distancePointSegment, labelPoint, multiPolygonArea, pointInPolygon, signedArea } from './polygon';
+import {
+  area,
+  bbox,
+  differenceMulti,
+  distancePointSegment,
+  intersectMulti,
+  labelPoint,
+  multiPolygonArea,
+  pointInPolygon,
+  signedArea,
+  unionMulti,
+  withClipFallback,
+} from './polygon';
 
 export interface AreaInput {
   variant: Variant;
@@ -54,6 +72,8 @@ export interface AreaInput {
   undersideAt: (x: number, y: number) => number | null;
   /** Terrain height relative to the main floor: `terrainZAt(terrain, site, x, y)`. */
   terrainZ: (x: number, y: number) => number;
+  /** The derived roofs (the source of `undersideAt`): when given, the measurable BRA is computed exactly. */
+  roofs?: DerivedRoof[];
 }
 
 /** A simple polygon flagged existing / new, used by `partitionByParts`. */
@@ -70,58 +90,23 @@ const STRIP = 0.6;
 const MIN_FREE_HEIGHT = 1.9;
 const DECK_MIN_HEIGHT = 0.5;
 const TOL = 1e-9;
+/** Segments of the disc used for the 0.6 m strip (64-gon: at most 0.7 mm short of the true circle). */
+const DISC_SEGMENTS = 64;
 
 // ---------------------------------------------------------------------------
-// MultiPolygon boolean operations with holes (polygon.ts only takes lists of simple polygons)
+// MultiPolygon boolean operations (polygon.ts wrappers: snapped input, ClipError on failure)
 // ---------------------------------------------------------------------------
-
-function openRing(ring: Vec2[]): Vec2[] {
-  const out: Vec2[] = [];
-  for (const p of ring) {
-    const last = out[out.length - 1];
-    if (last === undefined || Math.hypot(last[0] - p[0], last[1] - p[1]) > EPS) out.push([p[0], p[1]]);
-  }
-  while (out.length > 1 && Math.hypot(out[0][0] - out[out.length - 1][0], out[0][1] - out[out.length - 1][1]) <= EPS) {
-    out.pop();
-  }
-  return out;
-}
-
-function toClip(mp: MP): ClipMultiPolygon {
-  const out: ClipMultiPolygon = [];
-  for (const poly of mp) {
-    const rings = poly.map(openRing);
-    if (rings.length === 0 || rings[0].length < 3) continue;
-    out.push([rings[0], ...rings.slice(1).filter((r) => r.length >= 3)]);
-  }
-  return out;
-}
-
-function fromClip(mp: ClipMultiPolygon): MP {
-  return mp.map((poly) => poly.map((ring) => openRing(ring.map((p): Vec2 => [p[0], p[1]]))));
-}
 
 function mpUnion(a: MP, b: MP = []): MP {
-  const ga = toClip(a);
-  const gb = toClip(b);
-  if (ga.length === 0 && gb.length === 0) return [];
-  if (gb.length === 0) return fromClip(polygonClipping.union(ga));
-  if (ga.length === 0) return fromClip(polygonClipping.union(gb));
-  return fromClip(polygonClipping.union(ga, gb));
+  return unionMulti(a, b);
 }
 
 function mpIntersect(a: MP, b: MP): MP {
-  const ga = toClip(a);
-  const gb = toClip(b);
-  if (ga.length === 0 || gb.length === 0) return [];
-  return fromClip(polygonClipping.intersection(ga, gb));
+  return intersectMulti(a, b);
 }
 
 function mpDifference(a: MP, b: MP): MP {
-  const ga = toClip(a);
-  if (ga.length === 0) return [];
-  const gb = toClip(b);
-  return fromClip(gb.length === 0 ? polygonClipping.union(ga) : polygonClipping.difference(ga, gb));
+  return differenceMulti(a, b);
 }
 
 function boxesOverlap(p: { min: Vec2; max: Vec2 }, q: { min: Vec2; max: Vec2 }): boolean {
@@ -180,6 +165,24 @@ export function partitionByParts(region: MP, parts: PartRegion[]): { existing: M
   return { existing, new: added };
 }
 
+/** Fallback of `partitionByParts` without boolean operations: each polygon whole to the part at its label point. */
+export function partitionRough(region: MP, parts: PartRegion[]): { existing: MP; new: MP } {
+  const existing: MP = [];
+  const added: MP = [];
+  for (const poly of region) {
+    if (poly.length === 0 || poly[0].length < 3) continue;
+    const p = labelPoint(poly[0], poly.slice(1));
+    const part = parts.find((q) => q.polygon.length >= 3 && pointInPolygon(p, q.polygon));
+    (part?.isNew ? added : existing).push(poly);
+  }
+  return { existing, new: added };
+}
+
+/** `partitionByParts`, or `partitionRough` when a boolean operation fails (reported as `where`). */
+function partitionSafe(where: string, region: MP, parts: PartRegion[]): { existing: MP; new: MP } {
+  return withClipFallback(where, () => partitionByParts(region, parts), () => partitionRough(region, parts));
+}
+
 /**
  * Part polygons of all blocks at one outline level, in partition order (see header): derived parts first, then
  * each block's whole outline as a fallback. 'axis' clips the parts' own polygons to their block's axis polygon.
@@ -189,7 +192,8 @@ export function blockPartRegions(blocks: DerivedBlock[], outline: 'axis' | 'oute
   for (const b of blocks) {
     for (const p of b.parts) {
       if (outline === 'axis') {
-        for (const piece of mpIntersect([[p.part.polygon]], [[b.axis]])) parts.push({ polygon: piece[0], isNew: p.part.isNew });
+        const pieces = withClipFallback('axis area: parts', () => mpIntersect([[p.part.polygon]], [[b.axis]]), () => [[p.part.polygon]]);
+        for (const piece of pieces) parts.push({ polygon: piece[0], isNew: p.part.isNew });
       } else {
         parts.push({ polygon: p[outline], isNew: p.part.isNew });
       }
@@ -320,8 +324,9 @@ function deckArea(decks: DerivedDeck[], buildings: MP, terrainZ: AreaInput['terr
   let claimed = buildings;
   for (const deck of decks) {
     const shape: MP = [[deck.polygon]];
-    const piece = mpDifference(shape, claimed);
-    claimed = mpUnion(claimed, shape);
+    const before = claimed;
+    const piece = withClipFallback('BYA: deck minus buildings', () => mpDifference(shape, before), () => shape);
+    claimed = withClipFallback('BYA: deck union', () => mpUnion(before, shape), () => [...before, ...shape]);
     if (piece.length === 0) continue;
     const high = sampleCells(mpBox(piece), 0, (x, y) => deck.topZ - terrainZ(x, y) > DECK_MIN_HEIGHT);
     const a = areaInCells(piece, (i, j) => isOn(high, i, j));
@@ -333,9 +338,10 @@ function deckArea(decks: DerivedDeck[], buildings: MP, terrainZ: AreaInput['terr
 
 function computeBya(input: AreaInput): AreaSummary['bya'] {
   const { blocks } = input;
-  const union = mpUnion(blocks.map((b) => [b.outer]));
+  const outers: MP = blocks.filter((b) => b.outer.length >= 3).map((b) => [b.outer]);
+  const union = withClipFallback('BYA: union of the buildings', () => mpUnion(outers), () => outers);
   const buildings = multiPolygonArea(union);
-  const split = partitionByParts(union, blockPartRegions(blocks, 'outer'));
+  const split = partitionSafe('BYA: existing / new', union, blockPartRegions(blocks, 'outer'));
   const decks = deckArea(input.decks, union, input.terrainZ);
   const perBlock = blocks.map((b) => ({
     blockId: b.block.id,
@@ -362,27 +368,153 @@ function computeBya(input: AreaInput): AreaSummary['bya'] {
 export function levelRegion(level: Level, blocks: DerivedBlock[]): MP {
   const pieces: MP = [];
   for (const b of blocks) {
+    if (b.inner.length < 3) continue;
     if (b.block.levelId === level.id) {
       const replaced: MP = b.zones.filter((z) => z.kind === 'replace').map((z) => [z.polygon]);
-      pieces.push(...mpDifference([[b.inner]], replaced));
+      pieces.push(...withClipFallback('BRA: base floor region', () => mpDifference([[b.inner]], replaced), () => [[b.inner]]));
     }
     for (const z of b.zones) {
-      if (z.levelId === level.id) pieces.push(...mpIntersect([[z.polygon]], [[b.inner]]));
+      if (z.levelId === level.id) pieces.push(...withClipFallback('BRA: zone floor region', () => mpIntersect([[z.polygon]], [[b.inner]]), () => [[z.polygon]]));
     }
   }
-  return mpUnion(pieces);
+  return withClipFallback('BRA: floor region', () => mpUnion(pieces), () => pieces);
+}
+
+// ---------------------------------------------------------------------------
+// Exact measurable region (free height ≥ 1.9 m + 0.6 m strip)
+// ---------------------------------------------------------------------------
+
+/** Plan ring and underside plane z = a·x + b·y + c of one roof slope piece. */
+interface SlopePlane {
+  ring: Vec2[];
+  a: number;
+  b: number;
+  c: number;
+}
+
+function slopePlanes(roofs: DerivedRoof[]): SlopePlane[] {
+  const out: SlopePlane[] = [];
+  for (const roof of roofs) {
+    for (const s of roof.slopes) {
+      const p0 = s.polygon[0];
+      const [nx, ny, nz] = s.normal;
+      if (p0 === undefined || s.polygon.length < 3 || !(nz > 1e-9)) continue;
+      const a = -nx / nz;
+      const b = -ny / nz;
+      out.push({ ring: s.polygon.map((p): Vec2 => [p[0], p[1]]), a, b, c: p0[2] - roof.thickness - a * p0[0] - b * p0[1] });
+    }
+  }
+  return out;
+}
+
+/** Convex ring ∩ { a·x + b·y + c ≥ h } (Sutherland–Hodgman against one line); [] when empty. */
+function clipConvexAbove(ring: Vec2[], sp: SlopePlane, h: number): Vec2[] {
+  const f = (p: Vec2): number => sp.a * p[0] + sp.b * p[1] + sp.c - h;
+  const out: Vec2[] = [];
+  for (let k = 0; k < ring.length; k++) {
+    const cur = ring[k];
+    const prev = ring[(k + ring.length - 1) % ring.length];
+    const fc = f(cur);
+    const fp = f(prev);
+    if (fc >= 0 !== fp >= 0) {
+      const t = fp / (fp - fc);
+      out.push([prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t]);
+    }
+    if (fc >= 0) out.push(cur);
+  }
+  return out.length >= 3 && area(out) > TOL ? out : [];
+}
+
+/** The polygon grown by `r` (Minkowski sum with a regular 64-gon of radius r). */
+function grow(mp: MP, r: number): MP {
+  const shapes: MP = [...mp];
+  const disc = (c: Vec2): Vec2[] =>
+    Array.from({ length: DISC_SEGMENTS }, (_, k): Vec2 => {
+      const t = (2 * Math.PI * k) / DISC_SEGMENTS;
+      return [c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)];
+    });
+  for (const poly of mp) {
+    for (const ring of poly) {
+      for (let i = 0; i < ring.length; i++) {
+        const p = ring[i];
+        const q = ring[(i + 1) % ring.length];
+        const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        shapes.push([disc(p)]);
+        if (len < 1e-9) continue;
+        const nx = (-(q[1] - p[1]) / len) * r;
+        const ny = ((q[0] - p[0]) / len) * r;
+        shapes.push([
+          [
+            [p[0] + nx, p[1] + ny],
+            [p[0] - nx, p[1] - ny],
+            [q[0] - nx, q[1] - ny],
+            [q[0] + nx, q[1] + ny],
+          ],
+        ]);
+      }
+    }
+  }
+  return unionMulti(...shapes.map((s): MP => [s]));
+}
+
+/**
+ * Measurable part of `region` on a level without ceiling (see header): the free region — points of the region
+ * without any roof, and points (inside or outside the region) where some slope is ≥ 1.9 m above the floor — grown
+ * by 0.6 m and clipped to the region. The 1.9 m line is the roof's, so the strip also reaches the floor beyond a
+ * stairwell. Throws `ClipError` like the operations it uses.
+ */
+export function measurableRegion(region: MP, elevation: number, roofs: DerivedRoof[]): MP {
+  if (region.length === 0) return [];
+  const h = elevation + MIN_FREE_HEIGHT - TOL;
+  const box = mpBox(region);
+  const pad = STRIP + 0.1;
+  const boxRing: Vec2[] = [
+    [box.min[0] - pad, box.min[1] - pad],
+    [box.max[0] + pad, box.min[1] - pad],
+    [box.max[0] + pad, box.max[1] + pad],
+    [box.min[0] - pad, box.max[1] + pad],
+  ];
+  const planes = slopePlanes(roofs).filter((sp) => boxesOverlap(bbox(sp.ring), { min: boxRing[0], max: boxRing[2] }));
+  if (planes.length === 0) return region;
+  const covered = unionMulti(...planes.map((sp): MP => [[sp.ring]]));
+  const high: MP = [];
+  for (const sp of planes) {
+    const half = clipConvexAbove(boxRing, sp, h);
+    if (half.length >= 3) high.push(...intersectMulti([[sp.ring]], [[half]]));
+  }
+  const free = unionMulti(high, differenceMulti(region, covered));
+  if (multiPolygonArea(differenceMulti(region, free)) < 1e-9) return region;
+  if (free.length === 0) return [];
+  return intersectMulti(grow(free, STRIP), region);
 }
 
 /**
  * Measurable-area function for one level (see header): returns the measurable area of a MultiPolygon lying
- * inside `region`. The free-height grid is sampled once per level over the region.
+ * inside `region`. Exact with `roofs` (falls back to the grid when a boolean operation fails), else the free-height
+ * grid sampled once per level over the region.
  */
-function measurer(region: MP, level: Level, undersideAt: AreaInput['undersideAt']): (mp: MP) => number {
+function measurer(region: MP, level: Level, undersideAt: AreaInput['undersideAt'], roofs?: DerivedRoof[]): (mp: MP) => number {
   if (level.ceilingHeight !== undefined) {
     const all = level.ceilingHeight >= MIN_FREE_HEIGHT - TOL;
     return (mp) => (all ? multiPolygonArea(mp) : 0);
   }
   if (region.length === 0) return () => 0;
+  if (roofs !== undefined) {
+    const exact = withClipFallback(
+      'BRA: measurable area',
+      () => {
+        const m = measurableRegion(region, level.elevation, roofs);
+        return (mp: MP): number => (mp.length === 0 ? 0 : multiPolygonArea(intersectMulti(mp, m)));
+      },
+      () => null,
+    );
+    if (exact !== null) return (mp) => withClipFallback('BRA: measurable area', () => exact(mp), () => gridMeasurer(region, level, undersideAt)(mp));
+  }
+  return gridMeasurer(region, level, undersideAt);
+}
+
+/** The 0.25 m grid version of the measurable-area function (levels without ceiling). */
+function gridMeasurer(region: MP, level: Level, undersideAt: AreaInput['undersideAt']): (mp: MP) => number {
   const free = sampleCells(mpBox(region), STRIP + CELL, (x, y) => {
     const u = undersideAt(x, y);
     return u === null || u - level.elevation >= MIN_FREE_HEIGHT - TOL;
@@ -401,9 +533,9 @@ function computeBra(input: AreaInput): AreaSummary['bra'] {
     const openings: MP = input.rooms
       .filter((r) => r.room?.type === 'apning' && r.levelId === level.id && r.polygon.length >= 3)
       .map((r) => [r.polygon, ...r.holes]);
-    const usable = openings.length > 0 ? mpDifference(region, openings) : region;
-    const split = partitionByParts(usable, innerParts);
-    const measure = measurer(usable, level, input.undersideAt);
+    const usable = openings.length > 0 ? withClipFallback('BRA: stairwells', () => mpDifference(region, openings), () => region) : region;
+    const split = partitionSafe('BRA: existing / new', usable, innerParts);
+    const measure = measurer(usable, level, input.undersideAt, input.roofs);
     const existing = measure(split.existing);
     const added = measure(split.new);
     perLevel.push({ levelId: level.id, name: level.name, gross: multiPolygonArea(region), area: existing + added });
@@ -419,8 +551,9 @@ function computeBra(input: AreaInput): AreaSummary['bra'] {
 // ---------------------------------------------------------------------------
 
 function computeAxis(blocks: DerivedBlock[]): AreaSplit {
-  const union = mpUnion(blocks.map((b) => [b.axis]));
-  const split = partitionByParts(union, blockPartRegions(blocks, 'axis'));
+  const axes: MP = blocks.filter((b) => b.axis.length >= 3).map((b) => [b.axis]);
+  const union = withClipFallback('axis area: union', () => mpUnion(axes), () => axes);
+  const split = partitionSafe('axis area: existing / new', union, blockPartRegions(blocks, 'axis'));
   return { total: multiPolygonArea(union), existing: multiPolygonArea(split.existing), new: multiPolygonArea(split.new) };
 }
 

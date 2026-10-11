@@ -19,11 +19,16 @@
  *     dropped. innerPolygon is CCW; holes are CW (polygon-clipping's convention).
  *  6. area = inner outer ring − holes; labelPoint = pole of inaccessibility (holes respected); bbox and dims of
  *     the inner outer ring (`rectDims`: approx when the area differs > 2 % from the box).
+ *  7. Robustness: when the difference in step 5 fails on every snap grid (`ClipError`), the footprints are
+ *     subtracted one at a time, skipping those that fail; when none can be subtracted the face polygon itself is
+ *     used. Such rooms are flagged `approximate` (derive.ts turns the flag into a warning); fallbacks are reported
+ *     with `where` = ROOM_FACE_FALLBACK.
  */
 import type { Vec2 } from '../model/types';
 import { buildPlanarGraph, extractFaces } from './planarGraph';
 import type { Face, PlanarGraph } from './planarGraph';
-import { area, bbox, differencePolygons, ensureCCW, fnv1a, labelPoint, pointInPolygon, rectDims } from './polygon';
+import { area, bbox, differenceMulti, differencePolygons, ensureCCW, fnv1a, labelPoint, pointInPolygon, rectDims, withClipFallback } from './polygon';
+import type { MultiPoly } from './polygon';
 
 export interface WallLine {
   id: string;
@@ -42,7 +47,12 @@ export interface DetectedRoom {
   bbox: { min: Vec2; max: Vec2 };
   dims: { w: number; h: number; approx: boolean };
   wallIds: string[];
+  /** Set when the inner polygon could not be computed exactly (see the header, step 7). */
+  approximate?: true;
 }
+
+/** `where` of the fallbacks taken for inner polygons (see `withClipFallback`). */
+export const ROOM_FACE_FALLBACK = 'room-face';
 
 const DEFAULT_MIN_AREA = 0.3;
 /** Inner polygons with less net area than this (m²) count as empty. */
@@ -110,6 +120,22 @@ function largestPolygon(mp: Vec2[][][]): Vec2[][] | undefined {
   return best;
 }
 
+/** face minus the cut polygons; on failure one cut at a time (skipping failing ones), else the face itself. */
+function innerPieces(face: Vec2[], cut: Vec2[][]): { pieces: MultiPoly; approximate: boolean } {
+  let approximate = false;
+  const pieces = withClipFallback(
+    ROOM_FACE_FALLBACK,
+    () => differencePolygons([face], cut),
+    () => {
+      approximate = true;
+      let current: MultiPoly = [[ensureCCW(face)]];
+      for (const c of cut) current = withClipFallback(ROOM_FACE_FALLBACK, () => differenceMulti(current, [[c]]), () => current);
+      return current;
+    },
+  );
+  return { pieces, approximate };
+}
+
 /** Room geometry of one bounded face; undefined when nothing is left inside the walls. */
 function roomOfFace(
   graph: PlanarGraph,
@@ -122,13 +148,14 @@ function roomOfFace(
     ...wallIds.flatMap((id) => footprints.get(id) ?? []),
     ...islands.map((island) => ensureCCW(island.polygon)),
   ];
-  const piece = largestPolygon(differencePolygons([face.polygon], cut));
+  const { pieces, approximate } = innerPieces(face.polygon, cut);
+  const piece = largestPolygon(pieces);
   if (piece === undefined) return undefined;
   const innerPolygon = ensureCCW(piece[0]);
   const holes = piece.slice(1);
   const net = area(innerPolygon) - holes.reduce((sum, h) => sum + area(h), 0);
   if (!(net > EMPTY_AREA)) return undefined;
-  return {
+  const room: Omit<DetectedRoom, 'faceId'> = {
     facePolygon: face.polygon,
     innerPolygon,
     holes,
@@ -138,6 +165,8 @@ function roomOfFace(
     dims: rectDims(innerPolygon),
     wallIds,
   };
+  if (approximate) room.approximate = true;
+  return room;
 }
 
 export function detectRooms(

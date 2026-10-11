@@ -24,7 +24,10 @@
  *  - `simplifyCollinear` measures the distance to the infinite line through the neighbours (spikes go too) and
  *    may return fewer than 3 points for degenerate input.
  *  - polygon-clipping only has a default export at runtime (its .d.ts declares named exports), hence the default
- *    import below.
+ *    import below. This module is the ONLY caller of polygon-clipping: every input coordinate is snapped to a 1e-7 m
+ *    grid first, a failing operation is retried on coarser grids (1e-6 … 1e-4 m) and then throws `ClipError`, which
+ *    the derive pipeline catches with a local fallback (`withClipFallback`), so one bad operation never blanks the
+ *    whole model. `unionMulti` / `intersectMulti` / `differenceMulti` take MultiPolygons with holes.
  */
 import polygonClipping from 'polygon-clipping';
 import type { MultiPolygon } from 'polygon-clipping';
@@ -260,29 +263,117 @@ export function offsetPolygonPerEdge(poly: Vec2[], outward: number[]): Vec2[] {
 }
 
 // ---------------------------------------------------------------------------
-// Boolean operations (polygon-clipping)
+// Boolean operations (polygon-clipping) — the only module that calls polygon-clipping
 // ---------------------------------------------------------------------------
 
-/** List of simple polygons → polygon-clipping MultiPolygon (degenerate rings dropped). */
-function toGeom(polys: Vec2[][]): MultiPolygon {
+/** MultiPolygon `[poly][ring][pt]` with open rings, ring 0 = outer, further rings = holes. */
+export type MultiPoly = Vec2[][][];
+
+/**
+ * Snap grids (m) tried in order. Every input coordinate is rounded to the grid before polygon-clipping sees it, so
+ * nearly coincident vertices and edges from rounding noise (rotated or dragged geometry) become exactly coincident;
+ * polygon-clipping 0.15 throws on such near-misses ("Unable to complete output ring…"). When an operation still
+ * throws it is retried on the next, coarser grid (at most 0.1 mm of change), then a `ClipError` is thrown.
+ */
+const SNAP_GRIDS = [1e-7, 1e-6, 1e-5, 1e-4];
+
+/** A boolean operation that failed on every snap grid. Callers catch it and fall back (never out of derive). */
+export class ClipError extends Error {
+  constructor(op: string, cause: unknown) {
+    super(`polygon-clipping ${op} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'ClipError';
+  }
+}
+
+type ClipOp = 'union' | 'intersection' | 'difference';
+
+/** Ring rounded to the grid 1 / inv, consecutive duplicates and the closing point removed; null when degenerate. */
+function snapRing(ring: Vec2[], inv: number): Vec2[] | null {
+  const out: Vec2[] = [];
+  for (const p of cleanRing(ring)) {
+    const x = Math.round(p[0] * inv) / inv;
+    const y = Math.round(p[1] * inv) / inv;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const last = out[out.length - 1];
+    if (last === undefined || last[0] !== x || last[1] !== y) out.push([x === 0 ? 0 : x, y === 0 ? 0 : y]);
+  }
+  while (out.length > 1 && out[0][0] === out[out.length - 1][0] && out[0][1] === out[out.length - 1][1]) out.pop();
+  return out.length >= 3 && signedArea(out) !== 0 ? out : null;
+}
+
+function snapGeom(mp: MultiPoly, inv: number): MultiPolygon {
   const geom: MultiPolygon = [];
-  for (const p of polys) {
-    const ring = cleanRing(p);
-    if (ring.length >= 3) geom.push([ring]);
+  for (const poly of mp) {
+    const outer = poly.length > 0 ? snapRing(poly[0], inv) : null;
+    if (outer === null) continue;
+    const holes: Vec2[][] = [];
+    for (const h of poly.slice(1)) {
+      const r = snapRing(h, inv);
+      if (r !== null) holes.push(r);
+    }
+    geom.push([outer, ...holes]);
   }
   return geom;
 }
 
 /** polygon-clipping output (closed rings) → open rings. */
-function fromGeom(mp: MultiPolygon): Vec2[][][] {
+function fromGeom(mp: MultiPolygon): MultiPoly {
   return mp.map((poly) => poly.map((ring) => cleanRing(ring.map((p): Vec2 => [p[0], p[1]]))));
 }
 
+/** One attempt on one grid; null = nothing to compute (empty result). */
+function clipOnce(op: ClipOp, subject: MultiPoly, others: MultiPoly[], inv: number): MultiPoly {
+  const s = snapGeom(subject, inv);
+  const o = others.map((g) => snapGeom(g, inv));
+  if (op === 'union') {
+    const all = [s, ...o].filter((g) => g.length > 0);
+    if (all.length === 0) return [];
+    return fromGeom(polygonClipping.union(all[0], ...all.slice(1)));
+  }
+  if (s.length === 0) return [];
+  if (op === 'intersection') {
+    if (o.length === 0 || o.some((g) => g.length === 0)) return [];
+    return fromGeom(polygonClipping.intersection(s, ...o));
+  }
+  const cut = o.filter((g) => g.length > 0);
+  return fromGeom(cut.length === 0 ? polygonClipping.union(s) : polygonClipping.difference(s, ...cut));
+}
+
+/** Runs a boolean operation on snapped input, retrying on coarser grids; throws `ClipError` when all fail. */
+function clip(op: ClipOp, subject: MultiPoly, others: MultiPoly[]): MultiPoly {
+  let last: unknown;
+  for (const grid of SNAP_GRIDS) {
+    try {
+      return clipOnce(op, subject, others, Math.round(1 / grid));
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw new ClipError(op, last);
+}
+
+/** Union of MultiPolygons (holes respected). [] for no usable input. Throws `ClipError` only when every grid fails. */
+export function unionMulti(...mps: MultiPoly[]): MultiPoly {
+  if (mps.length === 0) return [];
+  return clip('union', mps[0], mps.slice(1));
+}
+
+/** Intersection of MultiPolygons (holes respected). [] when any side is empty. */
+export function intersectMulti(a: MultiPoly, ...b: MultiPoly[]): MultiPoly {
+  return clip('intersection', a, b);
+}
+
+/** a minus the others (holes respected). [] when a is empty; the normalised union of a when nothing is subtracted. */
+export function differenceMulti(a: MultiPoly, ...b: MultiPoly[]): MultiPoly {
+  return clip('difference', a, b);
+}
+
+/** Lists of simple polygons → one MultiPolygon. */
+const asMulti = (polys: Vec2[][]): MultiPoly => polys.map((p) => [p]);
+
 /** Union of simple polygons as a MultiPolygon (holes respected). [] for no usable input. Never throws on empty input. */
 export function unionPolygons(polys: Vec2[][]): Vec2[][][] {
-  const geom = toGeom(polys);
-  if (geom.length === 0) return [];
-  return fromGeom(polygonClipping.union(geom));
+  return clip('union', asMulti(polys), []);
 }
 
 /** Area of the union of simple polygons (overlaps counted once). */
@@ -292,18 +383,44 @@ export function unionArea(polys: Vec2[][]): number {
 
 /** Intersection of two lists of simple polygons. [] when either side is empty. */
 export function intersectPolygons(a: Vec2[][], b: Vec2[][]): Vec2[][][] {
-  const ga = toGeom(a);
-  const gb = toGeom(b);
-  if (ga.length === 0 || gb.length === 0) return [];
-  return fromGeom(polygonClipping.intersection(ga, gb));
+  return clip('intersection', asMulti(a), [asMulti(b)]);
 }
 
 /** a minus b for two lists of simple polygons. [] when a is empty; the normalised union of a when b is empty. */
 export function differencePolygons(a: Vec2[][], b: Vec2[][]): Vec2[][][] {
-  const ga = toGeom(a);
-  if (ga.length === 0) return [];
-  const gb = toGeom(b);
-  return fromGeom(gb.length === 0 ? polygonClipping.union(ga) : polygonClipping.difference(ga, gb));
+  return clip('difference', asMulti(a), [asMulti(b)]);
+}
+
+/** Where fallbacks taken by `withClipFallback` are reported while `collectClipFallbacks` runs (synchronous scope). */
+let fallbackSink: ((where: string, error: ClipError) => void) | null = null;
+
+/**
+ * `fn()`, or `fallback(error)` when a boolean operation inside it failed on every grid (`ClipError`; other errors
+ * propagate). `where` names the step for the fallback report (see `collectClipFallbacks`).
+ */
+export function withClipFallback<T>(where: string, fn: () => T, fallback: (error: ClipError) => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    if (!(e instanceof ClipError)) throw e;
+    fallbackSink?.(where, e);
+    return fallback(e);
+  }
+}
+
+/** Runs `fn` and returns its result with every `withClipFallback` fallback taken meanwhile (in order, nested scopes too). */
+export function collectClipFallbacks<T>(fn: () => T): { result: T; fallbacks: { where: string; message: string }[] } {
+  const previous = fallbackSink;
+  const fallbacks: { where: string; message: string }[] = [];
+  fallbackSink = (where, error) => {
+    fallbacks.push({ where, message: error.message });
+    previous?.(where, error);
+  };
+  try {
+    return { result: fn(), fallbacks };
+  } finally {
+    fallbackSink = previous;
+  }
 }
 
 /** Area of a MultiPolygon: outer rings minus holes (orientation-agnostic). */
@@ -398,6 +515,29 @@ export function collinearOverlap(
   const hi = Math.min(la, Math.max(s1, s2));
   if (hi - lo <= eps) return null;
   return [addScaled(a1, ua, lo), addScaled(a1, ua, hi)];
+}
+
+/**
+ * Whether the boundary of a closed polygon crosses or touches itself: two non-adjacent edges intersect (endpoints
+ * inclusive, EPS) or overlap, or two adjacent edges fold back onto each other. Consecutive duplicate vertices are
+ * ignored. Fewer than 4 distinct vertices → false.
+ */
+export function isSelfIntersecting(poly: Vec2[]): boolean {
+  const ring = cleanRing(poly);
+  const n = ring.length;
+  if (n < 4) return false;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    for (let j = i + 1; j < n; j++) {
+      const c = ring[j];
+      const d = ring[(j + 1) % n];
+      const adjacent = j === i + 1 || (i === 0 && j === n - 1);
+      if (collinearOverlap(a, b, c, d, EPS, 1e-3) !== null) return true;
+      if (!adjacent && segmentIntersection(a, b, c, d) !== null) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

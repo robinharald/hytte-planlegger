@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { Block, Opening, Variant, Vec2, Wall } from '../model/types';
+import type { Block, Opening, TerrainAsset, Variant, Vec2, Wall } from '../model/types';
 import { makeTestProject, makeVariant } from '../state/testProject';
-import { deriveDimensions, deriveVariant, dimensionText } from './derive';
+import { blockGroundWorks, deriveDimensions, deriveVariant, dimensionText } from './derive';
 import { area } from './polygon';
+import { terrainZAt } from './terrain';
 
 const site = makeTestProject().site;
 
@@ -141,6 +142,69 @@ describe('deriveVariant', () => {
     expect(area(slab.polygon)).toBeCloseTo(2.84 * 3.68, 6);
     expect(slab.holes).toHaveLength(1);
     expect(area(slab.holes[0])).toBeCloseTo(0.9 * 1.2, 6);
+  });
+
+  it('cuts a stair arriving on a level out of the room floor there and adds a stairwell floor at its bottom', () => {
+    const d = deriveVariant(
+      cabin((v) => {
+        v.levels.push({ id: 'lower', name: 'Under', storeyId: 'ground', elevation: -1, floorThickness: 0 });
+        v.structure.push({ id: 'st', kind: 'stair', min: [4, 1], max: [5, 2], fromLevelId: 'lower', toLevelId: 'main', upDirection: 'E', isNew: true });
+      }),
+      site,
+      null,
+    );
+    expect(d.warnings).toEqual([]);
+    const floor = d.floors.find((f) => f.id === 'room-2/floor')!;
+    expect(floor.holes).toHaveLength(1);
+    expect(area(floor.polygon) - area(floor.holes[0])).toBeCloseTo(2.78 * 3.68 - 1, 6);
+    expect(d.rooms.find((r) => r.id === 'room-2')!.area).toBeCloseTo(2.78 * 3.68, 6); // the room keeps its area
+    const well = d.floors.find((f) => f.id === 'st/stairwell')!;
+    expect(well).toMatchObject({ kind: 'slab', levelId: 'lower', z: -1, thickness: 0, material: 'wood', isNew: true });
+    expect(area(well.polygon)).toBeCloseTo(1, 9);
+    // A stair starting on a floor does not cut it, and a covered bottom gets no stairwell floor.
+    const up = deriveVariant(
+      cabin((v) => v.structure.push({ id: 'up', kind: 'stair', min: [4, 1], max: [5, 2], fromLevelId: 'main', toLevelId: 'loft', upDirection: 'E', isNew: false })),
+      site,
+      null,
+    );
+    expect(up.floors.find((f) => f.id === 'room-2/floor')!.holes).toEqual([]);
+    expect(up.floors.some((f) => f.id.startsWith('up/'))).toBe(false);
+  });
+
+  it("a block with ceilingHeight: 'auto' walls inside stop at the ceiling and a 'ceiling' floor is derived", () => {
+    const d = deriveVariant(
+      cabin((v) => {
+        v.blocks[0].ceilingHeight = 2.4;
+        v.blocks[0].isNew = true;
+        v.walls[0].heightMode = 'auto';
+        delete v.walls[0].height;
+      }),
+      site,
+      null,
+    );
+    expect(d.walls.find((w) => w.id === 'w-1')!.topZ).toBeCloseTo(2.4, 12);
+    const ceiling = d.floors.find((f) => f.kind === 'ceiling')!;
+    expect(ceiling).toMatchObject({ id: 'blk-1/ceiling', levelId: 'main', thickness: 0.05, material: 'wood', isNew: true, holes: [] });
+    expect(ceiling.z).toBeCloseTo(2.45, 12);
+    expect(area(ceiling.polygon)).toBeCloseTo(5.68 * 3.68, 6); // inner outline 0.16 .. 5.84 × 0.16 .. 3.84
+    // Exterior walls still run to the roof.
+    expect(Math.max(...d.walls.filter((w) => w.isExterior).map((w) => w.topZ))).toBeGreaterThan(3);
+    expect(deriveVariant(cabin(), site, null).floors.some((f) => f.kind === 'ceiling')).toBe(false);
+  });
+
+  it('cuts the terrain under every block (implicit ground works) for all terrain queries', () => {
+    // Flat terrain 0.5 m above the main floor everywhere.
+    const terrain: TerrainAsset = { id: 't', grids: [{ x0: -20, y0: -20, dx: 5, dy: 5, nx: 9, ny: 9, z: Array(81).fill(site.floorElevation + 0.5) }] };
+    const v = cabin((x) => x.blocks[0].floorZones.push({ id: 'z-low', levelId: 'main', kind: 'replace', polygon: rect(0, 0, 1, 1) }));
+    const d = deriveVariant(v, site, terrain);
+    const db = d.blocks[0];
+    expect(d.groundWorks).toEqual([...site.groundWorks, { id: 'gw-blk-1', polygon: db.outer, maxZ: db.lowestFloorZ - 0.1 }]);
+    expect(blockGroundWorks(d.blocks)).toEqual(d.groundWorks.slice(site.groundWorks.length));
+    expect(terrainZAt(terrain, site, 3, 2, d.groundWorks)).toBeCloseTo(-0.1, 12);
+    expect(terrainZAt(terrain, site, 6.1, 2, d.groundWorks)).toBeCloseTo(-0.1, 12); // cladding line = inside
+    expect(terrainZAt(terrain, site, 6.2, 2, d.groundWorks)).toBeCloseTo(0.5, 12);
+    expect(db.groundZ).toBeCloseTo(-0.1, 12);
+    expect(d.foundations[0].bottomZ).toBeCloseTo(-0.4, 12);
   });
 
   it('warns when BYA exceeds the area limit', () => {
