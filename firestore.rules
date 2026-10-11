@@ -1,0 +1,39 @@
+rules_version = '2';
+
+// Hytteplanlegger – familiens delte plass.
+// Alle forslag ligger under /families/{familyId}/... der familyId er en lang, tilfeldig id som bare finnes i lenken
+// familien deler. Enhver (anonymt innlogget) enhet som kjenner id-en kan lese og skrive der. Alt annet er stengt.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function validFamily(familyId) {
+      return familyId.size() >= 24 && familyId.size() <= 64;
+    }
+    function smallDoc() {
+      // Forslag er små JSON-dokumenter; grensen stopper misbruk.
+      return request.resource == null || request.resource.size() < 900 * 1024;
+    }
+
+    match /families/{familyId} {
+      allow read, write: if signedIn() && validFamily(familyId) && smallDoc();
+
+      match /proposals/{proposalId} {
+        allow read, write: if signedIn() && validFamily(familyId) && smallDoc();
+
+        match /revisions/{revisionId} {
+          allow read, write: if signedIn() && validFamily(familyId) && smallDoc();
+        }
+      }
+
+      match /members/{memberId} {
+        allow read, write: if signedIn() && validFamily(familyId) && smallDoc();
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
