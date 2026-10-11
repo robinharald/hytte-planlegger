@@ -16,7 +16,6 @@ import type {
   Room,
   Vec2,
   Vec3,
-  Wall,
 } from './types';
 
 export interface DerivedVariant {
