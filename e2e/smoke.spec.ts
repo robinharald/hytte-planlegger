@@ -2,7 +2,8 @@
  * Smoke test: the app loads, derives Forslag D, renders the plan and the 3D view, and the headline UI is there.
  *
  * Screenshots are written to e2e/screenshots/*.png (committed, so a diff shows what changed visually):
- *   plan.png, 3d-ute-oversikt.png, 3d-ute-framsiden.png, 3d-inne-stua.png, plan-hems.png, phone.png
+ *   plan.png, 3d-ute-oversikt.png, 3d-ute-framsiden.png, 3d-ute-langsiden.png, 3d-ute-inne-stua.png (Ute + the
+ *   'inne-stua' camera: the roofs seen from inside the living room), 3d-inne-stua.png, plan-hems.png, phone.png
  *
  * Preconditions: Chromium installed (`npx playwright install chromium`); the dev server is started by
  * playwright.config.ts or reused. The UI exposes `window.__hytte = { ready, project, derived }` and the
@@ -61,15 +62,18 @@ async function loadAndWaitReady(page: Page): Promise<void> {
   await assertDeriveIsNotStub(page);
 }
 
-/** A 'generic' warning is only produced by the derive stub; the real pipeline never emits it. */
+/**
+ * A 'generic' warning comes from the derive stub, a failed derive (useDerived.ts) or a geometry fallback
+ * (polygon clipping failed somewhere, derive.ts GEOMETRY_FALLBACK); the seed must produce none of them.
+ */
 async function assertDeriveIsNotStub(page: Page): Promise<void> {
   const generic = await page.evaluate(() =>
     ((window as HytteWindow).__hytte?.derived?.warnings ?? []).flatMap((w) => (w.kind === 'generic' ? [w.message] : [])),
   );
   expect(
     generic,
-    `derived.warnings contains a 'generic' warning (${generic.join('; ')}): src/geometry/derive.ts is still the stub. ` +
-      'Integrate the real deriveVariant before running the e2e smoke test.',
+    `derived.warnings contains a 'generic' warning (${generic.join('; ')}): the derive pipeline failed, fell back ` +
+      'to simplified geometry, or src/geometry/derive.ts is still the stub.',
   ).toEqual([]);
 }
 
@@ -78,6 +82,29 @@ async function shoot(page: Page, testInfo: TestInfo, name: string): Promise<void
   const file = join(SCREENSHOT_DIR, `${name}.png`);
   await page.screenshot({ path: file, fullPage: false, animations: 'disabled' });
   await testInfo.attach(name, { path: file, contentType: 'image/png' });
+}
+
+/** The Romskjema fits its column: the 'Areal' header ends inside the side panel and the table does not scroll sideways. */
+async function assertScheduleFits(page: Page): Promise<void> {
+  const header = await page.getByTestId('schedule-area-header').boundingBox();
+  const panel = await page.locator('aside.side').boundingBox();
+  expect(header, "the schedule's Areal header should be rendered").not.toBeNull();
+  expect(panel, 'the side panel should be rendered').not.toBeNull();
+  if (!header || !panel) return;
+  expect(header.x + header.width, "the schedule's Areal header should end inside the side panel").toBeLessThanOrEqual(panel.x + panel.width + 0.5);
+  const overflow = await page
+    .getByTestId('room-schedule')
+    .locator('.table-wrap')
+    .evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(overflow, 'the schedule table should not scroll sideways').toBeLessThanOrEqual(1);
+}
+
+/** Room labels in the plan that carry an area line ("… m²"). */
+async function planLabelsWithArea(page: Page): Promise<{ labels: number; withArea: number }> {
+  return page.getByTestId('plan-view').evaluate((svg) => {
+    const labels = [...svg.querySelectorAll('[data-room-label]')];
+    return { labels: labels.length, withArea: labels.filter((l) => (l.textContent ?? '').includes('m²')).length };
+  });
 }
 
 async function showPlan(page: Page, storey: 'ground' | 'loft'): Promise<void> {
@@ -105,16 +132,31 @@ test.describe('desktop 1400×900', () => {
     await expect(schedule, 'room schedule should list Hovedbad').toContainText('Hovedbad');
     await expect(schedule, 'room schedule should list Badstue').toContainText('Badstue');
     await expect(page.getByTestId('area-totals'), 'area totals should show BYA').toContainText('BYA');
+    await assertScheduleFits(page);
+    await expect(page.getByTestId('headline'), 'the headline splits the buildings from the deck').toContainText('bygg');
+    await expect(page.getByTestId('headline')).toContainText('terrasse');
 
     await showPlan(page, 'ground');
+    const { labels, withArea } = await planLabelsWithArea(page);
+    expect(withArea, `plan room labels with an m² line (of ${labels} labels)`).toBeGreaterThanOrEqual(15);
     await shoot(page, testInfo, 'plan');
 
     await show3d(page, 'ute', 'oversikt');
+    await expect(page.getByTestId('preset-langsiden'), 'the Langsiden preset should be offered').toBeVisible();
     await shoot(page, testInfo, '3d-ute-oversikt');
 
     await page.getByTestId('preset-framsiden').click();
     await page.waitForTimeout(SETTLE_MS);
     await shoot(page, testInfo, '3d-ute-framsiden');
+
+    await page.getByTestId('preset-langsiden').click();
+    await page.waitForTimeout(SETTLE_MS);
+    await shoot(page, testInfo, '3d-ute-langsiden');
+
+    // Roofs on, camera inside the stue: no turf slab may hang into the room (review fix in roof.ts).
+    await page.getByTestId('preset-inne-stua').click();
+    await page.waitForTimeout(SETTLE_MS);
+    await shoot(page, testInfo, '3d-ute-inne-stua');
 
     await show3d(page, 'inne', 'inne-stua');
     await shoot(page, testInfo, '3d-inne-stua');
@@ -133,6 +175,13 @@ test.describe('phone 375×812', () => {
     const pageErrors = collectPageErrors(page);
     await loadAndWaitReady(page);
     await page.waitForTimeout(SETTLE_MS);
+    // Del lenke and Hjelp stay on screen on a phone.
+    for (const id of ['open-share', 'open-help']) {
+      const box = await page.getByTestId(id).boundingBox();
+      expect(box, `${id} should be rendered`).not.toBeNull();
+      if (box) expect(box.x + box.width, `${id} should be inside the 375 px viewport`).toBeLessThanOrEqual(375);
+    }
+    await assertScheduleFits(page);
     await shoot(page, testInfo, 'phone');
     expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
   });

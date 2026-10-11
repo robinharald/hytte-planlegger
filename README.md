@@ -50,11 +50,14 @@ npm run dev        # http://localhost:5173
 - **Enhetstester** (`npm test`): all geometri i `src/geometry/` er rene funksjoner uten React/three og testes grundig,
   degenererte tilfeller inkludert. Seeden for Forslag D har egne invarianttester (aksemål 170,16 m², alle rom funnet
   og navngitt, møneforlengelser til y = 2,00 / 4,20 og x = 18,4 m). `src/model/seed/forslagD.derive.test.ts` kjører hele
-  pipelinen på seeden: alle 27 rom funnet og navngitt, ingen løse vegger, rommene innenfor 0,15 m² av IFC-arealene.
+  pipelinen på seeden: alle 27 rom funnet og navngitt, ingen advarsler, rommene innenfor 0,15 m² av IFC-arealene,
+  ingen takflate inne i rommene, trappeåpningene fri for gulv, terrenget under alle gulv og hems-BRA 12,54 m².
+  `robustness.test.ts` og `clipFailure.test.ts` sjekker at modellen tåler skjeve og ødelagte tegninger.
 - **Røyktest** (`npm run e2e`): første gang må Chromium installeres med `npx playwright install chromium`. Testen
   starter dev-serveren selv (eller bruker en som allerede kjører på port 5173), venter til appen melder
-  `window.__hytte.ready`, tar skjermbilder av plan, 3D ute (oversikt, framsiden), 3D inne (stua), hems og en
-  telefonvisning (375 × 812), og sjekker at romskjemaet og arealsummene vises. Skjermbildene i `e2e/screenshots/`
+  `window.__hytte.ready`, tar skjermbilder av plan, 3D ute (oversikt, framsiden, langsiden og taket sett fra
+  stua), 3D inne (stua), hems og en telefonvisning (375 × 812), og sjekker at romskjemaet får plass i kolonnen, at
+  planen viser minst 15 romnavn med areal, at arealsummene vises og at «Del lenke» og «Hjelp» er synlige på telefon. Skjermbildene i `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
   `e2e/playwright-report/` og `e2e/test-results/` (ikke i git).
 - Typesjekk av testoppsettet: `npx tsc --noEmit -p e2e/tsconfig.json`.
