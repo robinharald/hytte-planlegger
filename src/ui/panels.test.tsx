@@ -79,6 +79,8 @@ describe('Controls', () => {
     act(() => appStore.getState().setUi({ cutHeight: 1.3 }));
     click(byTestId('preset-inne-stua'));
     expect(appStore.getState().ui).toMatchObject({ preset: 'inne-stua', cutHeight: 2.3 });
+    click(byTestId('preset-ovenfra'));
+    expect(appStore.getState().ui).toMatchObject({ preset: 'ovenfra', cutHeight: 1.3 });
   });
 
   it('storey tabs set plan storey and active storey; toggles flip ui flags', () => {

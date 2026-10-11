@@ -36,13 +36,17 @@
  *    Block ceilings: an 'auto' wall whose midpoint lies in the axis polygon of a block with `ceilingHeight` is also
  *    capped at that block's level elevation + ceilingHeight (the lower of the two caps; ignored when the ceiling is
  *    not above the wall's base).
- *  - levelIds: the wall's own level plus every level with baseZ < elevation + 1.0 < topZ that EXISTS where the wall
- *    stands (a block containing an end or the midpoint has it as base level or has a zone of it containing that
- *    point) — otherwise main-level walls of the bod wing would join the loft graph and dangle there. Dividers: only
- *    their own level (they are graph edges of that level). Exterior pieces take part in the block's base level and
- *    in the level of every floor zone they run along (the piece midpoint nudged 1 cm into the block lies in the
- *    zone), whatever their height: the knee walls beside the loft zone bound the loft's rooms even though they stop
- *    at the eave, while the rest of the main block's walls stay out of the loft graph (they would dangle there).
+ *  - levelIds: the wall's own level plus every HIGHER level (elevation above the wall's base) that the wall clearly
+ *    reaches — topZ ≥ elevation + 1.0 + 0.3 (margin) — and that has a floor at the wall's midpoint: a block whose
+ *    base level it is, or a floor zone of that level (for the loft: the 'add' zone), contains the midpoint or the
+ *    midpoint nudged 1 cm beyond either face (so a wall along the zone boundary counts). Without the margin the
+ *    2.5 m main-level partitions (loft + 1.0 = 2.47) joined the loft, and testing the end points pulled in the
+ *    corridor walls that start at a corner of the loft zone; both then showed as cut walls in the Hems plan. The
+ *    floor test also keeps main-level walls of the bod wing out of the loft graph (they would dangle there).
+ *    Dividers: only their own level (they are graph edges of that level). Exterior pieces take part in the block's
+ *    base level and in the level of every floor zone they run along (the piece midpoint nudged 1 cm into the block
+ *    lies in the zone), whatever their height: the knee walls beside the loft zone bound the loft's rooms even
+ *    though they stop at the eave, while the rest of the main block's walls stay out of the loft graph.
  *    storeyIds = the storeys of those levels. Ids are listed in `variant.levels` order.
  *  - Openings on block edges: offset from the block vertex (the whole edge is the host); resolved onto the piece
  *    containing the centre (piece offset = offset − piece start). Centre on a removed segment →
@@ -113,8 +117,11 @@ const MIN_AREA = 1e-6;
 const DEFAULT_WALL_HEIGHT = 2.4;
 /** A block ceiling must be at least this (m) above a wall's base to cap it. */
 const LEVEL_EPS = 0.01;
-/** levelIds rule: the wall's z range must cover level.elevation + this. */
+/** levelIds rule: a stored wall joins a higher level when its topZ ≥ level.elevation + LEVEL_PROBE + LEVEL_MARGIN. */
 const LEVEL_PROBE = 1.0;
+const LEVEL_MARGIN = 0.3;
+/** How far beyond a wall face its midpoint is probed for a higher level's floor (m). */
+const LEVEL_NUDGE = 0.01;
 const FRAME_DEPTH = 0.1;
 /** Mitre tips farther than this × thickness from the vertex are squared off. */
 const MAX_MITRE = 10;
@@ -172,10 +179,10 @@ function levelIndex(variant: Variant): Levels {
   };
 }
 
-/** Levels whose elevation + 1.0 lies strictly inside (baseZ, topZ). */
-function zRangeLevels(levels: Levels, baseZ: number, topZ: number): Id[] {
+/** Levels above baseZ that a wall reaching topZ joins: topZ ≥ elevation + 1.0 + 0.3 (1 µm tolerance). */
+function reachedLevels(levels: Levels, baseZ: number, topZ: number): Id[] {
   return levels.list
-    .filter((l) => baseZ < l.elevation + LEVEL_PROBE - 1e-9 && topZ > l.elevation + LEVEL_PROBE + 1e-9)
+    .filter((l) => l.elevation > baseZ + 1e-9 && topZ >= l.elevation + LEVEL_PROBE + LEVEL_MARGIN - 1e-6)
     .map((l) => l.id);
 }
 
@@ -1115,6 +1122,13 @@ function levelExistsAt(blocks: DerivedBlock[], levelId: Id, p: Vec2): boolean {
   );
 }
 
+/** The midpoint of a→b and the midpoint nudged LEVEL_NUDGE beyond the left and the right face. */
+function midpointProbes(a: Vec2, b: Vec2, faceLeft: number, faceRight: number): Vec2[] {
+  const m = mid(a, b);
+  const n = leftNormal(unit(sub(b, a)));
+  return [m, along(m, n, faceLeft + LEVEL_NUDGE), along(m, n, -(faceRight + LEVEL_NUDGE))];
+}
+
 function storedWall(w: Wall, ctx: Ctx): DerivedWall {
   const isDivider = w.kind === 'divider';
   const thickness = isDivider ? 0 : w.thickness;
@@ -1124,8 +1138,8 @@ function storedWall(w: Wall, ctx: Ctx): DerivedWall {
   const topProfile = storedTopProfile(w, ctx);
   const topZ = profileTop(topProfile);
   const footprint = isDivider || dist(w.a, w.b) < EPS ? [] : pieceFootprint(w.a, w.b, faceLeft, faceRight, null, null).footprint;
-  const here = [w.a, mid(w.a, w.b), w.b];
-  const extra = zRangeLevels(ctx.levels, baseZ, topZ).filter((id) => here.some((p) => levelExistsAt(ctx.blocks, id, p)));
+  const probes = midpointProbes(w.a, w.b, faceLeft, faceRight);
+  const extra = reachedLevels(ctx.levels, baseZ, topZ).filter((id) => probes.some((p) => levelExistsAt(ctx.blocks, id, p)));
   const levelIds = isDivider ? [w.levelId] : orderLevels(ctx.levels, new Set([w.levelId, ...extra]));
   return {
     id: w.id,

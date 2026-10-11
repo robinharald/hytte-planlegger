@@ -153,6 +153,19 @@ describe('ui prefs', () => {
     expect(sanitizeUiPrefs({ preset: 'langsiden' })).toEqual({ preset: 'langsiden' });
   });
 
+  it("keeps the cut height 'inne-stua' replaced, so the raised one never becomes the user's choice", () => {
+    const raised = { ...DEFAULT_UI, preset: 'inne-stua' as const, cutHeight: 2.3, cutHeightBeforePreset: 1.3 };
+    saveUiPrefs(localStorage, raised);
+    expect(loadUiPrefs(localStorage)).toMatchObject({ preset: 'inne-stua', cutHeight: 2.3, cutHeightBeforePreset: 1.3 });
+    // Stored with another preset (not written by presetUi): the remembered value is the user's choice.
+    expect(sanitizeUiPrefs({ v: PREFS_VERSION, preset: 'ovenfra', cutHeight: 2.3, cutHeightBeforePreset: 1.3 })).toEqual({ preset: 'ovenfra', cutHeight: 1.3 });
+    // Not raised: nothing to remember.
+    saveUiPrefs(localStorage, { ...DEFAULT_UI, cutHeight: 2.0 });
+    const loaded = loadUiPrefs(localStorage);
+    expect(loaded.cutHeight).toBe(2.0);
+    expect('cutHeightBeforePreset' in loaded).toBe(false);
+  });
+
   it('keeps dismissedSeedRevision when prefs are saved', () => {
     saveDismissedSeedRevision(localStorage, 3);
     saveUiPrefs(localStorage, DEFAULT_UI);
@@ -657,6 +670,19 @@ describe('startAutosave', () => {
     const store = createAppStore(makeTestProject());
     const onSaveError = vi.fn();
     const ctl = startAutosave(store, { storage: null, onSaveError });
+    expect(onSaveError).not.toHaveBeenCalled();
+    ctl.stop();
+  });
+
+  it('never reports a failed write without storage (the start-up notice covers it)', () => {
+    const store = createAppStore(makeTestProject());
+    const onSaveError = vi.fn();
+    const ctl = startAutosave(store, { storage: null, onSaveError, delayMs: 10 });
+    store.getState().renameRoom('room-1', 'X');
+    store.getState().setUi({ showGrid: false });
+    vi.advanceTimersByTime(100);
+    ctl.flush();
+    expect(ctl.saveNow()).toBe(false);
     expect(onSaveError).not.toHaveBeenCalled();
     ctl.stop();
   });

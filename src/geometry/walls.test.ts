@@ -1030,13 +1030,20 @@ describe('deriveWalls: stored walls', () => {
     expect(fixed.topZ).toBeCloseTo(2.4, 12);
   });
 
-  it('levelIds: z range covers level + 1.0 where that level exists', () => {
+  it('levelIds: a higher level joins when the top reaches level + 1.3 and the midpoint has its floor', () => {
     const ws = stored([
-      mkWall('low-auto', [1, 1], [1, 5], { levelId: 'lower' }), // top 1.3
+      mkWall('low-auto', [1, 1], [1, 5], { levelId: 'lower' }), // top 1.3 = main + 1.0 + 0.3
       mkWall('low-roof', [1, 3], [3, 3], { levelId: 'lower', heightMode: 'roof' }), // top 3.0, under the loft zone
       mkWall('main-roof', [7, 1], [7, 5], { heightMode: 'roof' }), // top 3.0, no loft here
       mkWall('loft', [1, 2], [3, 2], { levelId: 'loft' }),
       mkWall('outside', [20, 0], [20, 2], { heightMode: 'roof' }),
+      // 2.5 is above loft + 1.0 (2.47) but below loft + 1.3 (2.77): not in the loft even inside its zone.
+      mkWall('loft-low', [2, 1], [2, 5], { heightMode: 'fixed', height: 2.5 }),
+      mkWall('loft-high', [3, 1], [3, 5], { heightMode: 'fixed', height: 2.8 }),
+      // Starts at the zone boundary but runs away from it: the midpoint (6, 3) has no loft floor.
+      mkWall('from-corner', [4, 3], [8, 3], { heightMode: 'roof' }),
+      // Runs along the zone boundary: the midpoint nudged beyond the left face lies in the zone.
+      mkWall('along-edge', [4, 1], [4, 5], { heightMode: 'roof' }),
     ]);
     expect(ws.map((w) => [w.id, w.levelIds, w.storeyIds])).toEqual([
       ['low-auto', ['lower', 'main'], ['ground']],
@@ -1044,6 +1051,10 @@ describe('deriveWalls: stored walls', () => {
       ['main-roof', ['main'], ['ground']],
       ['loft', ['loft'], ['loft']],
       ['outside', ['main'], ['ground']],
+      ['loft-low', ['main'], ['ground']],
+      ['loft-high', ['main', 'loft'], ['ground', 'loft']],
+      ['from-corner', ['main'], ['ground']],
+      ['along-edge', ['main', 'loft'], ['ground', 'loft']],
     ]);
   });
 
@@ -1252,6 +1263,21 @@ describe('Forslag D', () => {
     expect(byId(walls, 'w-mellom-boder').storeyIds).toEqual(['ground']);
     expect(byId(walls, 'w-106-korr').storeyIds).toEqual(['ground', 'loft']);
     expect(byId(walls, 'w-104-diag').topZ).toBeCloseTo(1.3, 12);
+  });
+
+  it('keeps the 2.5 m corridor walls out of the loft; the walls to the roof along the loft zone stay in it', () => {
+    // 2.5 > loft + 1.0 = 2.47, but below loft + 1.0 + 0.3, and their midpoints are outside the loft's 'add' zone
+    // (they only start at a corner of it).
+    for (const id of ['w-vf-korr', 'w-korr-stue']) {
+      expect(byId(walls, id).topZ, id).toBeCloseTo(2.5, 12);
+      expect(byId(walls, id).levelIds, id).toEqual(['main']);
+      expect(byId(walls, id).storeyIds, id).toEqual(['ground']);
+    }
+    // heightMode 'roof' along the zone boundary (midpoint on it): still part of the loft.
+    for (const id of ['w-106-korr', 'w-103-102', 'w-106-stue']) {
+      expect(byId(walls, id).levelIds, id).toContain('loft');
+      expect(byId(walls, id).storeyIds, id).toEqual(['ground', 'loft']);
+    }
   });
 
   it('attaches every stored opening exactly once', () => {

@@ -8,8 +8,11 @@ import type { ReconcilerRoot } from '@react-three/fiber';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import type { Group, Mesh, Object3D, Scene as ThreeScene, Vector3 } from 'three';
+import { deriveVariant } from '../geometry/derive';
 import type { DerivedFloor } from '../model/derived';
+import { createForslagD } from '../model/seed/forslagD';
 import type { Selection } from '../state/selection';
+import { presetView } from './cameras';
 import { toWorld } from './coords';
 import { FIXTURE_DERIVED, FIXTURE_SITE, FIXTURE_TERRAIN } from './fixture';
 import { PIN_MARGIN } from './labelDefs';
@@ -224,7 +227,8 @@ describe('Scene (R3F, stand-in renderer)', () => {
     const stue = m.container.querySelector<HTMLElement>('[data-label="room:main:rom-stue"]')!;
     const kitchen = m.container.querySelector<HTMLElement>('[data-label="room:main:rom-kjokken"]')!;
     expect(stue.style.display).toBe('block');
-    expect(stue.style.transform).toContain(`translate(400px, ${600 - PIN_MARGIN}px)`);
+    // pinned bottom-right (jsdom measures tags as 0 × 0, so its centre sits PIN_MARGIN from both edges)
+    expect(stue.style.transform).toContain(`translate(${800 - PIN_MARGIN}px, ${600 - PIN_MARGIN}px)`);
     expect(kitchen.style.display).toBe('none'); // behind the camera too, but not the camera's room
     // from above, nobody stands in a room: the Stue tag follows its anchor again
     m.look([3, -12, 20], [3, 2, 0]);
@@ -257,6 +261,46 @@ describe('Scene (R3F, stand-in renderer)', () => {
     fire('pointerdown', 2, 2);
     fire('pointerup', 2, 2);
     expect(onSelect).toHaveBeenLastCalledWith(null);
+  });
+
+  it("labels the block in front from 'framsiden', hides the one behind it and moves a partly hidden one (Forslag D)", async () => {
+    const project = createForslagD();
+    const derived = deriveVariant(project.variants[0], project.site, null);
+    // real tag sizes (jsdom has no layout): 120 × 32 px
+    const proto = HTMLElement.prototype;
+    const ow = Object.getOwnPropertyDescriptor(proto, 'offsetWidth');
+    const oh = Object.getOwnPropertyDescriptor(proto, 'offsetHeight');
+    const sized = (v: number) => ({
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.hasAttribute('data-label') ? v : 0;
+      },
+    });
+    Object.defineProperty(proto, 'offsetWidth', sized(120));
+    Object.defineProperty(proto, 'offsetHeight', sized(32));
+    try {
+      const m = await mount(baseProps({ derived, site: project.site, terrain: null, preset: 'framsiden', showTerrain: false, showTrees: false }));
+      const v = presetView('framsiden', derived.bounds);
+      m.look(v.position, v.target);
+      await frames(3);
+      const shown = (id: string) => m.container.querySelector<HTMLElement>(`[data-label="block:${id}"]`)!.style.display === 'block';
+      const box = (id: string) => {
+        const t = /translate\((-?\d+)px, (-?\d+)px\)/.exec(m.container.querySelector<HTMLElement>(`[data-label="block:${id}"]`)!.style.transform)!;
+        return { x: Number(t[1]), y: Number(t[2]) };
+      };
+      expect(shown('blk-wing')).toBe(true); // the new wing, nearest
+      expect(shown('blk-glass')).toBe(false); // behind the wing
+      // the main house's ridge shows above the wing's: its tag is nudged clear of the wing's instead of hidden
+      expect(shown('blk-main')).toBe(true);
+      const [wing, main] = [box('blk-wing'), box('blk-main')];
+      expect(Math.abs(wing.x - main.x) >= 120 || Math.abs(wing.y - main.y) >= 32).toBe(true);
+      // only the north end of the bod wing shows, right of the new wing: its tag sits there, not over the wing
+      expect(shown('blk-bod')).toBe(true);
+      expect(box('blk-bod').x).toBeGreaterThan(wing.x + 150);
+    } finally {
+      if (ow) Object.defineProperty(proto, 'offsetWidth', ow);
+      if (oh) Object.defineProperty(proto, 'offsetHeight', oh);
+    }
   });
 
   it('draws an overlay on the selected element', async () => {

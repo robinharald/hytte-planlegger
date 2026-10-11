@@ -58,6 +58,12 @@ export interface UiState {
   activeStoreyId: Id;
   mode3d: Mode3d;
   cutHeight: number;
+  /**
+   * The cut height the user had before choosing 'inne-stua' raised it to `EYE_LEVEL_CUT`; null when no preset
+   * raised it. Choosing another preset restores it (`presetUi`); any other change of `cutHeight` through `setUi`
+   * (the slider: the user's own choice) clears it.
+   */
+  cutHeightBeforePreset: number | null;
   showLabels: boolean;
   showDims: boolean;
   showGrid: boolean;
@@ -82,6 +88,7 @@ export const DEFAULT_UI: UiState = {
   mode3d: 'ute',
   /** Below the 'inne-stua' eye height (1.55), so the views from above look into the rooms; see `presetUi`. */
   cutHeight: 1.3,
+  cutHeightBeforePreset: null,
   showLabels: true,
   showDims: true,
   showGrid: true,
@@ -106,9 +113,16 @@ export const CUT_HEIGHT_MAX = 2.6;
  */
 export const EYE_LEVEL_CUT = 2.3;
 
-/** UI change for choosing a camera preset: 'inne-stua' also raises a lower cut height to `EYE_LEVEL_CUT`. */
-export function presetUi(preset: CameraPreset, ui: Pick<UiState, 'cutHeight'>): Partial<UiState> {
-  return preset === 'inne-stua' && ui.cutHeight < EYE_LEVEL_CUT ? { preset, cutHeight: EYE_LEVEL_CUT } : { preset };
+/**
+ * UI change for choosing a camera preset: 'inne-stua' also raises a lower cut height to `EYE_LEVEL_CUT` and
+ * remembers the one it replaced; any other preset puts that one back (unless the user has set the cut height since,
+ * which clears the memory, see `setUi`).
+ */
+export function presetUi(preset: CameraPreset, ui: Pick<UiState, 'cutHeight' | 'cutHeightBeforePreset'>): Partial<UiState> {
+  if (preset === 'inne-stua') {
+    return ui.cutHeight < EYE_LEVEL_CUT ? { preset, cutHeight: EYE_LEVEL_CUT, cutHeightBeforePreset: ui.cutHeight } : { preset };
+  }
+  return ui.cutHeightBeforePreset === null ? { preset } : { preset, cutHeight: ui.cutHeightBeforePreset, cutHeightBeforePreset: null };
 }
 
 /** Every camera preset, in button order (the type itself is contracted in view3d/View3D.tsx). */
@@ -170,6 +184,7 @@ export interface AppState {
    */
   replaceProject(project: Project, ui?: Partial<UiState>, history?: HistorySnapshot): void;
 
+  /** Patch the UI state. A patch with `cutHeight` but without `cutHeightBeforePreset` clears the latter. */
   setUi(patch: Partial<UiState>): void;
   select(selection: Selection | null): void;
 }
@@ -479,6 +494,8 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
           setUi: (patch) => {
             set((s) => {
               Object.assign(s.ui, patch);
+              // A cut height set by anything but a preset is the user's own: forget the one 'inne-stua' replaced.
+              if ('cutHeight' in patch && !('cutHeightBeforePreset' in patch)) s.ui.cutHeightBeforePreset = null;
             });
           },
 

@@ -7,11 +7,16 @@
  * it synchronously from a layout effect; with React 19 that races with its own render when labels change —
  * "Attempted to synchronously unmount a root while React was already rendering" followed by an uncaught
  * removeChild error.) Every rendered frame (frameloop 'demand': camera moves, prop changes) each anchor is
- * projected to the screen, hidden when it is behind the camera, when the building group (`occluder`, never the
- * terrain) is hit by a ray from the camera before the anchor, or when its whole tag would not fit inside the layer,
- * and shown at the density of labelDensities(). Tags claim space in labelOrder(): the room the camera stands in
- * first (never hidden, see labelDefs.placeTag), then by importance (area, mildly weighted by distance); a tag that
- * would overlap an already placed one is hidden (tag sizes are measured once per density).
+ * projected to the screen, hidden when it is behind the camera, when it is occluded, or when its whole tag would
+ * not fit inside the layer, and shown at the density of labelDensities(). Occluded: room labels when the building
+ * group (`occluder`, never the terrain) is hit by a ray from the camera before the anchor; block labels when every
+ * ray to the block's roof probes (labelDefs.roofProbes) first hits something that is not the block itself (own
+ * roof, walls, openings and foundation are ignored unless the camera stands inside the block); a partly hidden
+ * block's tag moves over its visible probes (labelDefs.blockAnchor). Tags claim space in
+ * labelOrder(): the room the camera stands in first (never hidden, see labelDefs.placeTag), then by importance
+ * (area, weighted by distance; strongly for blocks); a tag that would overlap an already placed one is hidden —
+ * block tags first try nudged positions (labelDefs.tagCandidates). The rectangle of `reserve` (the navigation
+ * hint) counts as placed, so no tag covers it or hides under it (tag sizes are measured once per density).
  */
 import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useLayoutEffect, useMemo, useRef } from 'react';
@@ -21,8 +26,20 @@ import type { Object3D } from 'three';
 import type { DerivedVariant } from '../model/derived';
 import type { Id } from '../model/types';
 import { fromWorld, toWorld } from './coords';
-import { blockLabels, cameraInRoom, labelDensities, labelOrder, placeTag, roomLabels } from './labelDefs';
+import {
+  blockAnchor,
+  blockLabels,
+  blockOwners,
+  cameraInBlock,
+  cameraInRoom,
+  labelDensities,
+  labelOrder,
+  placeTag,
+  roomLabels,
+  selectionBlock,
+} from './labelDefs';
 import type { LabelDef, LabelDensity, ScreenRect } from './labelDefs';
+import { selectionOf } from './sceneUtils';
 
 type Style = Partial<Record<string, string>>;
 
@@ -69,6 +86,8 @@ interface LabelItem {
   el: HTMLDivElement;
   detail: HTMLElement | null;
   world: Vector3;
+  /** Block labels: the roof probes in the world frame. */
+  probes: Vector3[];
   /** Last written state, so the DOM is only touched when something changes. */
   shown: LabelDensity | 'hidden';
   x: number;
@@ -76,12 +95,6 @@ interface LabelItem {
   /** Measured tag size (px) per density, cached once known (0 before layout, e.g. in jsdom). */
   size: Partial<Record<'full' | 'name', { w: number; h: number }>>;
 }
-
-/** Minimum gap (px) between two shown tags; a tag overlapping a more important one is hidden. */
-const LABEL_GAP = 2;
-
-const overlaps = (a: ScreenRect, b: ScreenRect): boolean =>
-  a.x0 < b.x1 + LABEL_GAP && b.x0 < a.x1 + LABEL_GAP && a.y0 < b.y1 + LABEL_GAP && b.y0 < a.y1 + LABEL_GAP;
 
 /** Size of the tag at a density (measured once by showing it briefly; the DOM state is restored). */
 function measure(it: LabelItem, density: LabelDensity): { w: number; h: number } {
@@ -106,13 +119,18 @@ export interface LabelsProps {
   cutHeight: number;
   highlightNew: boolean;
   occluder: RefObject<Object3D | null>;
+  /** An element over the layer that tags must keep clear of (the navigation hint). */
+  reserve?: RefObject<HTMLElement | null>;
 }
 
-export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutHeight, highlightNew, occluder }: LabelsProps) {
+export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutHeight, highlightNew, occluder, reserve }: LabelsProps) {
   const defs = useMemo(
     () => (mode === 'inne' ? roomLabels(derived, activeStoreyId, cutHeight) : blockLabels(derived)),
     [derived, mode, activeStoreyId, cutHeight],
   );
+  const owners = useMemo(() => blockOwners(derived), [derived]);
+  /** The reserved rectangle in layer coordinates, measured once per layer size (none while it has no size). */
+  const reserved = useRef<{ width: number; height: number; rects: ScreenRect[] } | null>(null);
   const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
   const items = useRef<LabelItem[]>([]);
@@ -147,7 +165,17 @@ export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutH
         el.appendChild(detail);
       }
       layer.appendChild(el);
-      const item: LabelItem = { def: d, el, detail, world: toWorld(d.at[0], d.at[1], d.at[2]), shown: 'hidden', x: NaN, y: NaN, size: {} };
+      const item: LabelItem = {
+        def: d,
+        el,
+        detail,
+        world: toWorld(d.at[0], d.at[1], d.at[2]),
+        probes: (d.block?.probes ?? []).map((p) => toWorld(p[0], p[1], p[2])),
+        shown: 'hidden',
+        x: NaN,
+        y: NaN,
+        size: {},
+      };
       return item;
     });
     invalidate();
@@ -156,6 +184,20 @@ export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutH
       items.current = [];
     };
   }, [layer, defs, highlightNew, invalidate]);
+
+  /** The `reserve` element's rectangle in layer coordinates (cached per layer size; empty until it has a size). */
+  function reservedRects(layerSize: { width: number; height: number }): ScreenRect[] {
+    const el = reserve?.current;
+    if (!el || !layer) return [];
+    const cached = reserved.current;
+    if (cached && cached.width === layerSize.width && cached.height === layerSize.height) return cached.rects;
+    const l = layer.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0)) return [];
+    const rects = [{ x0: r.left - l.left, x1: r.right - l.left, y0: r.top - l.top, y1: r.bottom - l.top }];
+    reserved.current = { ...layerSize, rects };
+    return rects;
+  }
 
   useFrame((state) => {
     const list = items.current;
@@ -169,29 +211,53 @@ export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutH
     const camPlan = fromWorld(tmp.cam);
     const distances = list.map((it) => it.world.distanceTo(tmp.cam));
     const pinned = list.map((it) => cameraInRoom(it.def, camPlan));
-    const order = labelOrder(list.map((it) => it.def.weight), distances, pinned);
+    const isBlock = list.map((it) => it.def.block !== undefined);
+    const order = labelOrder(list.map((it) => it.def.weight), distances, pinned, isBlock);
     const densities = labelDensities(distances, size.height, fov, order, pinned);
     const occ = occluder.current;
     const layerSize = { width: size.width, height: size.height };
-    const placed: ScreenRect[] = [];
+
+    /** Which of the block's roof probes a ray from the camera reaches before anything but the block itself. */
+    const probesSeen = (it: LabelItem, scene: Object3D): boolean[] => {
+      const block = it.def.block;
+      if (!block) return [];
+      const inside = cameraInBlock(block, camPlan);
+      return it.probes.map((p) => {
+        tmp.dir.copy(p).sub(tmp.cam);
+        const d = tmp.dir.length();
+        if (d < 1e-6) return true;
+        tmp.ray.set(tmp.cam, tmp.dir.divideScalar(d));
+        tmp.ray.far = Math.max(0, d - OCCLUSION_SLACK);
+        const hits = tmp.ray.intersectObject(scene, true);
+        return !hits.some((h) => inside || selectionBlock(selectionOf(h.object), owners) !== block.id);
+      });
+    };
+
+    const placed: ScreenRect[] = [...reservedRects(layerSize)];
     for (const i of order) {
       const it = list[i];
       const pin = pinned[i];
       let shown: LabelItem['shown'] = densities[i] === 'none' ? 'hidden' : densities[i];
       let rect: ScreenRect | null = null;
       if (shown !== 'hidden') {
-        const ndc = tmp.ndc.copy(it.world).project(camera);
+        // Block labels: hidden while the block cannot be seen, over the visible part of a partly hidden one.
+        let world: Vector3 | null = it.world;
+        if (it.def.block && occ) {
+          const at = blockAnchor(it.def, probesSeen(it, occ));
+          world = at === it.def.at ? it.world : at && toWorld(at[0], at[1], at[2]);
+        }
+        const ndc = world && tmp.ndc.copy(world).project(camera);
         let anchor: { x: number; y: number } | null =
-          ndc.z <= 1 && ndc.z >= -1 ? { x: ((ndc.x + 1) / 2) * size.width, y: ((1 - ndc.y) / 2) * size.height } : null;
+          ndc && ndc.z <= 1 && ndc.z >= -1 ? { x: ((ndc.x + 1) / 2) * size.width, y: ((1 - ndc.y) / 2) * size.height } : null;
         // the camera's own room is never hidden by occlusion (its label point may be behind a post or the chimney)
-        if (anchor && !pin && occ) {
+        if (anchor && !pin && occ && !it.def.block) {
           tmp.dir.copy(it.world).sub(tmp.cam).normalize();
           tmp.ray.set(tmp.cam, tmp.dir);
           tmp.ray.far = Math.max(0, distances[i] - OCCLUSION_SLACK);
           if (tmp.ray.intersectObject(occ, true).length > 0) anchor = null;
         }
-        const r = placeTag(anchor, measure(it, shown), layerSize, pin);
-        if (!r || (!pin && placed.some((p) => overlaps(p, r)))) shown = 'hidden';
+        const r = placeTag(anchor, measure(it, shown), layerSize, pin, placed, isBlock[i]);
+        if (!r) shown = 'hidden';
         else {
           placed.push(r);
           rect = r;

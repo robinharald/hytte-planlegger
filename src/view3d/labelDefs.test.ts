@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { FIXTURE_DERIVED } from './fixture';
 import type { DerivedFloor } from '../model/derived';
 import {
+  blockAnchor,
   blockLabels,
+  blockOwners,
+  cameraInBlock,
   cameraInRoom,
   labelDensities,
   labelDensity,
@@ -11,8 +14,11 @@ import {
   MAX_LABELS,
   PIN_MARGIN,
   placeTag,
+  PROBE_LIFT,
   pxPerMetre,
   roomLabels,
+  selectionBlock,
+  tagCandidates,
 } from './labelDefs';
 import { computeVisibility, floorIsDrawn, wallIsDrawn } from './visibility';
 
@@ -41,6 +47,46 @@ describe('label definitions', () => {
     expect(b.at[2]).toBeCloseTo(3.2 + 0.31 + 0.6, 9);
     expect(b.weight).toBeCloseTo(25.64, 9);
     expect(b.room).toBeUndefined();
+  });
+
+  it('probes a block at 25 / 50 / 75 % of its ridge over the block, just above the roof top', () => {
+    const [b] = blockLabels(FIXTURE_DERIVED);
+    // the ridge runs on over the gable overhangs (x −0.35 … 6.35); the block's axis spans x 0 … 6
+    const probes = [...b.block!.probes].sort((p, q) => p[0] - q[0]);
+    expect(probes).toHaveLength(3);
+    [1.5, 3, 4.5].forEach((x, i) => {
+      expect(probes[i][0]).toBeCloseTo(x, 9);
+      expect(probes[i][1]).toBeCloseTo(2, 9);
+      expect(probes[i][2]).toBeCloseTo(3.2 + 0.31 + PROBE_LIFT, 9);
+    });
+    expect(b.block!.topZ).toBeCloseTo(3.51, 9);
+    expect(cameraInBlock(b.block!, [3, 2, 1.5])).toBe(true);
+    expect(cameraInBlock(b.block!, [3, 2, 4])).toBe(false); // above the roof
+    expect(cameraInBlock(b.block!, [9, 2, 1.5])).toBe(false);
+  });
+
+  it('anchors a block tag over its visible probes, or hides it when none can be seen', () => {
+    const [b] = blockLabels(FIXTURE_DERIVED);
+    const p = b.block!.probes;
+    expect(blockAnchor(b, [true, true, true])).toBe(b.at);
+    expect(blockAnchor(b, [false, false, false])).toBeNull();
+    const part = blockAnchor(b, [false, true, true])!;
+    expect(part[0]).toBeCloseTo((p[1][0] + p[2][0]) / 2, 9);
+    expect(part[1]).toBeCloseTo(2, 9);
+    expect(part[2]).toBe(b.at[2]);
+    expect(blockAnchor({ at: [1, 2, 3] }, [])).toEqual([1, 2, 3]); // no probes: the anchor itself
+  });
+
+  it('knows which block a hit object belongs to (roof, foundation, exterior walls and their openings)', () => {
+    const owners = blockOwners(FIXTURE_DERIVED);
+    const ext = FIXTURE_DERIVED.walls.find((w) => w.isExterior && w.openings.length > 0)!;
+    const inner = FIXTURE_DERIVED.walls.find((w) => !w.isExterior && !w.isDivider)!;
+    expect(selectionBlock({ kind: 'block', id: 'blk' }, owners)).toBe('blk');
+    expect(selectionBlock({ kind: 'wall', id: ext.id }, owners)).toBe('blk');
+    expect(selectionBlock({ kind: 'opening', id: ext.openings[0].id }, owners)).toBe('blk');
+    expect(selectionBlock({ kind: 'wall', id: inner.id }, owners)).toBeNull();
+    expect(selectionBlock({ kind: 'deck', id: 'x' }, owners)).toBeNull();
+    expect(selectionBlock(null, owners)).toBeNull();
   });
 
   it('applies the plan density rule by pixels per metre', () => {
@@ -90,6 +136,17 @@ describe('label priority', () => {
     expect(labelOrder([10, 12], [2, 40])).toEqual([0, 1]);
   });
 
+  it('weights distance strongly for blocks, so the nearest block wins against a bigger one behind it', () => {
+    // Forslag D from 'framsiden': the new wing (41.5 m², 19.6 m) in front of the main house (102.5 m², 30 m)
+    expect(labelOrder([102.5, 41.5], [30, 19.6], [], [true, true])).toEqual([1, 0]);
+    // … while rooms keep the mild rule (the big one wins)
+    expect(labelOrder([102.5, 41.5], [30, 19.6])).toEqual([0, 1]);
+    // from 'oversikt' (main 44.9 m, wing 38.6 m away) the main house still comes first
+    expect(labelOrder([102.5, 41.5], [44.9, 38.6], [], [true, true])).toEqual([0, 1]);
+    expect(labelScore(27, 3, true)).toBeCloseTo(1, 9);
+    expect(labelScore(5, 0.2, true)).toBe(5); // at least 1 m
+  });
+
   it('puts the camera room first whatever its size', () => {
     expect(labelOrder([24, 2, 10], [5, 30, 3], [false, true, false])).toEqual([1, 0, 2]);
   });
@@ -124,11 +181,42 @@ describe('placeTag', () => {
     expect(placeTag({ x: 50, y: 30 }, size, layer)).not.toBeNull(); // exactly fits
   });
 
-  it('clamps the camera room tag into the layer, or pins it to the bottom centre', () => {
+  it('clamps the camera room tag into the layer, or pins it to the bottom-right corner', () => {
     expect(placeTag({ x: 20, y: 10 }, size, layer, true)).toEqual({ x0: 0, x1: 100, y0: 0, y1: 30 });
     expect(placeTag({ x: 790, y: 590 }, size, layer, true)).toEqual({ x0: 700, x1: 800, y0: 560, y1: 590 });
-    expect(placeTag(null, size, layer, true)).toEqual({ x0: 350, x1: 450, y0: 600 - PIN_MARGIN - 30, y1: 600 - PIN_MARGIN });
-    expect(placeTag({ x: -300, y: 200 }, size, layer, true)).toEqual({ x0: 350, x1: 450, y0: 600 - PIN_MARGIN - 30, y1: 600 - PIN_MARGIN });
+    const corner = { x0: 800 - PIN_MARGIN - 100, x1: 800 - PIN_MARGIN, y0: 600 - PIN_MARGIN - 30, y1: 600 - PIN_MARGIN };
+    expect(placeTag(null, size, layer, true)).toEqual(corner);
+    expect(placeTag({ x: -300, y: 200 }, size, layer, true)).toEqual(corner);
+  });
+
+  it('moves a pinned tag up above a reserved rectangle (the hint in a narrow pane)', () => {
+    const narrow = { width: 300, height: 600 };
+    const wide = { w: 150, h: 30 };
+    const hint = { x0: 10, x1: 205, y0: 566, y1: 590 };
+    expect(placeTag(null, wide, narrow, true)).toEqual({ x0: 138, x1: 288, y0: 558, y1: 588 });
+    expect(placeTag(null, wide, narrow, true, [hint])).toEqual({ x0: 138, x1: 288, y0: 534, y1: 564 });
+    // clear of it in a wide pane: stays in the corner
+    expect(placeTag(null, size, layer, true, [hint])).toEqual({ x0: 688, x1: 788, y0: 558, y1: 588 });
+  });
+
+  it('hides a tag that would overlap a taken rectangle, unless a nudged position is free', () => {
+    const first = placeTag({ x: 400, y: 300 }, size, layer)!;
+    expect(placeTag({ x: 500, y: 300 }, size, layer, false, [first])).toBeNull();
+    // nudged 8 px to the right
+    expect(placeTag({ x: 500, y: 300 }, size, layer, false, [first], true)).toEqual({ x0: 458, x1: 558, y0: 270, y1: 300 });
+    // almost on top of it: no sideways nudge helps, one tag higher still touches, two tags higher is free
+    expect(placeTag({ x: 410, y: 305 }, size, layer, false, [first], true)).toEqual({ x0: 360, x1: 460, y0: 211, y1: 241 });
+    // … unless that leaves the layer: then below the anchor
+    const top = placeTag({ x: 400, y: 70 }, size, layer)!;
+    expect(placeTag({ x: 410, y: 75 }, size, layer, false, [top], true)).toEqual({ x0: 360, x1: 460, y0: 77, y1: 107 });
+    // the candidates: on the anchor, ±8 / ±16 px, then the same one and two tags higher, then below
+    const c = tagCandidates({ x: 400, y: 300 }, size, true);
+    expect(c).toHaveLength(20);
+    expect(c.slice(0, 5).map((r) => r.x0 - 350)).toEqual([0, 8, -8, 16, -16]);
+    expect(c[5]).toEqual({ x0: 350, x1: 450, y0: 238, y1: 268 });
+    expect(c[10]).toEqual({ x0: 350, x1: 450, y0: 206, y1: 236 });
+    expect(c[15]).toEqual({ x0: 350, x1: 450, y0: 302, y1: 332 });
+    expect(tagCandidates({ x: 400, y: 300 }, size)).toEqual([first]);
   });
 });
 

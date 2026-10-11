@@ -58,6 +58,8 @@ export interface SceneProps {
   onReady?: () => void;
   /** Coarse pointer (phone/tablet): smaller shadow map, harder shadows. */
   coarse: boolean;
+  /** An element over the canvas the labels keep clear of (View3D's navigation hint). */
+  labelReserve?: RefObject<HTMLElement | null>;
 }
 
 const BACKGROUND = `#${PALETTE.background.toString(16).padStart(6, '0')}`;
@@ -125,7 +127,15 @@ export function Scene(props: SceneProps) {
       </group>
 
       {props.showLabels && (
-        <Labels derived={derived} mode={mode} activeStoreyId={activeStoreyId} cutHeight={cutHeight} highlightNew={highlightNew} occluder={building} />
+        <Labels
+          derived={derived}
+          mode={mode}
+          activeStoreyId={activeStoreyId}
+          cutHeight={cutHeight}
+          highlightNew={highlightNew}
+          occluder={building}
+          reserve={props.labelReserve}
+        />
       )}
       <SelectionOverlay
         selection={props.selection}

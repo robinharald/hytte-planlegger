@@ -129,8 +129,12 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
 3. `deriveWalls(variant, blocks, roofs)` (`walls.ts`) → exterior pieces (split at part + zone boundaries, junction
    handling, mitred corners at block vertices, butt ends elsewhere) + stored walls (interior, exterior-old,
    divider); each with footprint, `topProfile` (exact piecewise-linear upper envelope; level ceiling / fixed height
-   where applicable), `levelIds` (stored walls: z range covers level.elevation + 1.0 where that level exists;
-   exterior pieces: the block's base level plus the level of every floor zone the piece runs along), openings
+   where applicable), `levelIds` (stored walls: their own level plus every higher level whose elevation + 1.0 + 0.3
+   the wall's topZ reaches AND that has a floor at the wall's midpoint — a block with it as base level or a zone of
+   it, for the loft the 'add' zone — probed at the midpoint and 1 cm beyond either face, so walls along the zone
+   boundary count; the 2.5 m corridor walls `w-vf-korr` / `w-korr-stue` stay out of the loft, `w-106-korr`,
+   `w-103-102` and `w-106-stue` (to the roof, along the loft zone) are in it; exterior pieces: the block's base
+   level plus the level of every floor zone the piece runs along), openings
    resolved (sillZ/headZ, swing arc, rendering hints, `opening-above-roof` when headZ > envelope − 0.05), patches
    for removed openings, validation (fit inside host incl. the end-touch rule, overlaps in plan AND height).
 4. `detectRooms(...)` (`planarGraph.ts` + `rooms.ts`) per storey: ONE planar graph from the reference lines of all
@@ -283,10 +287,17 @@ with a 6 mm seam, a glazed one two panes with a centre frame bar. Terrain (`Terr
 lowest block ground level. Labels are plain DOM tags in one layer over the canvas, positioned every rendered frame
 by projecting their anchors and hidden when the building is hit first by a ray from the camera (name + dims + area,
 ≤ 30 visible, same density rule by camera distance), toggleable. Overlaps are resolved by importance: room area
-(block area outside), halved at 15 m distance, so a 24 m² room 15 m away beats a 2.7 m² pantry 3 m away; the
-30-label cap uses the same order. The label of the room the camera stands in always comes first and is never
-hidden (pinned to the bottom centre when its point is behind the camera or off-screen); every other tag is shown
-only when its whole rectangle fits inside the layer. (drei `<Html>` was dropped: it creates a React root per label
+halved at 15 m distance, so a 24 m² room 15 m away beats a 2.7 m² pantry 3 m away; block labels (outside) use the
+BYA area over the cube of the distance, so the nearest block wins against a bigger one behind it (from 'framsiden'
+the new wing beats the main house, from 'oversikt' the main house wins); the 30-label cap uses the same order. A
+block label is shown only while the block can be seen: rays to three probes just above its ridge (25 / 50 / 75 %
+of the ridge over the block) must not all hit another block first (the block's own roof, walls, openings and
+foundation do not count unless the camera is inside it); a partly hidden block's tag sits over its visible probes.
+A block tag that would overlap a placed one tries ±8 / ±16 px sideways, then one and two tag heights higher, then
+below its anchor before it is hidden. The label of the room the camera stands in always comes first and is never
+hidden (pinned to the bottom-right corner, 12 px inset, when its point is behind the camera or off-screen); the
+navigation hint's rectangle is reserved (a pinned tag moves up above it, other tags avoid it); every other tag is
+shown only when its whole rectangle fits inside the layer. (drei `<Html>` was dropped: it creates a React root per label
 and unmounts it synchronously, which races with React 19 rendering.) Camera presets defined in plan coords relative
 to `bounds` (from the old model's Forslag D views): oversikt p(36,−25,26) t(11.5,4.5,1.5); terrassen p(29,19,8)
 t(14.5,8,1.2); framsiden p(38,2,4.5) t(16,2.5,2) (the new wing's long east side with the white glass door, as in the
@@ -294,7 +305,9 @@ old model); baksiden p(−14,22,8) t(8,5,2); langsiden p(11,−27,5) t(12.5,0,2)
 ovenfra p(12,4.49,54) t(12,4.5,0); naert-tilbygget p(26,−9,12) t(17.5,2.5,0.6); inne-stua p(6.3,0.9,1.55)
 t(15.5,4.5,1.3) (eye level in the stue, looking along stue, passasje and spiseplass; the Stue's label point is at
 (8.03, 1.31), so the camera stands west of it). Choosing 'inne-stua' raises a cut height below 2.3 to 2.3
-(`presetUi`, `EYE_LEVEL_CUT`), so the walls rise above the eye. OrbitControls damped, maxPolarAngle 0.495·π,
+(`presetUi`, `EYE_LEVEL_CUT`), so the walls rise above the eye, and remembers the previous one in
+`ui.cutHeightBeforePreset`; choosing another preset restores it unless the user moved the slider in between (any
+`setUi` with `cutHeight` clears the memory). OrbitControls damped, maxPolarAngle 0.495·π,
 minDistance 3, animated transitions (~900 ms, skipped with reduced motion).
 Sun: directional light from `sunInPlan` for the chosen date/time (default 21 June 15:00 local).
 
@@ -304,7 +317,8 @@ Sun: directional light from `sunInPlan` for the chosen date/time (default 21 Jun
 interface AppState {
   project: Project;                       // tracked by zundo (partialize: project only, limit 200), autosaved
   ui: { activeView: 'plan'|'3d'|'split'; planStorey: 'ground'|'loft'; activeStoreyId: Id; mode3d: 'ute'|'inne';
-        cutHeight: number; showLabels: boolean; showDims: boolean; showGrid: boolean; showRoofPlan: boolean;
+        cutHeight: number; cutHeightBeforePreset: number | null; showLabels: boolean; showDims: boolean;
+        showGrid: boolean; showRoofPlan: boolean;
         highlightNew: boolean; showTrees: boolean; showTerrain: boolean; preset: CameraPreset;
         selection: Selection | null; tool: 'select'|'measure'; sun: { date: string; minutes: number };
         readOnly: boolean; source: 'local'|'link'|'version' };
@@ -335,8 +349,11 @@ model with the warning `nb.warnings.deriveFailed(detail)`.
 
 `persistence.ts`: autosave of `project` (debounced 500 ms) to localStorage `hytte-planlegger:project`, written once
 at start-up when nothing is stored (so a fresh project keeps its id across a reload); `saveNamedVersion` forces a
-save first. UI prefs under `hytte-planlegger:ui` with `v` = `PREFS_VERSION` (older prefs keep everything but the
-view and the cut height; the view is only remembered once the user clicked a view tab); named versions
+save first. Without storage (localStorage blocked) `startAutosave` does nothing and never reports a failed write: the
+start-up notice 'storage-unavailable' already says so. UI prefs under `hytte-planlegger:ui` with `v` =
+`PREFS_VERSION` (older prefs keep everything but the view and the cut height; the view is only remembered once the
+user clicked a view tab; `cutHeightBeforePreset` is kept only together with the preset 'inne-stua', otherwise it is
+loaded as the cut height, so the raised value never outlives the preset); named versions
 `hytte-planlegger:versions` = `{ id, name, savedAt, projectId, schemaVersion, project }[]`, listed for the current
 projectId newest first, capped at 30 with size shown; export / import JSON file (a share-link delta is also accepted
 as a file). Share link `#d=` + lz-string `compressToEncodedURIComponent(JSON of payload)`: a DELTA against the
@@ -524,10 +541,15 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   below every block floor, the derived wall `w-wing-w` (x = 16) with topZ 3.87, the wing ceiling at 2.45 with its
   partitions at 2.4, the double door's two 0.8 m leaves, no patch over a kept opening, loft BRA 12.54; it prints the
   room schedule and the area summary with `--silent=false`), roofs (extension ends y = 2.00 / 4.20 and x = 18.4;
-  wall y = 6.2 x 5–9 peaks at 3.28 — the wing ridge underside, the IFC's 3.26 is the ridge beam top), robustness
+  wall y = 6.2 x 5–9 peaks at 3.28 — the wing ridge underside, the IFC's 3.26 is the ridge beam top), walls on the
+  seed (the 2.5 m corridor walls `w-vf-korr` / `w-korr-stue` are on 'main' only, the walls to the roof along the
+  loft zone are in the loft), robustness
   (rotated seed, moved / swapped vertices, polygon-clipping mocked to fail), areas (invariants above), migrations,
   seed invariants, the 3D builders on the seed (terrain below every room floor with `derived.groundWorks`; the
-  'inne-stua' camera stands in the Stue and frames Passasje and Spiseplass).
+  'inne-stua' camera stands in the Stue and frames Passasje and Spiseplass), the 3D scene on the seed from
+  'framsiden' (the wing labelled, the glass bump behind it hidden, the main house's tag nudged clear, the bod
+  wing's tag over its visible north end), the cut height restored after 'inne-stua', no "save failed" without
+  storage.
 - `npm run e2e` → Playwright (Chromium) loads the app, waits for `window.__hytte.ready`, checks that no 'generic'
   warning exists, that the Romskjema's Areal header ends inside the side panel without sideways scrolling, that the
   plan shows ≥ 15 room labels with an m² line, and that Del lenke / Hjelp are on screen at 375 px, and writes

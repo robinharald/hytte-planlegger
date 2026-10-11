@@ -193,6 +193,7 @@ export const UI_PREF_KEYS = [
   'activeStoreyId',
   'mode3d',
   'cutHeight',
+  'cutHeightBeforePreset',
   'showLabels',
   'showDims',
   'showGrid',
@@ -219,6 +220,9 @@ function oneOf<T extends string>(v: unknown, allowed: readonly T[]): v is T {
   return typeof v === 'string' && (allowed as readonly string[]).includes(v);
 }
 
+const isCut = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const clampCut = (v: number): number => Math.min(CUT_HEIGHT_MAX, Math.max(CUT_HEIGHT_MIN, v));
+
 /** Validate stored prefs field by field; anything malformed is dropped (the default applies). */
 export function sanitizeUiPrefs(raw: unknown): Partial<UiState> {
   if (!isRecord(raw)) return {};
@@ -231,11 +235,17 @@ export function sanitizeUiPrefs(raw: unknown): Partial<UiState> {
   if (oneOf(raw.planStorey, ['ground', 'loft'] as const)) out.planStorey = raw.planStorey;
   if (typeof raw.activeStoreyId === 'string' && raw.activeStoreyId) out.activeStoreyId = raw.activeStoreyId;
   if (oneOf(raw.mode3d, ['ute', 'inne'] as const)) out.mode3d = raw.mode3d;
-  if (current && typeof raw.cutHeight === 'number' && Number.isFinite(raw.cutHeight)) {
-    out.cutHeight = Math.min(CUT_HEIGHT_MAX, Math.max(CUT_HEIGHT_MIN, raw.cutHeight));
+  if (oneOf(raw.preset, CAMERA_PRESET_KEYS)) out.preset = raw.preset;
+  if (current && isCut(raw.cutHeight)) {
+    out.cutHeight = clampCut(raw.cutHeight);
+    // The cut height 'inne-stua' raised: kept as such while that preset is chosen; otherwise it is the user's
+    // choice, so the raised value never outlives the preset.
+    if (isCut(raw.cutHeightBeforePreset)) {
+      if (out.preset === 'inne-stua') out.cutHeightBeforePreset = clampCut(raw.cutHeightBeforePreset);
+      else out.cutHeight = clampCut(raw.cutHeightBeforePreset);
+    }
   }
   for (const k of BOOL_PREFS) if (typeof raw[k] === 'boolean') out[k] = raw[k];
-  if (oneOf(raw.preset, CAMERA_PRESET_KEYS)) out.preset = raw.preset;
   const sun = raw.sun;
   if (
     isRecord(sun) &&
@@ -858,9 +868,12 @@ export interface AutosaveController {
  * At start the stored document counts as this tab's own; when there is none the project is written right away
  * (so its id survives a reload). A stored document with another key than the one this tab last wrote or adopted
  * belongs to another tab: it is reported once (`onExternalChange`) and never overwritten (see `adopt`).
+ * Without storage (localStorage blocked) it does nothing and never calls `onSaveError`: the start-up notice
+ * 'storage-unavailable' already says that nothing is saved, so edits must not add a "lite plass?" banner on top.
  */
 export function startAutosave(store: AppStore, opts: AutosaveOptions): AutosaveController {
   const { storage, target } = opts;
+  if (!storage) return { flush: () => {}, saveNow: () => false, adopt: () => {}, stop: () => {} };
   const delay = opts.delayMs ?? AUTOSAVE_DELAY_MS;
   let lastWritten: string | null = storedProjectKey(storage);
   let lastSaved: Project | null = null;
@@ -902,7 +915,7 @@ export function startAutosave(store: AppStore, opts: AutosaveOptions): AutosaveC
     return false;
   };
 
-  if (storage && lastWritten === null && !store.getState().ui.readOnly) saveProject();
+  if (lastWritten === null && !store.getState().ui.readOnly) saveProject();
 
   const savePrefs = () => {
     const ui = store.getState().ui;

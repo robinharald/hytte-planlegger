@@ -1,6 +1,6 @@
 # Status
 
-Oppdatert 2026-10-11 (fase 1 integrert, rettinger etter gjennomgangen integrert). Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
+Oppdatert 2026-10-11 (fase 1 integrert, rettinger etter gjennomgangen og etter den nye gjennomgangen integrert). Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
 - **Fase 1** – Forslag D vises riktig i plan og 3D med romskjema og arealer; lagring, versjoner, deling og publisering.
@@ -75,7 +75,26 @@ Faser:
   - Integrasjon: norske tekster for `block-self-intersecting` og for reserve-advarslene, 3D-terrenget bruker
     `terrainZAt(…, derived.groundWorks)`, standard snitthøyde 1,3 m (og 2,3 m når «Inne i stua» velges), røyktesten
     utvidet (se under).
-- Testtall: `npm test` 771 tester i 37 filer, alle grønne; `npm run typecheck`, `npm run lint` og `npm run build` rene;
+- Rettet etter den nye gjennomgangen (runde 3):
+  - Hemsplanen: da de eksisterende skilleveggene ble 2,5 m høye, kom to korridorvegger (`w-vf-korr` og `w-korr-stue`)
+    med i hemsetasjen (2,47 < 2,50) og ble tegnet som tykke snittvegger ut i det åpne rommet over korridoren og
+    kjøkkenet. Nå blir en lagret vegg med i en høyere etasje bare når toppen når minst etasjens høyde + 1,0 + 0,3 m
+    OG midtpunktet ligger på et gulv i den etasjen (for hemsen: i `add`-sonen; vegger langs sonekanten teller).
+    Veggene som går til taket langs hemsen (`w-106-korr`, `w-103-102`, `w-106-stue`) er fortsatt med. Yttervegger
+    som før. `plan-hems.png` viser ikke lenger korridorveggene.
+  - Snitthøyden etter «Inne i stua»: forhåndsvisningen husker snitthøyden den løftet fra (`cutHeightBeforePreset`) og
+    setter den tilbake når en annen visning velges (1,3 → 2,3 → 1,3), med mindre brukeren har flyttet glidebryteren
+    imellom (da blir den stående). Den løftede verdien lagres ikke som brukerens valg.
+  - 3D-etiketter for bygningsdeler: skjules når bygningsdelen ikke synes (stråler mot tre punkt like over mønet
+    treffer en annen bygningsdel først), og står over den synlige delen når bare noe av den synes. Nærmeste
+    bygningsdel vinner (areal delt på avstanden i tredje), og en etikett som ville overlappe prøver ±8 / ±16 px
+    til siden, så én eller to etiketthøyder opp, så under ankeret før den skjules. Fra «Framsiden»: «Ny tverrfløy»
+    har navnet sitt, «Hytta, hoveddel» står over den, «Glassutbygg» (bak fløya) vises ikke, og «Bod-fløy» står over
+    den nordre enden av bod-fløya, som synes til høyre for fløya. Den fastlåste rometiketten (rommet kameraet står i)
+    står nå nede til høyre (12 px inn) og holder seg unna hjelpeteksten «Dra for å snu …» nede til venstre.
+  - Lagring: når nettleserlagring er blokkert, kommer det ikke lenger et ekstra banner «Endringene kunne ikke
+    lagres … (lite plass?)» ved første endring; banneret om at lagring ikke er tilgjengelig er nok.
+- Testtall: `npm test` 782 tester i 37 filer, alle grønne; `npm run typecheck`, `npm run lint` og `npm run build` rene;
   `npm run e2e` 2 av 2 grønne (sjekker også at romskjemaet får plass, ≥ 15 romnavn med m² i planen og at «Del lenke» /
   «Hjelp» er synlige på telefon). Skjermbilder i `e2e/screenshots/`: `plan.png`, `plan-hems.png`, `3d-ute-oversikt.png`,
   `3d-ute-framsiden.png`, `3d-ute-langsiden.png`, `3d-ute-inne-stua.png` (Ute + «Inne i stua»: taket sett innenfra),
@@ -150,9 +169,10 @@ Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-
   langveggene.
 - Innervegger som vender bort fra sola er bare lyst av himmellyset og ser grå-beige ut (som i den gamle modellen); se
   `3d-inne-stua.png`.
-- Svært små rom får ingen etikett i planen ved standard zoom: Trapperepos, og Teknisk / vask under ca. 30 px/m – de dukker
-  opp når man zoomer inn. I «Begge» på 1400 px er planen ca. 11 px/m, så der vises bare navn som får plass med liten
-  skrift (standardvisningen er Plan under 1600 px). 3D-etiketter som ville overlappe en viktigere etikett skjules.
+- Små rom får ingen etikett i planen ved standard zoom: på 1400 × 900 (Plan) mangler Soverom 3, Korridor (nedre) og
+  Teknisk / vask (og Trapperepos på hemsen) – de dukker opp når man zoomer inn. I «Begge» på 1400 px er planen ca.
+  11 px/m, så der vises bare navn som får plass med liten skrift (standardvisningen er Plan under 1600 px).
+  3D-rometiketter som ville overlappe en viktigere etikett skjules; etiketter for bygningsdeler flyttes litt først.
 - Skjermbildene fra røyktesten (SwiftShader) har en kort grå strek øverst til venstre over målkjeden i planen; den finnes
   ikke i SVG-en og vises ikke uten SwiftShader (rasteriseringsfeil i den programvarebaserte GPU-en).
 - Konflikt med en annen fane: denne fanen slutter å lagre til brukeren velger «Hent endringene» eller «Behold mine

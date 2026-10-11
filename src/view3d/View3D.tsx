@@ -10,7 +10,7 @@
  * - `onReady` fires once, after the first frame rendered with the camera on its preset.
  */
 import { Canvas } from '@react-three/fiber';
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import type { CSSProperties, JSX } from 'react';
 import type { DerivedVariant } from '../model/derived';
 import type { Id, Site, TerrainAsset, Vec3 } from '../model/types';
@@ -80,6 +80,8 @@ function isCoarsePointer(): boolean {
 
 export function View3D(props: View3DProps): JSX.Element {
   const coarse = useMemo(isCoarsePointer, []);
+  /** The navigation hint: 3D labels keep clear of it (pinned tags move up above it in narrow panes). */
+  const hint = useRef<HTMLDivElement>(null);
   // Initial camera only; later preset changes are animated by the scene.
   const initialCamera = useMemo(() => {
     const v = presetWorld(props.preset, props.derived.bounds);
@@ -89,9 +91,11 @@ export function View3D(props: View3DProps): JSX.Element {
   return (
     <div data-testid="view-3d" style={ROOT_STYLE} aria-label={STRINGS.canvasLabel} role="region">
       <Canvas dpr={[1, 1.5]} frameloop="demand" shadows="percentage" flat gl={{ antialias: true, preserveDrawingBuffer: true }} camera={initialCamera}>
-        <Scene {...props} coarse={coarse} />
+        <Scene {...props} coarse={coarse} labelReserve={hint} />
       </Canvas>
-      <div style={HINT_STYLE}>{STRINGS.hint}</div>
+      <div ref={hint} style={HINT_STYLE}>
+        {STRINGS.hint}
+      </div>
     </div>
   );
 }
