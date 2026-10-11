@@ -1,122 +1,91 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+/**
+ * App shell (architecture.md "UI"): banners · top bar · headline numbers · [controls | stage | side panels],
+ * dialogs, keyboard shortcuts and the `window.__hytte` test hook.
+ *
+ * `window.__hytte.ready` turns true after View3D's first frame (onReady), or right after mount when the 3D view
+ * is not shown (plan only), and then stays true.
+ */
+import { useCallback, useState } from 'react';
+import { nb } from './i18n/nb';
+import { leaveSharedView, reloadPage, resetToSeed, useAppStore } from './state/appStore';
+import { Headline } from './ui/AreaTotals';
+import { Banners } from './ui/Banners';
+import { ErrorBoundary } from './ui/common';
+import { Controls } from './ui/Controls';
+import { HelpDialog, ShareDialog, VersionsDialog } from './ui/Dialogs';
+import { PHONE_QUERY, useKeyboardShortcuts, useMediaQuery, useTestHook } from './ui/hooks';
+import { SidePanels } from './ui/SidePanels';
+import { Stage } from './ui/Stage';
+import { TopBar } from './ui/TopBar';
+import type { DialogKind } from './ui/TopBar';
 
-function App() {
-  const [count, setCount] = useState(0)
-
+function AppError(props: { error: Error; reset: () => void }) {
+  const readOnly = useAppStore((s) => s.ui.readOnly);
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
+    <div className="error-box" role="alert">
+      <h2>{nb.error.heading}</h2>
+      <p>{nb.error.body}</p>
+      <div className="toolgroup">
+        <button type="button" className="btn btn-primary" onClick={reloadPage}>
+          {nb.error.reload}
+        </button>
         <button
           type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
+          className="btn"
+          onClick={() => {
+            if (readOnly) leaveSharedView();
+            else resetToSeed();
+            props.reset();
+          }}
         >
-          Count is {count}
+          {nb.error.reset}
         </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      </div>
+      <details className="explain">
+        <summary>{nb.error.details}</summary>
+        <pre>{props.error.stack ?? props.error.message}</pre>
+      </details>
+    </div>
+  );
 }
 
-export default App
+function Shell() {
+  const isPhone = useMediaQuery(PHONE_QUERY);
+  const activeView = useAppStore((s) => s.ui.activeView);
+  const readOnly = useAppStore((s) => s.ui.readOnly);
+  const [dialog, setDialog] = useState<DialogKind | null>(null);
+  const [ready3d, setReady3d] = useState(false);
+  // Plan-only view: ready right away (published to window.__hytte after mount by useTestHook).
+  const [planOnlySeen, setPlanOnlySeen] = useState(activeView === 'plan');
+  if (activeView === 'plan' && !planOnlySeen) setPlanOnlySeen(true);
+  const ready = ready3d || planOnlySeen;
+  const closeDialog = useCallback(() => setDialog(null), []);
+  const onReady3d = useCallback(() => setReady3d(true), []);
+
+  useKeyboardShortcuts();
+  useTestHook(ready);
+
+  return (
+    <div className="app" data-readonly={readOnly || undefined}>
+      <Banners />
+      <TopBar onOpen={setDialog} />
+      <Headline />
+      <div className="workspace">
+        <Controls isPhone={isPhone} />
+        <Stage onReady3d={onReady3d} />
+        <SidePanels isPhone={isPhone} />
+      </div>
+      {dialog === 'help' && <HelpDialog onClose={closeDialog} />}
+      {dialog === 'share' && <ShareDialog onClose={closeDialog} />}
+      {dialog === 'versions' && !readOnly && <VersionsDialog onClose={closeDialog} />}
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary fallback={(error, reset) => <AppError error={error} reset={reset} />}>
+      <Shell />
+    </ErrorBoundary>
+  );
+}
