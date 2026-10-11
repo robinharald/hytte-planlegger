@@ -1,0 +1,38 @@
+# Continuous integration: unit tests and a production build on every push and pull request.
+# The Playwright smoke test is not run here (it needs a Chromium install and the real derive pipeline);
+# run it locally with `npm run e2e` and commit the screenshots.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      - name: Build (tsc + vite)
+        run: npm run build

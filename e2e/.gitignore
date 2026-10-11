@@ -1,0 +1,3 @@
+# Playwright output (reports, traces, failure screenshots). The screenshots in ./screenshots/ ARE committed.
+test-results/
+playwright-report/

@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright output (reports, traces, failure screenshots). e2e/screenshots/*.png ARE committed.
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
