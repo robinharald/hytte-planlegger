@@ -47,8 +47,8 @@ Bump `SEED_REVISION` whenever the seed content changes; the app compares it with
 - The new wing has a flat ceiling at 2.4 (`blk-wing.ceilingHeight`, cold loft above); its partitions are `auto` and stop
   there. The wall between the stue and the wing (`w-wing-w`, x = 16) is `roof`: it runs up under the main ridge (3.87)
   and closes the stue's gable triangle. The two high gable windows (`win-gavl-s/n`, sill 2.75) therefore sit above the
-  ceiling and light the cold loft — an open question for Robin.
-- Terrace polygon, glass railing with three stair gaps, hot tub, tree positions.
+  ceiling and light the cold loft (kept so, Robin's decision after the phase-1 report).
+- Terrace polygon, glass railing with three stair gaps, hot tub, tree positions (the terrace as changed by Robin, below).
 
 **Robin's decisions (2026-10-11)** — see "Seed decisions" in `docs/kalibrering-ifc.md` for the full list:
 
@@ -62,6 +62,14 @@ Bump `SEED_REVISION` whenever the seed content changes; the app compares it with
 - Review fixes of 2026-10-11 (`SEED_REVISION` 2): gable overhang 0.51, existing partitions 2.5, `w-vf-korr` to x 9 (divider
   `dv-korr-ne` removed), diagonal doors at the IFC centres, the wing ceiling 2.4 with `auto` partitions, `w-wing-w` to the
   roof, the two-leaf terrace door.
+- Terrace cut (`SEED_REVISION` 3): the deck no longer runs in front of the glass bump (leseskrok). It starts at the bump's
+  east wall (x = 9), so the strip x 5–9 × y −4.6..−2 is gone (4 × 2.6 m; deck BYA 67.14 → 57.18 m², the 0.11 m cladding
+  strip south of the bump was already counted as building). The railing starts at (9, −2): the piece along the bump's
+  east wall (y 0..−2) is wall. The south steps moved from x 7–8.4 to x 11.6–13.0, just east of the living-room door
+  (`door-stue-s`, x 9.7–11.3); railing gaps [5.2, 6.6], [23.5, 24.9], [29.8, 31.2]. The hot tub stays at (21.7, −3.2).
+- Decided after the phase-1 report: the existing partitions stay 2.5 m, the free ridge post at (11.9, 3.1) stays, the new
+  wing keeps its 2.4 m ceiling (the high gable windows `win-gavl-s/n` light the cold loft), and the mellombygg wall
+  thickness deviation (−0.14 m² against the IFC) is accepted.
 
 Small choices made while writing the seed (the brief is silent): every opening has an explicit `levelId`; outward
 swinging exterior doors hinge at the jamb nearer an adjacent wall corner, else at `start`; the sauna door opens out of

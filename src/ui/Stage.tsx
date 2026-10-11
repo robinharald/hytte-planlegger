@@ -11,6 +11,7 @@ import { nb } from '../i18n/nb';
 import { PlanView } from '../plan2d/PlanView';
 import { appStore, useAppStore } from '../state/appStore';
 import type { Selection } from '../state/selection';
+import { cutHeightFor } from '../state/store';
 import { terrainFor, useDerived } from '../state/useDerived';
 import { ErrorBoundary, PaneError } from './common';
 import { useMediaQuery, useSun, WIDE_QUERY } from './hooks';
@@ -27,7 +28,6 @@ function Pane3D(props: { hidden: boolean; onReady: () => void }) {
     useShallow((s) => ({
       mode3d: s.ui.mode3d,
       activeStoreyId: s.ui.activeStoreyId,
-      cutHeight: s.ui.cutHeight,
       showLabels: s.ui.showLabels,
       highlightNew: s.ui.highlightNew,
       showTrees: s.ui.showTrees,
@@ -46,7 +46,7 @@ function Pane3D(props: { hidden: boolean; onReady: () => void }) {
             terrain={terrainFor(site)}
             mode={ui.mode3d}
             activeStoreyId={ui.activeStoreyId}
-            cutHeight={ui.cutHeight}
+            cutHeight={cutHeightFor(ui.preset)}
             showLabels={ui.showLabels}
             highlightNew={ui.highlightNew}
             showTrees={ui.showTrees}

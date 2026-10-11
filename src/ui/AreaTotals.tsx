@@ -4,7 +4,7 @@
  *
  * Panel: BYA with Bygninger (own eks./nytt split) and Terrasser over 0,5 m on separate lines, BRA per level
  * (measurable / gross), Aksemål and Rom (netto), each with an expandable "Slik måles det".
- * Headline: "BYA 245,5 m² · bygg 178,3 (eks. 102,2 · nytt 76,2) · terrasse 67,1 — BRA 168,8 m² (per level)",
+ * Headline: "BYA 235,5 m² · bygg 178,3 (eks. 102,2 · nytt 76,1) · terrasse 57,2 — BRA 170,1 m² (per level)",
  * with the abbreviations expanded in tooltips (<abbr title>).
  */
 import type { ReactNode } from 'react';

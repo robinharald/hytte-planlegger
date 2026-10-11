@@ -112,7 +112,7 @@ describe('ui prefs', () => {
       ...DEFAULT_UI,
       activeView: '3d' as const,
       activeViewChosen: true,
-      cutHeight: 2.2,
+      preset: 'inne-stua' as const,
       showGrid: false,
       readOnly: true,
       selection: { kind: 'room' as const, id: 'x' },
@@ -121,7 +121,7 @@ describe('ui prefs', () => {
     const loaded = loadUiPrefs(localStorage);
     expect(loaded.activeView).toBe('3d');
     expect(loaded.activeViewChosen).toBe(true);
-    expect(loaded.cutHeight).toBe(2.2);
+    expect(loaded.preset).toBe('inne-stua');
     expect(loaded.showGrid).toBe(false);
     expect('readOnly' in loaded).toBe(false);
     expect('selection' in loaded).toBe(false);
@@ -144,26 +144,25 @@ describe('ui prefs', () => {
     expect('activeView' in stored).toBe(false);
   });
 
-  it('drops malformed fields and clamps the cut height', () => {
+  it('drops malformed fields', () => {
     expect(
-      sanitizeUiPrefs({ v: PREFS_VERSION, chosenView: 'nope', cutHeight: 9, showLabels: 'yes', preset: 'ovenfra', sun: { date: '21.06', minutes: 5 } }),
-    ).toEqual({ cutHeight: 2.6, preset: 'ovenfra' });
+      sanitizeUiPrefs({ v: PREFS_VERSION, chosenView: 'nope', showLabels: 'yes', preset: 'ovenfra', sun: { date: '21.06', minutes: 5 } }),
+    ).toEqual({ preset: 'ovenfra' });
     expect(sanitizeUiPrefs(null)).toEqual({});
     expect(sanitizeUiPrefs({ sun: { date: '2026-12-21', minutes: 720.4 } })).toEqual({ sun: { date: '2026-12-21', minutes: 720 } });
     expect(sanitizeUiPrefs({ preset: 'langsiden' })).toEqual({ preset: 'langsiden' });
   });
 
-  it("keeps the cut height 'inne-stua' replaced, so the raised one never becomes the user's choice", () => {
-    const raised = { ...DEFAULT_UI, preset: 'inne-stua' as const, cutHeight: 2.3, cutHeightBeforePreset: 1.3 };
-    saveUiPrefs(localStorage, raised);
-    expect(loadUiPrefs(localStorage)).toMatchObject({ preset: 'inne-stua', cutHeight: 2.3, cutHeightBeforePreset: 1.3 });
-    // Stored with another preset (not written by presetUi): the remembered value is the user's choice.
-    expect(sanitizeUiPrefs({ v: PREFS_VERSION, preset: 'ovenfra', cutHeight: 2.3, cutHeightBeforePreset: 1.3 })).toEqual({ preset: 'ovenfra', cutHeight: 1.3 });
-    // Not raised: nothing to remember.
-    saveUiPrefs(localStorage, { ...DEFAULT_UI, cutHeight: 2.0 });
-    const loaded = loadUiPrefs(localStorage);
-    expect(loaded.cutHeight).toBe(2.0);
-    expect('cutHeightBeforePreset' in loaded).toBe(false);
+  it('ignores and drops the cut height of the removed slider; the preset is kept', () => {
+    const old = { v: PREFS_VERSION, preset: 'inne-stua', cutHeight: 2.3, cutHeightBeforePreset: 1.3, showGrid: false };
+    localStorage.setItem(KEYS.ui, JSON.stringify(old));
+    expect(loadUiPrefs(localStorage)).toEqual({ preset: 'inne-stua', showGrid: false });
+    expect(sanitizeUiPrefs({ ...old, preset: 'ovenfra' })).toEqual({ preset: 'ovenfra', showGrid: false });
+    saveUiPrefs(localStorage, { ...DEFAULT_UI, preset: 'inne-stua' });
+    const stored = JSON.parse(localStorage.getItem(KEYS.ui) ?? '{}') as Record<string, unknown>;
+    expect(stored.preset).toBe('inne-stua');
+    expect('cutHeight' in stored).toBe(false);
+    expect('cutHeightBeforePreset' in stored).toBe(false);
   });
 
   it('keeps dismissedSeedRevision when prefs are saved', () => {

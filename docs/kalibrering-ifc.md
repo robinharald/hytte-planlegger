@@ -109,12 +109,12 @@ Rule: the IFC wins for the existing building; the spec wins for the new parts; R
   x 10.5 takes its place; the old window is stored with status removed for the plan.
 - East gable (x = 12): its white door (y 2.59) and the two windows (y 1.53, 4.68) disappear with the 4 m extension. The wall no
   longer exists in Forslag D, so these openings are NOT stored (listed above only).
-- Free post at x 11.9: the ridge post in the removed east gable stays as a free post (0.11 sq, 0..3.5) under the ridge beam. It
-  will need an architect's decision later (note in STATUS).
+- Free post at x 11.9: the ridge post in the removed east gable stays as a free post (0.11 sq, 0..3.5) under the ridge beam
+  (confirmed by Robin after the phase-1 report).
 - Mellombygg walls: in reality only 0.11 thick (uninsulated) and the bod-wing walls 0.16. Accepted deviation: the seed keeps the
   common 0.27 / 0.11 build-up on the bod-wing block edges and stores the old north gable at y 10.1 as an asymmetric
   `exterior-old` wall (0.11 towards the woodshed, 0.16 towards the bod). Room sizes in the mellombygg are therefore ~5 cm too
-  small per side.
+  small per side. Accepted by Robin after the phase-1 report.
 - Bod 108 has no door today; Forslag D gives it an exterior door on the east wall (`door-teknisk`, new) and the room becomes
   "Teknisk / vask".
 - Sauna door swing: stored as { hinge 'start', side 'right' } on `w-wc-bad` (a->b runs +y, so the bathroom side +x is the RIGHT
@@ -133,7 +133,16 @@ Added after the geometry review of 2026-10-11 (`SEED_REVISION` 2):
 - New wing: flat ceiling at 2.4 (`blk-wing.ceilingHeight`, cold loft above). Its partitions (`w-gang-s`, `w-gang-n`,
   `w-pantry-wc`, `w-sauna-n`, `w-wc-bad`) are `auto` and stop at the ceiling, so the rooms are closed at the top. The wall
   between the stue and the wing (`w-wing-w`, x = 16, the open junction) is `roof`: it runs up under the main ridge (3.87),
-  so the stue (open to the roof) is closed off from the wing's cold loft. Open question for Robin: the spec's two high gable
-  windows (`win-gavl-s/n`, sill 2.75) are now above the ceiling and light the cold loft only.
+  so the stue (open to the roof) is closed off from the wing's cold loft. The spec's two high gable windows
+  (`win-gavl-s/n`, sill 2.75) are above the ceiling and light the cold loft only; Robin keeps them so (and the 2.4 m
+  ceiling) after the phase-1 report.
 - Terrace door `door-stue-s` (1.6 m glass door): two leaves (`leaves: 2`, 0.8 m each, hinged at both jambs), as the spec
   describes.
+
+Added after Robin's review of phase 1 (`SEED_REVISION` 3):
+
+- Terrace cut: the deck no longer runs in front of the glass bump (leseskrok, x 5..9). It starts at the bump's east wall
+  (x = 9); the railing starts at (9, -2) (the bump's east wall from y 0 to -2 is wall, no railing). The south steps moved
+  from x 7..8.4 to x 11.6..13.0, just east of the living-room glass door (x 9.7..11.3). Deck BYA 67.14 -> 57.18 m2.
+- Existing partitions 2.5 m, the free post at x 11.9, the wing's 2.4 m ceiling with the high gable windows and the
+  mellombygg wall-thickness deviation are confirmed as they are.

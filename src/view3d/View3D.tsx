@@ -29,7 +29,7 @@ export interface View3DProps {
   terrain: TerrainAsset | null;
   mode: 'ute' | 'inne';
   activeStoreyId: Id;
-  /** Metres above each level floor, interior mode (1.2–2.6). */
+  /** Wall cut height in interior mode, metres above each level floor (the app passes 1.3, or 2.3 with 'inne-stua'). */
   cutHeight: number;
   showLabels: boolean;
   highlightNew: boolean;

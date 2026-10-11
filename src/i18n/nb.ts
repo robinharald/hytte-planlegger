@@ -95,10 +95,8 @@ export const nb = {
     ute: 'Ute',
     uteTitle: 'Hele hytta utenfra, med tak',
     inne: 'Inne',
-    inneTitle: 'Taket tas av og veggene kuttes i snitthøyden, så du ser inn i rommene',
+    inneTitle: 'Taket tas av og veggene kuttes 1,3 m over gulvet, så du ser inn i rommene',
     inneHint: 'tak fjernet',
-    cutHeight: 'Snitthøyde',
-    cutHeightHint: 'over gulvet',
     presets: 'Vinkler',
     presetNames: {
       oversikt: 'Oversikt',
@@ -118,7 +116,7 @@ export const nb = {
       langsiden: 'Langsiden mot vannet: glassutbygget, stuedøra og gavlen på den nye fløya',
       ovenfra: 'Rett ovenfra, som et kart',
       'naert-tilbygget': 'Tilbygget på nært hold, ovenfra på skrå',
-      'inne-stua': 'I øyehøyde inne i stua, langs stua og spiseplassen (best med Inne; snitthøyden settes til minst 2,30 m)',
+      'inne-stua': 'I øyehøyde inne i stua, langs stua og spiseplassen (best med Inne; veggene kuttes da 2,3 m over gulvet)',
     } satisfies Record<CameraPreset, string> as Record<string, string>,
   },
 
@@ -290,7 +288,7 @@ export const nb = {
       'datamodell, så romstørrelser og arealer er alltid oppdatert.',
     items: [
       'Velg Plan, 3D eller Begge i Visning-panelet. I planen bytter du mellom Plan 1 og Hems.',
-      'I 3D viser Ute hele hytta, mens Inne tar av taket og kutter veggene i valgt snitthøyde. Dra for å snu, rull eller knip for å zoome.',
+      'I 3D viser Ute hele hytta, mens Inne tar av taket og kutter veggene, så du ser inn i rommene. Dra for å snu, rull eller knip for å zoome.',
       'Klikk på et rom i planen eller i romskjemaet for å se mål og areal under Egenskaper.',
       'Dupliser Forslag D før du endrer noe, så kan du sammenligne variantene etterpå.',
       'Alt lagres automatisk i nettleseren. «Lagre versjon» tar et navngitt øyeblikksbilde, «Del lenke» lager en lenke som inneholder hele designet.',

@@ -354,7 +354,7 @@ describe('Forslag D', () => {
   it('derives the terrace, its railing with three stairs and the hot tub on the deck', () => {
     const out = deriveOutdoor(variant, project.site, terrain);
     expect(out.decks).toHaveLength(1);
-    expect(out.decks[0].skirtBottomZ).toHaveLength(12);
+    expect(out.decks[0].skirtBottomZ).toHaveLength(10); // one per deck vertex (the deck starts at the glass bump's east wall)
     const [r] = out.railings;
     expect(r.baseZ).toBe(-0.02);
     expect(r.steps.map((s) => s.id)).toEqual(['rail-terrasse/steps/0', 'rail-terrasse/steps/1', 'rail-terrasse/steps/2']);

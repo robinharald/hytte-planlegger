@@ -31,7 +31,7 @@ import { migrateProject, SchemaTooNewError } from '../model/migrate';
 import { createForslagD, createForslagDVariant, SEED_REVISION, SEED_VARIANT_ID } from '../model/seed/forslagD';
 import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Id, Project, Site, Variant } from '../model/types';
-import { CAMERA_PRESET_KEYS, CUT_HEIGHT_MAX, CUT_HEIGHT_MIN } from './store';
+import { CAMERA_PRESET_KEYS } from './store';
 import type { ActiveView, AppStore, UiState } from './store';
 
 export const KEYS = {
@@ -182,18 +182,21 @@ export function isNewer(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Version of the stored prefs. Prefs without it (or older) were written before 2026-10-12: they carry the old
- * defaults for the view and the cut height (saved whether or not the user chose them), so those two are ignored.
+ * Version of the stored prefs. Prefs without it (or older) were written before 2026-10-12: their `activeView` was
+ * saved whether or not the user chose it, so it is never read (the chosen view is `chosenView`, from version 2).
+ * Prefs of version 2 may still hold `cutHeight` / `cutHeightBeforePreset` from the removed cut-height slider: they
+ * are ignored and dropped on the next save (the cut height follows the camera preset, see `cutHeightFor`).
  */
 export const PREFS_VERSION = 2;
+
+/** Fields of older prefs that are no longer read; `saveUiPrefs` removes them from the stored object. */
+const STALE_PREF_KEYS = ['activeView', 'cutHeight', 'cutHeightBeforePreset'] as const;
 
 /** Persisted fields; `activeView` is stored separately as `chosenView`, and only once the user picked it. */
 export const UI_PREF_KEYS = [
   'planStorey',
   'activeStoreyId',
   'mode3d',
-  'cutHeight',
-  'cutHeightBeforePreset',
   'showLabels',
   'showDims',
   'showGrid',
@@ -220,14 +223,10 @@ function oneOf<T extends string>(v: unknown, allowed: readonly T[]): v is T {
   return typeof v === 'string' && (allowed as readonly string[]).includes(v);
 }
 
-const isCut = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-const clampCut = (v: number): number => Math.min(CUT_HEIGHT_MAX, Math.max(CUT_HEIGHT_MIN, v));
-
 /** Validate stored prefs field by field; anything malformed is dropped (the default applies). */
 export function sanitizeUiPrefs(raw: unknown): Partial<UiState> {
   if (!isRecord(raw)) return {};
   const out: Partial<UiState> = {};
-  const current = typeof raw.v === 'number' && raw.v >= PREFS_VERSION;
   if (oneOf(raw.chosenView, ['plan', '3d', 'split'] as const)) {
     out.activeView = raw.chosenView;
     out.activeViewChosen = true;
@@ -236,15 +235,6 @@ export function sanitizeUiPrefs(raw: unknown): Partial<UiState> {
   if (typeof raw.activeStoreyId === 'string' && raw.activeStoreyId) out.activeStoreyId = raw.activeStoreyId;
   if (oneOf(raw.mode3d, ['ute', 'inne'] as const)) out.mode3d = raw.mode3d;
   if (oneOf(raw.preset, CAMERA_PRESET_KEYS)) out.preset = raw.preset;
-  if (current && isCut(raw.cutHeight)) {
-    out.cutHeight = clampCut(raw.cutHeight);
-    // The cut height 'inne-stua' raised: kept as such while that preset is chosen; otherwise it is the user's
-    // choice, so the raised value never outlives the preset.
-    if (isCut(raw.cutHeightBeforePreset)) {
-      if (out.preset === 'inne-stua') out.cutHeightBeforePreset = clampCut(raw.cutHeightBeforePreset);
-      else out.cutHeight = clampCut(raw.cutHeightBeforePreset);
-    }
-  }
   for (const k of BOOL_PREFS) if (typeof raw[k] === 'boolean') out[k] = raw[k];
   const sun = raw.sun;
   if (
@@ -268,7 +258,7 @@ export function loadUiPrefs(storage: KeyValueStorage | null): Partial<UiState> {
 export function saveUiPrefs(storage: KeyValueStorage | null, ui: UiState): boolean {
   const existing = parseJson(readRaw(storage, KEYS.ui));
   const base: Record<string, unknown> = isRecord(existing) ? { ...existing } : {};
-  delete base.activeView; // pre-v2 field (saved even when the user never chose a view)
+  for (const k of STALE_PREF_KEYS) delete base[k];
   if (!ui.activeViewChosen) delete base.chosenView;
   return writeRaw(storage, KEYS.ui, JSON.stringify({ ...base, ...pickUiPrefs(ui) }));
 }

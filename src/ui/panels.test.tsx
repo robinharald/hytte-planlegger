@@ -20,6 +20,7 @@ const { Headline } = await import('./AreaTotals');
 const { Banners } = await import('./Banners');
 const { TopBar } = await import('./TopBar');
 const { useKeyboardShortcuts, useTestHook } = await import('./hooks');
+const { cutHeightFor } = await import('../state/store');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -63,24 +64,26 @@ describe('Controls', () => {
     expect(byTestId('mode-ute')).toBeNull();
   });
 
-  it('has a button per camera preset and the cut height in interior mode', () => {
+  it('has a button per camera preset and no cut-height control; the preset sets the interior cut', () => {
     render(<Controls isPhone={false} />);
     for (const p of ['oversikt', 'terrassen', 'framsiden', 'baksiden', 'langsiden', 'ovenfra', 'naert-tilbygget', 'inne-stua']) {
       expect(byTestId(`preset-${p}`), p).not.toBeNull();
     }
     click(byTestId('preset-ovenfra'));
     expect(appStore.getState().ui.preset).toBe('ovenfra');
-    expect(byTestId('cut-height')).toBeNull();
     click(byTestId('mode-inne'));
     expect(appStore.getState().ui.mode3d).toBe('inne');
-    const slider = byTestId('cut-height') as HTMLInputElement;
-    expect(slider.min).toBe('1.2');
-    expect(slider.max).toBe('2.6');
-    act(() => appStore.getState().setUi({ cutHeight: 1.3 }));
+    // The slider "Snitthøyde (over gulvet)" is gone (Robin found it confusing): no range input in the 3D panel.
+    expect(byTestId('cut-height')).toBeNull();
+    expect(document.querySelectorAll('aside.controls input[type="range"]')).toHaveLength(1); // the sun time only
+    expect(document.body.textContent).not.toMatch(/snitthøyde/i);
+    const cut = () => cutHeightFor(appStore.getState().ui.preset);
+    expect(cut()).toBe(1.3);
     click(byTestId('preset-inne-stua'));
-    expect(appStore.getState().ui).toMatchObject({ preset: 'inne-stua', cutHeight: 2.3 });
+    expect(appStore.getState().ui.preset).toBe('inne-stua');
+    expect(cut()).toBe(2.3);
     click(byTestId('preset-ovenfra'));
-    expect(appStore.getState().ui).toMatchObject({ preset: 'ovenfra', cutHeight: 1.3 });
+    expect(cut()).toBe(1.3);
   });
 
   it('storey tabs set plan storey and active storey; toggles flip ui flags', () => {

@@ -128,7 +128,7 @@ describe('createForslagD', () => {
     expect(project.id).toBe('hytte-merkesvatnet');
     expect(project.name).toBe('Hytta ved Merkesvatnet');
     expect(project.seedRevision).toBe(SEED_REVISION);
-    expect(SEED_REVISION).toBe(2);
+    expect(SEED_REVISION).toBe(3);
     expect(project.variants).toHaveLength(1);
     expect(project.activeVariantId).toBe(variant.id);
     expect(variant.id).toBe('forslag-d');
@@ -468,9 +468,9 @@ describe('structure, outdoor, site', () => {
     expect(decks.some((d) => d.id === rail.deckId)).toBe(true);
     expect(rail).toMatchObject({ height: 1.05, style: 'glass', isNew: true });
     expect(rail.gaps).toEqual([
-      { from: 4.6, to: 6.0, steps: true },
-      { from: 27.5, to: 28.9, steps: true },
-      { from: 33.8, to: 35.2, steps: true },
+      { from: 5.2, to: 6.6, steps: true },
+      { from: 23.5, to: 24.9, steps: true },
+      { from: 29.8, to: 31.2, steps: true },
     ]);
     let pathLength = 0;
     for (let i = 0; i + 1 < rail.path.length; i++) pathLength += dist(rail.path[i], rail.path[i + 1]);
@@ -480,6 +480,11 @@ describe('structure, outdoor, site', () => {
     }
     // the railing path runs along deck edges
     for (const p of rail.path) expect(pointInPolygon(p, decks[0].polygon), `${p}`).toBe(true);
+    // no deck in front of the glass bump (x 5–9): it starts at the bump's east wall, the railing too
+    expect(Math.min(...decks[0].polygon.map((p) => p[0]))).toBe(9);
+    expect(rail.path[0]).toEqual([9, -2]);
+    expect(rail.path[1]).toEqual([9, -4.6]);
+    expect(Math.abs(signedArea(decks[0].polygon))).toBeCloseTo(14.2 * 16.7 - 11.8 * 6.2 - 4.8 * 2, 9); // 164.38 m² (10.4 less than before)
     expect(hotTubs).toEqual([{ id: 'tub-1', centre: [21.7, -3.2], diameter: 2.0, isNew: true }]);
   });
 

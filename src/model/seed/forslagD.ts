@@ -48,7 +48,7 @@ import type {
 } from '../types';
 
 /** Bump when the seed content changes; the app offers "Hent ny Forslag D" to projects with an older revision. */
-export const SEED_REVISION = 2;
+export const SEED_REVISION = 3;
 export const SEED_PROJECT_ID = 'hytte-merkesvatnet';
 export const SEED_VARIANT_ID = 'forslag-d';
 /** Id of the bundled terrain asset (src/model/seed/terrain-merkesvatnet.json). */
@@ -643,8 +643,9 @@ function buildStructure(): StructureElement[] {
 function buildOutdoor(): Variant['outdoor'] {
   const deck: Deck = {
     id: 'deck-terrasse',
+    // Starts at the glass bump's east wall (x 9): no deck in front of the leseskrok (Robin, 2026-10-11).
     polygon: [
-      [5, -4.6],
+      [9, -4.6],
       [23.2, -4.6],
       [23.2, 12.1],
       [9, 12.1],
@@ -654,15 +655,14 @@ function buildOutdoor(): Variant['outdoor'] {
       [16, -2],
       [16, 0],
       [9, 0],
-      [9, -2],
-      [5, -2],
     ],
     topHeight: -0.02,
     isNew: true,
   };
+  // Along the deck's free edges; from (9, 0) to (9, -2) the deck runs along the glass bump's east wall (no railing).
   const path: Vec2[] = [
-    [5, -2],
-    [5, -4.6],
+    [9, -2],
+    [9, -4.6],
     [23.2, -4.6],
     [23.2, 12.1],
     [9, 12.1],
@@ -675,7 +675,7 @@ function buildOutdoor(): Variant['outdoor'] {
     height: 1.05,
     style: 'glass',
     gaps: [
-      gap([7, -4.6], [8.4, -4.6]), // steps down from the south edge
+      gap([11.6, -4.6], [13, -4.6]), // steps down from the south edge, just east of the living-room door (x 9.7–11.3)
       gap([23.2, 2.1], [23.2, 3.5]), // opposite the corridor door
       gap([23.2, 8.4], [23.2, 9.8]),
     ],

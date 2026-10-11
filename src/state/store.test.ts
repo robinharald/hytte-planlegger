@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CAMERA_PRESET_KEYS, createAppStore, DEFAULT_UI, defaultActiveView, EYE_LEVEL_CUT, nextStamp, presetUi, selectActiveVariant, SPLIT_MIN_WIDTH } from './store';
+import { CAMERA_PRESET_KEYS, createAppStore, cutHeightFor, DEFAULT_UI, defaultActiveView, EYE_LEVEL_CUT, INTERIOR_CUT, nextStamp, selectActiveVariant, SPLIT_MIN_WIDTH } from './store';
 import { makeTestProject, makeVariant } from './testProject';
 import type { CameraPreset } from '../view3d/View3D';
 
@@ -23,7 +23,7 @@ describe('initial state', () => {
     const s = setup({ activeView: 'plan', readOnly: true });
     expect(s.getState().ui.activeView).toBe('plan');
     expect(s.getState().ui.readOnly).toBe(true);
-    expect(s.getState().ui.cutHeight).toBe(DEFAULT_UI.cutHeight);
+    expect(s.getState().ui.preset).toBe(DEFAULT_UI.preset);
   });
 });
 
@@ -61,7 +61,7 @@ describe('project actions and undo/redo', () => {
 
   it('setUi and select never create history entries', () => {
     const s = setup();
-    s.getState().setUi({ showGrid: false, cutHeight: 2 });
+    s.getState().setUi({ showGrid: false, preset: 'inne-stua' });
     s.getState().select({ kind: 'room', id: 'room-1' });
     expect(s.getState().ui.showGrid).toBe(false);
     expect(s.getState().ui.selection).toEqual({ kind: 'room', id: 'room-1' });
@@ -401,43 +401,34 @@ describe('review fixes', () => {
     expect(roomName(s)).toBe('Stue');
   });
 
-  it('defaults: plan view below 1600 px, "Begge" from 1600 px; cut height 1.3; langsiden preset', () => {
+  it('defaults: plan view below 1600 px, "Begge" from 1600 px; interior cut 1.3; langsiden preset', () => {
     expect(defaultActiveView(1400)).toBe('plan');
     expect(defaultActiveView(375)).toBe('plan');
     expect(defaultActiveView(SPLIT_MIN_WIDTH)).toBe('split');
     expect(DEFAULT_UI.activeView).toBe('plan');
     expect(DEFAULT_UI.activeViewChosen).toBe(false);
-    expect(DEFAULT_UI.cutHeight).toBe(1.3);
+    expect(cutHeightFor(DEFAULT_UI.preset)).toBe(1.3);
     expect(CAMERA_PRESET_KEYS).toContain('langsiden');
   });
 
-  it("'inne-stua' raises a cut height below eye level to 2.3 and remembers it; other presets put it back", () => {
-    expect(presetUi('inne-stua', { cutHeight: 1.3, cutHeightBeforePreset: null })).toEqual({
-      preset: 'inne-stua',
-      cutHeight: EYE_LEVEL_CUT,
-      cutHeightBeforePreset: 1.3,
-    });
-    expect(presetUi('inne-stua', { cutHeight: 2.5, cutHeightBeforePreset: null })).toEqual({ preset: 'inne-stua' });
-    expect(presetUi('oversikt', { cutHeight: 1.3, cutHeightBeforePreset: null })).toEqual({ preset: 'oversikt' });
-    expect(presetUi('oversikt', { cutHeight: 2.3, cutHeightBeforePreset: 1.6 })).toEqual({ preset: 'oversikt', cutHeight: 1.6, cutHeightBeforePreset: null });
+  it("interior mode cuts at 1.3 m; 'inne-stua' raises the cut to eye level (2.3), every other preset keeps 1.3", () => {
+    expect(INTERIOR_CUT).toBe(1.3);
     expect(EYE_LEVEL_CUT).toBe(2.3);
+    expect(cutHeightFor('inne-stua')).toBe(EYE_LEVEL_CUT);
+    for (const p of CAMERA_PRESET_KEYS) if (p !== 'inne-stua') expect(cutHeightFor(p), p).toBe(INTERIOR_CUT);
   });
 
-  it("restores the cut height after 'inne-stua' unless the user moved the slider in between", () => {
+  it("follows the chosen preset: 1.3 → 2.3 with 'inne-stua' → 1.3 again with another preset", () => {
     const s = createAppStore(makeTestProject());
-    const choose = (p: CameraPreset) => s.getState().setUi(presetUi(p, s.getState().ui));
-    expect(s.getState().ui.cutHeight).toBe(1.3);
+    const cut = () => cutHeightFor(s.getState().ui.preset);
+    const choose = (p: CameraPreset) => s.getState().setUi({ preset: p });
+    expect(cut()).toBe(1.3);
     choose('inne-stua');
-    expect(s.getState().ui).toMatchObject({ preset: 'inne-stua', cutHeight: 2.3, cutHeightBeforePreset: 1.3 });
+    expect(cut()).toBe(2.3);
     choose('ovenfra');
-    expect(s.getState().ui).toMatchObject({ preset: 'ovenfra', cutHeight: 1.3, cutHeightBeforePreset: null });
-
-    const t = createAppStore(makeTestProject());
-    const chooseT = (p: CameraPreset) => t.getState().setUi(presetUi(p, t.getState().ui));
-    chooseT('inne-stua');
-    t.getState().setUi({ cutHeight: 2.0 }); // the slider
-    expect(t.getState().ui.cutHeightBeforePreset).toBeNull();
-    chooseT('ovenfra');
-    expect(t.getState().ui).toMatchObject({ preset: 'ovenfra', cutHeight: 2.0, cutHeightBeforePreset: null });
+    expect(cut()).toBe(1.3);
+    // The cut height is not part of the UI state (nothing to persist or to get out of step with the preset).
+    expect('cutHeight' in s.getState().ui).toBe(false);
+    expect('cutHeightBeforePreset' in s.getState().ui).toBe(false);
   });
 });

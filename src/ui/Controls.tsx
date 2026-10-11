@@ -1,16 +1,17 @@
 /**
  * Left column: view tabs (Plan / 3D / Begge), storey tabs (Plan 1 / Hems — shown with the plan and for 3D
- * "Inne"), 3D mode + cut height + camera presets (shown with the 3D view), toggles and the sun study.
+ * "Inne"), 3D mode + camera presets (shown with the 3D view), toggles and the sun study. The interior mode's wall
+ * cut height is not a control: it follows the preset (`cutHeightFor`).
  * The storey tabs set both `planStorey` and `activeStoreyId` (the seed's storey ids are 'ground' and 'loft').
  * Picking a view tab marks the view as the user's choice (remembered in the UI prefs). Every control has a tooltip.
  */
 import type { ReactNode } from 'react';
 import { nb } from '../i18n/nb';
 import { appStore, useAppStore } from '../state/appStore';
-import { CAMERA_PRESET_KEYS, CUT_HEIGHT_MAX, CUT_HEIGHT_MIN, presetUi } from '../state/store';
+import { CAMERA_PRESET_KEYS } from '../state/store';
 import type { ActiveView, PlanStorey, UiState } from '../state/store';
 import { Panel } from './common';
-import { formatDegrees, formatLength, minutesToTime, timeToMinutes } from './format';
+import { formatDegrees, minutesToTime, timeToMinutes } from './format';
 import { useSun } from './hooks';
 
 const setUi = (patch: Partial<UiState>) => appStore.getState().setUi(patch);
@@ -155,22 +156,6 @@ export function Controls(props: { isPhone: boolean }) {
               { value: 'inne', label: nb.mode3d.inne, hint: nb.mode3d.inneHint, title: nb.mode3d.inneTitle, testId: 'mode-inne' },
             ]}
           />
-          {ui.mode3d === 'inne' && (
-            <label className="field">
-              <span>
-                {nb.mode3d.cutHeight} ({nb.mode3d.cutHeightHint}) <span className="range-value">{formatLength(ui.cutHeight)}</span>
-              </span>
-              <input
-                type="range"
-                min={CUT_HEIGHT_MIN}
-                max={CUT_HEIGHT_MAX}
-                step={0.05}
-                value={ui.cutHeight}
-                onChange={(e) => setUi({ cutHeight: Number(e.target.value) })}
-                data-testid="cut-height"
-              />
-            </label>
-          )}
           <div className="presets" role="group" aria-label={nb.mode3d.presets}>
             {CAMERA_PRESET_KEYS.map((key) => (
               <button
@@ -179,7 +164,7 @@ export function Controls(props: { isPhone: boolean }) {
                 aria-pressed={ui.preset === key}
                 data-testid={`preset-${key}`}
                 title={nb.mode3d.presetTitles[key]}
-                onClick={() => setUi(presetUi(key, ui))}
+                onClick={() => setUi({ preset: key })}
               >
                 {nb.mode3d.presetNames[key]}
               </button>

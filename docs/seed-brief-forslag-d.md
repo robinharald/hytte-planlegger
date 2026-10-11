@@ -10,7 +10,7 @@ host line a→b that the leaf opens into (left = (−dy, dx) = inside for exteri
 
 ## Project
 id `hytte-merkesvatnet`, name "Hytta ved Merkesvatnet", `seedRevision = SEED_REVISION` (1 at the first build, 2 after the
-review fixes of 2026-10-11; bump on every content change), one variant
+review fixes of 2026-10-11, 3 after Robin's terrace cut; bump on every content change), one variant
 `forslag-d` named "Forslag D" with settings `{ defaultExteriorWall: { thickness 0.27, outerOffset 0.11 },
 defaultInteriorThickness 0.12, areaLimit null }`.
 
@@ -117,7 +117,7 @@ Status `existing` unless marked NEW; white frames, window mullions [2,2] unless 
 | door-green-w | bod / west | 5.21 (y 6.89) | door | 0.91×2.01 | 0 | main | frame + leaf green, swings out |
 | win-do-w | bod / west | 3.28 (y 8.82) | window | 0.61×1.21 | 0.8 | main | |
 | win-badstue-s | wing / south | 1.3 (x 17.3) | window | 1.2×0.9 | 0.7 | main | NEW |
-| win-gavl-s | wing / south | 2.4 (x 18.4) | window | 0.8×0.7 | 2.75 | main | NEW, high gable window (above the 2.4 ceiling: lights the cold loft; open question for Robin) |
+| win-gavl-s | wing / south | 2.4 (x 18.4) | window | 0.8×0.7 | 2.75 | main | NEW, high gable window (above the 2.4 ceiling: lights the cold loft; kept so, Robin's decision) |
 | win-bad-s | wing / south | 4.15 (x 20.15) | window | 0.6×0.6 | 1.1 | main | NEW |
 | win-bad-e1 | wing / east | 1.7 (y -0.3) | window | 0.6×0.6 | 1.1 | main | NEW |
 | win-bad-e2 | wing / east | 3.5 (y 1.5) | window | 0.5×0.6 | 1.3 | main | NEW |
@@ -144,17 +144,22 @@ Loft: Hems 1 (soverom) (2.5,1.1) hems · Hems 2 (soverom) (2,5) hems · Trappere
 
 ## Structure (z absolute)
 Posts (0.11 square, bottom 0, top 3.5, existing): (5.1,3.1) (8.95,3.1) (11.9,3.1) — the last one stands in the removed
-east gable; keep it as a free post (note in STATUS). New woodshed corner post: (8.93,12.03) size 0.14, bottom 0, top 2.22.
+east gable; it stays as a free post (Robin's decision after the phase-1 report). New woodshed corner post: (8.93,12.03)
+size 0.14, bottom 0, top 2.22.
 Ridge beam existing (0.03,3.1)→(11.97,3.1) z 3.5–3.86 width 0.12; new continuation (11.97,3.1)→(18.4,3.1) same section.
 Tie beams (z 2.3–2.5, width 0.12, existing): (5.04,3.1)→(7.01,3.1), (8.89,3.1)→(11.97,3.1), (8.95,0.07)→(8.95,3.15).
 Chimney min (7.08,2.48) max (7.63,3.03) bottom 0 top 5.2.
 Stairs: `stair-loft` min (3.85,2.24) max (6.1,3.04) main→loft, up W; `stair-level` min (4.3,3.17) max (5.55,4.17) lower→main, up E.
 
 ## Outdoor (all new)
-Deck `deck-terrasse` polygon: (5,-4.6) (23.2,-4.6) (23.2,12.1) (9,12.1) (9,6.2) (20.8,6.2) (20.8,-2) (16,-2) (16,0) (9,0) (9,-2) (5,-2);
-topHeight -0.02. Railing `rail-terrasse` (deckId deck-terrasse, glass, 1.05) path:
-(5,-2)→(5,-4.6)→(23.2,-4.6)→(23.2,12.1)→(9,12.1); gaps (distance along the path, all with steps: true)
-[4.6,6.0] (x 7–8.4), [27.5,28.9] (y 2.1–3.5, opposite the corridor door), [33.8,35.2] (y 8.4–9.8).
+The deck does not run in front of the glass bump (leseskrok, x 5–9): it starts at the bump's east wall, x = 9
+(Robin, 2026-10-11, `SEED_REVISION` 3; before, it also covered the strip x 5–9 × y −4.6..−2).
+Deck `deck-terrasse` polygon: (9,-4.6) (23.2,-4.6) (23.2,12.1) (9,12.1) (9,6.2) (20.8,6.2) (20.8,-2) (16,-2) (16,0) (9,0)
+(164.38 m² on the axis lines); topHeight -0.02. Railing `rail-terrasse` (deckId deck-terrasse, glass, 1.05) path:
+(9,-2)→(9,-4.6)→(23.2,-4.6)→(23.2,12.1)→(9,12.1) (from (9,0) to (9,-2) the deck runs along the glass bump's east wall:
+wall, no railing); gaps (distance along the path, all with steps: true)
+[5.2,6.6] (south edge, x 11.6–13.0, just east of the living-room door `door-stue-s` at x 9.7–11.3),
+[23.5,24.9] (east edge, y 2.1–3.5, opposite the corridor door), [29.8,31.2] (east edge, y 8.4–9.8).
 Hot tub `tub-1` centre (21.7,-3.2), diameter 2.0.
 
 ## Site

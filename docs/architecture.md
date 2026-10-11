@@ -304,10 +304,10 @@ t(14.5,8,1.2); framsiden p(38,2,4.5) t(16,2.5,2) (the new wing's long east side 
 old model); baksiden p(−14,22,8) t(8,5,2); langsiden p(11,−27,5) t(12.5,0,2) (the lake facade, from the old model);
 ovenfra p(12,4.49,54) t(12,4.5,0); naert-tilbygget p(26,−9,12) t(17.5,2.5,0.6); inne-stua p(6.3,0.9,1.55)
 t(15.5,4.5,1.3) (eye level in the stue, looking along stue, passasje and spiseplass; the Stue's label point is at
-(8.03, 1.31), so the camera stands west of it). Choosing 'inne-stua' raises a cut height below 2.3 to 2.3
-(`presetUi`, `EYE_LEVEL_CUT`), so the walls rise above the eye, and remembers the previous one in
-`ui.cutHeightBeforePreset`; choosing another preset restores it unless the user moved the slider in between (any
-`setUi` with `cutHeight` clears the memory). OrbitControls damped, maxPolarAngle 0.495·π,
+(8.03, 1.31), so the camera stands west of it). The interior cut height is not a user setting (the slider
+"Snitthøyde" was removed after Robin's review, he found it confusing): `cutHeightFor(preset)` (`state/store.ts`) gives
+1.3 (`INTERIOR_CUT`) for every preset and 2.3 (`EYE_LEVEL_CUT`) for 'inne-stua', so the walls rise above the eye
+there; `ui/Stage.tsx` passes it to View3D. OrbitControls damped, maxPolarAngle 0.495·π,
 minDistance 3, animated transitions (~900 ms, skipped with reduced motion).
 Sun: directional light from `sunInPlan` for the chosen date/time (default 21 June 15:00 local).
 
@@ -317,8 +317,7 @@ Sun: directional light from `sunInPlan` for the chosen date/time (default 21 Jun
 interface AppState {
   project: Project;                       // tracked by zundo (partialize: project only, limit 200), autosaved
   ui: { activeView: 'plan'|'3d'|'split'; planStorey: 'ground'|'loft'; activeStoreyId: Id; mode3d: 'ute'|'inne';
-        cutHeight: number; cutHeightBeforePreset: number | null; showLabels: boolean; showDims: boolean;
-        showGrid: boolean; showRoofPlan: boolean;
+        showLabels: boolean; showDims: boolean; showGrid: boolean; showRoofPlan: boolean;
         highlightNew: boolean; showTrees: boolean; showTerrain: boolean; preset: CameraPreset;
         selection: Selection | null; tool: 'select'|'measure'; sun: { date: string; minutes: number };
         readOnly: boolean; source: 'local'|'link'|'version' };
@@ -333,8 +332,9 @@ interface AppState {
 `selection.ts`: `type Selection = { kind: 'wall'|'blockEdge'|'blockVertex'|'opening'|'room'|'block'|'deck'|
 'railing'|'hotTub'|'structure'|'furniture'|'tree'; id: Id; levelId?: Id }`; selectors return null for a dangling
 selection after undo. While `ui.readOnly` every project action is a no-op and autosave is off. Defaults:
-`activeView` 'split' (Begge) from 1600 px window width (`SPLIT_MIN_WIDTH`), else 'plan'; `cutHeight` 1.3 (below
-the 'inne-stua' eye height); `preset` 'oversikt'. `commitTransaction` / `cancelTransaction` reset the
+`activeView` 'split' (Begge) from 1600 px window width (`SPLIT_MIN_WIDTH`), else 'plan'; `preset` 'oversikt'. The
+interior cut height is not stored: `cutHeightFor(ui.preset)` = 1.3 (below the 'inne-stua' eye height), 2.3 with
+'inne-stua'. `commitTransaction` / `cancelTransaction` reset the
 `updateVariant` merge key, so a later edit with the same label gets its own undo step. Every change of the project
 (undo, redo and `setProject` included) gets a fresh `updatedAt` from `nextStamp()` (never repeats, never goes
 backwards).
@@ -351,14 +351,13 @@ model with the warning `nb.warnings.deriveFailed(detail)`.
 at start-up when nothing is stored (so a fresh project keeps its id across a reload); `saveNamedVersion` forces a
 save first. Without storage (localStorage blocked) `startAutosave` does nothing and never reports a failed write: the
 start-up notice 'storage-unavailable' already says so. UI prefs under `hytte-planlegger:ui` with `v` =
-`PREFS_VERSION` (older prefs keep everything but the view and the cut height; the view is only remembered once the
-user clicked a view tab; `cutHeightBeforePreset` is kept only together with the preset 'inne-stua', otherwise it is
-loaded as the cut height, so the raised value never outlives the preset); named versions
-`hytte-planlegger:versions` = `{ id, name, savedAt, projectId, schemaVersion, project }[]`, listed for the current
-projectId newest first, capped at 30 with size shown; export / import JSON file (a share-link delta is also accepted
-as a file). Share link `#d=` + lz-string `compressToEncodedURIComponent(JSON of payload)`: a DELTA against the
-bundled Forslag D (per variant the changed top-level fields and, per collection, added / changed entities in full,
-removed ids and the order) when the project is at the bundled `SEED_REVISION` and the delta is smaller, else the full
+`PREFS_VERSION` (older prefs keep everything but the view; the view is only remembered once the user clicked a view
+tab; `cutHeight` / `cutHeightBeforePreset` saved by the removed slider are ignored and dropped on the next save);
+named versions `hytte-planlegger:versions` = `{ id, name, savedAt, projectId, schemaVersion, project }[]`, listed for
+the current projectId newest first, capped at 30 with size shown; export / import JSON file (a share-link delta is
+also accepted as a file). Share link `#d=` + lz-string `compressToEncodedURIComponent(JSON of payload)`: a DELTA
+against the bundled Forslag D (per variant the changed top-level fields and, per collection, added / changed entities
+in full, removed ids and the order) when the project is at the bundled `SEED_REVISION` and the delta is smaller, else the full
 `{ v, project }`; timestamps are never sent. Only the active variant by default ("del alle varianter" toggle), size
 shown, warning above 8 kB with "send som JSON-fil" fallback; never includes terrain. Unchanged Forslag D is about
 210 characters, one renamed room under 1.5 kB. A delta made against an older seed revision is applied to the current
@@ -380,13 +379,14 @@ walls whose endpoint lies within 1 cm of a moved block edge are extended/trimmed
 ## UI (`ui/`)
 
 Layout: top bar (title, variant selector + duplicate/rename, undo/redo, Lagre versjon / Versjoner / Eksporter /
-Importer / Del lenke, Hjelp) · left column (view tabs Plan/3D/Begge, plan storey tabs, 3D mode + cut height +
-presets, toggles, sun date/time) · centre (plan and/or 3D) · right column, `clamp(360px, 24vw, 440px)` wide
-(340 px between 1100 and 1279 px): Romskjema, Egenskaper for the selection (opened and scrolled into view when a
-schedule row is clicked), Arealer with explanations, Advarsler. Romskjema columns: Rom · Bygningsdel · Status ·
+Importer / Del lenke, Hjelp) · left column (view tabs Plan/3D/Begge, plan storey tabs, 3D mode + presets, toggles,
+sun date/time; no cut-height control: 'Inne' cuts the walls 1.3 m above each floor, 2.3 m with 'Inne i stua') ·
+centre (plan and/or 3D) · right column, `clamp(360px, 24vw, 440px)` wide (340 px between 1100 and 1279 px):
+Romskjema, Egenskaper for the selection (opened and scrolled into view when a schedule row is clicked), Arealer with
+explanations, Advarsler. Romskjema columns: Rom · Bygningsdel · Status ·
 Mål (m) · Areal, fixed table layout, rows grouped per level with level sums; a room that is part existing, part new
-shows both tags and both shares. Headline always visible: "BYA 245,5 m² · bygg 178,3 (eks. 102,2 · nytt 76,1) ·
-terrasse 67,1 — BRA 170,1 m² (per level)", with BYA / BRA / eks. expanded in tooltips; the Arealer panel shows
+shows both tags and both shares. Headline always visible: "BYA 235,5 m² · bygg 178,3 (eks. 102,2 · nytt 76,1) ·
+terrasse 57,2 — BRA 170,1 m² (per level)", with BYA / BRA / eks. expanded in tooltips; the Arealer panel shows
 Bygninger with its own eks./nytt split and the deck on its own line (the building-only split is worked out in
 `ui/areaFigures.ts` from whether the decks are new; none is shown for mixed decks). Buttons, toggles, tabs and presets have tooltips.
 Phone (< 800 px): stacked, 3D first, panels collapsible, heights in `100dvh`, canvas and SVG with
@@ -417,7 +417,7 @@ export interface View3DProps {
   terrain: TerrainAsset | null;
   mode: 'ute' | 'inne';
   activeStoreyId: Id;
-  cutHeight: number;              // metres above each level floor, interior mode (1.2–2.6)
+  cutHeight: number;              // metres above each level floor, interior mode (cutHeightFor(preset): 1.3 / 2.3)
   showLabels: boolean; highlightNew: boolean; showTrees: boolean; showTerrain: boolean;
   sun: { dir: Vec3; isUp: boolean };   // unit vector towards the sun, plan frame
   preset: CameraPreset;            // changing it animates the camera
@@ -548,11 +548,13 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   seed invariants, the 3D builders on the seed (terrain below every room floor with `derived.groundWorks`; the
   'inne-stua' camera stands in the Stue and frames Passasje and Spiseplass), the 3D scene on the seed from
   'framsiden' (the wing labelled, the glass bump behind it hidden, the main house's tag nudged clear, the bod
-  wing's tag over its visible north end), the cut height restored after 'inne-stua', no "save failed" without
-  storage.
+  wing's tag over its visible north end), the interior cut 1.3 → 2.3 with 'inne-stua' → 1.3 and no cut-height
+  control in the 3D panel, no "save failed" without storage.
 - `npm run e2e` → Playwright (Chromium) loads the app, waits for `window.__hytte.ready`, checks that no 'generic'
-  warning exists, that the Romskjema's Areal header ends inside the side panel without sideways scrolling, that the
-  plan shows ≥ 15 room labels with an m² line, and that Del lenke / Hjelp are on screen at 375 px, and writes
+  warning exists, that a fresh start has the bundled `SEED_REVISION` (terrace from x 9, the three step gaps), that the
+  Romskjema's Areal header ends inside the side panel without sideways scrolling, that the plan shows ≥ 15 room labels
+  with an m² line, that an autosave of an older seed revision gets the "Hent ny Forslag D" banner and the button adds
+  the new seed as the active variant, and that Del lenke / Hjelp are on screen at 375 px, and writes
   screenshots into `e2e/screenshots/`: `plan.png`, `3d-ute-oversikt.png`, `3d-ute-framsiden.png`,
   `3d-ute-langsiden.png`, `3d-ute-inne-stua.png` (Ute + the 'inne-stua' camera: the roof from inside),
   `3d-inne-stua.png`, `plan-hems.png`, `phone.png`.

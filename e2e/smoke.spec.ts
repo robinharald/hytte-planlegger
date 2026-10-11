@@ -1,5 +1,6 @@
 /**
  * Smoke test: the app loads, derives Forslag D, renders the plan and the 3D view, and the headline UI is there.
+ * A fresh start uses the bundled seed revision; an autosave of an older revision gets "Hent ny Forslag D".
  *
  * Screenshots are written to e2e/screenshots/*.png (committed, so a diff shows what changed visually):
  *   plan.png, 3d-ute-oversikt.png, 3d-ute-framsiden.png, 3d-ute-langsiden.png, 3d-ute-inne-stua.png (Ute + the
@@ -14,7 +15,8 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DerivedVariant } from '../src/model/derived';
-import type { Project } from '../src/model/types';
+import { createForslagD, SEED_REVISION } from '../src/model/seed/forslagD';
+import type { Project, Vec2 } from '../src/model/types';
 
 /** Shape of the test hook the UI keeps on window. */
 interface HytteHook {
@@ -77,6 +79,22 @@ async function assertDeriveIsNotStub(page: Page): Promise<void> {
   ).toEqual([]);
 }
 
+/** The active variant's terrace: its westmost x and the railing's step gaps (from the project on screen). */
+async function activeDeck(page: Page): Promise<{ seedRevision: number; variants: string[]; active: string; deckMinX: number; gaps: [number, number][] }> {
+  return page.evaluate(() => {
+    const p = (window as HytteWindow).__hytte?.project;
+    if (!p) throw new Error('window.__hytte.project is missing');
+    const v = p.variants.find((x) => x.id === p.activeVariantId) ?? p.variants[0];
+    return {
+      seedRevision: p.seedRevision,
+      variants: p.variants.map((x) => x.name),
+      active: v.name,
+      deckMinX: Math.min(...v.outdoor.decks[0].polygon.map((q) => q[0])),
+      gaps: v.outdoor.railings[0].gaps.map((g): [number, number] => [g.from, g.to]),
+    };
+  });
+}
+
 /** Viewport screenshot into e2e/screenshots/<name>.png, also attached to the report. */
 async function shoot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   const file = join(SCREENSHOT_DIR, `${name}.png`);
@@ -127,6 +145,18 @@ test.describe('desktop 1400×900', () => {
     const pageErrors = collectPageErrors(page);
     await loadAndWaitReady(page);
 
+    // A fresh start uses the bundled seed: the terrace starts at the glass bump's east wall (x 9), the south steps
+    // are east of the living-room door.
+    expect(await activeDeck(page)).toMatchObject({
+      seedRevision: SEED_REVISION,
+      deckMinX: 9,
+      gaps: [
+        [5.2, 6.6],
+        [23.5, 24.9],
+        [29.8, 31.2],
+      ],
+    });
+
     // Headline UI: the new wing's rooms are in the schedule and the area panel shows BYA.
     const schedule = page.getByTestId('room-schedule');
     await expect(schedule, 'room schedule should list Hovedbad').toContainText('Hovedbad');
@@ -164,6 +194,33 @@ test.describe('desktop 1400×900', () => {
     await showPlan(page, 'loft');
     await shoot(page, testInfo, 'plan-hems');
 
+    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('an autosave of an older Forslag D revision is offered "Hent ny Forslag D"', async ({ page }) => {
+    const pageErrors = collectPageErrors(page);
+    // The autosave of a user who started before the terrace cut: older revision, deck in front of the glass bump.
+    const old = createForslagD();
+    old.seedRevision = SEED_REVISION - 1;
+    const oldDeck: Vec2[] = [[5, -4.6], [23.2, -4.6], [23.2, 12.1], [9, 12.1], [9, 6.2], [20.8, 6.2], [20.8, -2], [16, -2], [16, 0], [9, 0], [9, -2], [5, -2]];
+    old.variants[0].outdoor.decks[0].polygon = oldDeck;
+    await page.addInitScript((json) => {
+      if (!localStorage.getItem('hytte-planlegger:project')) localStorage.setItem('hytte-planlegger:project', json);
+    }, JSON.stringify(old));
+    await loadAndWaitReady(page);
+    expect(await activeDeck(page)).toMatchObject({ seedRevision: SEED_REVISION - 1, deckMinX: 5 });
+
+    const fetchSeed = page.getByRole('button', { name: 'Hent ny Forslag D' });
+    await expect(page.getByText(`Forslag D er oppdatert (revisjon ${SEED_REVISION}).`)).toBeVisible();
+    await fetchSeed.click();
+    await expect(fetchSeed, 'the banner goes away').toHaveCount(0);
+    await expect.poll(async () => (await activeDeck(page)).seedRevision).toBe(SEED_REVISION);
+    // The new seed is added as a variant next to the user's own (kept unchanged) and becomes the active one.
+    expect(await activeDeck(page)).toMatchObject({
+      variants: ['Forslag D', `Forslag D (revisjon ${SEED_REVISION})`],
+      active: `Forslag D (revisjon ${SEED_REVISION})`,
+      deckMinX: 9,
+    });
     expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
   });
 });

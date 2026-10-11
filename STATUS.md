@@ -1,6 +1,7 @@
 # Status
 
-Oppdatert 2026-10-11 (fase 1 integrert, rettinger etter gjennomgangen og etter den nye gjennomgangen integrert). Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
+Oppdatert 2026-10-11 (fase 1 integrert, rettinger etter gjennomgangen og etter den nye gjennomgangen integrert, Robins
+tilbakemelding på fase 1 integrert). Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
 - **Fase 1** – Forslag D vises riktig i plan og 3D med romskjema og arealer; lagring, versjoner, deling og publisering.
@@ -84,7 +85,8 @@ Faser:
     som før. `plan-hems.png` viser ikke lenger korridorveggene.
   - Snitthøyden etter «Inne i stua»: forhåndsvisningen husker snitthøyden den løftet fra (`cutHeightBeforePreset`) og
     setter den tilbake når en annen visning velges (1,3 → 2,3 → 1,3), med mindre brukeren har flyttet glidebryteren
-    imellom (da blir den stående). Den løftede verdien lagres ikke som brukerens valg.
+    imellom (da blir den stående). Den løftede verdien lagres ikke som brukerens valg. (Glidebryteren er senere
+    fjernet, se runde 4.)
   - 3D-etiketter for bygningsdeler: skjules når bygningsdelen ikke synes (stråler mot tre punkt like over mønet
     treffer en annen bygningsdel først), og står over den synlige delen når bare noe av den synes. Nærmeste
     bygningsdel vinner (areal delt på avstanden i tredje), og en etikett som ville overlappe prøver ±8 / ±16 px
@@ -94,11 +96,29 @@ Faser:
     står nå nede til høyre (12 px inn) og holder seg unna hjelpeteksten «Dra for å snu …» nede til venstre.
   - Lagring: når nettleserlagring er blokkert, kommer det ikke lenger et ekstra banner «Endringene kunne ikke
     lagres … (lite plass?)» ved første endring; banneret om at lagring ikke er tilgjengelig er nok.
+- Etter Robins gjennomgang av fase 1 (runde 4):
+  - Terrassen kuttet (`SEED_REVISION` 3): terrassen går ikke lenger foran glassutbygget (leseskroken, x 5–9), men
+    starter ved glassutbyggets østvegg (x = 9). Stripa x 5–9 × y −4,6..−2 (4 × 2,6 m) er borte; rekkverket starter i
+    (9; −2), og stykket langs glassutbyggets østvegg (y 0 til −2) er vegg, ikke rekkverk. Trappa ned fra sørkanten er
+    flyttet fra x 7–8,4 til x 11,6–13,0, rett øst for terrassedøra i stua (x 9,7–11,3); åpningene i rekkverket er
+    [5,2; 6,6], [23,5; 24,9] og [29,8; 31,2] langs stien. Badestampen står der den sto (21,7; −3,2). Terrassens BYA
+    går fra 67,14 til 57,18 m² (−9,96: stripa minus kledningsstripa på 0,11 m sør for glassutbygget, som alt var
+    regnet som bygg). Eksisterende autolagringer får «Forslag D er oppdatert (revisjon 3)» med «Hent ny Forslag D».
+  - Glidebryteren «Snitthøyde (over gulvet)» er fjernet (Robin syntes den var forvirrende). Inne kutter veggene
+    1,3 m over gulvet i hver etasje og 2,3 m med «Inne i stua» (`cutHeightFor(preset)` i `state/store.ts`); snitthøyden
+    er ikke lenger en del av UI-tilstanden og lagres ikke (`cutHeightBeforePreset` og `presetUi` er borte, en lagret
+    `cutHeight` fra før ignoreres og fjernes ved neste lagring). Tekstene for glidebryteren er fjernet, og
+    hjelpeteksten og verktøytipsene nevner ikke lenger snitthøyden.
+  - Robins avgjørelser er ført inn (se «Avgjort av Robin»).
+  - Røyktesten sjekker nå at en ny start får gjeldende `SEED_REVISION` (terrassen fra x 9 og de tre trappeåpningene),
+    og at en autolagring med eldre revisjon får banneret og at «Hent ny Forslag D» legger den nye seeden til som
+    aktiv variant ved siden av brukerens egen.
 - Testtall: `npm test` 782 tester i 37 filer, alle grønne; `npm run typecheck`, `npm run lint` og `npm run build` rene;
-  `npm run e2e` 2 av 2 grønne (sjekker også at romskjemaet får plass, ≥ 15 romnavn med m² i planen og at «Del lenke» /
-  «Hjelp» er synlige på telefon). Skjermbilder i `e2e/screenshots/`: `plan.png`, `plan-hems.png`, `3d-ute-oversikt.png`,
-  `3d-ute-framsiden.png`, `3d-ute-langsiden.png`, `3d-ute-inne-stua.png` (Ute + «Inne i stua»: taket sett innenfra),
-  `3d-inne-stua.png`, `phone.png`.
+  `npm run e2e` 3 av 3 grønne (sjekker også at romskjemaet får plass, ≥ 15 romnavn med m² i planen, at en eldre
+  autolagring får «Hent ny Forslag D» og at «Del lenke» / «Hjelp» er synlige på telefon). Skjermbilder i
+  `e2e/screenshots/`: `plan.png`, `plan-hems.png`, `3d-ute-oversikt.png`, `3d-ute-framsiden.png`,
+  `3d-ute-langsiden.png`, `3d-ute-inne-stua.png` (Ute + «Inne i stua»: taket sett innenfra), `3d-inne-stua.png`,
+  `phone.png`.
 
 ### Romskjema Forslag D (avledet) mot IFC
 
@@ -132,7 +152,7 @@ Faser:
 | Hems 2 (soverom) | Hems | ca. 4,83 × 2,88 | 12,49 | 12,5 | −0,01 |
 | Trapperepos | Hems | 1,14 × 0,80 | 0,91 | – | |
 
-Arealer: BYA 245,46 m² (bygg 178,33 + terrasse 67,14; eks. 102,18 / nytt 143,28, av det bygg eks. 102,18 / nytt 76,15).
+Arealer: BYA 235,50 m² (bygg 178,33 + terrasse 57,18; eks. 102,18 / nytt 133,32, av det bygg eks. 102,18 / nytt 76,15).
 BRA 170,07 m² (underetasje 27,33, hovedplan 130,21, hems 12,54 målbart av 26,34 brutto; eks. 103,51 / nytt 66,56).
 Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-rommet 101 Korridor 10,1 m².
 
@@ -140,15 +160,8 @@ Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-
 
 1. Slå på GitHub Pages i repoet (Settings → Pages → Source: GitHub Actions), pushe `main` og verifisere den publiserte
    appen, også på telefon.
-2. Robins avgjørelser:
-   - Hva «Framsiden» skal vise: nå er det den nye fløyas langside mot øst med den hvite glassdøra (akse 4, som i den
-     gamle modellen), ikke en gavl. «Langsiden (mot vannet)» viser fasaden mot vannet.
-   - Den frie stolpen på (11,9; 3,1) i den gamle østgavlen, som nå står midt i stua.
-   - Høyden på de eksisterende skilleveggene på hovedplanet: 2,5 m (toppen av hanebjelkene, som i IFC; før 2,3).
-   - Himlingen i den nye fløya på 2,4 m (kald loft over). Da sitter de to høye gavlvinduene (`win-gavl-s/n`, brystning
-     2,75) over himlingen og lyser bare opp kaldloftet: fjerne dem, senke dem eller droppe himlingen?
+2. Åpent for Robin:
    - Badstudøra (`d-badstue`) er lagret med `side: 'right'` (åpner ut mot badet, +x) – briefen sa 'left'.
-   - Ekte veggtykkelser i mellombygget (se under).
 3. Vurdere å kjøre røyktesten i CI (`npx playwright install --with-deps chromium`) og legge `npm run lint` inn i `ci.yml`.
 4. Geometri: gi reserve-advarslene en egen `ModelWarning`-type i stedet for `'generic'` med «geometry fallback:», og
    legge eks./nytt-delingen av bygg og terrasse inn i `AreaSummary` (UI-en regner den ut selv i `ui/areaFigures.ts`).
@@ -156,11 +169,25 @@ Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-
    innholdet i Forslag D må øke `SEED_REVISION`, ellers dekodes gamle delingslenker mot en endret seed.
 6. Fase 3: møbelkatalog (`src/furniture/`).
 
+## Avgjort av Robin
+
+Robin svarte «resten ser bra ut» på rapporten etter fase 1 (2026-10-11). Avgjort:
+
+- Terrassen går ikke foran glassutbygget; trappa ned fra sørkanten står rett øst for terrassedøra i stua (runde 4).
+- Snitthøyden er ikke en innstilling: Inne kutter veggene på 1,3 m (2,3 m i «Inne i stua»).
+- «Framsiden» beholder den gamle modellens østvisning: den nye fløyas langside mot øst med den hvite glassdøra
+  (akse 4), ikke en gavl. «Langsiden (mot vannet)» viser fasaden mot vannet.
+- Den frie stolpen på (11,9; 3,1) i den gamle østgavlen blir stående (midt i stua).
+- De eksisterende skilleveggene på hovedplanet er 2,5 m høye (toppen av hanebjelkene, som i IFC).
+- Den nye fløya beholder himlingen på 2,4 m med kaldloft over; de høye gavlvinduene (`win-gavl-s/n`, brystning 2,75)
+  sitter over himlingen og lyser opp kaldloftet.
+- Avviket i veggtykkelsene i mellombygget godtas (se under).
+
 ## Kjente problemer
 
 - **Mellombygg −0,14 m² mot IFC**: veggene der er i virkeligheten 0,11 m (uisolert) og bod-fløyas 0,16 m; seeden
   bruker felles oppbygging 0,27 / 0,11 på bod-fløyas blokk-kanter, så rommet blir ca. 5 cm for smått per side.
-  Akseptert avvik (se `docs/kalibrering-ifc.md`), innenfor testens grense på 0,15 m².
+  Akseptert avvik (godtatt av Robin, se `docs/kalibrering-ifc.md`), innenfor testens grense på 0,15 m².
 - Takflatene er rektangulære over blokkens omriss: i en rotert eller skjev tegning blir arealet av hemsrommene ca.
   0,1 m² annerledes enn i den rette (robusthetstesten utelater derfor hemsrommene).
 - Når en polygonberegning feiler, brukes en enklere geometri og det vises en advarsel («En del av geometrien er
@@ -177,9 +204,10 @@ Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-
   ikke i SVG-en og vises ikke uten SwiftShader (rasteriseringsfeil i den programvarebaserte GPU-en).
 - Konflikt med en annen fane: denne fanen slutter å lagre til brukeren velger «Hent endringene» eller «Behold mine
   endringer»; lukkes fanen uten valg, mistes endringene som bare var i den.
-- UI-innstillinger lagret før denne runden beholder alt unntatt visning og snitthøyde (de ble lagret selv om brukeren
-  aldri valgte dem). «Lag min egen kopi» lagrer ikke lenger en sikkerhetsversjon (ingenting blir erstattet); tomta i
-  eget prosjekt beholdes, tomta fra lenken slås ikke sammen.
+- UI-innstillinger lagret før runde 2 beholder alt unntatt visningen (den ble lagret selv om brukeren aldri valgte
+  den); en lagret snitthøyde fra den fjernede glidebryteren ignoreres og fjernes ved neste lagring. «Lag min egen
+  kopi» lagrer ikke lenger en sikkerhetsversjon (ingenting blir erstattet); tomta i eget prosjekt beholdes, tomta fra
+  lenken slås ikke sammen.
 - Uten terrengdata ligger den flate bakken 2 cm under blokkenes laveste grunnhøyde, som nå er ca. −1,1 under hele
   hytta (utgravingen under hovedhuset); det gjelder bare hvis terrengfila mangler.
 - Planar graf: et snappet vegg-endepunkt flyttes inntil 5 cm uten ny kryssingssjekk; sammenslåing av noder innen
@@ -188,8 +216,6 @@ Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-
   klippede deler/soner droppes (bare ytre ring).
 - Tak: ingen valmtak; L-formede blokker må deles i to blokker. Et klokkeslett som hoppes over ved sommertid flyttes én
   time fram.
-- Stolpen på (11,9; 3,1) står i østgavlen som rives sammen med stueforlengelsen; den beholdes som frittstående stolpe
-  til Robin bestemmer noe annet.
 - Ingen arealbegrenser i fase 1 (`areaLimit = null`); advarselen `area-limit` virker hvis en grense settes.
 - React Three Fiber logger en advarsel om at `THREE.Clock` er foreldet (fra biblioteket, ikke fra appen).
 - `tsc -b` typesjekker bare `src/` og `vite.config.ts`. `e2e/` og `playwright.config.ts` sjekkes med

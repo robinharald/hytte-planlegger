@@ -56,14 +56,8 @@ export interface UiState {
   planStorey: PlanStorey;
   /** Storey whose levels the 3D interior mode shows (storeys above it are hidden). Kept in step with planStorey. */
   activeStoreyId: Id;
+  /** 'inne' cuts the walls `cutHeightFor(preset)` above each level's floor (not a user setting). */
   mode3d: Mode3d;
-  cutHeight: number;
-  /**
-   * The cut height the user had before choosing 'inne-stua' raised it to `EYE_LEVEL_CUT`; null when no preset
-   * raised it. Choosing another preset restores it (`presetUi`); any other change of `cutHeight` through `setUi`
-   * (the slider: the user's own choice) clears it.
-   */
-  cutHeightBeforePreset: number | null;
   showLabels: boolean;
   showDims: boolean;
   showGrid: boolean;
@@ -86,9 +80,6 @@ export const DEFAULT_UI: UiState = {
   planStorey: 'ground',
   activeStoreyId: 'ground',
   mode3d: 'ute',
-  /** Below the 'inne-stua' eye height (1.55), so the views from above look into the rooms; see `presetUi`. */
-  cutHeight: 1.3,
-  cutHeightBeforePreset: null,
   showLabels: true,
   showDims: true,
   showGrid: true,
@@ -104,8 +95,11 @@ export const DEFAULT_UI: UiState = {
   source: 'local',
 };
 
-export const CUT_HEIGHT_MIN = 1.2;
-export const CUT_HEIGHT_MAX = 2.6;
+/**
+ * Interior mode ('Inne') cuts the walls this high above each level's floor: below the 'inne-stua' eye height (1.55),
+ * so the views from above look into the rooms.
+ */
+export const INTERIOR_CUT = 1.3;
 
 /**
  * Cut height the eye-level preset 'inne-stua' needs (eye at 1.55 m): the walls rise above the eye, so the view reads
@@ -114,15 +108,11 @@ export const CUT_HEIGHT_MAX = 2.6;
 export const EYE_LEVEL_CUT = 2.3;
 
 /**
- * UI change for choosing a camera preset: 'inne-stua' also raises a lower cut height to `EYE_LEVEL_CUT` and
- * remembers the one it replaced; any other preset puts that one back (unless the user has set the cut height since,
- * which clears the memory, see `setUi`).
+ * Wall cut height of the interior 3D mode for a camera preset (metres above each level's floor). Internal: the user
+ * has no control for it (the slider was removed, Robin found it confusing); 'inne-stua' raises it to eye level.
  */
-export function presetUi(preset: CameraPreset, ui: Pick<UiState, 'cutHeight' | 'cutHeightBeforePreset'>): Partial<UiState> {
-  if (preset === 'inne-stua') {
-    return ui.cutHeight < EYE_LEVEL_CUT ? { preset, cutHeight: EYE_LEVEL_CUT, cutHeightBeforePreset: ui.cutHeight } : { preset };
-  }
-  return ui.cutHeightBeforePreset === null ? { preset } : { preset, cutHeight: ui.cutHeightBeforePreset, cutHeightBeforePreset: null };
+export function cutHeightFor(preset: CameraPreset): number {
+  return preset === 'inne-stua' ? EYE_LEVEL_CUT : INTERIOR_CUT;
 }
 
 /** Every camera preset, in button order (the type itself is contracted in view3d/View3D.tsx). */
@@ -184,7 +174,7 @@ export interface AppState {
    */
   replaceProject(project: Project, ui?: Partial<UiState>, history?: HistorySnapshot): void;
 
-  /** Patch the UI state. A patch with `cutHeight` but without `cutHeightBeforePreset` clears the latter. */
+  /** Patch the UI state. */
   setUi(patch: Partial<UiState>): void;
   select(selection: Selection | null): void;
 }
@@ -494,8 +484,6 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
           setUi: (patch) => {
             set((s) => {
               Object.assign(s.ui, patch);
-              // A cut height set by anything but a preset is the user's own: forget the one 'inne-stua' replaced.
-              if ('cutHeight' in patch && !('cutHeightBeforePreset' in patch)) s.ui.cutHeightBeforePreset = null;
             });
           },
 

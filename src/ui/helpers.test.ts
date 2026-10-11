@@ -208,11 +208,11 @@ describe('review fixes: schedule, area figures, subtitle, strings', () => {
   });
 
   it('buildingSplit separates the buildings from the decks', () => {
-    const bya = { total: 245.46, existing: 102.18, new: 143.28, buildings: 178.33, decks: 67.14, perBlock: [] };
+    const bya = { total: 235.5, existing: 102.18, new: 133.32, buildings: 178.33, decks: 57.18, perBlock: [] };
     const all = buildingSplit(bya, [{ isNew: true }]);
     expect(all?.existing).toBeCloseTo(102.18);
     expect(all?.new).toBeCloseTo(76.15);
-    const old = buildingSplit({ ...bya, existing: 169.32, new: 76.15 }, [{ isNew: false }]);
+    const old = buildingSplit({ ...bya, existing: 159.36, new: 76.15 }, [{ isNew: false }]);
     expect(old?.existing).toBeCloseTo(102.18);
     expect(old?.new).toBeCloseTo(76.15);
     expect(buildingSplit(bya, [{ isNew: true }, { isNew: false }])).toBeNull();
