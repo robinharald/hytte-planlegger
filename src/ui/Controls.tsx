@@ -2,28 +2,37 @@
  * Left column: view tabs (Plan / 3D / Begge), storey tabs (Plan 1 / Hems — shown with the plan and for 3D
  * "Inne"), 3D mode + cut height + camera presets (shown with the 3D view), toggles and the sun study.
  * The storey tabs set both `planStorey` and `activeStoreyId` (the seed's storey ids are 'ground' and 'loft').
+ * Picking a view tab marks the view as the user's choice (remembered in the UI prefs). Every control has a tooltip.
  */
 import type { ReactNode } from 'react';
 import { nb } from '../i18n/nb';
 import { appStore, useAppStore } from '../state/appStore';
-import { CAMERA_PRESET_KEYS, CUT_HEIGHT_MAX, CUT_HEIGHT_MIN } from '../state/store';
+import { CAMERA_PRESET_KEYS, CUT_HEIGHT_MAX, CUT_HEIGHT_MIN, presetUi } from '../state/store';
 import type { ActiveView, PlanStorey, UiState } from '../state/store';
 import { Panel } from './common';
 import { formatDegrees, formatLength, minutesToTime, timeToMinutes } from './format';
 import { useSun } from './hooks';
 
 const setUi = (patch: Partial<UiState>) => appStore.getState().setUi(patch);
+const T = nb.toggles.titles;
 
 function Seg<T extends string>(props: {
   label: string;
   value: T;
-  options: { value: T; label: string; hint?: string; testId: string }[];
+  options: { value: T; label: string; hint?: string; title?: string; testId: string }[];
   onChange: (v: T) => void;
 }) {
   return (
     <div className="seg" role="group" aria-label={props.label}>
       {props.options.map((o) => (
-        <button key={o.value} type="button" aria-pressed={props.value === o.value} data-testid={o.testId} onClick={() => props.onChange(o.value)}>
+        <button
+          key={o.value}
+          type="button"
+          aria-pressed={props.value === o.value}
+          data-testid={o.testId}
+          title={o.title}
+          onClick={() => props.onChange(o.value)}
+        >
           {o.label}
           {o.hint && <small>{o.hint}</small>}
         </button>
@@ -32,9 +41,9 @@ function Seg<T extends string>(props: {
   );
 }
 
-function Toggle(props: { label: ReactNode; checked: boolean; onChange: (v: boolean) => void; testId?: string }) {
+function Toggle(props: { label: ReactNode; title: string; checked: boolean; onChange: (v: boolean) => void; testId?: string }) {
   return (
-    <label>
+    <label title={props.title}>
       <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} data-testid={props.testId} />
       <span>{props.label}</span>
     </label>
@@ -115,11 +124,11 @@ export function Controls(props: { isPhone: boolean }) {
         <Seg<ActiveView>
           label={nb.views.heading}
           value={ui.activeView}
-          onChange={(v) => setUi({ activeView: v })}
+          onChange={(v) => setUi({ activeView: v, activeViewChosen: true })}
           options={[
-            { value: 'plan', label: nb.views.plan, testId: 'view-tab-plan' },
-            { value: '3d', label: nb.views.threeD, testId: 'view-tab-3d' },
-            { value: 'split', label: nb.views.split, testId: 'view-tab-split' },
+            { value: 'plan', label: nb.views.plan, title: nb.views.planTitle, testId: 'view-tab-plan' },
+            { value: '3d', label: nb.views.threeD, title: nb.views.threeDTitle, testId: 'view-tab-3d' },
+            { value: 'split', label: nb.views.split, title: nb.views.splitTitle, testId: 'view-tab-split' },
           ]}
         />
         {(showPlan || (show3d && ui.mode3d === 'inne')) && (
@@ -128,8 +137,8 @@ export function Controls(props: { isPhone: boolean }) {
             value={ui.planStorey}
             onChange={setStorey}
             options={[
-              { value: 'ground', label: nb.views.ground, testId: 'plan-storey-ground' },
-              { value: 'loft', label: nb.views.loft, testId: 'plan-storey-loft' },
+              { value: 'ground', label: nb.views.ground, title: nb.views.groundTitle, testId: 'plan-storey-ground' },
+              { value: 'loft', label: nb.views.loft, title: nb.views.loftTitle, testId: 'plan-storey-loft' },
             ]}
           />
         )}
@@ -142,8 +151,8 @@ export function Controls(props: { isPhone: boolean }) {
             value={ui.mode3d}
             onChange={(v) => setUi({ mode3d: v })}
             options={[
-              { value: 'ute', label: nb.mode3d.ute, testId: 'mode-ute' },
-              { value: 'inne', label: nb.mode3d.inne, hint: nb.mode3d.inneHint, testId: 'mode-inne' },
+              { value: 'ute', label: nb.mode3d.ute, title: nb.mode3d.uteTitle, testId: 'mode-ute' },
+              { value: 'inne', label: nb.mode3d.inne, hint: nb.mode3d.inneHint, title: nb.mode3d.inneTitle, testId: 'mode-inne' },
             ]}
           />
           {ui.mode3d === 'inne' && (
@@ -169,7 +178,8 @@ export function Controls(props: { isPhone: boolean }) {
                 type="button"
                 aria-pressed={ui.preset === key}
                 data-testid={`preset-${key}`}
-                onClick={() => setUi({ preset: key })}
+                title={nb.mode3d.presetTitles[key]}
+                onClick={() => setUi(presetUi(key, ui))}
               >
                 {nb.mode3d.presetNames[key]}
               </button>
@@ -180,11 +190,27 @@ export function Controls(props: { isPhone: boolean }) {
 
       <Panel title={nb.toggles.heading} defaultOpen={open}>
         <div className="toggles">
-          <Toggle label={nb.toggles.labels} checked={ui.showLabels} onChange={(v) => setUi({ showLabels: v })} testId="toggle-labels" />
-          {showPlan && <Toggle label={nb.toggles.dims} checked={ui.showDims} onChange={(v) => setUi({ showDims: v })} testId="toggle-dims" />}
-          {showPlan && <Toggle label={nb.toggles.grid} checked={ui.showGrid} onChange={(v) => setUi({ showGrid: v })} testId="toggle-grid" />}
+          <Toggle
+            label={nb.toggles.labels}
+            title={T.labels}
+            checked={ui.showLabels}
+            onChange={(v) => setUi({ showLabels: v })}
+            testId="toggle-labels"
+          />
           {showPlan && (
-            <Toggle label={nb.toggles.roofPlan} checked={ui.showRoofPlan} onChange={(v) => setUi({ showRoofPlan: v })} testId="toggle-roof-plan" />
+            <Toggle label={nb.toggles.dims} title={T.dims} checked={ui.showDims} onChange={(v) => setUi({ showDims: v })} testId="toggle-dims" />
+          )}
+          {showPlan && (
+            <Toggle label={nb.toggles.grid} title={T.grid} checked={ui.showGrid} onChange={(v) => setUi({ showGrid: v })} testId="toggle-grid" />
+          )}
+          {showPlan && (
+            <Toggle
+              label={nb.toggles.roofPlan}
+              title={T.roofPlan}
+              checked={ui.showRoofPlan}
+              onChange={(v) => setUi({ showRoofPlan: v })}
+              testId="toggle-roof-plan"
+            />
           )}
           <Toggle
             label={
@@ -192,13 +218,22 @@ export function Controls(props: { isPhone: boolean }) {
                 <span className="swatch-new" /> {nb.toggles.new}
               </>
             }
+            title={T.new}
             checked={ui.highlightNew}
             onChange={(v) => setUi({ highlightNew: v })}
             testId="toggle-new"
           />
-          {show3d && <Toggle label={nb.toggles.trees} checked={ui.showTrees} onChange={(v) => setUi({ showTrees: v })} testId="toggle-trees" />}
           {show3d && (
-            <Toggle label={nb.toggles.terrain} checked={ui.showTerrain} onChange={(v) => setUi({ showTerrain: v })} testId="toggle-terrain" />
+            <Toggle label={nb.toggles.trees} title={T.trees} checked={ui.showTrees} onChange={(v) => setUi({ showTrees: v })} testId="toggle-trees" />
+          )}
+          {show3d && (
+            <Toggle
+              label={nb.toggles.terrain}
+              title={T.terrain}
+              checked={ui.showTerrain}
+              onChange={(v) => setUi({ showTerrain: v })}
+              testId="toggle-terrain"
+            />
           )}
         </div>
       </Panel>

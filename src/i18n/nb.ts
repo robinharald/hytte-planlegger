@@ -24,19 +24,27 @@ export const nb = {
     duplicate: 'Dupliser',
     duplicateTitle: 'Lag en kopi av varianten du ser på',
     rename: 'Gi nytt navn',
+    renameTitle: 'Gi varianten du ser på et nytt navn',
     delete: 'Slett',
+    deleteTitle: 'Slett varianten du ser på (kan angres)',
     undo: 'Angre',
     undoTitle: 'Angre (Ctrl+Z)',
     redo: 'Gjør om',
     redoTitle: 'Gjør om (Ctrl+Y)',
     saveVersion: 'Lagre versjon',
+    saveVersionTitle: 'Ta et navngitt øyeblikksbilde av prosjektet som du kan hente fram igjen',
     versions: 'Versjoner',
+    versionsTitle: 'Se, hent og slett lagrede versjoner',
     export: 'Eksporter',
     exportTitle: 'Last ned prosjektet som JSON-fil',
     import: 'Importer',
     importTitle: 'Åpne et prosjekt fra en JSON-fil',
     share: 'Del lenke',
+    shareTitle: 'Lag en lenke som inneholder designet, til å sende til andre',
     help: 'Hjelp',
+    helpTitle: 'Slik bruker du planleggeren, og hurtigtaster',
+    more: 'Mer',
+    moreTitle: 'Lagre versjon, versjoner, eksport og import',
     fileActions: 'Lagring og deling',
   },
 
@@ -48,16 +56,23 @@ export const nb = {
     deleteVariant: (name: string) => `Vil du slette varianten «${name}»? Dette kan angres med Ctrl+Z.`,
     deleteVersion: (name: string) => `Vil du slette versjonen «${name}»? Dette kan ikke angres.`,
     resetSeed: 'Vil du tilbakestille hele prosjektet til Forslag D? Alle varianter erstattes. Dette kan angres med Ctrl+Z.',
-    restoreVersion: (name: string) => `Hente versjonen «${name}»? Dagens prosjekt erstattes (kan angres med Ctrl+Z).`,
-    importProject: (name: string) => `Åpne «${name}» fra fila? Dagens prosjekt erstattes (kan angres med Ctrl+Z).`,
+    restoreVersion: (name: string) => `Vil du hente versjonen «${name}»? Dagens prosjekt erstattes (kan angres med Ctrl+Z).`,
+    importProject: (name: string) => `Vil du åpne «${name}» fra fila? Dagens prosjekt erstattes (kan angres med Ctrl+Z).`,
   },
 
   headline: {
     label: 'Nøkkeltall',
     bya: 'BYA',
+    byaFull: 'Bebygd areal',
     bra: 'BRA',
+    braFull: 'Bruksareal',
     existingShort: 'eks.',
+    existingFull: 'eksisterende',
     newShort: 'nytt',
+    buildings: 'bygg',
+    buildingsFull: 'Bygningene, målt til utsiden av kledningen',
+    decks: 'terrasse',
+    decksFull: 'Terrasser mer enn 0,5 m over terrenget',
   },
 
   views: {
@@ -65,15 +80,22 @@ export const nb = {
     plan: 'Plan',
     threeD: '3D',
     split: 'Begge',
+    planTitle: 'Bare plantegningen',
+    threeDTitle: 'Bare 3D-modellen',
+    splitTitle: 'Plan og 3D ved siden av hverandre',
     storey: 'Etasje',
     ground: 'Plan 1',
+    groundTitle: 'Underetasjen og hovedplanet',
     loft: 'Hems',
+    loftTitle: 'Hemsen over soverommene',
   },
 
   mode3d: {
     heading: '3D',
     ute: 'Ute',
+    uteTitle: 'Hele hytta utenfra, med tak',
     inne: 'Inne',
+    inneTitle: 'Taket tas av og veggene kuttes i snitthøyden, så du ser inn i rommene',
     inneHint: 'tak fjernet',
     cutHeight: 'Snitthøyde',
     cutHeightHint: 'over gulvet',
@@ -83,9 +105,20 @@ export const nb = {
       terrassen: 'Fra terrassen',
       framsiden: 'Framsiden',
       baksiden: 'Baksiden',
+      langsiden: 'Langsiden (mot vannet)',
       ovenfra: 'Ovenfra',
       'naert-tilbygget': 'Nært tilbygget',
       'inne-stua': 'Inne i stua',
+    } satisfies Record<CameraPreset, string> as Record<string, string>,
+    presetTitles: {
+      oversikt: 'Hele hytta og tomta på skrå ovenfra',
+      terrassen: 'Fra terrassen, mot den nye fløya og bod-fløya',
+      framsiden: 'Den nye fløyas langside med den hvite glassdøra',
+      baksiden: 'Baksiden, med bod-fløya',
+      langsiden: 'Langsiden mot vannet: glassutbygget, stuedøra og gavlen på den nye fløya',
+      ovenfra: 'Rett ovenfra, som et kart',
+      'naert-tilbygget': 'Tilbygget på nært hold, ovenfra på skrå',
+      'inne-stua': 'I øyehøyde inne i stua, langs stua og spiseplassen (best med Inne; snitthøyden settes til minst 2,30 m)',
     } satisfies Record<CameraPreset, string> as Record<string, string>,
   },
 
@@ -98,6 +131,15 @@ export const nb = {
     new: 'Marker det som er nytt',
     trees: 'Bjørketrær',
     terrain: 'Terreng',
+    titles: {
+      labels: 'Vis romnavn med mål og areal i planen og i 3D',
+      dims: 'Vis målkjeder langs ytterveggene i planen',
+      grid: 'Vis rutenett med 1 m mellom linjene i planen',
+      roofPlan: 'Vis takflatene over planen',
+      new: 'Farg det som er nytt (tilbygg og nye vegger) oransje',
+      trees: 'Vis bjørketrærne på tomta i 3D',
+      terrain: 'Vis terrenget rundt hytta i 3D',
+    },
   },
 
   sun: {
@@ -116,13 +158,17 @@ export const nb = {
   schedule: {
     heading: 'Romskjema',
     room: 'Rom',
-    level: 'Etasje',
-    part: 'Del',
-    dims: 'Mål',
+    block: 'Bygningsdel',
+    status: 'Status',
+    statusTitle: 'Eksisterende (eks.) eller nytt',
+    dims: 'Mål (m)',
+    dimsTitle: 'Innvendige mål, bredde × dybde. «ca.» når rommet ikke er et rektangel.',
     area: 'Areal',
+    areaTitle: 'Netto gulvflate (m²) mellom innsidene av veggene',
     unnamed: 'Uten navn',
     newTag: 'nytt',
     existingTag: 'eks.',
+    split: (existing: string, added: string) => `eks. ${existing} · nytt ${added}`,
     empty: 'Ingen rom er funnet ennå.',
     sum: 'Sum',
     levelSum: 'Sum etasje',
@@ -144,6 +190,8 @@ export const nb = {
     new: 'Nytt',
     buildings: 'Bygninger',
     decks: 'Terrasser over 0,5 m',
+    existingShort: 'eks.',
+    newShort: 'nytt',
     gross: 'Brutto',
     measurable: 'Målbart',
     perLevel: 'Per etasje',
@@ -152,7 +200,8 @@ export const nb = {
       bya:
         'Bebygd areal etter NS 3940: flaten bygningene dekker på tomta, målt til utsiden av kledningen, pluss ' +
         'terrasser som ligger mer enn 0,5 m over terrenget. Der bygningsdeler overlapper telles flaten én gang. ' +
-        'Eksisterende og nytt fordeles etter hvilken bygningsdel hvert punkt ligger i.',
+        'For bygningene fordeles eksisterende og nytt etter hvilken bygningsdel hvert punkt ligger i; terrassene ' +
+        'vises for seg.',
       bra:
         'Bruksareal etter NS 3940: gulvflaten innenfor ytterveggene, med innerveggene medregnet. «Brutto» er hele ' +
         'flaten innenfor ytterveggene på etasjen. «Målbart» teller bare der det er minst 1,9 m fri høyde under taket, ' +
@@ -160,7 +209,11 @@ export const nb = {
       axis:
         'Grunnflate målt på akselinjene (utsiden av bindingsverket), slik skissen for Forslag D regner: ' +
         'ca. 170,2 m². Bare til sammenligning, ikke et standardisert mål.',
-      rooms: 'Netto gulvflate i hvert rom, målt mellom innsidene av veggene. Delt i eksisterende og nytt etter bygningsdel.',
+      rooms:
+        'Netto gulvflate i hvert rom, målt mellom innsidene av veggene. Delt i eksisterende og nytt etter ' +
+        'bygningsdel. Rom under skråtak (hemsen) telles her med hele gulvflaten, også der det er under 1,9 m under ' +
+        'taket. I BRA teller bare delen med minst 1,9 m fri høyde, så summen av rommene kan bli større enn BRA ' +
+        'selv om BRA også tar med innerveggene.',
     },
   },
 
@@ -170,10 +223,11 @@ export const nb = {
     dangling: 'Det som var valgt finnes ikke lenger.',
     clear: 'Avmarker',
     rename: 'Gi nytt navn',
+    renameTitle: 'Gi rommet et nytt navn',
     fields: {
       name: 'Navn',
       type: 'Type',
-      kind: 'Slag',
+      kind: 'Veggtype',
       level: 'Etasje',
       block: 'Bygningsdel',
       dims: 'Innvendige mål',
@@ -222,6 +276,10 @@ export const nb = {
     none: 'Ingen advarsler.',
     count: (n: number) => (n === 1 ? '1 advarsel' : `${n} advarsler`),
     showTitle: 'Vis i planen',
+    deriveFailed: (detail: string) => `Modellen kunne ikke beregnes: ${detail}`,
+    /** A 'generic' warning from a geometry fallback (derive.ts GEOMETRY_FALLBACK); the detail stays technical. */
+    geometryFallback: (detail: string) =>
+      `En del av geometrien er forenklet fordi en polygonberegning feilet. Sjekk hjørner og vegger som nesten ligger oppå hverandre (teknisk: ${detail}).`,
   },
 
   help: {
@@ -231,7 +289,7 @@ export const nb = {
       'Planleggeren viser Forslag D for hytta ved Merkesvatnet som 2D-plan og 3D-modell. Alt lages fra én ' +
       'datamodell, så romstørrelser og arealer er alltid oppdatert.',
     items: [
-      'Velg Plan, 3D eller Begge øverst til venstre. I planen bytter du mellom Plan 1 og Hems.',
+      'Velg Plan, 3D eller Begge i Visning-panelet. I planen bytter du mellom Plan 1 og Hems.',
       'I 3D viser Ute hele hytta, mens Inne tar av taket og kutter veggene i valgt snitthøyde. Dra for å snu, rull eller knip for å zoome.',
       'Klikk på et rom i planen eller i romskjemaet for å se mål og areal under Egenskaper.',
       'Dupliser Forslag D før du endrer noe, så kan du sammenligne variantene etterpå.',
@@ -251,23 +309,30 @@ export const nb = {
 
   banners: {
     readOnly: 'Du ser på en delt versjon.',
-    readOnlyHint: 'Endringer er slått av. Lag din egen kopi for å jobbe videre med den.',
+    readOnlyHintMerge: (variants: number) =>
+      `Endringer er slått av. «Lag min egen kopi» legger ${variants === 1 ? 'den delte varianten' : `de ${variants} delte variantene`} ` +
+      'til i ditt eget prosjekt, ved siden av variantene du har fra før.',
+    readOnlyHintNew: 'Endringer er slått av. «Lag min egen kopi» gjør den til ditt eget prosjekt, så du kan jobbe videre med den.',
     makeCopy: 'Lag min egen kopi',
     leaveShared: 'Tilbake til mitt prosjekt',
+    showSeed: 'Vis Forslag D',
     seedUpdated: (rev: number) => `Forslag D er oppdatert (revisjon ${rev}).`,
     fetchSeed: 'Hent ny Forslag D',
     resetSeed: 'Tilbakestill til Forslag D',
     schemaTooNew: 'Det lagrede prosjektet kommer fra en nyere versjon av appen og kan ikke åpnes her.',
     reload: 'Last siden på nytt',
-    otherTab: 'Prosjektet er endret i en annen fane.',
+    otherTab: 'Prosjektet er endret i en annen fane. Endringene her lagres ikke før du har valgt.',
     loadOtherTab: 'Hent endringene',
+    keepMine: 'Behold mine endringer',
     storageUnavailable: 'Lagring i nettleseren er ikke tilgjengelig. Endringer forsvinner når du lukker siden.',
     saveFailed: 'Endringene kunne ikke lagres i nettleseren (lite plass?). Eksporter prosjektet som JSON-fil for sikkerhets skyld.',
     linkInvalid: 'Lenken kunne ikke leses. Viser det lagrede prosjektet i stedet.',
     linkTooNew: 'Lenken kommer fra en nyere versjon av appen. Last siden på nytt og prøv igjen.',
+    linkRebased:
+      'Lenken ble laget med en eldre utgave av Forslag D. Endringene i lenken er lagt oppå den nyeste utgaven, så noe kan se annerledes ut.',
     autosaveInvalid: 'Det lagrede prosjektet kunne ikke leses. Viser Forslag D i stedet (en kopi av det gamle er tatt vare på).',
-    importFailed: 'Filen kunne ikke leses som et prosjekt.',
-    importTooNew: 'Filen kommer fra en nyere versjon av appen.',
+    importFailed: 'Fila kunne ikke leses som et prosjekt.',
+    importTooNew: 'Fila kommer fra en nyere versjon av appen.',
     versionFailed: 'Versjonen kunne ikke hentes.',
     dismiss: 'Lukk',
   },
@@ -286,6 +351,8 @@ export const nb = {
     tooBig: 'Lenken er lang (over 8 kB). Noen apper kutter lange lenker. Send heller designet som JSON-fil.',
     sendJson: 'Send som JSON-fil',
     close: 'Lukk',
+    /** Name of a shared variant added to a project that already has a variant called `name`. */
+    sharedName: (name: string, n: number) => (n === 1 ? `${name} (delt)` : `${name} (delt ${n})`),
   },
 
   versions: {
@@ -304,7 +371,6 @@ export const nb = {
     limit: (n: number) => `Maks ${n} versjoner per prosjekt. De eldste fjernes først.`,
     close: 'Lukk',
     defaultName: (date: string) => `Versjon ${date}`,
-    backupBeforeCopy: 'Lagret automatisk før kopi av delt lenke',
     danger: 'Start på nytt',
     resetSeed: 'Tilbakestill til Forslag D',
   },
@@ -431,11 +497,14 @@ export const nb = {
     /** Root element label for assistive technology. */
     canvasLabel: '3D-modell av hytta',
     /** Hint in the lower left corner (old model). */
-    hint: 'Dra for å snu · scroll/knip for å zoome',
+    hint: 'Dra for å snu · rull/knip for å zoome',
     /** Room without a name (should not normally be labelled). */
     unnamedRoom: 'Uten navn',
   },
 } as const;
+
+/** Start of the message of a geometry-fallback 'generic' warning (geometry/derive.ts `GEOMETRY_FALLBACK` + ':'). */
+const GEOMETRY_FALLBACK_PREFIX = 'geometry fallback:';
 
 /** Lookup used by `warningText` to turn ids into names. Return the id itself when unknown. */
 export type NameLookup = (kind: 'level' | 'room' | 'block' | 'opening' | 'wall', id: string) => string;
@@ -468,6 +537,8 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
       return `Veggen «${names('wall', w.wallId)}» henger løs og danner ikke noe rom.`;
     case 'block-overlap':
       return `Bygningsdelene «${names('block', w.blockIds[0])}» og «${names('block', w.blockIds[1])}» overlapper.`;
+    case 'block-self-intersecting':
+      return `Bygningsdelen «${names('block', w.blockId)}» krysser seg selv – sjekk hjørnene.`;
     case 'parts-overlap':
       return `Delene i «${names('block', w.blockId)}» overlapper hverandre.`;
     case 'roof-no-meet':
@@ -475,7 +546,9 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
     case 'area-limit':
       return `Arealet ${fmtArea(w.actual)} er over grensen på ${fmtArea(w.limit)}.`;
     case 'generic':
-      return w.message;
+      return w.message.startsWith(GEOMETRY_FALLBACK_PREFIX)
+        ? nb.warnings.geometryFallback(w.message.slice(GEOMETRY_FALLBACK_PREFIX.length).trim())
+        : w.message;
     default:
       return 'Ukjent advarsel.';
   }

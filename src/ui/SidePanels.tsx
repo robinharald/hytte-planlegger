@@ -1,7 +1,7 @@
 /**
- * Right column: Romskjema, Arealer, Egenskaper (read-only summary of the selection; rooms can be renamed) and
- * Advarsler (click a warning to select what it is about). On phones the panels start collapsed except the
- * schedule.
+ * Right column: Romskjema, Egenskaper (read-only summary of the selection; rooms can be renamed; right below the
+ * schedule and scrolled into view when a row is chosen), Arealer and Advarsler (click a warning to select what it
+ * is about). On phones Arealer and Advarsler start collapsed.
  */
 import { useMemo } from 'react';
 import { nb } from '../i18n/nb';
@@ -11,6 +11,7 @@ import type { Selection } from '../state/selection';
 import { useActiveVariant, useDerived, useResolvedSelection } from '../state/useDerived';
 import { AreaTotals } from './AreaTotals';
 import { Panel } from './common';
+import { PROPERTIES_PANEL_ID } from './reveal';
 import { describeSelection } from './properties';
 import { RoomSchedule } from './RoomSchedule';
 import { planStoreyOf } from './schedule';
@@ -31,7 +32,7 @@ function PropertiesPanel(props: { defaultOpen: boolean }) {
   };
 
   return (
-    <Panel title={nb.properties.heading} defaultOpen={props.defaultOpen}>
+    <Panel title={nb.properties.heading} defaultOpen={props.defaultOpen} id={PROPERTIES_PANEL_ID} testId="properties">
       {!selection && <p className="muted">{nb.properties.none}</p>}
       {selection && !desc && <p className="muted">{nb.properties.dangling}</p>}
       {desc && (
@@ -52,7 +53,12 @@ function PropertiesPanel(props: { defaultOpen: boolean }) {
       {selection && (
         <div className="toolgroup">
           {desc?.roomId && !readOnly && (
-            <button type="button" className="btn btn-small" onClick={() => rename(desc.roomId as Id, desc.title)}>
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => rename(desc.roomId as Id, desc.title)}
+              title={nb.properties.renameTitle}
+            >
               {nb.properties.rename}
             </button>
           )}
@@ -104,8 +110,8 @@ export function SidePanels(props: { isPhone: boolean }) {
   return (
     <aside className="side">
       <RoomSchedule defaultOpen />
-      <AreaTotals defaultOpen={open} />
       <PropertiesPanel defaultOpen />
+      <AreaTotals defaultOpen={open} />
       <WarningsPanel defaultOpen={open} />
     </aside>
   );

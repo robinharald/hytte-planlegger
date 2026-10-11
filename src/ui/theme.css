@@ -507,6 +507,54 @@ select {
   color: var(--muted);
 }
 
+/* Romskjema: fixed layout so the table always fits its column (Areal never clipped); text cells wrap. */
+.table.schedule {
+  table-layout: fixed;
+  font-size: 13px;
+}
+.table.schedule col.c-block {
+  width: 24%;
+}
+.table.schedule col.c-status {
+  width: 44px;
+}
+.table.schedule col.c-dims {
+  width: 20%;
+}
+.table.schedule col.c-area {
+  width: 58px;
+}
+.table.schedule th {
+  white-space: normal;
+  font-size: 11.5px;
+}
+.table.schedule td {
+  overflow-wrap: anywhere;
+}
+.table.schedule td.block {
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.table.schedule td.dims {
+  overflow-wrap: normal;
+}
+.table.schedule td.dims .approx {
+  color: var(--muted);
+}
+.table.schedule .tags {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.table.schedule .area-split {
+  display: block;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
 .tag {
   display: inline-block;
   font-size: 11.5px;
@@ -677,6 +725,57 @@ select {
 .headline .new {
   color: var(--new-fg);
 }
+.headline .hl-sep {
+  color: var(--muted);
+}
+abbr[title] {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+.headline b abbr[title] {
+  text-decoration-thickness: 1px;
+}
+
+/* "Mer" menu in the top bar (narrow screens). */
+.menu {
+  position: relative;
+}
+.menu > summary {
+  list-style: none;
+}
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+.menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.menu-item {
+  text-align: left;
+  font-weight: 500;
+  font-size: 14px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  padding: 9px 10px;
+  cursor: pointer;
+  min-height: 40px;
+}
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--chip);
+}
 
 .banners {
   display: flex;
@@ -712,7 +811,7 @@ select {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 250px minmax(0, 1fr) 360px;
+  grid-template-columns: 250px minmax(0, 1fr) clamp(360px, 24vw, 440px);
   grid-template-areas: 'controls stage side';
   gap: 12px;
   padding: 0 12px 12px;
@@ -878,7 +977,7 @@ select {
 
 @media (max-width: 1279px) {
   .workspace {
-    grid-template-columns: 228px minmax(0, 1fr) 320px;
+    grid-template-columns: 228px minmax(0, 1fr) 340px;
   }
 }
 
@@ -920,12 +1019,6 @@ select {
   .brand h1 {
     font-size: 21px;
   }
-  .toolgroup.file-actions {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    width: 100%;
-    padding-bottom: 2px;
-  }
   .workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
@@ -953,6 +1046,64 @@ select {
   }
   .modal {
     max-height: 92dvh;
+  }
+}
+
+/* Narrow phones: title row = brand + Del lenke / Hjelp (icons); then variant, undo/redo and the "Mer" menu. */
+@media (max-width: 599px) {
+  .topbar .brand {
+    order: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .topbar .brand p {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .topbar .primary-actions {
+    order: 1;
+    flex-wrap: nowrap;
+  }
+  .topbar .variant-actions {
+    order: 2;
+    flex: 1 1 100%;
+  }
+  .topbar .history-actions {
+    order: 3;
+  }
+  .topbar .file-actions {
+    order: 4;
+    margin-left: auto;
+  }
+  .topbar .spacer {
+    display: none;
+  }
+  .headline .hl-sep {
+    display: none;
+  }
+  .topbar .variant-actions select {
+    max-width: 150px;
+  }
+  .primary-actions .btn {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 7px 9px;
+  }
+  .primary-actions .btn svg {
+    width: 20px;
+    height: 20px;
+  }
+  .primary-actions .btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 }
 

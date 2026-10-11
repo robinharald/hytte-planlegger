@@ -6,7 +6,9 @@ import type { Selection } from '../state/selection';
 import { makeVariant } from '../state/testProject';
 import { formatLength, formatPoint } from './format';
 import { describeSelection, wallTitle } from './properties';
-import { buildSchedule, planStoreyOf, shortLevelName, sortByLevelElevation, SPLIT_MIN_AREA } from './schedule';
+import { buildingSplit } from './areaFigures';
+import { buildSchedule, planStoreyOf, shortLevelName, shortName, sortByLevelElevation, SPLIT_MIN_AREA } from './schedule';
+import { projectSubtitle } from './labels';
 import { EXT_WALL, INT_WALL, makeDerived } from './testDerived';
 import { makeNameLookup, warningItems, warningTarget } from './warnings';
 
@@ -172,6 +174,8 @@ describe('warnings', () => {
       { kind: 'roof-no-meet', blockId: 'blk-1', end: 'start' },
       { kind: 'area-limit', limit: 1, actual: 2 },
       { kind: 'generic', message: 'En melding' },
+      { kind: 'block-self-intersecting', blockId: 'blk-1' },
+      { kind: 'generic', message: 'geometry fallback: rooms on storey ground (polygon clipping failed)' },
     ];
     for (const w of all) {
       const text = warningText(w, names, (a) => `${a} m²`);
@@ -183,5 +187,55 @@ describe('warnings', () => {
     expect(warningTarget(all[4])).toEqual({ kind: 'opening', id: 'a' });
     expect(warningTarget(all[9])).toEqual({ kind: 'block', id: 'blk-1' });
     expect(warningTarget(all[13])).toBeNull();
+    expect(warningText(all[14], names, String)).toContain('krysser seg selv');
+    expect(warningTarget(all[14])).toEqual({ kind: 'block', id: 'blk-1' });
+    expect(warningText(all[15], names, String)).toMatch(/^En del av geometrien er forenklet.*teknisk: rooms on storey ground/);
+    expect(warningText(all[13], names, String)).toBe('En melding');
+  });
+});
+
+describe('review fixes: schedule, area figures, subtitle, strings', () => {
+  it('schedule rows carry the block name and short dimensions', () => {
+    const rows = buildSchedule(makeDerived()).groups.flatMap((g) => g.rows);
+    const gang = rows.find((r) => r.id === 'gang');
+    expect(gang?.blockName).toBe('Hytta');
+    expect(gang?.dimsShort).toBe('2,0 × 2,5');
+    expect(gang?.approx).toBe(false);
+    const d = makeDerived();
+    const unknown = buildSchedule({ ...d, rooms: [{ ...d.rooms[0], blockId: undefined }] }).groups[0].rows[0];
+    expect(unknown.blockName).toBe('');
+    expect(shortName('Glassutbygg (leseskrok)')).toBe('Glassutbygg');
+  });
+
+  it('buildingSplit separates the buildings from the decks', () => {
+    const bya = { total: 245.46, existing: 102.18, new: 143.28, buildings: 178.33, decks: 67.14, perBlock: [] };
+    const all = buildingSplit(bya, [{ isNew: true }]);
+    expect(all?.existing).toBeCloseTo(102.18);
+    expect(all?.new).toBeCloseTo(76.15);
+    const old = buildingSplit({ ...bya, existing: 169.32, new: 76.15 }, [{ isNew: false }]);
+    expect(old?.existing).toBeCloseTo(102.18);
+    expect(old?.new).toBeCloseTo(76.15);
+    expect(buildingSplit(bya, [{ isNew: true }, { isNew: false }])).toBeNull();
+    expect(buildingSplit({ ...bya, decks: 0, total: 178.33, new: 76.15 }, [])?.new).toBeCloseTo(76.15);
+  });
+
+  it('the subtitle does not repeat the place name', () => {
+    expect(projectSubtitle('Hytta ved Merkesvatnet')).toBe('Hytta ved Merkesvatnet');
+    expect(projectSubtitle('Testhytte')).toBe('Testhytte · Merkesvatnet');
+  });
+
+  it('copy: one form of "fila", "Vil du …" questions, Veggtype, rull/knip, the derive-failed text', () => {
+    const all = JSON.stringify(nb);
+    expect(all).not.toMatch(/Filen|filen/);
+    expect(nb.prompts.restoreVersion('X')).toMatch(/^Vil du hente versjonen «X»\?/);
+    expect(nb.prompts.importProject('X')).toMatch(/^Vil du åpne «X» fra fila\?/);
+    expect(nb.properties.fields.kind).toBe('Veggtype');
+    expect(nb.view3d.hint).toContain('rull/knip for å zoome');
+    expect(nb.help.items[0]).toContain('i Visning-panelet');
+    expect(nb.warnings.deriveFailed('boom')).toBe('Modellen kunne ikke beregnes: boom');
+    expect(nb.mode3d.presetNames.langsiden).toBe('Langsiden (mot vannet)');
+    for (const key of Object.keys(nb.mode3d.presetNames)) expect(nb.mode3d.presetTitles[key], key).toBeTruthy();
+    expect(nb.share.sharedName('Forslag D', 1)).toBe('Forslag D (delt)');
+    expect(nb.share.sharedName('Forslag D', 3)).toBe('Forslag D (delt 3)');
   });
 });

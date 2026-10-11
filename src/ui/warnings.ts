@@ -50,6 +50,7 @@ export function warningTarget(w: ModelWarning): Selection | null {
       return { kind: 'wall', id: w.wallId };
     case 'block-overlap':
       return { kind: 'block', id: w.blockIds[0] };
+    case 'block-self-intersecting':
     case 'parts-overlap':
     case 'roof-no-meet':
       return { kind: 'block', id: w.blockId };

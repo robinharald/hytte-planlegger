@@ -18,6 +18,8 @@ import { isEditableTarget, shortcutFor } from './keys';
 
 /** Phone layout (architecture.md: < 800 px). */
 export const PHONE_QUERY = '(max-width: 799px)';
+/** Narrow phones: the top bar folds its file actions into a menu and shows Del lenke / Hjelp as icons. */
+export const NARROW_QUERY = '(max-width: 599px)';
 /** "Begge" side by side from 1100 px, stacked below. */
 export const WIDE_QUERY = '(min-width: 1100px)';
 

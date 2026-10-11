@@ -11,10 +11,10 @@ import { nb } from '../i18n/nb';
 // Panel
 // ---------------------------------------------------------------------------
 
-export function Panel(props: { title: string; badge?: ReactNode; defaultOpen?: boolean; testId?: string; children: ReactNode }) {
+export function Panel(props: { title: string; badge?: ReactNode; defaultOpen?: boolean; testId?: string; id?: string; children: ReactNode }) {
   const [open, setOpen] = useState(props.defaultOpen ?? true);
   return (
-    <details className="panel" open={open} onToggle={(e) => setOpen(e.currentTarget.open)} data-testid={props.testId}>
+    <details className="panel" id={props.id} open={open} onToggle={(e) => setOpen(e.currentTarget.open)} data-testid={props.testId}>
       <summary>
         <span className="panel-title">
           {props.title}
@@ -174,5 +174,10 @@ export const IconShare = () => (
   <Svg>
     <path d="M10 14a4 4 0 0 0 5.7 0l3.2-3.2a4 4 0 0 0-5.7-5.7l-1.1 1.1" />
     <path d="M14 10a4 4 0 0 0-5.7 0l-3.2 3.2a4 4 0 0 0 5.7 5.7l1.1-1.1" />
+  </Svg>
+);
+export const IconChevronDown = () => (
+  <Svg>
+    <path d="m6 9 6 6 6-6" />
   </Svg>
 );

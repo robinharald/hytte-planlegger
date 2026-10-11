@@ -64,5 +64,22 @@ describe('App shell (plan only)', () => {
     const link = dialog?.querySelector('textarea')?.value ?? '';
     expect(link).toContain('#d=');
     expect(dialog?.textContent).toMatch(/Lengde: \d/);
+    // Forslag D as bootstrapped is sent as a delta against the bundled seed: short, no "send JSON" warning.
+    expect(link.length).toBeLessThan(1024);
+    expect(dialog?.textContent).not.toContain('over 8 kB');
+  });
+
+  it('read-only (shared link): banner, view controls kept, edit actions and undo gone', () => {
+    act(() => appStore.getState().replaceProject(appStore.getState().project, { readOnly: true, source: 'link' }));
+    expect(byTestId('banner-shared')).not.toBeNull();
+    expect(byTestId('make-copy')).not.toBeNull();
+    expect(byTestId('view-tab-plan')).not.toBeNull();
+    const labels = [...document.querySelectorAll('button')].map((b) => b.textContent?.trim());
+    expect(labels).not.toContain('Lagre versjon');
+    expect(labels).not.toContain('Dupliser');
+    expect(labels).toContain('Del lenke');
+    expect(labels).toContain('Hjelp');
+    expect(document.querySelector('[aria-label="Angre"]')).toBeNull();
+    act(() => appStore.getState().replaceProject(appStore.getState().project, { readOnly: false, source: 'local' }));
   });
 });

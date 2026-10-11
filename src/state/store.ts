@@ -14,6 +14,9 @@
  *    begin/commit: consecutive calls with the SAME label collapse into the entry created by the first call;
  *    any other project action ends the group.
  *  - `canUndo` / `canRedo` mirror the temporal store so components can subscribe to them like any field.
+ *  - `updatedAt` is fresh after every change of the project, including undo, redo and `setProject` (a restored
+ *    version or an imported file brings its old timestamp): autosave and the other-tab check key a saved
+ *    document by `id@updatedAt`, so a project must never come back with an old one. Undo/redo stamp it untracked.
  *  - While `ui.readOnly` (shared link) every project action, undo and redo is a no-op; `replaceProject` is the
  *    one unguarded entry point (bootstrap, link, "Lag min egen kopi", "Hent endringene") and clears the history.
  *    Documented exception: `setActiveVariant` still works while read-only, WITHOUT a history entry, so a viewer
@@ -38,8 +41,18 @@ export type Mode3d = 'ute' | 'inne';
 export type Tool = 'select' | 'measure';
 export type ProjectSource = 'local' | 'link' | 'version';
 
+/** "Begge" (plan and 3D side by side) is the default only on windows at least this wide; narrower ones open the plan. */
+export const SPLIT_MIN_WIDTH = 1600;
+
+/** Default view for a window width when the user has not chosen one (`UiState.activeViewChosen`). */
+export function defaultActiveView(windowWidth: number): ActiveView {
+  return windowWidth >= SPLIT_MIN_WIDTH ? 'split' : 'plan';
+}
+
 export interface UiState {
   activeView: ActiveView;
+  /** The user picked `activeView` with the view tabs (only then is it remembered in the UI prefs). */
+  activeViewChosen: boolean;
   planStorey: PlanStorey;
   /** Storey whose levels the 3D interior mode shows (storeys above it are hidden). Kept in step with planStorey. */
   activeStoreyId: Id;
@@ -62,11 +75,13 @@ export interface UiState {
 }
 
 export const DEFAULT_UI: UiState = {
-  activeView: 'split',
+  activeView: 'plan',
+  activeViewChosen: false,
   planStorey: 'ground',
   activeStoreyId: 'ground',
   mode3d: 'ute',
-  cutHeight: 1.6,
+  /** Below the 'inne-stua' eye height (1.55), so the views from above look into the rooms; see `presetUi`. */
+  cutHeight: 1.3,
   showLabels: true,
   showDims: true,
   showGrid: true,
@@ -85,18 +100,38 @@ export const DEFAULT_UI: UiState = {
 export const CUT_HEIGHT_MIN = 1.2;
 export const CUT_HEIGHT_MAX = 2.6;
 
+/**
+ * Cut height the eye-level preset 'inne-stua' needs (eye at 1.55 m): the walls rise above the eye, so the view reads
+ * as a room and not as one band of wall tops on the horizon.
+ */
+export const EYE_LEVEL_CUT = 2.3;
+
+/** UI change for choosing a camera preset: 'inne-stua' also raises a lower cut height to `EYE_LEVEL_CUT`. */
+export function presetUi(preset: CameraPreset, ui: Pick<UiState, 'cutHeight'>): Partial<UiState> {
+  return preset === 'inne-stua' && ui.cutHeight < EYE_LEVEL_CUT ? { preset, cutHeight: EYE_LEVEL_CUT } : { preset };
+}
+
 /** Every camera preset, in button order (the type itself is contracted in view3d/View3D.tsx). */
 export const CAMERA_PRESET_KEYS = [
   'oversikt',
   'terrassen',
   'framsiden',
   'baksiden',
+  'langsiden',
   'ovenfra',
   'naert-tilbygget',
   'inne-stua',
 ] as const satisfies readonly CameraPreset[];
 
 export type VariantRecipe = (draft: Variant) => void;
+
+/** The undo/redo stacks (oldest first), e.g. to come back to one's own project after looking at a shared link. */
+export interface HistorySnapshot {
+  past: Project[];
+  future: Project[];
+}
+
+export const EMPTY_HISTORY: HistorySnapshot = { past: [], future: [] };
 
 export interface AppState {
   project: Project;
@@ -111,6 +146,8 @@ export interface AppState {
   /** Returns the new variant id, or null when nothing was done. */
   duplicateVariant(id: Id, name: string): Id | null;
   addVariant(variant: Variant, opts?: { activate?: boolean; seedRevision?: number }): void;
+  /** Append several variants (ids not in the project yet) as ONE undo step; `activeId` becomes the active variant. */
+  addVariants(variants: Variant[], opts?: { activeId?: Id }): void;
   setActiveVariant(id: Id): void;
   renameVariant(id: Id, name: string): void;
   deleteVariant(id: Id): void;
@@ -124,9 +161,14 @@ export interface AppState {
   undo(): void;
   redo(): void;
   clearHistory(): void;
+  /** Copy of the undo/redo stacks. */
+  history(): HistorySnapshot;
 
-  /** System entry point, not guarded by readOnly: replaces the project (and patches ui), clears the history. */
-  replaceProject(project: Project, ui?: Partial<UiState>): void;
+  /**
+   * System entry point, not guarded by readOnly: replaces the project (and patches ui) and clears the history, or
+   * installs `history` instead (returning to a project whose stacks were kept with `history()`).
+   */
+  replaceProject(project: Project, ui?: Partial<UiState>, history?: HistorySnapshot): void;
 
   setUi(patch: Partial<UiState>): void;
   select(selection: Selection | null): void;
@@ -134,6 +176,24 @@ export interface AppState {
 
 function nowISO(): string {
   return new Date().toISOString();
+}
+
+/** Last value handed out by `nextStamp` (ms), module-wide so it also holds across stores. */
+let lastStampMs = 0;
+
+/**
+ * A fresh ISO timestamp strictly later than every `previous` one: `id@updatedAt` identifies a saved document
+ * (persistence.projectKey), so two changes in the same millisecond, or an undo right after an edit, must still
+ * get different values.
+ */
+export function nextStamp(...previous: string[]): string {
+  let t = Math.max(Date.now(), lastStampMs + 1);
+  for (const p of previous) {
+    const ms = Date.parse(p);
+    if (Number.isFinite(ms) && ms >= t) t = ms + 1;
+  }
+  lastStampMs = t;
+  return new Date(t).toISOString();
 }
 
 /** Default name for a duplicated variant: "Forslag D (kopi)". */
@@ -182,14 +242,16 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             const v = s.project.variants.find((x) => x.id === id);
             if (!v) return;
             recipe(v);
-            s.project.updatedAt = nowISO();
+            s.project.updatedAt = nextStamp(s.project.updatedAt);
           });
         };
 
-        const clearSelection = () =>
+        /** After undo/redo: clear the selection and, when the project changed, give it a fresh updatedAt (no entry). */
+        const afterTimeTravel = (before: Project) =>
           untracked(() =>
             set((s) => {
               s.ui.selection = null;
+              if (get().project !== before) s.project.updatedAt = nextStamp(s.project.updatedAt);
             }),
           );
 
@@ -203,7 +265,7 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             if (readOnly()) return;
             mergeKey = null;
             set((s) => {
-              s.project = project;
+              s.project = { ...project, updatedAt: nextStamp(get().project.updatedAt, project.updatedAt) };
               s.ui.selection = null;
             });
           },
@@ -235,7 +297,7 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
               const i = s.project.variants.findIndex((v) => v.id === id);
               s.project.variants.splice(i + 1, 0, copy);
               s.project.activeVariantId = copy.id;
-              s.project.updatedAt = nowISO();
+              s.project.updatedAt = nextStamp(s.project.updatedAt);
               s.ui.selection = null;
             });
             return copy.id;
@@ -252,7 +314,28 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
                 s.ui.selection = null;
               }
               if (o?.seedRevision !== undefined) s.project.seedRevision = o.seedRevision;
-              s.project.updatedAt = nowISO();
+              s.project.updatedAt = nextStamp(s.project.updatedAt);
+            });
+          },
+
+          addVariants: (variants, o) => {
+            if (readOnly()) return;
+            const taken = new Set(get().project.variants.map((v) => v.id));
+            const fresh: Variant[] = [];
+            for (const v of variants) {
+              if (taken.has(v.id)) continue;
+              taken.add(v.id);
+              fresh.push(v);
+            }
+            if (fresh.length === 0) return;
+            mergeKey = null;
+            set((s) => {
+              s.project.variants.push(...fresh);
+              if (o?.activeId && fresh.some((v) => v.id === o.activeId)) {
+                s.project.activeVariantId = o.activeId;
+                s.ui.selection = null;
+              }
+              s.project.updatedAt = nextStamp(s.project.updatedAt);
             });
           },
 
@@ -264,7 +347,7 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             const apply = () =>
               set((s) => {
                 s.project.activeVariantId = id;
-                if (!viewOnly) s.project.updatedAt = nowISO();
+                if (!viewOnly) s.project.updatedAt = nextStamp(s.project.updatedAt);
                 s.ui.selection = null;
               });
             if (viewOnly) untracked(apply);
@@ -280,7 +363,7 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             set((s) => {
               const draft = s.project.variants.find((x) => x.id === id);
               if (draft) draft.name = trimmed;
-              s.project.updatedAt = nowISO();
+              s.project.updatedAt = nextStamp(s.project.updatedAt);
             });
           },
 
@@ -296,7 +379,7 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
                 s.project.activeVariantId = s.project.variants[Math.max(0, i - 1)].id;
                 s.ui.selection = null;
               }
-              s.project.updatedAt = nowISO();
+              s.project.updatedAt = nextStamp(s.project.updatedAt);
             });
           },
 
@@ -325,6 +408,8 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             if (!tx) return;
             const { start } = tx;
             tx = null;
+            // A later updateVariant with the same label must start its own undo step.
+            mergeKey = null;
             temporalApi().resume();
             if (get().project !== start) pushPast(start);
           },
@@ -333,6 +418,7 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             if (!tx) return;
             const { start } = tx;
             tx = null;
+            mergeKey = null;
             set((s) => {
               s.project = start;
             });
@@ -344,15 +430,17 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
           undo: () => {
             if (readOnly() || tx) return;
             mergeKey = null;
+            const before = get().project;
             temporalApi().undo();
-            clearSelection();
+            afterTimeTravel(before);
           },
 
           redo: () => {
             if (readOnly() || tx) return;
             mergeKey = null;
+            const before = get().project;
             temporalApi().redo();
-            clearSelection();
+            afterTimeTravel(before);
           },
 
           clearHistory: () => {
@@ -360,7 +448,14 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             temporalApi().clear();
           },
 
-          replaceProject: (project, ui) => {
+          history: (): HistorySnapshot => {
+            const t = temporalApi();
+            const projects = (states: readonly Partial<{ project: Project }>[]) =>
+              states.flatMap((x) => (x.project ? [x.project] : []));
+            return { past: projects(t.pastStates), future: projects(t.futureStates) };
+          },
+
+          replaceProject: (project, ui, history) => {
             if (tx) {
               tx = null;
               temporalApi().resume();
@@ -373,6 +468,12 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
               }),
             );
             temporalApi().clear();
+            if (history && (history.past.length > 0 || history.future.length > 0)) {
+              store.temporal.setState({
+                pastStates: history.past.slice(-limit).map((p) => ({ project: p })),
+                futureStates: history.future.slice(-limit).map((p) => ({ project: p })),
+              });
+            }
           },
 
           setUi: (patch) => {

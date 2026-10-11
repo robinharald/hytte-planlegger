@@ -2,6 +2,10 @@
  * Banners above the top bar: shared (read-only) link with "Lag min egen kopi", a newer Forslag D seed, another
  * tab's newer save, a too-new stored schema ("Last siden på nytt") and one-off problems (broken link, import,
  * storage). Texts in i18n/nb.ts.
+ *
+ * The shared-link banner says what "Lag min egen kopi" does: it adds the shared variant(s) to the user's own project,
+ * or makes the link the user's project when there is none (then "Tilbake til mitt prosjekt" reads "Vis Forslag D").
+ * The other-tab banner offers "Hent endringene" or "Behold mine endringer"; this tab saves nothing until one is chosen.
  */
 import type { ReactNode } from 'react';
 import { nb } from '../i18n/nb';
@@ -10,6 +14,7 @@ import {
   dismissNotice,
   dismissSeedUpdate,
   fetchNewSeed,
+  keepOwnChanges,
   leaveSharedView,
   makeMyOwnCopy,
   reloadPage,
@@ -33,6 +38,7 @@ function Banner(props: { tone?: 'info' | 'warn'; children: ReactNode; actions?: 
 const SIMPLE: Partial<Record<AppNotice, string>> = {
   'link-invalid': nb.banners.linkInvalid,
   'link-too-new': nb.banners.linkTooNew,
+  'link-rebased': nb.banners.linkRebased,
   'autosave-invalid': nb.banners.autosaveInvalid,
   'storage-unavailable': nb.banners.storageUnavailable,
   'save-failed': nb.banners.saveFailed,
@@ -55,6 +61,7 @@ export function Banners() {
   const project = useAppStore((s) => s.project);
   const notices = useNotices((s) => s.notices);
   const dismissedSeed = useNotices((s) => s.dismissedSeedRevision);
+  const sharedHasOwn = useNotices((s) => s.sharedHasOwn);
   const b = nb.banners;
 
   const items: ReactNode[] = [];
@@ -69,13 +76,14 @@ export function Banners() {
             <button type="button" className="btn btn-primary btn-small" onClick={makeMyOwnCopy} data-testid="make-copy">
               {b.makeCopy}
             </button>
-            <button type="button" className="btn btn-small btn-ghost" onClick={leaveSharedView}>
-              {b.leaveShared}
+            <button type="button" className="btn btn-small btn-ghost" onClick={leaveSharedView} data-testid="leave-shared">
+              {sharedHasOwn ? b.leaveShared : b.showSeed}
             </button>
           </>
         }
       >
-        <strong>{b.readOnly}</strong> <span className="muted">{b.readOnlyHint}</span>
+        <strong>{b.readOnly}</strong>{' '}
+        <span className="muted">{sharedHasOwn ? b.readOnlyHintMerge(project.variants.length) : b.readOnlyHintNew}</span>
       </Banner>,
     );
   }
@@ -105,7 +113,9 @@ export function Banners() {
             <button type="button" className="btn btn-small btn-primary" onClick={acceptExternalChange}>
               {b.loadOtherTab}
             </button>
-            <DismissButton notice="other-tab" />
+            <button type="button" className="btn btn-small btn-ghost" onClick={keepOwnChanges}>
+              {b.keepMine}
+            </button>
           </>
         }
       >

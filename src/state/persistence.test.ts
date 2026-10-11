@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import LZString from 'lz-string';
+import { createForslagD, SEED_REVISION } from '../model/seed/forslagD';
 import { CURRENT_SCHEMA_VERSION } from '../model/types';
-import type { Project } from '../model/types';
+import type { Project, Variant } from '../model/types';
 import {
+  applyCollection,
   AUTOSAVE_DELAY_MS,
   decodeShare,
+  deltaPayload,
+  diffCollection,
   deleteVersion,
   encodeShare,
   getStorage,
@@ -20,7 +24,9 @@ import {
   makeOwnCopy,
   makeShareLink,
   parseProjectText,
+  PREFS_VERSION,
   projectFileName,
+  projectKey,
   readProjectFile,
   sanitizeUiPrefs,
   saveAutosave,
@@ -30,6 +36,7 @@ import {
   serializeProject,
   SHARE_WARN_BYTES,
   shareParamFromHash,
+  sharePayloadJson,
   sharedProject,
   startAutosave,
   VERSION_LIMIT,
@@ -101,22 +108,49 @@ describe('autosave round trip', () => {
 
 describe('ui prefs', () => {
   it('round-trips the persisted subset only', () => {
-    const ui = { ...DEFAULT_UI, activeView: 'plan' as const, cutHeight: 2.2, showGrid: false, readOnly: true, selection: { kind: 'room' as const, id: 'x' } };
+    const ui = {
+      ...DEFAULT_UI,
+      activeView: '3d' as const,
+      activeViewChosen: true,
+      cutHeight: 2.2,
+      showGrid: false,
+      readOnly: true,
+      selection: { kind: 'room' as const, id: 'x' },
+    };
     saveUiPrefs(localStorage, ui);
     const loaded = loadUiPrefs(localStorage);
-    expect(loaded.activeView).toBe('plan');
+    expect(loaded.activeView).toBe('3d');
+    expect(loaded.activeViewChosen).toBe(true);
     expect(loaded.cutHeight).toBe(2.2);
     expect(loaded.showGrid).toBe(false);
     expect('readOnly' in loaded).toBe(false);
     expect('selection' in loaded).toBe(false);
   });
 
+  it('remembers the view only when the user chose it', () => {
+    saveUiPrefs(localStorage, { ...DEFAULT_UI, activeView: 'split', activeViewChosen: true });
+    saveUiPrefs(localStorage, { ...DEFAULT_UI, activeView: 'plan', activeViewChosen: false, showGrid: false });
+    const loaded = loadUiPrefs(localStorage);
+    expect('activeView' in loaded).toBe(false);
+    expect(loaded.showGrid).toBe(false);
+  });
+
+  it('ignores the view and cut height of prefs saved before PREFS_VERSION (old defaults)', () => {
+    localStorage.setItem(KEYS.ui, JSON.stringify({ activeView: 'split', cutHeight: 1.6, showGrid: false }));
+    expect(loadUiPrefs(localStorage)).toEqual({ showGrid: false });
+    saveUiPrefs(localStorage, { ...DEFAULT_UI, showGrid: false });
+    const stored = JSON.parse(localStorage.getItem(KEYS.ui) ?? '{}') as Record<string, unknown>;
+    expect(stored.v).toBe(PREFS_VERSION);
+    expect('activeView' in stored).toBe(false);
+  });
+
   it('drops malformed fields and clamps the cut height', () => {
     expect(
-      sanitizeUiPrefs({ activeView: 'nope', cutHeight: 9, showLabels: 'yes', preset: 'ovenfra', sun: { date: '21.06', minutes: 5 } }),
+      sanitizeUiPrefs({ v: PREFS_VERSION, chosenView: 'nope', cutHeight: 9, showLabels: 'yes', preset: 'ovenfra', sun: { date: '21.06', minutes: 5 } }),
     ).toEqual({ cutHeight: 2.6, preset: 'ovenfra' });
     expect(sanitizeUiPrefs(null)).toEqual({});
     expect(sanitizeUiPrefs({ sun: { date: '2026-12-21', minutes: 720.4 } })).toEqual({ sun: { date: '2026-12-21', minutes: 720 } });
+    expect(sanitizeUiPrefs({ preset: 'langsiden' })).toEqual({ preset: 'langsiden' });
   });
 
   it('keeps dismissedSeedRevision when prefs are saved', () => {
@@ -221,10 +255,11 @@ describe('share links', () => {
     expect(r.project.id).toBe(p.id);
   });
 
-  it('encodes all variants on request and round-trips exactly', () => {
+  it('encodes all variants on request and round-trips (timestamps are not sent)', () => {
     const p = twoVariantProject();
-    const r = decodeShare(encodeShare(p, { allVariants: true }));
-    expect(r.status === 'ok' && r.project).toEqual(p);
+    const now = new Date('2026-10-12T08:00:00.000Z');
+    const r = decodeShare(encodeShare(p, { allVariants: true }), now);
+    expect(r.status === 'ok' && r.project).toEqual(withTimes(p, now.toISOString()));
   });
 
   it('sharedProject falls back to the first variant and leaves the input alone', () => {
@@ -273,6 +308,113 @@ describe('share links', () => {
   });
 });
 
+/** `p` with every timestamp set to `iso` (what a decoded link carries). */
+function withTimes(p: Project, iso: string): Project {
+  return { ...p, createdAt: iso, updatedAt: iso, variants: p.variants.map((v) => ({ ...v, createdAt: iso })) };
+}
+
+/** The bundled seed as a user has it: own id, current timestamps. */
+function userSeed(): Project {
+  return { ...createForslagD('2026-10-11T18:00:00.000Z'), id: 'AbCdEfGhIjKl' };
+}
+
+const BASE_URL = 'https://robin.github.io/hytte-planlegger/';
+
+describe('share links as a delta against the bundled seed', () => {
+  const now = new Date('2026-10-12T08:00:00.000Z');
+
+  it('an unchanged Forslag D link is under 1 kB and decodes to the seed', () => {
+    const p = userSeed();
+    const link = makeShareLink(p, { allVariants: false }, BASE_URL);
+    expect(link.bytes).toBeLessThan(1024);
+    expect(link.tooBig).toBe(false);
+    expect(sharePayloadJson(p, { allVariants: false })).not.toContain('createdAt');
+    const r = decodeShare(shareParamFromHash(new URL(link.url).hash) ?? '', now);
+    expect(r.status).toBe('ok');
+    if (r.status !== 'ok') return;
+    expect(r.rebased).toBeUndefined();
+    expect(r.project).toEqual(withTimes(p, now.toISOString()));
+  });
+
+  it('a link with one renamed room is under 1.5 kB', () => {
+    const p = userSeed();
+    const rooms = p.variants[0].rooms.map((r, i) => (i === 3 ? { ...r, name: 'Gjesterom' } : r));
+    const edited = { ...p, variants: [{ ...p.variants[0], rooms }] };
+    const link = makeShareLink(edited, { allVariants: false }, BASE_URL);
+    expect(link.bytes).toBeLessThan(1536);
+    const r = decodeShare(shareParamFromHash(new URL(link.url).hash) ?? '', now);
+    expect(r.status === 'ok' && r.project.variants[0].rooms[3].name).toBe('Gjesterom');
+  });
+
+  it('a variant with three edited walls, an added and a removed one round-trips deep-equal', () => {
+    const p = userSeed();
+    const v = p.variants[0];
+    const walls = v.walls
+      .map((w, i) => (i < 3 ? { ...w, thickness: w.thickness + 0.05, height: 2.5 } : w))
+      .filter((w) => w.id !== v.walls[5].id);
+    walls.push({ id: 'w-ny', a: [1, 1], b: [2, 1], thickness: 0.1, levelId: 'main', status: 'new', kind: 'interior', heightMode: 'auto' });
+    const variant: Variant = { ...v, name: 'Forslag E', description: undefined, walls, settings: { ...v.settings, areaLimit: 150 } };
+    const second: Variant = { ...v, id: 'v-2', name: 'Uendret' };
+    const edited: Project = { ...p, name: 'Mitt prosjekt', variants: [variant, second], activeVariantId: 'v-2' };
+    const delta = deltaPayload(edited);
+    expect(delta.variants[0].changes?.walls?.change).toHaveLength(3);
+    expect(delta.variants[0].changes?.walls?.add).toHaveLength(1);
+    expect(delta.variants[0].changes?.walls?.remove).toEqual([v.walls[5].id]);
+    expect(delta.variants[0].unset).toEqual(['description']);
+    expect(delta.variants[1].changes).toBeUndefined();
+    const r = decodeShare(encodeShare(edited, { allVariants: true }), now);
+    expect(r.status === 'ok' && r.project).toEqual(withTimes(edited, now.toISOString()));
+  });
+
+  it('keeps a changed collection order and a changed site', () => {
+    const p = userSeed();
+    const v = p.variants[0];
+    const blocks = [...v.blocks].reverse();
+    const site = { ...p.site, floorElevation: 161.2 };
+    const edited: Project = { ...p, site, variants: [{ ...v, blocks }] };
+    const delta = deltaPayload(edited);
+    expect(delta.variants[0].changes?.blocks?.order).toEqual(blocks.map((b) => b.id));
+    expect(delta.site?.floorElevation).toBe(161.2);
+    const r = decodeShare(encodeShare(edited, { allVariants: false }), now);
+    expect(r.status === 'ok' && r.project).toEqual(withTimes(edited, now.toISOString()));
+  });
+
+  it('sends the full project when it is not at the bundled seed revision', () => {
+    const p = { ...userSeed(), seedRevision: SEED_REVISION - 1 };
+    const json = JSON.parse(sharePayloadJson(p, { allVariants: false })) as Record<string, unknown>;
+    expect(json.base).toBeUndefined();
+    expect(json.project).toBeDefined();
+  });
+
+  it('applies a link from an older seed revision to the current seed (rebased) and rejects a newer one', () => {
+    const delta = { ...deltaPayload(userSeed()), seedRevision: SEED_REVISION - 1 };
+    const old = decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(delta)), now);
+    expect(old.status === 'ok' && old.rebased).toBe(true);
+    const newer = { ...delta, seedRevision: SEED_REVISION + 1 };
+    expect(decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(newer))).status).toBe('too-new');
+    const broken = { ...delta, variants: [{ set: {} }] };
+    expect(decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(broken))).status).toBe('invalid');
+  });
+
+  it('a delta payload is accepted as an imported file too', () => {
+    const r = parseProjectText(JSON.stringify(deltaPayload(userSeed())));
+    expect(r.status === 'ok' && r.project.variants[0].id).toBe('forslag-d');
+  });
+
+  it('diffCollection / applyCollection handle duplicates and a different base', () => {
+    const base = [{ id: 'a', x: 1 }, { id: 'b', x: 2 }];
+    expect(diffCollection(base, base)).toBeNull();
+    const dup = [{ id: 'a', x: 1 }, { id: 'a', x: 3 }];
+    expect(diffCollection(dup, base)).toEqual({ all: dup });
+    expect(applyCollection(base, { all: dup })).toEqual(dup);
+    // Rebased: a changed entity the new base no longer has is kept (appended), order ids that vanished are skipped.
+    expect(applyCollection([{ id: 'b', x: 2 }], { change: [{ id: 'a', x: 9 }], order: ['a', 'zz', 'b'] })).toEqual([
+      { id: 'a', x: 9 },
+      { id: 'b', x: 2 },
+    ]);
+  });
+});
+
 describe('loadInitialState', () => {
   const seed = () => makeTestProject({ id: 'seed', name: 'Seed' });
 
@@ -295,7 +437,7 @@ describe('loadInitialState', () => {
   });
 
   it('uses the seed when nothing is stored, with saved prefs applied', () => {
-    saveUiPrefs(localStorage, { ...DEFAULT_UI, activeView: '3d' });
+    saveUiPrefs(localStorage, { ...DEFAULT_UI, activeView: '3d', activeViewChosen: true });
     const s = loadInitialState({ storage: localStorage, hash: '', createSeed: seed });
     expect(s.project.id).toBe('seed');
     expect(s.ui.activeView).toBe('3d');
@@ -330,20 +472,90 @@ describe('startAutosave', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('debounces project writes and writes nothing for the initial project', () => {
+  it('writes the initial project once when nothing is stored, then debounces writes', () => {
     const store = createAppStore(makeTestProject());
     const ctl = startAutosave(store, { storage: localStorage, target: window });
-    vi.advanceTimersByTime(AUTOSAVE_DELAY_MS * 2);
-    expect(localStorage.getItem(KEYS.project)).toBeNull();
+    const first = localStorage.getItem(KEYS.project);
+    expect(first).not.toBeNull();
+    expect(loadAutosave(localStorage).status === 'ok' && projectKey(store.getState().project)).toBe(projectKey(makeTestProject()));
 
     store.getState().renameRoom('room-1', 'A');
     vi.advanceTimersByTime(AUTOSAVE_DELAY_MS - 100);
     store.getState().renameRoom('room-1', 'B');
     vi.advanceTimersByTime(AUTOSAVE_DELAY_MS - 100);
-    expect(localStorage.getItem(KEYS.project)).toBeNull();
+    expect(localStorage.getItem(KEYS.project)).toBe(first);
     vi.advanceTimersByTime(200);
     const r = loadAutosave(localStorage);
     expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('B');
+    ctl.stop();
+  });
+
+  it('does not rewrite an autosave it started from', () => {
+    const p = makeTestProject();
+    saveAutosave(localStorage, p);
+    const raw = localStorage.getItem(KEYS.project);
+    const store = createAppStore(p);
+    const ctl = startAutosave(store, { storage: localStorage, target: window });
+    store.getState().setUi({ showGrid: false });
+    ctl.flush();
+    expect(localStorage.getItem(KEYS.project)).toBe(raw);
+    ctl.stop();
+  });
+
+  it('edit → flush → undo → flush saves the undone state, without reporting another tab', () => {
+    const store = createAppStore(makeTestProject());
+    const onExternalChange = vi.fn();
+    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
+    store.getState().renameRoom('room-1', 'Edited');
+    ctl.flush();
+    store.getState().undo();
+    ctl.flush();
+    const r = loadAutosave(localStorage);
+    expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('Stue');
+    store.getState().redo();
+    vi.advanceTimersByTime(AUTOSAVE_DELAY_MS + 10);
+    const r2 = loadAutosave(localStorage);
+    expect(r2.status === 'ok' && r2.project.variants[0].rooms[0].name).toBe('Edited');
+    expect(onExternalChange).not.toHaveBeenCalled();
+    ctl.stop();
+  });
+
+  it('a project with an old updatedAt (restored version, imported file) is saved', () => {
+    const store = createAppStore(makeTestProject());
+    const onExternalChange = vi.fn();
+    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
+    store.getState().renameRoom('room-1', 'Ny');
+    ctl.flush();
+    store.getState().setProject(makeTestProject({ name: 'Gammel versjon', updatedAt: '2001-01-01T00:00:00.000Z' }));
+    ctl.flush();
+    const r = loadAutosave(localStorage);
+    expect(r.status === 'ok' && r.project.name).toBe('Gammel versjon');
+    expect(onExternalChange).not.toHaveBeenCalled();
+    ctl.stop();
+  });
+
+  it('a variant switch followed by undo (fake timers) saves the undone state', () => {
+    const store = createAppStore(twoVariantProject());
+    const onExternalChange = vi.fn();
+    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
+    store.getState().setActiveVariant('v-1');
+    vi.advanceTimersByTime(600);
+    store.getState().undo();
+    vi.advanceTimersByTime(600);
+    const r = loadAutosave(localStorage);
+    expect(r.status === 'ok' && r.project.activeVariantId).toBe('v-2');
+    expect(onExternalChange).not.toHaveBeenCalled();
+    ctl.stop();
+  });
+
+  it('saveNow writes even when nothing changed (the stored copy was removed)', () => {
+    const store = createAppStore(makeTestProject());
+    const ctl = startAutosave(store, { storage: localStorage, target: window });
+    localStorage.removeItem(KEYS.project);
+    ctl.flush();
+    expect(localStorage.getItem(KEYS.project)).toBeNull();
+    expect(ctl.saveNow()).toBe(true);
+    expect(loadAutosave(localStorage).status).toBe('ok');
     ctl.stop();
   });
 
@@ -360,10 +572,11 @@ describe('startAutosave', () => {
   });
 
   it('never writes while read-only', () => {
-    const store = createAppStore(makeTestProject());
+    const store = createAppStore(makeTestProject({ id: 'shared' }), { readOnly: true, source: 'link' });
     const ctl = startAutosave(store, { storage: localStorage, target: window });
-    store.getState().replaceProject(makeTestProject({ id: 'shared' }), { readOnly: true, source: 'link' });
+    store.getState().setActiveVariant('v-1');
     ctl.flush();
+    expect(ctl.saveNow()).toBe(false);
     expect(localStorage.getItem(KEYS.project)).toBeNull();
     // "Lag min egen kopi" → writable again → saved.
     store.getState().replaceProject(makeOwnCopy(store.getState().project), { readOnly: false, source: 'local' });
@@ -373,35 +586,60 @@ describe('startAutosave', () => {
     ctl.stop();
   });
 
-  it('does not overwrite a newer project saved by another tab and reports it', () => {
+  it('does not overwrite a project saved by another tab, reports it once, and overwrites after adopt()', () => {
     const store = createAppStore(makeTestProject());
     const onExternalChange = vi.fn();
     const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
     store.getState().renameRoom('room-1', 'Mine');
-    const newer = makeTestProject({ updatedAt: '2999-01-01T00:00:00.000Z', name: 'Fra annen fane' });
-    saveAutosave(localStorage, newer);
+    // Another tab saves, even with an OLDER timestamp: it is still not ours.
+    const other = makeTestProject({ updatedAt: '2000-01-01T00:00:00.000Z', name: 'Fra annen fane' });
+    saveAutosave(localStorage, other);
+    ctl.flush();
+    store.getState().renameRoom('room-1', 'Mine 2');
     ctl.flush();
     const r = loadAutosave(localStorage);
     expect(r.status === 'ok' && r.project.name).toBe('Fra annen fane');
     expect(onExternalChange).toHaveBeenCalledTimes(1);
     expect(onExternalChange.mock.calls[0][0].name).toBe('Fra annen fane');
+    // "Behold mine endringer".
+    ctl.adopt();
+    expect(ctl.saveNow()).toBe(true);
+    const r2 = loadAutosave(localStorage);
+    expect(r2.status === 'ok' && r2.project.variants[0].rooms[0].name).toBe('Mine 2');
     ctl.stop();
   });
 
-  it('reports newer projects from storage events and ignores older ones', () => {
+  it('taking over the other tab’s project stops the conflict', () => {
     const store = createAppStore(makeTestProject());
     const onExternalChange = vi.fn();
     const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
-    const older = makeTestProject({ updatedAt: '2000-01-01T00:00:00.000Z' });
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify(older) }));
+    const other = makeTestProject({ updatedAt: '2030-01-01T00:00:00.000Z', name: 'Fra annen fane' });
+    saveAutosave(localStorage, other);
+    store.getState().replaceProject(other);
+    ctl.flush();
+    store.getState().renameRoom('room-1', 'Videre');
+    ctl.flush();
+    const r = loadAutosave(localStorage);
+    expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('Videre');
+    expect(onExternalChange).not.toHaveBeenCalled();
+    ctl.stop();
+  });
+
+  it('reports projects saved by other tabs from storage events, not its own', () => {
+    const store = createAppStore(makeTestProject());
+    const onExternalChange = vi.fn();
+    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
+    const own = localStorage.getItem(KEYS.project) ?? '';
+    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: own }));
     window.dispatchEvent(new StorageEvent('storage', { key: KEYS.ui, newValue: '{}' }));
     window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: 'garbage' }));
     expect(onExternalChange).not.toHaveBeenCalled();
-    const newer = makeTestProject({ updatedAt: '2999-01-01T00:00:00.000Z' });
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify(newer) }));
+    const other = makeTestProject({ updatedAt: '2000-01-01T00:00:00.000Z' });
+    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify(other) }));
+    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify(other) }));
     expect(onExternalChange).toHaveBeenCalledTimes(1);
     ctl.stop();
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify({ ...newer, updatedAt: '3000-01-01T00:00:00.000Z' }) }));
+    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify({ ...other, updatedAt: '3000-01-01T00:00:00.000Z' }) }));
     expect(onExternalChange).toHaveBeenCalledTimes(1);
   });
 
@@ -412,6 +650,14 @@ describe('startAutosave', () => {
     store.getState().renameRoom('room-1', 'X');
     ctl.flush();
     expect(onSaveError).toHaveBeenCalled();
+    ctl.stop();
+  });
+
+  it('does not try the start-up write without storage', () => {
+    const store = createAppStore(makeTestProject());
+    const onSaveError = vi.fn();
+    const ctl = startAutosave(store, { storage: null, onSaveError });
+    expect(onSaveError).not.toHaveBeenCalled();
     ctl.stop();
   });
 });

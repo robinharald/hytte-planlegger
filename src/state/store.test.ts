@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAppStore, DEFAULT_UI, selectActiveVariant } from './store';
+import { CAMERA_PRESET_KEYS, createAppStore, DEFAULT_UI, defaultActiveView, EYE_LEVEL_CUT, nextStamp, presetUi, selectActiveVariant, SPLIT_MIN_WIDTH } from './store';
 import { makeTestProject, makeVariant } from './testProject';
 
 function setup(ui = {}) {
@@ -313,5 +313,107 @@ describe('read-only', () => {
     expect(s.getState().inTransaction()).toBe(false);
     s.getState().renameRoom('room-1', 'Z');
     expect(s.temporal.getState().pastStates).toHaveLength(1);
+  });
+});
+
+describe('review fixes', () => {
+  it('a later updateVariant with the label of a committed transaction gets its own undo step', () => {
+    const s = setup();
+    const id = s.getState().project.activeVariantId;
+    s.getState().beginTransaction('slider');
+    s.getState().updateVariant(id, (v) => void (v.name = 'A'), { transaction: 'slider' });
+    s.getState().commitTransaction();
+    expect(s.temporal.getState().pastStates).toHaveLength(1);
+    s.getState().updateVariant(id, (v) => void (v.name = 'B'), { transaction: 'slider' });
+    expect(s.temporal.getState().pastStates).toHaveLength(2);
+    s.getState().undo();
+    expect(selectActiveVariant(s.getState()).name).toBe('A');
+  });
+
+  it('the same after a cancelled transaction', () => {
+    const s = setup();
+    const id = s.getState().project.activeVariantId;
+    s.getState().updateVariant(id, (v) => void (v.name = 'A'), { transaction: 'slider' });
+    s.getState().beginTransaction('slider');
+    s.getState().updateVariant(id, (v) => void (v.name = 'X'), { transaction: 'slider' });
+    s.getState().cancelTransaction();
+    s.getState().updateVariant(id, (v) => void (v.name = 'B'), { transaction: 'slider' });
+    expect(s.temporal.getState().pastStates).toHaveLength(2);
+  });
+
+  it('undo, redo and setProject give the project a fresh, strictly later updatedAt without history entries', () => {
+    const s = setup();
+    s.getState().renameRoom('room-1', 'A');
+    const edited = s.getState().project.updatedAt;
+    s.getState().undo();
+    const undone = s.getState().project.updatedAt;
+    expect(Date.parse(undone)).toBeGreaterThan(Date.parse(edited));
+    expect(s.temporal.getState().pastStates).toHaveLength(0);
+    expect(s.temporal.getState().futureStates).toHaveLength(1);
+    s.getState().redo();
+    expect(Date.parse(s.getState().project.updatedAt)).toBeGreaterThan(Date.parse(undone));
+    expect(roomName(s)).toBe('A');
+    const old = makeTestProject({ name: 'Gammel', updatedAt: '2001-01-01T00:00:00.000Z' });
+    s.getState().setProject(old);
+    expect(s.getState().project.name).toBe('Gammel');
+    expect(s.getState().project.updatedAt).not.toBe(old.updatedAt);
+    expect(old.updatedAt).toBe('2001-01-01T00:00:00.000Z');
+    expect(s.temporal.getState().pastStates).toHaveLength(2);
+  });
+
+  it('nextStamp is strictly increasing and later than its arguments', () => {
+    const a = nextStamp();
+    const b = nextStamp();
+    expect(b > a).toBe(true);
+    expect(nextStamp('2999-01-01T00:00:00.000Z')).toBe('2999-01-01T00:00:00.001Z');
+  });
+
+  it('addVariants adds several variants as one undo step and activates one', () => {
+    const s = setup();
+    s.getState().addVariants([makeVariant('v-a', 'A'), makeVariant('v-b', 'B'), makeVariant('v-1', 'Duplikat')], { activeId: 'v-b' });
+    expect(s.getState().project.variants.map((v) => v.id)).toEqual(['v-1', 'v-a', 'v-b']);
+    expect(s.getState().project.activeVariantId).toBe('v-b');
+    expect(s.temporal.getState().pastStates).toHaveLength(1);
+    s.getState().undo();
+    expect(s.getState().project.variants).toHaveLength(1);
+    s.getState().addVariants([]);
+    expect(s.temporal.getState().pastStates).toHaveLength(0);
+  });
+
+  it('replaceProject can bring back saved undo/redo stacks', () => {
+    const s = setup();
+    s.getState().renameRoom('room-1', 'A');
+    s.getState().renameRoom('room-1', 'B');
+    s.getState().undo();
+    const kept = { project: s.getState().project, history: s.getState().history() };
+    expect(kept.history.past).toHaveLength(1);
+    expect(kept.history.future).toHaveLength(1);
+    s.getState().replaceProject(makeTestProject({ id: 'shared' }), { readOnly: true });
+    expect(s.getState().canUndo).toBe(false);
+    s.getState().replaceProject(kept.project, { readOnly: false }, kept.history);
+    expect(s.getState().canUndo).toBe(true);
+    expect(s.getState().canRedo).toBe(true);
+    s.getState().redo();
+    expect(roomName(s)).toBe('B');
+    s.getState().undo();
+    s.getState().undo();
+    expect(roomName(s)).toBe('Stue');
+  });
+
+  it('defaults: plan view below 1600 px, "Begge" from 1600 px; cut height 1.3; langsiden preset', () => {
+    expect(defaultActiveView(1400)).toBe('plan');
+    expect(defaultActiveView(375)).toBe('plan');
+    expect(defaultActiveView(SPLIT_MIN_WIDTH)).toBe('split');
+    expect(DEFAULT_UI.activeView).toBe('plan');
+    expect(DEFAULT_UI.activeViewChosen).toBe(false);
+    expect(DEFAULT_UI.cutHeight).toBe(1.3);
+    expect(CAMERA_PRESET_KEYS).toContain('langsiden');
+  });
+
+  it("'inne-stua' raises a cut height below eye level to 2.3; other presets keep it", () => {
+    expect(presetUi('inne-stua', { cutHeight: 1.3 })).toEqual({ preset: 'inne-stua', cutHeight: EYE_LEVEL_CUT });
+    expect(presetUi('inne-stua', { cutHeight: 2.5 })).toEqual({ preset: 'inne-stua' });
+    expect(presetUi('oversikt', { cutHeight: 1.3 })).toEqual({ preset: 'oversikt' });
+    expect(EYE_LEVEL_CUT).toBe(2.3);
   });
 });

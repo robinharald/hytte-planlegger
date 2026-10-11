@@ -8,6 +8,7 @@
  */
 import { useMemo } from 'react';
 import { deriveVariant } from '../geometry/derive';
+import { nb } from '../i18n/nb';
 import type { DerivedVariant } from '../model/derived';
 import terrainJson from '../model/seed/terrain-merkesvatnet.json';
 import type { Site, TerrainAsset, Variant } from '../model/types';
@@ -67,7 +68,7 @@ export function deriveForState(state: Pick<AppState, 'project'>): DerivedVariant
     derived = deriveVariant(variant, site, terrainFor(site));
   } catch (e) {
     console.error('deriveVariant failed', e);
-    derived = emptyDerived(variant, `Modellen kunne ikke beregnes: ${e instanceof Error ? e.message : String(e)}`);
+    derived = emptyDerived(variant, nb.warnings.deriveFailed(e instanceof Error ? e.message : String(e)));
   }
   cache = { variant, site, derived };
   return derived;
