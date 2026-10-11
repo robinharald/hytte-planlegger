@@ -69,3 +69,42 @@ Swing: IFC door types single swing L/R; exterior doors swing out? (check drawing
 - Chosen main floor elevation: 161.0 m a.s.l. (plinth ≈ 0.5 m above ground at the living-room gable, lower bedroom floor 160.0 ≈ 0.5 m above ground there).
 - Conversion plan → geo offsets from the ADDRESS point (metres): E = 3.1 − 0.2756·x + 0.9613·y ; N = 6.8 − 0.9613·x − 0.2756·y
   (sin/cos of 196° and 106°). Inverse: x = −0.2756·(E−3.1) − 0.9613·(N−6.8) ; y = 0.9613·(E−3.1) − 0.2756·(N−6.8).
+
+## Seed decisions (2026-10-11)
+
+Where the Forslag D spec (forslag-D-spec.json) and the IFC disagree, this is what `src/model/seed/forslagD.ts` stores and why.
+Rule: the IFC wins for the existing building; the spec wins for the new parts; Robin's answers of 2026-10-11 settle the rest.
+
+- One level → split level (IFC wins): the west part x < 5.1 (y < 2.18) / x < 4.3 (2.18..4.24) / x < 5.05 (y > 4.24) is at
+  -1.0 m (`zone-lower`, kind replace), the hems slab at +1.47 with thickness 0.17 (`zone-loft`, kind add) and the lower ceiling at
+  2.3. The spec and the old model assumed one floor at 0.
+- Eave / ridge / pitch (IFC wins): eave underside 2.22 at the axis line, main ridge 3.87, wing ridges 3.28, pitch 28 deg, roof
+  build-up 0.31, overhang 0.51 / 0.35. The spec's 2.5 / 4.35 above floor and ~30.8 deg are not used. The new wing keeps the
+  spec's rule "ridge at the main ridge height" (3.87, drive 'height'), so its pitch follows from the 4.8 m width (~34.5 deg).
+- Wall build-up (IFC wins, applied to new blocks too): exterior walls 0.27 thick with 0.11 (cladding + battens) OUTSIDE the axis
+  line, so the room sizes of the spec (measured to the axis) hold. The spec's 0.22 is not used. BYA to the cladding is therefore
+  larger than the spec's 98.0 / 170.2 on the axis lines; the app shows both (BYA and "aksemal").
+- Hems windows (IFC wins): 1.11 x 1.01 at y 2.44 and 3.76, sill 0.53 above the hems floor (= +2.0); the spec's 0.9 x 0.8 at
+  2.3 / 4.0 with sill 2.8 is not used.
+- Stair positions (IFC wins): loft stair X 3.85..6.1, Y 2.24..3.04 (rises westward); level stair X 4.3..5.55, Y 3.17..4.17 (rises
+  eastward). The spec placed the loft stair at x 4.3-5.5, y 2.3-4.1, which is really the level stair.
+- Opening positions (IFC wins for existing openings): e.g. the SW window at x 1.73 (spec 1.72), the bathroom window at x 3.51
+  (spec 3.42), the kitchen window at 10.59 (spec 10.6), the lower west window at y 3.81 (spec 3.73), the glass-bump windows at
+  x 6.07 / 7.94 and y -0.96 (spec 6.0 / 8.0 / -1.0), green doors at y 6.89 (spec 6.9). New openings use the spec's positions.
+- Room 106: the IFC shows an exterior door at x 3.68 and no window; the spec removes the door and adds nothing. Robin's decision:
+  the door is removed (`door-106-old`, status removed, dashed "rives") and a window 1.1 x 1.2 with sill 0.8 replaces it
+  (`win-106-s`, new).
+- Living-room south wall: the existing window at x 10.36 (`win-stue-s-old`) is removed and the spec's 1.6 m glass door at
+  x 10.5 takes its place; the old window is stored with status removed for the plan.
+- East gable (x = 12): its white door (y 2.59) and the two windows (y 1.53, 4.68) disappear with the 4 m extension. The wall no
+  longer exists in Forslag D, so these openings are NOT stored (listed above only).
+- Free post at x 11.9: the ridge post in the removed east gable stays as a free post (0.11 sq, 0..3.5) under the ridge beam. It
+  will need an architect's decision later (note in STATUS).
+- Mellombygg walls: in reality only 0.11 thick (uninsulated) and the bod-wing walls 0.16. Accepted deviation: the seed keeps the
+  common 0.27 / 0.11 build-up on the bod-wing block edges and stores the old north gable at y 10.1 as an asymmetric
+  `exterior-old` wall (0.11 towards the woodshed, 0.16 towards the bod). Room sizes in the mellombygg are therefore ~5 cm too
+  small per side.
+- Bod 108 has no door today; Forslag D gives it an exterior door on the east wall (`door-teknisk`, new) and the room becomes
+  "Teknisk / vask".
+- Sauna door swing: stored as { hinge 'start', side 'right' } on `w-wc-bad` (a->b runs +y, so the bathroom side +x is the RIGHT
+  side); the brief's prose says 'left' but describes the same +x side. It opens OUT of the sauna.
