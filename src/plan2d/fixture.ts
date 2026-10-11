@@ -798,6 +798,7 @@ export function createPlanFixture(): DerivedVariant {
     wallUnion: makeWallUnion(walls),
     rooms,
     floors: makeFloors(rooms, walls),
+    groundWorks: [],
     roofs: makeRoofs(),
     outdoor: {
       decks: [{ id: 'deck-1', polygon: DECK_POLY, topZ: DECK_TOP, thickness: 0.15, skirtBottomZ: [-0.9, -0.9, -0.6, -0.6], boardDirection: 'x', isNew: true }],

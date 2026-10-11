@@ -4,7 +4,7 @@ import type { DerivedFloor } from '../../model/derived';
 import { polygonPath } from '../svg';
 import { FLOOR_TINT } from '../style';
 
-const ORDER: Record<DerivedFloor['kind'], number> = { slab: 0, room: 1, threshold: 2 };
+const ORDER: Record<DerivedFloor['kind'], number> = { slab: 0, room: 1, threshold: 2, ceiling: 3 };
 
 export const FloorLayer = memo(function FloorLayer({ floors }: { floors: DerivedFloor[] }) {
   const sorted = [...floors].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);

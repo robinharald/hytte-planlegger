@@ -182,6 +182,12 @@ export interface Block {
   wall: WallBuildUp;
   /** Underside of the roof at the AXIS LINE (0.11 m inside the cladding face), above the block's level floor. 2.22 for the existing cabin. */
   eaveHeight: number;
+  /**
+   * Flat ceiling inside this block, metres above the block's level floor (the new wing: 2.4). Stored walls with
+   * heightMode 'auto' inside the block stop there, a 'ceiling' floor is derived, and the space above is a cold loft.
+   * Undefined = open to the roof.
+   */
+  ceilingHeight?: number;
   roof: Roof;
   /** How edges shared with other blocks are treated. Missing entry = 'wall'. */
   junctions: Junction[];
@@ -320,6 +326,8 @@ export interface Opening {
   height: number;
   /** Cut the full wall height up to the top profile (open shed front); `height` is then ignored. */
   fullHeight?: boolean;
+  /** Number of door leaves (1 default, 2 = double door with two half-width leaves hinged at both jambs). */
+  leaves?: 1 | 2;
   /** Sill/threshold height above the floor of `levelId` (0 for doors). */
   sill: number;
   /**

@@ -490,6 +490,7 @@ export const FIXTURE_DERIVED: DerivedVariant = {
   ],
   blocks: [DERIVED_BLOCK],
   walls: WALLS,
+  groundWorks: [],
   wallUnion: [],
   rooms: ROOMS,
   floors: FLOORS,

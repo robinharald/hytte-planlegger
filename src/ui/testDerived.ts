@@ -158,6 +158,7 @@ export function makeDerived(overrides: Partial<DerivedVariant> = {}): DerivedVar
     ],
     blocks: [BLOCK],
     walls: [EXT_WALL, INT_WALL],
+    groundWorks: [],
     wallUnion: [],
     rooms,
     floors: [],

@@ -13,6 +13,7 @@ import type {
   Cardinal,
   ElementStatus,
   FloorMaterial,
+  GroundWork,
   Id,
   Level,
   Opening,
@@ -42,6 +43,11 @@ export interface DerivedVariant {
   foundations: DerivedFoundation[];
   dimensions: DerivedDimension[];
   site: { trees: { tree: Tree; baseZ: number }[]; waterZ?: number };
+  /**
+   * Terrain cuts the renderer and all terrain queries must apply: `Site.groundWorks` plus one implicit cut per
+   * block (its outer outline, maxZ = lowestFloorZ − 0.1) so the ground never rises into a floor.
+   */
+  groundWorks: GroundWork[];
   /** Bounding box of everything built (outer outlines, decks), plan coords. */
   bounds: { min: Vec2; max: Vec2 };
   areas: AreaSummary;
@@ -153,6 +159,8 @@ export interface DerivedOpening {
   footprint: Vec2[];
   /** Door swing arc: hinge point, free corner of the closed leaf, free corner of the open leaf (plan coords), sweep +1 CCW / -1 CW. */
   swing?: { hinge: Vec2; closed: Vec2; open: Vec2; sweep: 1 | -1 };
+  /** Second leaf of a double door (Opening.leaves === 2), hinged at the other jamb. */
+  swing2?: { hinge: Vec2; closed: Vec2; open: Vec2; sweep: 1 | -1 };
   /** Outward normal of the wall at this opening (exterior walls only), unit vector. */
   outward?: Vec2;
   /** Rendering hints resolved from type + style. */
@@ -215,9 +223,10 @@ export interface DerivedFloor {
   /**
    * 'room' = one per room (inner polygon); 'threshold' = floor piece under a door/opening between two rooms at the
    * lower room's z, so no gap is visible; 'slab' = whole-storey slab under a floor zone / mezzanine (used as the
-   * ceiling seen from below and for walking).
+   * ceiling seen from below and for walking); 'ceiling' = flat ceiling of a block with `Block.ceilingHeight`
+   * (z = top of the ceiling board, thickness 0.05, drawn from below; hidden in interior mode).
    */
-  kind: 'room' | 'threshold' | 'slab';
+  kind: 'room' | 'threshold' | 'slab' | 'ceiling';
 }
 
 // ---------------------------------------------------------------------------

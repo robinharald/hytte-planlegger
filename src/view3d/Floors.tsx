@@ -22,7 +22,7 @@ export interface FloorsProps {
   highlightNew: boolean;
 }
 
-const LIFT: Record<DerivedFloor['kind'], number> = { room: 0.006, threshold: 0.003, slab: 0 };
+const LIFT: Record<DerivedFloor['kind'], number> = { room: 0.006, threshold: 0.003, slab: 0, ceiling: 0 };
 
 export const Floors = memo(function Floors({ floors, rooms, foundations, vis, highlightNew }: FloorsProps) {
   const fillByRoom = useMemo(() => {

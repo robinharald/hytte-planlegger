@@ -44,6 +44,7 @@ export function emptyDerived(variant: Variant, message: string): DerivedVariant 
     foundations: [],
     dimensions: [],
     site: { trees: [] },
+    groundWorks: [],
     bounds: { min: [0, 0], max: [10, 10] },
     areas: {
       bya: { total: 0, existing: 0, new: 0, buildings: 0, decks: 0, perBlock: [] },

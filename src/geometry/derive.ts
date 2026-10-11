@@ -542,6 +542,7 @@ function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | nu
       .map((db) => ({ blockId: db.block.id, polygon: db.outer, topZ: db.lowestFloorZ, bottomZ: db.groundZ - FOUNDATION_DEPTH })),
     dimensions: deriveDimensions(blocks),
     site: derivedSite,
+    groundWorks: site.groundWorks,
     bounds: boundsOf([...blocks.map((db) => db.outer), ...outdoor.decks.map((d) => d.polygon)]),
     areas,
     warnings,
