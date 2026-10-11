@@ -1,0 +1,40 @@
+{
+  "name": "hytte-planlegger",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.1",
+    "immer": "^11.1.21",
+    "lz-string": "^1.5.0",
+    "nanoid": "^6.0.2",
+    "polygon-clipping": "^0.15.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "suncalc": "^2.1.1",
+    "three": "^0.186.1",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/suncalc": "^1.9.2",
+    "@types/three": "^0.186.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.1.2",
+    "oxlint": "^1.81.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.3"
+  }
+}
