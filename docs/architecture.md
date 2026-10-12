@@ -23,7 +23,8 @@ src/
   model/       types.ts (schema), derived.ts (render contract), migrate.ts (schema versions),
                seed/forslagD.ts (Forslag D built from calibrated numbers, exports SEED_REVISION),
                seed/frozen/forslagD.schema1.json + seed/frozenSeed.ts (the phase-1 seed, schema 1 / revision 3,
-               frozen for decoding phase-1 share links; never edited),
+               frozen for decoding phase-1 share links; never edited), seed/frozen/forslagD.schema1.rev2.json (the
+               revision-2 seed of 11 Oct, only to recognise untouched phase-1 autosaves of that window),
                seed/terrain-merkesvatnet.json (TerrainAsset, built by scripts/build-terrain.mjs)
                unitTemplates.ts ("Nytt bygg" templates: Vedskjul, Bod, Badstue, Anneks, Eget bygg; names from nb.ts)
   geometry/    pure functions, fully unit-tested, no React/three imports:
@@ -124,7 +125,9 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2); public/*.png 
   `DerivedOpening.isGhost`) stay in the derived walls / openings and the `removed` wall unions for the plan, which
   draws them dashed ("Fjernet") only while "Vis hva som er nytt" is on. They take no part in room detection, areas,
   thresholds, validation or 3D (removed openings still leave infill `patches` in their wall). Moved existing block
-  edges leave `Variant.ghosts` (`{ id, a, b }`, passed through as `DerivedVariant.ghosts`, dashed lines in the plan),
+  edges leave `Variant.ghosts` (`{ id, a, b }`, passed through as `DerivedVariant.ghosts`, dashed lines in the plan;
+  `Variant.mergedRooms` — optional, no schema bump — keeps the Room records merges removed with their peers' anchors,
+  see Editing),
   and so do the ranges a shortened existing edge lost (partner stubs included; first free id `…/ghost`, `…/ghost/2`).
   Existing openings that a block-edge move carries or clamps turn new and leave their ghost at the old centre, hosted
   on a removed `'exterior-old'` wall with the edge ghost's id (`ensureGhostHost`), so the plan draws the old wall band
@@ -324,8 +327,10 @@ are `rail-terrasse/steps/0..2`, the ids the v1 → v2 migration gives the phase-
   to the union of the other roofed blocks' POLYGONS (axis lines, i.e. inside their walls — clipping to their roof
   outlines let the main roof poke out under the wing's gable overhang) and gets no overhang of its own; no barge
   board on extended ends; fascias only on eave segments outside other roofs' outlines. If the envelope never reaches
-  the ridge height, E is a free gable (overhangGable) with warning `roof-no-meet`. `Roof.extend.start/end` = total
-  distance beyond the axis line, replacing both the automatic extension and overhangGable.
+  the ridge height, E is a free gable (overhangGable) with warning `roof-no-meet` — unless every block at that end is
+  a placed unit (`Block.template`, Nytt bygg: a shed against a gable end is not meant to carry the ridge on; same free
+  gable, no warning; final fix round after 2b). `Roof.extend.start/end` = total distance beyond the axis line,
+  replacing both the automatic extension and overhangGable.
 - **No slab inside another block.** Overhang strips (eave and gable overhangs beyond the block's own bbox,
   extensions excluded) that fall inside another roofed block's axis polygon are dropped. Then every slope keeps only
   the region where its roof is the upper envelope (underside ≥ the other roofs' undersides − 1 cm): for planar
@@ -446,14 +451,17 @@ chairs are items of their own, `symbolOverflow` is 0), tappable through its foot
 rugs (mount 'flat') are drawn under the other items and, until selected, take taps only on a 12 px band along their
 outline (`FLAT_EDGE_HIT_PX`), so a tap inside a rug selects the room. The selected item gets an accent outline, its name,
 its clearance zone (every item's with «Plassbehov for møbler», `ui.showClearances`, a persisted pref) and a rotate
-handle on its front edge (a tap turns 90°, a drag in 15° steps, 1° with Alt, applied once on release). Fix round after
-2b: the handle's hit area is its drawn circle only; on touch (`coarse`) its radius is at most `ROTATE_HANDLE_MAX_M` =
-0.3 m and it is not drawn when that is under `ROTATE_HANDLE_MIN_TOUCH_PX` = 10 px (below about 33 px/m; the mini-bar
-has Roter). A press on it whose point lies on another item (rugs by their footprint), an opening, a wall band, a
-ghost, structure, a railing or a room name goes to the plan as a press on that element (`elementUnderHandle`,
-usePanZoom.ts `passPointer`); a press it keeps (the floor, a block, a deck, empty paper) is held (`holdPointer`): the
-gesture tracker counts it but never pans, taps or claims with it, so a second finger anywhere makes a pinch, and the
-handle then drops its press (no preview, no turn). `onLostPointerCapture` ignores a child losing its capture. Colliding items (their own `collisions` / `blocksDoors`
+handle (a tap turns 90°, a drag in 15° steps, 1° with Alt, applied once on release). Fix round after 2b: the
+handle's hit area is its drawn circle only; on touch (`coarse`) its radius is at most `ROTATE_HANDLE_MAX_M` = 0.3 m and
+it is not drawn when that is under `ROTATE_HANDLE_MIN_TOUCH_PX` = 10 px (below about 33 px/m; the mini-bar has Roter).
+Final fix round: the handle stands on a free side (`handleSide` / `sideHandle`: the first of front, back, left, right
+whose circle meets no other item and no live wall and whose stem crosses no live wall — `walls` prop, so an item
+backed onto a wall never gets its handle in the next room; else a side over a rug only; on touch else a side
+facing up on the screen, where the mini-bar does not cover it; else the front; `data-rotate-side` on the group is the
+side's angle from the front, 0 / 180 / −90 / 90), and a press on the drawn circle always turns the item (no
+pass-through any more); a drag turns the handle's own side towards the pointer. A press on it is held
+(`holdPointer`): the gesture tracker counts it but never pans, taps or claims with it, so a second finger anywhere
+makes a pinch, and the handle then drops its press (no preview, no turn). `onLostPointerCapture` ignores a child losing its capture. Colliding items (their own `collisions` / `blocksDoors`
 or the furniture warnings) get a red outline. Room names move off furniture where they can (the same text, else a
 shorter one: "name / m²", the name alone) and keep their place otherwise; on touch the hit area of a name that had to
 stay on furniture lies above the furniture (rooms are tapped by name on a phone), with a mouse the furniture under it
@@ -466,20 +474,30 @@ so the library needs no reference to the plan (and the hidden plan or the 3D vie
 (`PlanView.tsx uncoveredCentre`, fix round after 2b) is the middle of the svg box cut to the window and reduced by
 `viewportInsets` (the part a bottom sheet leaves visible, the same area the reveal uses); off every room it falls back
 to the label point of the last room used, then the middle of the storey's rooms, then the room nearest to it
-(`placementCentre`), so repeated tap placements with nothing selected stay in the house and on screen.
+(`placementCentre`), so repeated tap placements with nothing selected stay in the house and on screen. Final fix
+round: while the Møbler tool is active the insets are the ones from before the library sheet opened
+(`insetsBeforeLibrary`: the view the user was looking at, not the strip above the sheet; on a PC the visible middle),
+and the request names the item (`requestPlanCentre(doc, catalogId)` → `PlanCentreDetail.catalogId`, passed by
+`useFurniturePlacer` / `PlacerEnv.planCentre(catalogId)`): when it has no free spot (`tapPlacement`) in the room at the
+centre, the 6 rooms nearest the centre (by label point) are tried before an overlap is allowed.
 Editor polish (phase 2b): the drag loop calls `previewDrag` (state/editActions.ts: the snap and the dragged element's
 target outline, no store change, no derive; about 0.1 ms in Node) every animation frame and `updateDrag` at most every
 `updateInterval(last)` = clamp(2 × its last duration, 16, 150) ms, and once more with the last position before
 `endDrag` (`usePlanEditing.ts`). The overlay draws two outlines: the base (the element at pointer-down, dashed) and the
 preview's `target` (the element at the snapped pointer) solid over it, `data-edit-moving` (`normalizePreview` keeps
-`target`; `previewFeedback` returns the base first, then the moving rings, also as `PlanFeedback.target`). Fix round
-after 2b: before, `normalizeFeedback` dropped `target`, so the element moved only when an `updateDrag` landed; a touch press the plan claims (on the selection or a handle) becomes a drag after
+`target`; `previewFeedback` returns the base first, then the moving rings, also as `PlanFeedback.target`). A drag's
+`hint` (`DragFeedback.hint` → `PlanFeedback.hint`, kept by `normalizeFeedback`) replaces the tool's hint line text while
+the drag lasts (`usePlanEditing.ts` → `onHint`; a wall drag cut short: «Veggen kan ikke flyttes lenger hit – enden står
+fast», final fix round). Fix round after 2b: before, `normalizeFeedback` dropped `target`, so the element moved only when an `updateDrag` landed; a touch press the plan claims (on the selection or a handle) becomes a drag after
 5 px (`DRAG_THRESHOLD_TOUCH_SELECTED_PX`, a 0.5 m nudge at the phone's 11.56 px/m; elsewhere 10 px); a tap that the
 DOM gives to a wall, opening or ghost band but that lies inside a drawn room name selects the room unless it is within
 4.5 px of the element's line (`labelTap`, `data-label-box`); live openings' bodies lie above the ghosts and a second
-tap on a selected opening selects the ghost under it; on touch the end handles of an opening show at any zoom, outside
-its jambs (`OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH` = 0, fix round after 2b), and `resizePlan` stores the width in
-whole centimetres with the other jamb fixed; loose-wall warnings say where the wall stands ("veggen nord i Stue", "på terrassen", "sør for
+tap on a selected opening selects the ghost under it; on touch the end handles of an opening are at most
+`OPENING_END_HANDLE_MAX_M_TOUCH` = 0.3 m in radius and not drawn below `OPENING_END_HANDLE_MIN_TOUCH_PX` = 10 px (under
+about 33 px/m; Bredde in Egenskaper covers the starting zoom), one capped radius outside the jambs; the handle carries
+its radius as `PlanHandle.r` (px, only when it differs from the pointer's) and `EditOverlay` draws `h.r ??
+sizes.handleR` (final fix round; before, 1.2 m circles at the starting zoom caught every tap near a selected door), and
+`resizePlan` stores the width in whole centimetres with the other jamb fixed; loose-wall warnings say where the wall stands ("veggen nord i Stue", "på terrassen", "sør for
 «Bod-fløy»") and identical lines merge with a count ("3 vegger nord i Stue henger løs …"; the Advarsler badge counts
 every warning).
 
@@ -620,27 +638,52 @@ by an earlier page), and `flush` waits for them (`waitForPendingWrites`), so an 
 alle». No save is written while a drag transaction is open (`inTransaction()`: re-scheduled after 250 ms). An open
 conflict shows the pill «Ikke lagret – velg Hent endringene eller Lagre over» and a `beforeunload` warning (iOS has
 none). Anonymous auth uses `initializeAuth` with IndexedDB / local persistence and no popup-redirect resolver, so
-phones load no Google scripts and no auth iframe. Mode
+phones load no Google scripts and no auth iframe. Final fix round after 2b: «Lagre over» saves with `forceRevision`
+(the version written over is always kept, whatever the 5-minute rule) and «Hent endringene» keeps the local version
+with `keepRevision` when it differs (also for a proposal deleted elsewhere); the banner says which version goes under
+Tidligere versjoner (`nb.family.conflictKeeps` / `conflictKeepsDeleted`). The sync and `startPrefsAutosave` flush at
+once on `visibilitychange` → hidden (all iOS fires when the user leaves the app), besides `pagehide` /
+`beforeunload`. The last 5 own version stamps per proposal (at most 100 proposals) are kept in
+`hytte-planlegger:own-versions:<family | local>`, so the overwritten / deleted-unseen notices work after a reload. A
+content save over an existing document is a merge-set without `revisions` / `lastRevisionAt` plus `arrayUnion` of the
+new revision id (`arrayRemove` for pruned ones; a new document is written whole), so an offline save from an old view
+never drops another device's revision ids; a stamp never goes below the newest version seen (the document's
+`updatedAt` can still go back when a queued offline save lands after a newer one: Firestore has no server-side max for
+strings). Making a proposal is no undo step: the sync takes the history step that added a variant out of
+`store.temporal` (and adds the variant to the other history states), so Angre can never delete a proposal for the
+family without the menu's two confirmations; a delete stays undoable. Mode
 (`resolveFamilyMode`): shared with a Firebase config, except in tests and under browser automation
 (`navigator.webdriver`), overridable by `VITE_FAMILY_STORE` or localStorage `hytte-planlegger:family-mode`. Shared
 mode whose Firebase cannot be loaded falls back to the local store for the session (`appStore.ts startFallback`,
 pill «Kun på denne enheten (familiens plass kan ikke nås nå)»), retries every 15 s and on `online`, and once connected
 saves what was kept locally into the family space (also at the next start: `importLeftovers`). Links: `#f=<family>`
-(24–64 characters; the address bar keeps `#f=…&p=<proposal>`), `#d=` (an old share link: imported as new
-proposal(s), ids derived from the link). A `#f=` whose id is not whole never starts a family: the notice
+(24–64 characters, decoded, trailing characters outside `[A-Za-z0-9_-]` — a sentence's full stop, a bracket — are
+dropped; the address bar keeps `#f=…&p=<proposal>`), `#d=` (an old share link: imported as new proposal(s), ids
+derived from the link). A `#f=` whose id is not whole never starts a family: the notice
 'family-link-invalid' («Lenken til familiens plass er ikke hel …»), the stored family is kept, and a device without one
 keeps its proposals in the local store (`noFamily`, pill «Kun på denne enheten (familielenken er ikke hel)», the broken
 hash kept) until a whole link moves them in. Switching to another family (at start-up or by a hash change in the tab)
 pushes the old id onto `hytte-planlegger:family.previous` and records it in `…:family.switched-from`; once the new space
 has answered, the proposals this device created in the old one (`…:family.created`, filled by `ProposalSync.onCreated`)
 are offered («Hent forslagene fra den forrige plassen»: `acceptCarryOver` copies them in and puts the old ones in the old
-space's Papirkurv; «Nei takk» forgets the offer). The old whole-project autosave becomes proposals once and is kept as
+space's Papirkurv; «Nei takk» forgets the offer). Final fix round: the offer is the snapshot taken at the switch
+(`…:family.switch-offer`: what was created in the old space before it), and copies brought in are recorded under
+`…:family.carried-in` and never offered again. A link (at start-up or by a hash change) to a family listed in
+`…:family.previous` is no switch: the device stays where it is, nothing is offered, and the banner
+'left-family-banner' («Denne lenken går til en plass du har byttet bort fra.») asks: «Bli her» (`stayInFamily`) puts
+the current family back into the address bar, «Bytt tilbake» (`returnToLeftFamily`) switches and reloads without a
+carry-over offer (an old Safari tab that iOS reloads used to switch the device back and offer to move the family's
+proposals out). The old whole-project autosave becomes proposals once and is kept as
 `hytte-planlegger:project.before-2b`: a variant equal to the base it was made from (a phase-1 autosave is compared with
-the frozen schema-1 Forslag D, `seed/frozen/forslagD.schema1.json`) is left out, an edited copy becomes «Forslag D
+the frozen schema-1 Forslag D, `seed/frozen/forslagD.schema1.json`, and since the final fix round also with the
+revision-2 seed the live site served for 11 minutes on 11 Oct, `seed/frozen/forslagD.schema1.rev2.json`) is left out
+only when it is Forslag D itself (`forslag-d` with its seed name, or phase 1's auto-named «Forslag D (revisjon n)») — a
+copy with its own name is kept even untouched; an edited copy becomes «Forslag D
 (eget)» with the id `forslag-d-eget-<hash of the autosave's project id and times>` (unique per device, the same on
 re-import);
-the autosave's active proposal is shown and every migrated proposal keeps the autosave's «sist endret» (`addVariants(…,
-{ at })`). The PWA: vite-plugin-pwa, `registerType: 'prompt'`, `injectRegister: false`,
+the autosave's active proposal is shown (in local mode its key is written right after the start-up project is
+built, so it is still shown after the next reload) and every migrated proposal keeps the autosave's «sist endret»
+(`addVariants(…, { at })`). The PWA: vite-plugin-pwa, `registerType: 'prompt'`, `injectRegister: false`,
 `UpdateToast.tsx` registers `./sw.js` (scope `./`) and asks before an update; when the new worker takes over, only the
 tab that pressed Oppdater reloads (`onNeedReload`), the others show «Appen er oppdatert i en annen fane … [Last på
 nytt]» (also on `controllerchange` in a tab that never saw the waiting worker); everything is precached (also the
@@ -746,7 +789,9 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   sends it to the face's label point. Whole-block moves and rotations hand the carried rooms to reconcile
   (`EditContext.carried`), which shifts their previous polygons the same way before matching.
 - **Drag protocol** (plan → actions): `beginDrag(selection, p, handle?)` → session (null: nothing to drag, then the
-  plan pans), `updateDrag(session, p, modifiers)` → `{ indicators, chips, ghost }`, `previewDrag(session, p, modifiers)`
+  plan pans), `updateDrag(session, p, modifiers)` → `{ indicators, chips, ghost, hint? }` (`hint`: a wall drag cut back
+  or refused because an end cannot follow — `wallMoveFraction`, the same clamp as `applyMoveWall`, also applied to the
+  preview's `target` — gives `nb.editor.wallStuck`), `previewDrag(session, p, modifiers)`
   → the same plus `target` (the dragged element's outline at the snapped pointer) without changing or deriving
   anything (phase 2b; the plan draws it every frame and applies `updateDrag` at most every few frames), `endDrag` /
   `cancelDrag`. Handles 'a' / 'b' (wall ends), 'start' / 'end' (opening jambs), 'insert' (deck "+"). A furniture drag
@@ -756,8 +801,9 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   (the UI selects the copy; `duplicatePlacement`: back-to-wall and corner items take the next free spot from
   `tapPlacement` started at the original; free and flat items, and wall items with no free wall spot, keep the
   original's turn and take the nearest free spot on a 5 cm grid in the item's own frame — outside rooms on the
-  original's deck; in a full room a second pass clear only of walls, structure and the original; the fixed 0.3 m east
-  and south only as the last resort), `deleteFurniture`, `setFurnitureProps` (a new size keeps the back
+  original's deck; final fix round: a full room hands over to the rooms whose outline is within 0.6 m of it, nearest
+  first, free spots only, the copy taking that room's level; with none, `duplicateFurniture` adds nothing, makes no
+  undo step and toasts `nb.editor.duplicateNoSpace` «Ingen ledig plass til en kopi.»), `deleteFurniture`, `setFurnitureProps` (a new size keeps the back
   edge in place, stretch ranges clamp, presets and colours apply; false when nothing changed). They refuse Forslag D
   and never reconcile rooms. Every action that moves walls (`run()`) lets furniture backed onto a moved wall face (≤ 1
   cm, either face, block edges too, thickness changes too) follow it (`followWallFaces`), never onto another level's
@@ -776,9 +822,21 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   sideways (`carryParallel`: lw-106-top moves with w-106-korr), and `restoreGhost` brings such carried walls back whole
   (lw-split can no longer be moved north at all). Room tombstones: the Room records in the undo history with the
   anchors of the rooms alive alongside them (`editActions.ts roomsFromHistory`) let `edit.ts reviveRoomRecords` give a
-  merged-away room its face back when a later restore splits it again (no `mergedInto` field: it is inferred from the
-  history). Nytt bygg on touch reaches at most max(0.25 m, 10 px) (`unitPlacementReach`, about 0.87 m at the phone's
-  starting zoom; the mouse keeps its radius).
+  merged-away room its face back when a later restore splits it again. Nytt bygg on touch reaches at most max(0.25 m,
+  10 px) (`unitPlacementReach`, about 0.87 m at the phone's starting zoom; the mouse keeps its radius).
+- **Final fix round after 2b** (the fourth review): `carriedSideways` counts a wall as carried only when it changed in
+  the undo step that made the restored ghost (`ghostStep`: the history states either side of it); with no history
+  (after a reload) only when it moved across by exactly as much as the restored wall at that end — a wall in line that
+  the user moved in a step of its own (w-vf-korr beside w-103-korr, also the loft's lw-hems2-s) stays. `pushFurnitureOut`
+  pushes only items with no derived room whose centre is in no other block (never the house's furniture; a unit over
+  the house keeps its block-overlap warning), clear of walls and door swings (the unit's own new door included), up to
+  2 m out in 5 cm steps; `applyMoveBlock` / `applyRotateBlock` and block drags push out what the unit did not own before
+  the edit (`EditContext.pushed`, one toast per drag in `endDrag`), so a unit never takes terrace furniture over.
+  `applyPlaceUnit` turns a unit 180° when its open front (or door edge) would touch another block (`deckFacingEdge`;
+  same footprint, the mono roof then slopes towards the wing; placement only). Each merge stores the removed Room with
+  the anchors of the rooms on its storey (`Variant.mergedRooms`, `MergedRoom { room, peers }`, at most 40; dropped when
+  the room comes back; optional, no schema bump), so the revival survives a reload; it still happens only in
+  `restoreGhost`.
 - **Snapping** (`snap.ts`): grid 0.10 m (0.01 with Alt); wall ends / midpoints, block axis vertices and edges (never
   cladding faces), deck edges and vertices, collinear extensions and perpendiculars (within 6 m of the ends), ortho
   from the start point; polygons (units, blocks) snap axis to axis; furniture back to wall; hot tubs to deck edges.
@@ -859,7 +917,8 @@ placed unit · Slett; the room of a placed single-room unit also gets the unit's
 `commands.ts unitOfRoom` / `rotateUnit`, and with four buttons the bar is compact, icon above a short label;
 `miniBarPlacement.ts placeMiniBar` from the plan's `anchor.rect`: above the selection, flipped
 below it when there is no room, never over the toolbar, the hint line or an open sheet, hidden while the plan reports
-no anchor) opens the properties as a bottom sheet (schedule rows too). The sheet opens LOW (40dvh, basic fields only)
+no anchor, and shown only with Velg — final fix round: with Nytt bygg, Vegg, Dør/vindu, Mål or Møbler active it would
+lie over the plan where the next tap goes, and a tap meant to place a shed hit its Slett) opens the properties as a bottom sheet (schedule rows too). The sheet opens LOW (40dvh, basic fields only)
 and "Vis mer" / the handle opens it to 88dvh with everything; it reports its height (`overlay.ts setSheetHeight`),
 opening it scrolls the toolbar to the top of the screen, and `Stage.tsx` hands the plan the covered parts of its box
 as `viewportInsets` (`planInsets.ts`) while a sheet is open. The furniture library is a bottom sheet that closes after a
@@ -894,7 +953,7 @@ export interface PlanViewProps {
   overlay?: PlanOverlay;           // { highlight?: PanelHighlight, cornerDimensionFor?, dimensions?, highlightWalls? }
   onSelectionBar?: (anchor: SelectionBarAnchor | null) => void;   // phone mini-bar: viewport x / y (+ localX / localY)
   onToolChange?: (tool: PlanTool) => void;   // 'select' after Dør/vindu and Nytt bygg placed something
-  onHint?: (hint: string | null) => void;    // hint line text of the active tool and step
+  onHint?: (hint: string | null) => void;    // hint line text of the active tool and step, or a drag's own hint
   onDropFurniture?: (catalogId: string, planPoint: Vec2) => void;
   coarsePointer?: boolean;                   // default: matchMedia('(pointer: coarse)')
   onLocked?: () => void;                     // locked base: a drag that starts on the selection (once per gesture)
@@ -1165,10 +1224,19 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   2b: `editActions.fix3.test.ts` (unit furniture, uneven returns, ghost ends, clipped junction ghosts, parallel walls,
   tombstones, the phone's placement reach), `usePlanEditing.test.tsx` (PlanView with the real bound actions: two
   outlines every frame, the moving one at the pointer), `PlanView.furniture` / `FurnitureLayer` (the handle's hit area,
-  pass-through, pinch with a finger on the handle, the uncovered centre), `furnitureDerive` (tucked chairs),
+  always turns, a free side, pinch with a finger on the handle, the uncovered centre), `furnitureDerive` (tucked chairs),
   `editActions.furniture` (Dupliser), `appStore.family.test.ts` (broken links, family switch, carry-over, phase-1
   autosaves), `familyStore` / `familyStore.sync` (field updates, pending after an offline reload, no writes mid-drag),
-  `UpdateToast.test.tsx`, `familyBanners.test.tsx`; a captured phase-1 autosave in `state/fixtures/`.
+  `UpdateToast.test.tsx`, `familyBanners.test.tsx`; a captured phase-1 autosave in `state/fixtures/`. Final fix round
+  after 2b: `editActions.fix4.test.ts` (carried walls only from their own step, with and without a reload; no house
+  furniture pushed; units never take terrace furniture over; push clear of door swings; the clamped wall preview and
+  its hint; room names across a JSON reload; the 180° shed), `SelectionMiniBar.test.tsx` (only with Velg),
+  `EditOverlay.test.tsx` (`PlanHandle.r`), `editModel.polish` / `smallTargets` (touch end handles ≤ 0.3 m),
+  `FurnitureLayer` / `PlanView.furniture` (the handle on a free side, never across a wall; library centre before the
+  sheet, neighbouring rooms), `usePlanEditing.test.tsx` (a drag's hint on the hint line), `roof.test.ts` (no
+  roof-no-meet for a unit), `familyStore` / `familyStore.sync` / `appStore.family` (merge saves, conflict revisions,
+  hidden flush, persisted own versions, creation not undoable, the left-family banner, carried-in copies, trailing
+  punctuation, the rev-2 frozen seed, named copies kept).
 - `npm run e2e` since 2b also runs `furniture.spec.ts` (desktop: a toilet placed in Hovedbad from the library with its
   clearance, dragged into the door swing → door-blocked naming it, turned, duplicated, deleted; the bed in Soverom (ny
   fløy) dragged off the wall and back → snapped back; main south +0.3 then glass east +0.5 then "Ta tilbake" on every
@@ -1189,9 +1257,18 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   `proposals.spec.ts` "family links" (shared mode switched on, never the real Firestore: a broken `#f=` link; a hash
   switch offering the old space's proposals, on an in-browser fake Firestore the test routes into the dev server's
   familyStore.firestore.ts; `family-carry-over.png`) and `offline.spec.ts` (two tabs: Oppdater reloads only its own).
+  Final fix round: `editing.spec.ts` (u)–(x) (w-vf-korr kept after «Ta tilbake» on w-103-korr; a shed by the sauna
+  moves no house furniture; a shed dragged onto the terrace table pushes it out and its delete leaves it; lw-split's
+  clamped drag on the hint line), `proposals.spec.ts` "conflicts and undo" (Angre after «+ Nytt forslag»; two tabs on
+  the fake family space — it now relays writes between tabs through the `storage` event — B holds a drag while A
+  saves, «Lagre over» keeps A's version under Tidligere versjoner) and the old-tab banner in "family links",
+  `phone-editing.spec.ts` (the whole first-time flow from the first-run card to Send, the link opened on a second
+  device; door handles; `phone-first-flow.png`), `phone-furniture.spec.ts` (the dining chair's handle on its back turns
+  it; Kommode in the zoomed-in bedroom).
   Opt-in against the REAL Firestore (`E2E_FIRESTORE=1`, throwaway `e2e-` families deleted afterwards over the REST API,
   `e2e/firestoreAdmin.ts`): `family-firestore.spec.ts` (an offline delete never wipes another device's newer edit; a
-  phase-1 autosave), `phone-family-firestore.spec.ts` (no Google scripts or auth iframe on the iPhone) and
+  phase-1 autosave; an old tab at a space the device left; «Lagre over» within 5 minutes keeps the other version as a
+  revision; an edit followed by `visibilitychange` → hidden is written within 0.7 s and survives the context closing), `phone-family-firestore.spec.ts` (no Google scripts or auth iframe on the iPhone) and
   `family-offline.spec.ts` ('pwa': an offline reload keeps «Lagret her – sendes når du er på nett»). Without the
   variable they are skipped.
 - `npm run build` must pass with zero TypeScript errors; `npm run lint` (oxlint) clean.

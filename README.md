@@ -35,21 +35,26 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   Håndtakene (hvite sirkler) flytter hjørner og kanter; «+» på en terrassekant lager et nytt hjørne.
 - **Verktøylinja:** Velg · Vegg (trykk der veggen begynner og der den slutter) · Dør/vindu (velg type, trykk på en
   vegg) · Nytt bygg (velg Vedskjul, Bod, Badstue, Anneks eller Eget bygg, «Roter», trykk der det skal stå – det fester
-  seg til terrassekanten og veggene; et bygg som står kan roteres med «Roter 90°») · Møbler · Mål (trykk på to punkter) ·
-  Angre / Gjør om. Angre i en toast angrer bare den handlingen toasten gjelder.
+  seg til terrassekanten og veggene; et vedskjul som settes med den åpne fronten mot et annet bygg, snus; et bygg som
+  står kan roteres med «Roter 90°»; settes eller flyttes det over møbler på terrassen, skyves de ut) · Møbler · Mål
+  (trykk på to punkter) · Angre / Gjør om. Angre i en toast angrer bare den handlingen toasten gjelder; «+ Nytt
+  forslag» er ikke noe angresteg. På telefon står menyen ved det valgte (Egenskaper · Slett) bare med Velg.
 - **Møbler** åpner møbelbiblioteket (venstre kolonne, på telefon et ark nedenfra): søk eller bla i kategoriene, trykk
-  på et møbel for å sette det i det valgte rommet (ellers i et rom midt i den delen av planen du ser), mot nærmeste
-  ledige vegg – eller dra det inn i planen eller 3D-visningen (på telefon: hold fingeren på det først). Det valgte
-  møbelet har et rotasjonshåndtak (trykk: 90°, dra: 15°-trinn; på telefon først når du har zoomet inn, ellers «Roter» i
-  menyen ved møbelet), viser plassbehovet foran seg, og Egenskaper har Størrelse, Bredde/Dybde (der møbelet kan
-  strekkes), Farge, «Roter 90°», «Dupliser» (kopien havner på nærmeste ledige plass ved siden av) og «Slett». Møbler som
+  på et møbel for å sette det i det valgte rommet (ellers i rommet midt i planen slik du så den før biblioteket åpnet;
+  er det fullt, i et rom ved siden av), mot nærmeste ledige vegg – eller dra det inn i planen eller 3D-visningen (på
+  telefon: hold fingeren på det først). Det valgte møbelet har et rotasjonshåndtak på en ledig side (trykk: 90°, dra:
+  15°-trinn; på telefon først når du har zoomet inn, ellers «Roter» i menyen ved møbelet), viser plassbehovet foran
+  seg, og Egenskaper har Størrelse, Bredde/Dybde (der møbelet kan strekkes), Farge, «Roter 90°», «Dupliser» (kopien
+  havner på nærmeste ledige plass ved siden av, i et fullt rom i et rom ved siden av; er det ikke plass noe sted, sier
+  appen fra) og «Slett». Møbler som
   står i en vegg, oppå hverandre eller i slaget til en dør blir røde og gir en advarsel; en stol kan skyves et stykke inn
   under et bord; toalett og dusj vil stå i et våtrom. «Plassbehov for møbler» under Vis viser plassbehovet for alle.
   Møbler mot en vegg som flyttes, følger med veggen; et nytt bygg tar bare med seg møblene som står i det.
 - **Egenskaper** (øverst til høyre, på telefon som et ark nedenfra) viser målene og lar deg skrive dem inn: «2,4»,
   «2,40» og «2.40» virker, −/+ endrer 10 cm. Dybde og bredde på et rom flytter veggen på den siden.
 - **Vis hva som er nytt** (på som standard i planen): nye deler er oransje, og det som er flyttet eller fjernet fra
-  hytta i dag vises stiplet («Fjernet»). Velg det stiplede og trykk «Ta tilbake» for å sette det tilbake. 3D viser
+  hytta i dag vises stiplet («Fjernet»). Velg det stiplede og trykk «Ta tilbake» for å sette det tilbake (en vegg du
+  selv har flyttet for seg, blir stående). Stopper en vegg under et drag, sier hjelpelinja det. 3D viser
   naturlige farger; «Vis hva som er nytt i 3D» farger det nye der også.
 - Trærne og møblene hører til forslaget: å flytte et tre eller et møbel i et forslag endrer ikke Forslag D.
 - Hurtigtaster: Delete, piltastene (1 cm, med Shift 10 cm), R, Ctrl+D, Ctrl+Z / Ctrl+Y og Esc.
@@ -63,11 +68,13 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   lager en kopi av forslaget på skjermen. Hver enhet blir spurt én gang «Hva heter du?».
 - **Lagring er automatisk.** Statusen øverst sier «Lagret for alle», «Lagrer …», «Lagret her – sendes når du er på
   nett» (uten nett, også etter at appen er lastet på nytt) eller «Kun på denne enheten …» (uten delt plass). Endrer to
-  samme forslag samtidig, får den ene valget «Hent endringene» / «Lagre over», og statusen sier «Ikke lagret – velg
-  Hent endringene eller Lagre over» til du har valgt.
+  samme forslag samtidig, får den ene valget «Hent endringene» / «Lagre over» (utgaven som ikke vinner, legges under
+  Tidligere versjoner), og statusen sier «Ikke lagret – velg Hent endringene eller Lagre over» til du har valgt.
+  Endringene lagres også med en gang når appen legges bort (en annen app, Hjem-skjermen, låseknappen).
 - **Slett** spør to ganger; forslaget ligger 30 dager i **Papirkurv** (under Mer og i Forslag-menyen) og kan hentes
   tilbake. En sletting gjort uten nett tar aldri med seg endringer andre har gjort i mellomtiden: den som endret,
-  får beskjed og kan trykke «Hent tilbake». **Tidligere versjoner** (Mer) har inntil 20 automatiske versjoner per forslag. Mer har også «Lagre som fil»,
+  får beskjed og kan trykke «Hent tilbake». Åpner du en gammel fane eller lenke til en plass enheten har byttet bort
+  fra, spør appen («Bytt tilbake» / «Bli her») i stedet for å bytte. **Tidligere versjoner** (Mer) har inntil 20 automatiske versjoner per forslag. Mer har også «Lagre som fil»,
   «Åpne fil» og «Eksporter JSON».
 - **Uten nett** starter appen fra mellomlageret (service worker), og endringene sendes når nettet er tilbake. På
   iPhone: legg appen på Hjem-skjermen mens familielenken er åpen (kortet «Legg planleggeren på Hjem-skjermen» forklarer
@@ -138,7 +145,10 @@ npm run dev        # http://localhost:5173
   bare laster den fanen på nytt. Fikserunden etter 2b la til drag-forhåndsvisningen ved pekeren, Ctrl+D, «Ta tilbake»
   ett spøkelse om gangen og en stol under bordet (PC), trykk og knip ved rotasjonshåndtaket, biblioteket tre ganger
   etter Slett, et vedskjul midt på terrassen og dørhåndtak ved startzoom (iPhone), og en familielenke som er kuttet av
-  og bytte av familieplass (forslagene). Prøvene mot den ekte Firestore kjøres bare med `E2E_FIRESTORE=1` (se
+  og bytte av familieplass (forslagene). Runde 2 la til hele førstegangsflyten på iPhone (fra førstegangskortet til
+  «Send», og lenken åpnet på en annen enhet), spisestolens rotasjonshåndtak, «Ta tilbake» som lar en annen flyttet vegg
+  stå, vedskjul ved badstua og over utebordet, hintet når en vegg stopper (PC), Angre etter «+ Nytt forslag», «Lagre
+  over» med to faner og den gamle fanen til en forlatt plass (forslagene). Prøvene mot den ekte Firestore kjøres bare med `E2E_FIRESTORE=1` (se
   [docs/firebase-oppsett.md](docs/firebase-oppsett.md)); ellers hoppes de over. Skjermbildene i `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
   `e2e/playwright-report/` og `e2e/test-results/` (ikke i git).
