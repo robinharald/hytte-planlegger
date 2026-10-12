@@ -215,7 +215,9 @@ describe('render cost: a wall drag re-renders only what changed', () => {
     const session = A.beginDrag(store, { kind: 'wall', id: 'w-gang-n' }, [18, 3.4], undefined, { snapRadiusM: 0.5 });
     const frames: DerivedVariant[] = [];
     for (let i = 1; i <= 3; i++) {
-      A.updateDrag(store, session, [18, 3.4 + 0.1 * i], { snapRadiusM: 0.5 });
+      // South, into the corridor: north it would run into the bedroom's nightstand (the seed is furnished, revision 6)
+      // and the furniture would legitimately re-render.
+      A.updateDrag(store, session, [18, 3.4 - 0.1 * i], { snapRadiusM: 0.5 });
       counts.layers = {};
       counts.openingFrame = 0;
       plan.draw();

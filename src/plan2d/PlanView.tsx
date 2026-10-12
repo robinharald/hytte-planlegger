@@ -5,8 +5,11 @@
  *   flipped group `matrix(s 0 0 -s tx ty)` (viewport.ts) so plan +y is up on screen. Text is counter-flipped
  *   per label (ScreenText) so it reads correctly and keeps its pixel size.
  * - Pan by dragging, wheel zoom around the cursor, two-finger pinch; `touch-action: none` (usePanZoom.ts).
- * - Layers bottom → top: grid, decks/hot tubs/trees, block hit areas, floors, room hit areas, furniture (with
- *   clearances when `showClearances`), other storeys' walls (faint), room-label hit areas, walls (union, opening
+ * - Layers bottom → top: grid, decks/hot tubs/trees, block hit areas, floors, room hit areas, other storeys' walls
+ *   (faint), room-label hit areas, furniture (symbols, with clearances when `showClearances`; above the label hit
+ *   areas, below the walls and openings; rugs take taps on their edge only until selected; room names keep clear of
+ *   furniture where they can, and on touch the hit areas of names that must sit on furniture lie above it; a second
+ *   tap on the selected item or room reaches the other), walls (union, opening
  *   cuts clipped out) + wall hit areas and corridors, dividers, block-edge ghosts (dashed, with "highlight new" only,
  *   like removed walls and openings), openings, structure, railings/steps, selection outline (room/block), roof
  *   plan (optional), room label text, dimension lines; screen-space north arrow (in the viewport corner that covers
@@ -36,7 +39,13 @@
  * - Furniture library drags (no HTML5 drag-and-drop): the library tracks its own pointer and calls the handle's
  *   `furnitureDragOver(catalogId, clientX, clientY)` while moving (a drop marker) and `dropFurniture(…)` on release,
  *   which calls `onDropFurniture(catalogId, planPoint)` when the point is over the plan. `visibleCenter()` gives the
- *   plan point at the middle of the view (tap-to-place without a selected room).
+ *   plan point at the middle of the view (tap-to-place without a selected room). Phase 2b: the same hand-off as DOM
+ *   events (furnitureDrop.ts), so the library needs no handle: a drag over the plan shows the item where it will land
+ *   (furniturePlacement.ts `dropPlacement`, drawn by FurnitureLayer as a ghost), the release calls `onDropFurniture`,
+ *   and the shown plan answers the library's "visible plan centre" question. While the Møbler tool has no item armed
+ *   (`toolOptions.furnitureItem`) the plan behaves as Velg, so placed items can be selected, dragged and turned with
+ *   the library open. The selected item gets a rotate handle on its front edge (FurnitureLayer.tsx
+ *   `FurnitureRotateHandle`, `editActions.rotateFurniture`).
  * - View: fitted to `derived.bounds`, grown by the dimension lines when they are shown, plus a 1.5 m margin —
  *   on mount, when the viewport is first measured and when the variant changes (not on every edit); a
  *   container resize refits while the user has not panned or zoomed since the last fit, else keeps the plan
@@ -50,7 +59,7 @@
  *   re-renders with the view and the drag feedback (it holds a handful of elements).
  * - In jsdom (no layout) the viewport falls back to 1000 × 700 px so tests see a deterministic zoom.
  */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DerivedVariant } from '../model/derived';
 import type { Site, Vec2 } from '../model/types';
 import type { Selection } from '../state/selection';
@@ -59,7 +68,13 @@ import { DimensionLayer } from './layers/DimensionLayer';
 import { EditOverlay } from './layers/EditOverlay';
 import type { TempDimension } from './layers/EditOverlay';
 import { FloorLayer } from './layers/FloorLayer';
-import { FurnitureLayer } from './layers/FurnitureLayer';
+import { FurnitureLayer, FurnitureRotateHandle } from './layers/FurnitureLayer';
+import type { FurnitureGhost } from './layers/FurnitureLayer';
+import { collidingFurnitureIds, furnitureLabelObstacles, labelsOverFurniture, layoutLabelsClearOfFurniture } from './layers/furnitureLayerModel';
+import { FURNITURE_DRAG_EVENT, FURNITURE_DROP_EVENT, PLAN_CENTRE_EVENT, furnitureDragDetail, furnitureDropDetail } from './furnitureDrop';
+import type { PlanCentreDetail } from './furnitureDrop';
+import { catalogPlacementSpec, dropPlacement } from './furniturePlacement';
+
 import { GridLayer } from './layers/GridLayer';
 import { LabelHitLayer, LabelLayer } from './layers/LabelLayer';
 import type { PlacedLabel } from './layers/LabelLayer';
@@ -77,10 +92,10 @@ import { StructureLayer } from './layers/StructureLayer';
 import { WallLayer } from './layers/WallLayer';
 import { NORTH_ARROW_BOX, NORTH_ARROW_MARGIN, fitBounds, legendBox, placeCornerOverlay, scaleBarBox } from './drawing';
 import { chipText, mid } from './editFeedback';
-import { handlesFor, hitBandPx, openingCornerDimension, pointerSizes, selectionBounds, wallsById } from './editModel';
+import { handlesFor, hitBandPx, openingCornerDimension, pointerSizes, selectionBounds, snapRadiusM, wallsById } from './editModel';
 import type { PlanHandle } from './editModel';
 import type { PlanEditActions, PlanOverlay, PlanSelection, PlanTool, PlanToolOptions, SelectionBarAnchor } from './editTypes';
-import { labelFonts, layoutRoomLabels } from './labelLayout';
+import { labelFonts } from './labelLayout';
 import { planLayerData } from './storeyData';
 import { labelDensity } from './svg';
 import { planStrings } from './strings';
@@ -192,6 +207,8 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   const editable = !!props.editable && !!editActions;
   const tool = props.tool ?? 'select';
   const toolOptions = props.toolOptions ?? NO_OPTIONS;
+  // Møbler without an armed item (the library places): the plan selects, drags and turns like Velg.
+  const planTool: PlanTool = tool === 'furniture' && !toolOptions.furnitureItem ? 'select' : tool;
   const showClearances = !!props.showClearances;
   const overlay = props.overlay;
   const coarse = useCoarsePointer(props.coarsePointer);
@@ -221,7 +238,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   // model per frame, but only the layers whose part changed re-render.
   const data = useShared(useMemo(() => planLayerData(derived, planStorey), [derived, planStorey]));
   const storeyId = data.ctx?.storeyId ?? planStorey;
-  const handlesOn = editable && effectiveTool(tool, editable) === 'select';
+  const handlesOn = editable && effectiveTool(planTool, editable) === 'select';
 
   const bridge = useRef<PanZoomBridge | null>(null);
   const editing = usePlanEditing({
@@ -230,7 +247,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     pieces: data.pieces,
     selection,
     editable,
-    tool,
+    tool: planTool,
     toolOptions,
     actions: editActions,
     coarse,
@@ -325,6 +342,66 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     }),
     [fit, clientToPlan, getView, w, h, setDropPreview, cancel],
   );
+
+  // Furniture library hand-off (furnitureDrop.ts): the preview of where a dragged library item lands, the drop, and
+  // the visible centre for a tap-to-place.
+  const [furnitureGhost, setFurnitureGhost] = useState<FurnitureGhost | null>(null);
+  const handOff = useRef({ derived, storeyId, editable, coarse });
+  useLayoutEffect(() => {
+    handOff.current = { derived, storeyId, editable, coarse };
+  });
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const onDrag = (e: Event) => {
+      const d = furnitureDragDetail(e);
+      const over = !!d && d.catalogId !== null && e.target instanceof Node && wrap.contains(e.target);
+      const p = over && d ? clientToPlan(d.clientX, d.clientY) : null;
+      const cur = handOff.current;
+      if (!d || d.catalogId === null || !p) {
+        setFurnitureGhost(null);
+        return;
+      }
+      e.preventDefault();
+      if (!cur.editable) {
+        setFurnitureGhost(null);
+        return;
+      }
+      const spec = catalogPlacementSpec(d.catalogId);
+      const at = dropPlacement(cur.derived, cur.storeyId, spec, p, { reach: snapRadiusM(cur.coarse, getView().s) });
+      setFurnitureGhost({ catalogId: d.catalogId, position: at.position, rotationDeg: at.rotationDeg, size: spec.size, footprint: at.footprint, free: at.free });
+    };
+    const onDrop = (e: Event) => {
+      const d = furnitureDropDetail(e);
+      setFurnitureGhost(null);
+      const p = d ? clientToPlan(d.clientX, d.clientY) : null;
+      if (!d || !p || !cb.current.onDropFurniture) return;
+      e.preventDefault();
+      cb.current.onDropFurniture(d.catalogId, p);
+    };
+    const onCentre = (e: Event) => {
+      const detail = (e as CustomEvent<PlanCentreDetail | null>).detail;
+      const svg = svgRef.current;
+      // Only a shown plan answers (a hidden pane keeps its size but is `visibility: hidden`).
+      if (!detail || detail.centre || !svg || getComputedStyle(svg).visibility === 'hidden') return;
+      const r = svg.getBoundingClientRect();
+      detail.centre = screenToPlan(getView(), [(r.width || w) / 2, (r.height || h) / 2]);
+      detail.storeyId = handOff.current.storeyId;
+      detail.scale = getView().s;
+    };
+    document.addEventListener(FURNITURE_DRAG_EVENT, onDrag);
+    wrap.addEventListener(FURNITURE_DROP_EVENT, onDrop);
+    document.addEventListener(PLAN_CENTRE_EVENT, onCentre);
+    return () => {
+      document.removeEventListener(FURNITURE_DRAG_EVENT, onDrag);
+      wrap.removeEventListener(FURNITURE_DROP_EVENT, onDrop);
+      document.removeEventListener(PLAN_CENTRE_EVENT, onCentre);
+    };
+  }, [clientToPlan, getView, w, h]);
+  const colliding = useShared(useMemo(() => collidingFurnitureIds(data.furniture, derived.warnings), [data.furniture, derived.warnings]));
+  const onRotateFurniture = useCallback((id: string, degrees: number) => {
+    (cb.current.editActions as { rotateFurniture?: (furnitureId: string, degrees: number) => unknown } | undefined)?.rotateFurniture?.(id, degrees);
+  }, []);
 
   // Phone mini-bar anchor: top-centre of the selection's screen box (clamped to the view) and the box itself in
   // viewport pixels, only when it changes; checked after every render (pans and zooms re-render) and once per frame
@@ -429,11 +506,30 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   const density = labelDensity(scale);
   const { labelObstacles, ghostObstacles } = data;
   const obstacles = useMemo(() => (highlightNew && ghostObstacles.length > 0 ? [...labelObstacles, ...ghostObstacles] : labelObstacles), [highlightNew, labelObstacles, ghostObstacles]);
+  // Names keep clear of the furniture where they can (its hit areas lie above the labels'; furnitureLayerModel.ts),
+  // as it stood when a drag began: the names do not hop around while something is dragged.
+  const liveFurnitureObstacles = useMemo(() => furnitureLabelObstacles(data.furniture), [data.furniture]);
+  const [heldFurnitureObstacles, setHeldFurnitureObstacles] = useState(liveFurnitureObstacles);
+  if (!dragging && heldFurnitureObstacles !== liveFurnitureObstacles) setHeldFurnitureObstacles(liveFurnitureObstacles);
+  const furnitureObstacles = dragging ? heldFurnitureObstacles : liveFurnitureObstacles;
+  const furnitureFootprints = useMemo(() => furnitureLabelObstacles(data.furniture, { flat: true }), [data.furniture]);
   const labels = useShared(
     useMemo(
-      () => (showLabels && density !== 'none' ? layoutRoomLabels(data.rooms, density, scale, labelFonts(scale), obstacles) : NO_LABELS),
-      [showLabels, density, data.rooms, scale, obstacles],
+      () => (showLabels && density !== 'none' ? layoutLabelsClearOfFurniture(data.rooms, density, scale, labelFonts(scale), obstacles, furnitureObstacles) : NO_LABELS),
+      [showLabels, density, data.rooms, scale, obstacles, furnitureObstacles],
     ),
+  );
+  // Names that had to sit on furniture: on touch their hit areas lie above the furniture's (what you see on top is
+  // what you tap: rooms are tapped by name on a phone; a second tap there gives the item, usePlanEditing.ts
+  // `cycleFurnitureRoom`). With a mouse the furniture stays on top (the bed under a bedroom's name can be grabbed;
+  // the room is its floor, or a second click on the item).
+  const labelsOnFurniture = useShared(useMemo(() => (coarse ? labelsOverFurniture(labels, furnitureFootprints, scale) : NO_LABELS), [coarse, labels, furnitureFootprints, scale]));
+  const labelsUnderFurniture = useShared(
+    useMemo(() => {
+      if (labelsOnFurniture.length === 0) return labels;
+      const on = new Set(labelsOnFurniture.map((l) => `${l.room.id}|${l.room.levelId}`));
+      return labels.filter((l) => !on.has(`${l.room.id}|${l.room.levelId}`));
+    }, [labels, labelsOnFurniture]),
   );
 
   const vis = snapRectOut(visiblePlanRect(view, w, h), GRID_SNAP_M);
@@ -456,6 +552,11 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   );
 
   const activeTool = editing.overlay.tool;
+  // The selected furniture item's rotate handle (editing with Velg, not while it is dragged).
+  const rotateItem =
+    handlesOn && !dragging && selection?.kind === 'furniture' && typeof (editActions as { rotateFurniture?: unknown } | undefined)?.rotateFurniture === 'function'
+      ? (data.furniture.find((f) => f.id === selection.id && f.footprint.length >= 3) ?? null)
+      : null;
 
   return (
     <div ref={wrapRef} data-plan-wrap style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0, overflow: 'hidden', background: PAPER }}>
@@ -491,9 +592,10 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           <BlockLayer blocks={data.blocks} />
           <FloorLayer floors={data.floors} highlightNew={highlightNew} />
           <RoomLayer rooms={data.rooms} selection={selection} />
-          <FurnitureLayer items={data.furniture} selection={selection} scale={view.s} showClearances={showClearances} />
           <OtherStoreyLayer unions={data.otherUnions} />
-          <LabelHitLayer labels={labels} scale={scale} />
+          <LabelHitLayer labels={labelsUnderFurniture} scale={scale} />
+          <FurnitureLayer items={data.furniture} selection={selection} scale={view.s} showClearances={showClearances} colliding={colliding} ghost={furnitureGhost} />
+          {labelsOnFurniture.length > 0 && <LabelHitLayer labels={labelsOnFurniture} scale={scale} />}
           <WallLayer unions={data.unions} pieces={data.pieces} dividers={data.dividers} cuts={data.cuts} bounds={data.bounds} highlightNew={highlightNew} selection={selection} corridorPx={band} />
           <GhostLayer ghosts={data.ghosts} highlightNew={highlightNew} selection={selection} corridorPx={band} />
           <OpeningLayer openings={data.openings} highlightNew={highlightNew} selection={selection} corridorPx={band} />
@@ -505,6 +607,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           {showRoofPlan && <RoofPlanLayer roofs={data.roofs} />}
           <LabelLayer labels={labels} scale={scale} highlightNew={highlightNew} />
           {showDims && <DimensionLayer dimensions={data.dimensions} scale={view.s} />}
+          {rotateItem && <FurnitureRotateHandle item={rotateItem} scale={view.s} handleR={sizes.handleR} clientToPlan={clientToPlan} onRotate={onRotateFurniture} title={planStrings.edit.rotateHandle} />}
         </g>
         <NorthArrow bearing={site.planNorthBearing} cx={north[0]} cy={north[1]} />
         <ScaleBar scale={view.s} x={scaleBarAt[0]} y={scaleBarAt[1]} />

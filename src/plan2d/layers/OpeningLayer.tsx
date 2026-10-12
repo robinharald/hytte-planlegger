@@ -7,6 +7,12 @@
  * footprint hit area for selection, plus a corridor between its jambs `corridorPx` wide on screen (12 px, 24 px on a
  * coarse pointer; docs/phase2-plan.md §3.1) drawn as a path so the symbol's line count stays as it was. A removed
  * opening is selected as { kind: 'ghost', id: opening id } (outlined dashed in the accent colour).
+ *
+ * Hit order (editor polish, phase 2b): a new opening often sits where an old one was ("Fjernet" ghost under it), so
+ * the layer draws, bottom → top, the live openings' corridors, then the ghosts (symbol, footprint and corridor), then
+ * the live openings (symbol and footprint). A click on a live opening's drawn body selects it; the ghost wins only
+ * outside that body (beside the wall, or past the live opening's jambs), where before it covered the live opening's
+ * middle; past the ghost's own extent the live opening's corridor still selects the live opening.
  */
 import { memo } from 'react';
 import type { DerivedOpening, DerivedWall } from '../../model/derived';
@@ -121,15 +127,38 @@ interface OpeningItemProps {
   /** Selected (as the opening, or as its ghost when removed). */
   selected: boolean;
   corridorPx: number;
+  /** Draw the corridor inside the item (ghosts); live openings get theirs from `OpeningCorridor`, below the ghosts. */
+  withCorridor: boolean;
 }
 
-/** One opening: its symbol (or ghost), hit footprint and corridor. Memoised per item, so a drag that moves one door
- * re-renders only that door (the layer's data keeps unchanged openings' identities, stable.ts). */
-const OpeningItem = memo(function OpeningItem({ wall, o, highlightNew, selected: sel, corridorPx }: OpeningItemProps) {
+/** The invisible hit corridor between an opening's jambs, `corridorPx` wide on screen. */
+function corridorPath(wall: DerivedWall, o: DerivedOpening): string {
+  const f = openingFrame(wall, o);
+  return `M${f.start[0]} ${f.start[1]}L${f.end[0]} ${f.end[1]}`;
+}
+
+/** A live opening's corridor, drawn below the ghosts (memoised per item like `OpeningItem`). */
+const OpeningCorridor = memo(function OpeningCorridor({ wall, o, corridorPx }: { wall: DerivedWall; o: DerivedOpening; corridorPx: number }) {
+  return (
+    <path
+      d={corridorPath(wall, o)}
+      fill="none"
+      stroke="transparent"
+      strokeWidth={corridorPx}
+      pointerEvents="stroke"
+      data-opening-corridor={o.id}
+      {...selAttrs('opening', o.id, o.opening.levelId ?? wall.levelId)}
+      {...NSS}
+    />
+  );
+});
+
+/** One opening: its symbol (or ghost), hit footprint and (ghosts) corridor. Memoised per item, so a drag that moves
+ * one door re-renders only that door (the layer's data keeps unchanged openings' identities, stable.ts). */
+const OpeningItem = memo(function OpeningItem({ wall, o, highlightNew, selected: sel, corridorPx, withCorridor }: OpeningItemProps) {
   const removed = o.status === 'removed';
   const ink = o.isNew && highlightNew ? COLORS.openingNew : COLORS.opening;
   const hit = o.footprint.length >= 3 ? polygonPath(o.footprint) : '';
-  const f = openingFrame(wall, o);
   const attrs = removed ? selAttrs('ghost', o.id) : selAttrs('opening', o.id, o.opening.levelId ?? wall.levelId);
   return (
     <g data-opening-id={o.id} data-opening-type={o.type} data-opening-status={o.status} {...attrs}>
@@ -150,28 +179,29 @@ const OpeningItem = memo(function OpeningItem({ wall, o, highlightNew, selected:
           {...NSS}
         />
       )}
-      <path
-        d={`M${f.start[0]} ${f.start[1]}L${f.end[0]} ${f.end[1]}`}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={corridorPx}
-        pointerEvents="stroke"
-        data-opening-corridor={o.id}
-        {...NSS}
-      />
+      {withCorridor && (
+        <path d={corridorPath(wall, o)} fill="none" stroke="transparent" strokeWidth={corridorPx} pointerEvents="stroke" data-opening-corridor={o.id} {...NSS} />
+      )}
     </g>
   );
 });
 
 export const OpeningLayer = memo(function OpeningLayer({ openings, highlightNew, selection, corridorPx = 12 }: OpeningLayerProps) {
+  const live = openings.filter(({ opening: o }) => o.status !== 'removed');
+  const ghosts = highlightNew ? openings.filter(({ opening: o }) => o.status === 'removed') : [];
   return (
     <g data-layer="openings">
-      {openings.map(({ wall, opening: o }) => {
-        const removed = o.status === 'removed';
-        if (removed && !highlightNew) return null;
-        const selected = removed ? isSelected(selection, 'ghost', o.id) : isSelected(selection, 'opening', o.id);
-        return <OpeningItem key={o.id} wall={wall} o={o} highlightNew={highlightNew} selected={selected} corridorPx={corridorPx} />;
-      })}
+      <g data-layer="opening-corridors">
+        {live.map(({ wall, opening: o }) => (
+          <OpeningCorridor key={o.id} wall={wall} o={o} corridorPx={corridorPx} />
+        ))}
+      </g>
+      {ghosts.map(({ wall, opening: o }) => (
+        <OpeningItem key={o.id} wall={wall} o={o} highlightNew={highlightNew} selected={isSelected(selection, 'ghost', o.id)} corridorPx={corridorPx} withCorridor />
+      ))}
+      {live.map(({ wall, opening: o }) => (
+        <OpeningItem key={o.id} wall={wall} o={o} highlightNew={highlightNew} selected={isSelected(selection, 'opening', o.id)} corridorPx={corridorPx} withCorridor={false} />
+      ))}
     </g>
   );
 });

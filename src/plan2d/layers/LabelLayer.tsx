@@ -16,9 +16,15 @@
  *    ghost's hit band (editModel.ts `hitBandPx`) that element wins, so walls and ghosts stay selectable next to a
  *    label.
  *  - `LabelLayer`: the text itself, on top of everything, taking no pointer events.
+ *
+ * Each hit rectangle also carries its box in plan metres (`data-label-box`, "x0 y0 x1 y1", editModel.ts
+ * `formatLabelBox`), so a tap that the DOM gives to a wall, door or ghost band can still go to the room whose name was
+ * tapped (editModel.ts `labelTap`, usePlanEditing.ts): the label beats the band except within LABEL_TAP_CORE_PX of the
+ * element's line. That keeps the names of narrow rooms tappable at the phone's starting zoom («Bod (ny)»).
  */
 import { memo } from 'react';
 import type { DerivedRoom } from '../../model/derived';
+import { formatLabelBox } from '../editModel';
 import type { PlacedRoomLabel } from '../labelLayout';
 import { selAttrs } from '../selection';
 import { COLORS, PAPER } from '../style';
@@ -35,11 +41,29 @@ export interface LabelLayerProps {
 
 const labelKey = (r: DerivedRoom) => `${r.levelId}/${r.id}`;
 
+/** The label's hit rectangle in plan metres (`data-label-box`): `label.w` × `label.h` screen px centred on `at`. */
+function labelBoxOf({ label, at }: Pick<PlacedLabel, 'label' | 'at'>, scale: number): string {
+  const hw = label.w / 2 / scale;
+  const hh = label.h / 2 / scale;
+  return formatLabelBox([at[0] - hw, at[1] - hh], [at[0] + hw, at[1] + hh]);
+}
+
 /** One label's hit area (memoised per label: PlanView keeps unchanged labels' identities between frames). */
-const LabelHit = memo(function LabelHit({ placed: { room: r, label, at }, scale }: { placed: PlacedLabel; scale: number }) {
+const LabelHit = memo(function LabelHit({ placed, scale }: { placed: PlacedLabel; scale: number }) {
+  const { room: r, label, at } = placed;
   return (
     <ScreenText x={at[0]} y={at[1]} scale={scale}>
-      <rect x={-label.w / 2} y={-label.h / 2} width={label.w} height={label.h} fill="none" pointerEvents="fill" data-room-label-hit={r.id} {...selAttrs('room', r.id, r.levelId)} />
+      <rect
+        x={-label.w / 2}
+        y={-label.h / 2}
+        width={label.w}
+        height={label.h}
+        fill="none"
+        pointerEvents="fill"
+        data-room-label-hit={r.id}
+        data-label-box={labelBoxOf(placed, scale)}
+        {...selAttrs('room', r.id, r.levelId)}
+      />
     </ScreenText>
   );
 });

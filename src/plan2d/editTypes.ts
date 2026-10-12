@@ -94,6 +94,12 @@ export interface PlanSnapOptions {
 export interface PlanEditActions {
   beginDrag?(selection: PlanSelection, pointerPlan: Vec2, handle?: PlanDragHandle): unknown;
   updateDrag?(session: unknown, pointerPlan: Vec2, modifiers: PlanDragModifiers): unknown;
+  /**
+   * The cheap part of `updateDrag` (drag-preview contract, state/editActions.ts `previewDrag`): the snap and the dragged
+   * element's target outline `{ indicators, chips, ghost, target }`, with no store change and no derive. The plan calls
+   * it every frame and `updateDrag` at most every few frames (usePlanEditing.ts `updateInterval`).
+   */
+  previewDrag?(session: unknown, pointerPlan: Vec2, modifiers: PlanDragModifiers): unknown;
   endDrag?(session: unknown): unknown;
   cancelDrag?(session: unknown): unknown;
   addWall?(a: Vec2, b: Vec2, levelId?: Id): unknown;

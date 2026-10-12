@@ -10,6 +10,7 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DerivedFurniture, DerivedVariant } from '../model/derived';
+import { catalogItem } from '../furniture/catalog';
 import type { Vec2 } from '../model/types';
 import { editStrings } from './editStrings';
 import type { SelectionBarAnchor } from './editTypes';
@@ -229,18 +230,30 @@ describe('gestures: tap selects, drag the selected element moves, any other drag
     expect(actions.beginDrag.mock.calls[0][0]).toEqual({ kind: 'blockEdge', id: 'a-sw' });
   });
 
-  it('needs 10 px before a touch press moves or pans', () => {
+  it('needs 5 px before a touch press on the selection moves it, 10 px before a touch press elsewhere pans', () => {
     const actions = mockActions();
     const svg = render(baseProps({ editable: true, editActions: actions, selection: WALL_SEL }));
     const before = rootMatrix(svg);
     const at = scr(svg, [8.5, 3]);
     const touch = { pointerType: 'touch' };
+    // Elsewhere (empty plan): 8 px is still a tap, 14 px pans.
+    const away = scr(svg, [30, 30]);
+    act(() => {
+      pointer(svg, 'pointerdown', away, touch);
+      pointer(svg, 'pointermove', plus(away, 0, 8), touch);
+    });
+    expect(rootMatrix(svg)).toEqual(before);
+    act(() => pointer(svg, 'pointermove', plus(away, 0, 14), touch));
+    expect(rootMatrix(svg)).not.toEqual(before);
+    act(() => pointer(svg, 'pointerup', plus(away, 0, 14), touch));
+    expect(actions.beginDrag).not.toHaveBeenCalled();
+    // On the selected wall: 4 px is nothing yet, 8 px drags (editModel.ts dragThresholdPx(…, true) = 5 px).
     act(() => {
       pointer(svg.querySelector('[data-wall-id="w-bad-s"]')!, 'pointerdown', at, touch);
-      pointer(svg, 'pointermove', plus(at, 0, 8), touch);
+      pointer(svg, 'pointermove', plus(at, 0, 4), touch);
     });
     expect(actions.beginDrag).not.toHaveBeenCalled();
-    expect(rootMatrix(svg)).toEqual(before);
+    act(() => pointer(svg, 'pointermove', plus(at, 0, 8), touch));
     act(() => pointer(svg, 'pointermove', plus(at, 0, 14), touch));
     expect(actions.beginDrag).toHaveBeenCalledTimes(1);
     expect((actions.updateDrag.mock.calls.at(-1) as [unknown, Vec2, { coarse: boolean; snapRadiusM: number }])[2].coarse).toBe(true);
@@ -737,7 +750,7 @@ function withFurniture(): DerivedVariant {
   const item: DerivedFurniture = {
     id: 'f-seng',
     item: { id: 'f-seng', catalogId: 'seng-150', position: [12, 2], rotationDeg: 0, levelId: 'main', size: { w: 1.5, d: 2, h: 0.5 }, isNew: true },
-    catalog: { id: 'seng-150', name: 'Seng 150' },
+    catalog: catalogItem('seng-150') ?? null,
     footprint: [
       [11.25, 1],
       [12.75, 1],
@@ -801,17 +814,19 @@ describe('ghosts, legend, furniture and temporary overlays', () => {
     expect(svg.querySelector('[data-steps-id="deck-1/steps/0"]')!.getAttribute('data-steps-blocked')).toBe('true');
   });
 
-  it('draws furniture of the storey as named rectangles, selectable, with clearances on request', () => {
+  it('draws furniture of the storey as its symbols (named when selected), selectable, with clearances on request', () => {
     const onSelect = vi.fn();
     const svg = render(baseProps({ derived: withFurniture(), onSelect }));
     expect(svg.querySelectorAll('[data-furniture-id]')).toHaveLength(1);
-    expect(svg.querySelector('[data-furniture-label="f-seng"]')!.textContent).toBe('Seng 150');
+    expect(svg.querySelector('[data-furniture-id="f-seng"] [data-symbol="seng-150"]')).not.toBeNull();
+    expect(svg.querySelector('[data-furniture-label="f-seng"]')).toBeNull();
     expect(svg.querySelector('[data-clearance-of]')).toBeNull();
     tapAt(svg.querySelector('[data-furniture-id="f-seng"] path')!, scr(svg, [12, 2]));
     expect(onSelect).toHaveBeenLastCalledWith({ kind: 'furniture', id: 'f-seng', levelId: 'main' });
     render(baseProps({ derived: withFurniture(), showClearances: true, selection: { kind: 'furniture', id: 'f-seng' } }));
     expect(svg.querySelector('[data-clearance-of="f-seng"]')).not.toBeNull();
     expect(svg.querySelector('[data-furniture-id="f-seng"] path')!.getAttribute('stroke')).toBe(ACCENT);
+    expect(svg.querySelector('[data-furniture-label="f-seng"]')!.textContent).toBe('Seng 150');
     render(baseProps({ derived: withFurniture(), planStorey: 'loft' }));
     expect([...svg.querySelectorAll('[data-furniture-id]')].map((e) => e.getAttribute('data-furniture-id'))).toEqual(['f-hems']);
   });

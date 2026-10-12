@@ -6,8 +6,9 @@
  * One pointer:
  *  - pointer-down asks `controller.claim(down)` whether the press is on something draggable (the selected element
  *    or a handle); the down target is kept (pointer capture retargets later events to the SVG);
- *  - nothing happens until the pointer moves more than the threshold (5 px mouse / pen, 10 px touch, editModel.ts
- *    `dragThresholdPx`); then a claimed press calls `controller.start(down, now)` — true starts an element drag
+ *  - nothing happens until the pointer moves more than the threshold (5 px mouse / pen, 10 px touch, 6 px for a touch
+ *    press the controller claimed, editModel.ts `dragThresholdPx`); then a claimed press calls `controller.start(down,
+ *    now)` — true starts an element drag
  *    (`move` per pointer move, `end` on pointer-up), false (or an unclaimed press) pans, 'block' swallows the rest of
  *    the gesture (no pan, no tap: a refused drag on the locked base proposal);
  *  - a release below the threshold is a tap (`onTap`, with the down target).
@@ -186,7 +187,9 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
         }
       }
       if (!g) return;
-      if (!g.moved && Math.hypot(p[0] - g.down.screen[0], p[1] - g.down.screen[1]) > dragThresholdPx(g.down.pointerType)) {
+      // A press the controller claimed (on the selection or a handle) follows a finger from 6 px; pans and taps
+      // elsewhere keep 10 px (editModel.ts dragThresholdPx).
+      if (!g.moved && Math.hypot(p[0] - g.down.screen[0], p[1] - g.down.screen[1]) > dragThresholdPx(g.down.pointerType, g.claimed)) {
         g.moved = true;
         if (g.claimed && controllerRef.current) {
           const started = controllerRef.current.start(g.down, info(e, g.down.target));

@@ -59,7 +59,8 @@ describe('planLayerData shared across the frames of a wall drag (the layers only
     let prev: PlanLayerData = planLayerData(deriveForState(store.getState()), 'ground');
     const session = A.beginDrag(store, { kind: 'wall', id: 'w-gang-n' }, [18, 3.4], undefined, { snapRadiusM: 0.5 });
     for (let i = 1; i <= 2; i++) {
-      A.updateDrag(store, session, [18, 3.4 + 0.1 * i], { snapRadiusM: 0.5 });
+      // South, into the corridor: north it would run into the bedroom's nightstand (the seed is furnished, revision 6).
+      A.updateDrag(store, session, [18, 3.4 - 0.1 * i], { snapRadiusM: 0.5 });
       const next = shareEqual(prev, planLayerData(deriveForState(store.getState()), 'ground'));
       const changed = (Object.keys(next) as (keyof PlanLayerData)[]).filter((k) => next[k] !== prev[k]).sort();
       expect(changed).toEqual(['cuts', 'floors', 'openings', 'pieces', 'rooms', 'unions', 'walls']);

@@ -41,6 +41,23 @@
  *  - Dør/vindu: `freeOpeningOffset` moves a new opening that would overlap an existing one on the same wall piece (along
  *    the wall and in height, like the 'opening-overlap' warning) to the nearest free centre on the 10 cm grid (1 cm
  *    with Alt) within the piece; with no free place it keeps the tapped centre (the warning shows the overlap).
+ *
+ * Editor polish (phase 2b, plan side; the second review's leftovers):
+ *  - Short moves on the phone: a touch press on the selected element's body or one of its handles becomes a drag
+ *    after DRAG_THRESHOLD_TOUCH_SELECTED_PX (5 px, `dragThresholdPx(pointerType, true)`; integration: 5 rather than the
+ *    6 first chosen, so a 0,5 m nudge works at the starting zoom); pans and taps elsewhere keep 10 px. usePanZoom.ts
+ *    applies it to every press the plan claims; usePlanEditing.ts still turns a claimed touch "tap" that moved more
+ *    than that into the drag it was.
+ *  - Opening end handles on touch appear from half a handle diameter of width (`openingEndHandlesShown`: they sit
+ *    outside the jambs, so they never cover the door); walls and the mouse keep one diameter.
+ *  - Room labels on narrow rooms (`labelTap`): a tap whose DOM target is a wall, opening or ghost band but that lies
+ *    inside a drawn room label selects the label's room, unless it is within LABEL_TAP_CORE_PX of the element's line
+ *    (or on its drawn body). The core is 4,5 px, not 3: at the phone's starting zoom the ±4 px taps beside w-gang-n,
+ *    w-104-103 and dv-pass-n (phone e2e, touchTaps.test.tsx) lie on the labels of Gang, Bad and Passasje and must keep
+ *    selecting the walls, while «Bod (ny)»'s label point is 5,5 px from w-bod-ved.
+ *  - Ghost openings under live ones (`cycleOpeningGhost`): OpeningLayer.tsx draws a live opening's body above the
+ *    ghosts, so a second tap on the selected opening selects a ghost under it (zoomed in, a wall's body is wider than
+ *    the hit band and covers a ghost of the same place completely).
  */
 import type { DerivedBlock, DerivedDeck, DerivedOpening, DerivedVariant, DerivedWall } from '../model/derived';
 import type { Id, OpeningHost, Vec2 } from '../model/types';
@@ -66,6 +83,12 @@ export const SNAP_RADIUS_COARSE_PX = 24;
 /** Movement (px) before a press becomes a drag (move or pan): 5 with a mouse or pen, 10 with touch. */
 export const DRAG_THRESHOLD_PX = 5;
 export const DRAG_THRESHOLD_TOUCH_PX = 10;
+/**
+ * Touch presses on the selected element's body or one of its handles move it after 5 px, as with a mouse (a 0,5 m nudge
+ * at the phone's starting zoom of 11,56 px/m is 5,8 px), so a short move is not taken for a tap that changes the
+ * selection. Pans and taps elsewhere keep DRAG_THRESHOLD_TOUCH_PX.
+ */
+export const DRAG_THRESHOLD_TOUCH_SELECTED_PX = 5;
 /** Grid snap (m): 0.10, 0.01 with Alt. */
 export const GRID_STEP = 0.1;
 export const GRID_STEP_FINE = 0.01;
@@ -82,8 +105,13 @@ export function pointerSizes(coarse: boolean): PointerSizes {
     : { handleR: HANDLE_RADIUS_PX, corridor: CORRIDOR_PX, snap: SNAP_RADIUS_PX };
 }
 
-export function dragThresholdPx(pointerType: string): number {
-  return pointerType === 'touch' ? DRAG_THRESHOLD_TOUCH_PX : DRAG_THRESHOLD_PX;
+/**
+ * Movement (px) before a press becomes a drag: 5 with a mouse or pen; with touch 10, or 6 when the press started on the
+ * selected element's body or one of its handles (`onSelection`: what usePlanEditing.ts's `claim` grabs).
+ */
+export function dragThresholdPx(pointerType: string, onSelection = false): number {
+  if (pointerType !== 'touch') return DRAG_THRESHOLD_PX;
+  return onSelection ? DRAG_THRESHOLD_TOUCH_SELECTED_PX : DRAG_THRESHOLD_TOUCH_PX;
 }
 
 /** Touch: the wall / opening hit band is this wide (plan metres) between its pixel floor and ceiling. */
@@ -98,6 +126,13 @@ export const TOUCH_BAND_MIN_PX = 10;
 export const HANDLE_MIN_DIAMETERS = 3;
 /** End handles (just outside a wall's ends / an opening's jambs) are left out below this many diameters of length. */
 export const END_HANDLE_MIN_DIAMETERS = 1;
+/** … but an opening's end handles on touch already from half a diameter of width (28 px handles: from 14 px). */
+export const OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH = 0.5;
+/**
+ * A tap inside a drawn room label beats the wall / opening / ghost hit band under it, except within this distance
+ * (screen px) of the element's line (`labelTap`), so walls stay tappable ±4 px from their line everywhere.
+ */
+export const LABEL_TAP_CORE_PX = 4.5;
 
 /**
  * Width (screen px) of the invisible wall / opening / ghost hit bands at `scale` px/m: 12 px with a fine pointer; on a
@@ -304,6 +339,8 @@ function deckHandles(d: DerivedDeck, sel: PlanSelection): PlanHandle[] {
 export interface HandleScreen {
   scale: number;
   handleR: number;
+  /** Touch / coarse pointer; when absent, a handle radius of HANDLE_RADIUS_COARSE_PX or more counts as touch. */
+  coarse?: boolean;
 }
 
 /**
@@ -313,6 +350,18 @@ export interface HandleScreen {
  */
 export function endHandlesShown(lengthM: number, screen?: HandleScreen): boolean {
   return !screen || !(screen.scale > 0) || lengthM * screen.scale >= END_HANDLE_MIN_DIAMETERS * 2 * screen.handleR;
+}
+
+/**
+ * Are the END handles of an opening `widthM` wide drawn at this screen? As `endHandlesShown`, but on touch from
+ * OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH (half a diameter): the 28 px handles sit outside the jambs, so a 0,91 m door
+ * gets them from about 15 px/m instead of 31 px/m. Without a screen: always.
+ */
+export function openingEndHandlesShown(widthM: number, screen?: HandleScreen): boolean {
+  if (!screen || !(screen.scale > 0)) return true;
+  const coarse = screen.coarse ?? screen.handleR >= HANDLE_RADIUS_COARSE_PX;
+  const diameters = coarse ? OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH : END_HANDLE_MIN_DIAMETERS;
+  return widthM * screen.scale >= diameters * 2 * screen.handleR;
 }
 
 /**
@@ -389,7 +438,7 @@ export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'o
       const hit = findOpening(derived, sel.id);
       if (!hit || hit.opening.isGhost) return [];
       const { wall, opening } = hit;
-      if (!endHandlesShown(opening.width, screen)) return [];
+      if (!openingEndHandlesShown(opening.width, screen)) return [];
       const u = unit(wall.a, wall.b) ?? [1, 0];
       const target: PlanSelection = { kind: 'opening', id: opening.id };
       return (['start', 'end'] as const).map((end) => ({
@@ -463,6 +512,34 @@ export function tapSelection(derived: Pick<DerivedVariant, 'rooms' | 'blocks'>, 
   const block = derived.blocks.find((b) => b.block.id === blockId);
   if (!block?.block.template || derived.rooms.filter((r) => r.blockId === blockId).length !== 1) return tapped;
   return current?.kind === 'block' && current.id === blockId ? tapped : { kind: 'block', id: blockId };
+}
+
+/**
+ * Tool Velg: a second tap on the same spot reaches what lies under the first choice (integration of phase 2b): a tap
+ * on the selected furniture item selects the room under the tap, and a tap on the selected room where a furniture item
+ * lies under the tap (on the phone a room's name is drawn — and tapped — above the bed it could not move off) selects
+ * the item; the next tap goes back. Rugs count only where no solid item is. Anything else: `tapped` itself.
+ */
+export function cycleFurnitureRoom(
+  derived: Pick<DerivedVariant, 'rooms' | 'furniture' | 'levels'>,
+  storeyId: Id,
+  current: PlanSelection | null,
+  tapped: PlanSelection | null,
+  p: Vec2,
+): PlanSelection | null {
+  if (!tapped || !current || tapped.kind !== current.kind || tapped.id !== current.id) return tapped;
+  if (tapped.kind === 'furniture') {
+    const room = derived.rooms.find((r) => r.storeyId === storeyId && r.polygon.length >= 3 && pointInPolygon(p, r.polygon) && !r.holes.some((h) => pointInPolygon(p, h)));
+    return room ? { kind: 'room', id: room.id, levelId: room.levelId } : tapped;
+  }
+  if (tapped.kind === 'room') {
+    const storeyOf = (levelId: Id) => derived.levels.find((l) => l.id === levelId)?.storeyId;
+    const under = derived.furniture.filter((f) => storeyOf(f.levelId) === storeyId && f.footprint.length >= 3 && pointInPolygon(p, f.footprint));
+    // The one drawn on top: solid items above rugs, later items above earlier ones (FurnitureLayer.tsx).
+    const top = under.filter((f) => f.catalog?.mount !== 'flat').at(-1) ?? under.at(-1);
+    return top ? { kind: 'furniture', id: top.id, levelId: top.levelId } : tapped;
+  }
+  return tapped;
 }
 
 function nearWall(w: DerivedWall, p: Vec2, tolM: number): boolean {
@@ -618,6 +695,111 @@ export function pressTarget(
   }
   if (!body) return null;
   return onSelected || hitsSelection(derived, selection, p, tolM) ? { kind: 'body', target: body } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Room labels over hit bands (tool Velg taps)
+// ---------------------------------------------------------------------------
+
+/** A drawn room label's hit rectangle in plan metres (LabelLayer.tsx writes it as `data-label-box`). */
+export interface LabelBox {
+  roomId: Id;
+  levelId?: Id;
+  min: Vec2;
+  max: Vec2;
+}
+
+/** `data-label-box` value of a label's hit rectangle: "x0 y0 x1 y1" in plan metres. */
+export function formatLabelBox(min: Vec2, max: Vec2): string {
+  const r = (v: number) => String(Math.round(v * 1e4) / 1e4);
+  return `${r(min[0])} ${r(min[1])} ${r(max[0])} ${r(max[1])}`;
+}
+
+/** Parse a `data-label-box` value; null unless it holds four finite numbers. */
+export function parseLabelBox(value: string | null | undefined): { min: Vec2; max: Vec2 } | null {
+  const v = (value ?? '').trim().split(/\s+/).map(Number);
+  if (v.length !== 4 || !v.every(Number.isFinite)) return null;
+  return { min: [Math.min(v[0], v[2]), Math.min(v[1], v[3])], max: [Math.max(v[0], v[2]), Math.max(v[1], v[3])] };
+}
+
+/** The lines (and drawn bodies) of a wall, opening or ghost selection: what its hit band runs along. */
+export function bandLines(derived: Pick<DerivedVariant, 'walls' | 'ghosts'>, sel: PlanSelection): { a: Vec2; b: Vec2; body?: Vec2[] }[] {
+  const ofWall = (w: DerivedWall) => ({ a: w.a, b: w.b, body: w.footprint.length >= 3 ? w.footprint : undefined });
+  const ofOpening = (id: Id) => {
+    const hit = findOpening(derived, id);
+    if (!hit) return null;
+    const u = unit(hit.wall.a, hit.wall.b) ?? [1, 0];
+    const { offset, width, footprint } = hit.opening;
+    return { a: add(hit.wall.a, u, offset - width / 2), b: add(hit.wall.a, u, offset + width / 2), body: footprint.length >= 3 ? footprint : undefined };
+  };
+  switch (sel.kind) {
+    case 'wall':
+      return wallsById(derived.walls, sel.id).map(ofWall);
+    case 'opening': {
+      const o = ofOpening(sel.id);
+      return o ? [o] : [];
+    }
+    case 'ghost': {
+      const o = ofOpening(sel.id);
+      if (o) return [o];
+      const walls = derived.walls.filter((w) => w.isGhost && ghostIdOfWall(w) === sel.id).map(ofWall);
+      if (walls.length > 0) return walls;
+      return derived.ghosts.filter((g) => g.id === sel.id).map((g) => ({ a: g.a, b: g.b }));
+    }
+    default:
+      return [];
+  }
+}
+
+/**
+ * Tool Velg: a tap on the SELECTED live opening that lands on the ghost of a removed opening under it (on the same
+ * wall piece, within its jambs and `tolM` of the line or its body) selects that ghost, and a tap on the selected ghost
+ * the opening again. The plan draws live openings above their ghosts (OpeningLayer.tsx), so zoomed in, where a wall's
+ * body is wider than the hit band, a ghost wholly under a new opening (door-106-old under win-106-s) is reached this
+ * way. Anything else: `tapped`.
+ */
+export function cycleOpeningGhost(
+  derived: Pick<DerivedVariant, 'walls'>,
+  current: PlanSelection | null,
+  tapped: PlanSelection | null,
+  p: Vec2,
+  tolM: number,
+): PlanSelection | null {
+  if (!tapped || !current || tapped.kind !== 'opening' || current.kind !== 'opening' || current.id !== tapped.id) return tapped;
+  const hit = findOpening(derived, tapped.id);
+  if (!hit) return tapped;
+  const { wall } = hit;
+  const { s } = along(p, wall.a, wall.b);
+  const across = distancePointSegment(p, wall.a, wall.b);
+  const ghost = wall.openings.find(
+    (o) => o.isGhost && s >= o.offset - o.width / 2 && s <= o.offset + o.width / 2 && (across <= Math.max(tolM, wall.faceLeft, wall.faceRight) || (o.footprint.length >= 3 && pointInPolygon(p, o.footprint))),
+  );
+  return ghost ? { kind: 'ghost', id: ghost.id } : tapped;
+}
+
+/**
+ * Tool Velg: what a tap on a hit band selects where a room's label is drawn. `tapped` is the element the DOM hit (a
+ * wall, opening or ghost; anything else comes back as it is), `p` the tap in plan metres, `labels` the drawn labels'
+ * hit boxes, `scale` px/m. The label's room wins when `p` lies inside its box, off the element's drawn body and more
+ * than `corePx` (LABEL_TAP_CORE_PX) from the element's line(s); otherwise `tapped`. At the phone's starting zoom the
+ * 10 px bands leave a narrow room like «Bod (ny)» (11 px deep) almost nothing of its name.
+ */
+export function labelTap(
+  derived: Pick<DerivedVariant, 'walls' | 'ghosts'>,
+  tapped: PlanSelection | null,
+  p: Vec2,
+  labels: readonly LabelBox[],
+  scale: number,
+  corePx = LABEL_TAP_CORE_PX,
+): PlanSelection | null {
+  if (!tapped || (tapped.kind !== 'wall' && tapped.kind !== 'opening' && tapped.kind !== 'ghost') || !(scale > 0)) return tapped;
+  const label = labels.find((l) => p[0] >= l.min[0] && p[0] <= l.max[0] && p[1] >= l.min[1] && p[1] <= l.max[1]);
+  if (!label) return tapped;
+  const lines = bandLines(derived, tapped);
+  const core = corePx / scale;
+  const onElement = lines.some((l) => distancePointSegment(p, l.a, l.b) <= core || (l.body !== undefined && pointInPolygon(p, l.body)));
+  if (onElement || lines.length === 0) return tapped;
+  return label.levelId ? { kind: 'room', id: label.roomId, levelId: label.levelId } : { kind: 'room', id: label.roomId };
 }
 
 // ---------------------------------------------------------------------------

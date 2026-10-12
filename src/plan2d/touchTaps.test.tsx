@@ -169,7 +169,8 @@ describe('phone (11,6 px/m): walls, doors and ghosts are tappable, room names st
   });
 
   it('at least 22 of the 24 rooms are selected by a tap on their name (or their label point when no name fits)', () => {
-    const d = deriveForState(proposal().getState());
+    // Without the seed's furniture: a label point with no name drawn over a bed selects the bed (furniture layer).
+    const d = { ...deriveForState(proposal().getState()), furniture: [] };
     const svg = renderAt(d, PHONE, true);
     const rooms = d.rooms.filter((r) => r.storeyId === 'ground');
     expect(rooms).toHaveLength(24);
@@ -186,7 +187,7 @@ describe('phone (11,6 px/m): walls, doors and ghosts are tappable, room names st
   });
 
   it('the label points of the 8 rooms the phone e2e test taps: all 8 select their room', () => {
-    const d = deriveForState(proposal().getState());
+    const d = { ...deriveForState(proposal().getState()), furniture: [] };
     const svg = renderAt(d, PHONE, true);
     const names = ['Stue', 'Kjøkken', 'Spiseplass', 'Soverom (ny fløy)', 'Hovedbad', 'Soverom 1', 'Soverom 2', 'Vindfang'];
     const rooms = d.rooms.filter((r) => r.room && names.includes(r.room.name));
@@ -195,8 +196,62 @@ describe('phone (11,6 px/m): walls, doors and ghosts are tappable, room names st
     expect(misses.map(({ r, got }) => `${r.room?.name} → ${got}`)).toEqual([]);
   });
 
-  it('laptop (23,5 px/m, mouse): every room by its name, and walls ±4 px', () => {
+  it('furnished seed: on the phone every room name drawn selects its room; with a mouse a name over furniture gives the item', () => {
     const d = deriveForState(proposal().getState());
+    expect(d.furniture.length).toBeGreaterThan(50);
+    for (const [scale, coarse] of [
+      [PHONE, true],
+      [LAPTOP, false],
+    ] as const) {
+      const svg = renderAt(d, scale, coarse);
+      const drawn = d.rooms.filter((r) => r.storeyId === 'ground' && svg.querySelector(`[data-room-label-hit="${r.id}"]`));
+      // As many names as without furniture (7 on the phone: Stue, Kjøkken, Bad, Bod (ny), Gang, Soverom (ny fløy),
+      // Passasje; names move off furniture rather than disappear).
+      const withArea = (s: SVGSVGElement) => [...s.querySelectorAll('[data-room-label]')].filter((l) => (l.textContent ?? '').includes('m²')).length;
+      const areaFurnished = withArea(svg);
+      const bare = renderAt({ ...d, furniture: [] }, scale, coarse);
+      const bareCount = d.rooms.filter((r) => r.storeyId === 'ground' && bare.querySelector(`[data-room-label-hit="${r.id}"]`)).length;
+      // A name moved off furniture may drop its area line (the bed under it stays tappable): on the laptop 10 of the
+      // 17 areas stay in the labels (Romskjema and Egenskaper have them all).
+      expect(areaFurnished).toBeLessThanOrEqual(withArea(bare));
+      if (scale === LAPTOP) expect(areaFurnished).toBeGreaterThanOrEqual(10);
+      renderAt(d, scale, coarse);
+      expect(drawn.length).toBe(bareCount);
+      expect(drawn.length).toBeGreaterThanOrEqual(scale === PHONE ? 7 : 20);
+      const misses = drawn.flatMap((r) => {
+        const g = svg.querySelector(`[data-room-label-hit="${r.id}"]`)!.parentElement!.getAttribute('transform')!;
+        const at = /translate\(([^ ]+) ([^)]+)\)/.exec(g)!.slice(1, 3).map(Number) as Vec2;
+        const got = tapAt(svg, at);
+        return got === `room:${r.id}` ? [] : [{ name: r.room?.name ?? r.id, got }];
+      });
+      // Phone: names win (rooms are tapped by name; a second tap there gives the item, `cycleFurnitureRoom`). Mouse:
+      // the furniture under a name wins (a second click on it gives the room).
+      if (scale === PHONE) expect(misses, `${scale} px/m`).toEqual([]);
+      else for (const m of misses) expect(m.got, m.name).toMatch(/^furniture:/);
+      // The bed in Soverom 1 (no name drawn there on the phone) is tapped where it is.
+      if (scale === PHONE) expect(tapAt(svg, d.furniture.find((f) => f.id === 'fu-sov1-1')!.item.position)).toBe('furniture:fu-sov1-1');
+      if (scale === LAPTOP) {
+        // The bed in Soverom (ny fløy): its middle is the bed's (the room's name moved off it).
+        const lb = svg.querySelector('[data-room-label-hit="room-sov-ny"]');
+        console.log('SOVNY', lb?.getAttribute('data-label-box'), [...svg.querySelectorAll('[data-room-label]')].find((x) => x.textContent?.includes('Soverom (ny'))?.textContent);
+        expect(tapAt(svg, [19.64, 4.75])).toBe('furniture:fu-sov-ny-1');
+        // A rug is taken by its edge only: inside it, the room under it; the coffee table on it is drawn above it.
+        expect(tapAt(svg, [6.4, -0.5])).toBe('room:room-leseskrok');
+        expect(tapAt(svg, [5.8, -0.6])).toBe('furniture:fu-leseskrok-5');
+        // The coffee table on the rug: where the room's name covers it the name wins (a name keeps its tap area above
+        // furniture), elsewhere the table.
+        const box = svg.querySelector('[data-room-label-hit="room-leseskrok"]')!.getAttribute('data-label-box')!.split(' ').map(Number);
+        const inBox = (p: Vec2) => p[0] >= box[0] && p[0] <= box[2] && p[1] >= box[1] && p[1] <= box[3];
+        const table: Vec2[] = [];
+        for (let x = 6.72; x < 7.3; x += 0.04) for (let y = -1.63; y < -1.06; y += 0.04) table.push([x, y]);
+        for (const p of table) expect(tapAt(svg, p), `${p}`).toBe(inBox(p) ? 'room:room-leseskrok' : 'furniture:fu-leseskrok-3');
+      }
+    }
+  });
+
+  it('laptop (23,5 px/m, mouse): every room by its name, and walls ±4 px', () => {
+    // Without the seed's furniture (with a mouse an item under a name wins the click).
+    const d = { ...deriveForState(proposal().getState()), furniture: [] };
     const svg = renderAt(d, LAPTOP, false);
     const rooms = d.rooms.filter((r) => r.storeyId === 'ground');
     const ok = rooms.filter((r) => {
