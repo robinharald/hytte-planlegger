@@ -6,7 +6,14 @@
  *  - tap a new wall (w-gang-n) and drag it with one finger: it moves;
  *  - the mini-bar's Egenskaper opens the properties bottom sheet; type a number (the wall's Tykkelse);
  *  - Dør/vindu → Dør, tap on a wall: a door is placed and the tool goes back to Velg (the door selected).
- * Screenshots: phone-edit.png (the dragged wall selected, handles and the mini-bar), phone-sheet.png (the sheet).
+ * Fix round after 2a, all at the starting zoom (about 11.6 px/m):
+ *  - taps on 8 rooms' label points select the room (at least 7 of 8; before, walls and doors won most taps);
+ *  - a selected door dragged 1.5 m moves and keeps its width (before, the end handles covered it and it shrank);
+ *  - a freshly placed Vedskjul dragged by its body moves and keeps its size;
+ *  - the Egenskaper sheet for a wall leaves the wall in view above the sheet (the plan pans);
+ *  - the tool row shows all six tools on the 390 px screen.
+ * Screenshots: phone-edit.png (the dragged wall selected, handles and the mini-bar), phone-sheet.png (the sheet),
+ * phone-tools.png (the tool row).
  */
 import { expect, test, type CDPSession, type Page } from '@playwright/test';
 import type { Vec2 } from '../src/model/types';
@@ -14,10 +21,12 @@ import {
   activeVariant,
   assertNoGenericWarnings,
   collectPageErrors,
+  dismissToasts,
   type HytteWindow,
   loadAndWaitReady,
   planScale,
   planToClient,
+  planTransform,
   projectOnScreen,
   selection,
   shoot,
@@ -28,8 +37,36 @@ import {
   touchSession,
 } from './helpers';
 
-async function rootTransform(page: Page): Promise<string | null> {
-  return page.locator('[data-testid=plan-view] [data-plan-root]').getAttribute('transform');
+const rootTransform = planTransform;
+
+function bbox(poly: Vec2[]): { x0: number; y0: number; x1: number; y1: number } {
+  return {
+    x0: Math.min(...poly.map((p) => p[0])),
+    y0: Math.min(...poly.map((p) => p[1])),
+    x1: Math.max(...poly.map((p) => p[0])),
+    y1: Math.max(...poly.map((p) => p[1])),
+  };
+}
+
+/** "+ Nytt forslag" (the name prompt accepted as it is), toasts closed, the plan scrolled into view; the starting zoom. */
+async function phoneProposal(page: Page): Promise<void> {
+  await loadAndWaitReady(page);
+  page.once('dialog', (d) => void d.accept());
+  await page.getByTestId('new-proposal').tap();
+  await expect.poll(async () => (await projectOnScreen(page)).variants.length).toBe(2);
+  await expect(page.getByTestId('plan-view')).toHaveAttribute('data-plan-editable', 'true');
+  await dismissToasts(page);
+  await page.getByTestId('plan-view').scrollIntoViewIfNeeded();
+}
+
+/** Is the client point inside the plan's box on screen (and inside the viewport)? */
+async function onPlan(page: Page, p: Vec2): Promise<boolean> {
+  const box = await page.getByTestId('plan-view').boundingBox();
+  const vp = page.viewportSize();
+  if (!box || !vp) return false;
+  const top = Math.max(box.y, 0);
+  const bottom = Math.min(box.y + box.height, vp.height);
+  return p[0] > box.x + 2 && p[0] < box.x + box.width - 2 && p[1] > top + 2 && p[1] < bottom - 2;
 }
 
 /** Two-finger pinch around a client point: the fingers move from ±d0 to ±d1 px apart horizontally. */
@@ -75,9 +112,8 @@ test.describe('editing on an iPhone', () => {
     await expect.poll(() => planScale(page)).toBeGreaterThan(s0 * 1.8);
     expect(JSON.stringify(await activeVariant(page)), 'a pinch moves nothing').toBe(before);
 
-    // Tap the new wall between Gang and Soverom (ny fløy), then drag it 1.6 m north with one finger (to y 5.0: clear of
-    // the 24 px touch snap radius around other walls' lines: a short drag snaps back onto y 3.4, where the divider dv-pass-n
-    // continues the wall's line).
+    // Tap the new wall between Gang and Soverom (ny fløy), then drag it 1.6 m north with one finger (to y 5.0; line
+    // snapping reaches at most 0.25 m and never pulls a wall back to its own starting line, snap.ts).
     const wallAt = await planToClient(page, [18.4, 3.4]);
     const planBox = await plan.boundingBox();
     expect(planBox && wallAt[0] > planBox.x + 10 && wallAt[0] < planBox.x + planBox.width - 10, 'the wall is on screen').toBe(true);
@@ -120,5 +156,129 @@ test.describe('editing on an iPhone', () => {
     const notes = await page.evaluate(() => (window as HytteWindow).__hytte?.derived?.warnings.map((w) => w.kind) ?? []);
     expect(notes.filter((k) => k === 'generic')).toEqual([]);
     expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+  });
+});
+
+test.describe('editing on an iPhone at the starting zoom (fix round after 2a)', () => {
+  let pageErrors: string[] = [];
+  test.beforeEach(async ({ page }) => {
+    pageErrors = collectPageErrors(page);
+    await skipFirstRun(page);
+  });
+  test.afterEach(async ({ page }) => {
+    await assertNoGenericWarnings(page);
+    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('taps on room label points select the rooms', async ({ page }) => {
+    await phoneProposal(page);
+    const names = ['Stue', 'Kjøkken', 'Spiseplass', 'Soverom (ny fløy)', 'Hovedbad', 'Soverom 1', 'Soverom 2', 'Vindfang'];
+    const rooms = await page.evaluate(
+      (wanted) =>
+        ((window as HytteWindow).__hytte?.derived?.rooms ?? [])
+          .filter((r) => r.room && wanted.includes(r.room.name))
+          .map((r) => ({ id: r.id, name: r.room?.name ?? '', p: r.labelPoint })),
+      names,
+    );
+    expect(rooms.map((r) => r.name).sort()).toEqual([...names].sort());
+    const scale = await planScale(page);
+    expect(scale, 'the starting zoom on the phone').toBeLessThan(16);
+    let ok = 0;
+    const misses: string[] = [];
+    for (const r of rooms) {
+      await page.keyboard.press('Escape');
+      await expect.poll(() => selection(page)).toBeNull();
+      const at = await planToClient(page, r.p);
+      expect(await onPlan(page, at), `${r.name}'s label point is on screen`).toBe(true);
+      await page.touchscreen.tap(at[0], at[1]);
+      await expect.poll(() => selection(page)).not.toBeNull();
+      const s = await selection(page);
+      if (s?.kind === 'room' && s.id === r.id) ok++;
+      else misses.push(`${r.name} → ${s?.kind}:${s?.id}`);
+    }
+    expect(ok, `rooms selected by a tap on their label (misses: ${misses.join('; ') || 'none'})`).toBeGreaterThanOrEqual(7);
+  });
+
+  test('a selected door dragged 1.5 m moves and keeps its width', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    const door = async () => (await activeVariant(page)).openings.find((o) => o.id === 'door-mellom-vf');
+    const d0 = await door();
+    expect(d0).toMatchObject({ status: 'existing' });
+    await tapPlan(page, [7.01, 6.2]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
+    // 1.5 m west along the north wall of the old cabin (the edge runs east → west: the offset grows).
+    await touchDragPlan(page, cdp, [7.01, 6.2], [5.51, 6.2], 16);
+    await expect.poll(async () => (await door())?.status).toBe('new');
+    const d1 = await door();
+    expect(d1?.width, 'the width is unchanged').toBeCloseTo(d0?.width ?? NaN, 3);
+    expect((d1?.offset ?? 0) - (d0?.offset ?? 0), 'it moved about 1.5 m').toBeGreaterThan(1.2);
+    expect(await selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
+  });
+
+  test('a freshly placed Vedskjul dragged by its body keeps its size', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    await page.getByTestId('tool-unit').tap();
+    await page.getByTestId('unit-vedskjul').tap();
+    await page.getByTestId('plan-view').scrollIntoViewIfNeeded();
+    await tapPlan(page, [14, 11.3]);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(5);
+    const unit = (await activeVariant(page)).blocks[4];
+    const b0 = bbox(unit.polygon.map((q) => q.p));
+    expect(b0.x1 - b0.x0).toBeCloseTo(2, 3);
+    expect(b0.y1 - b0.y0).toBeCloseTo(1.5, 3);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: unit.id });
+    await dismissToasts(page);
+
+    const c0: Vec2 = [(b0.x0 + b0.x1) / 2, (b0.y0 + b0.y1) / 2];
+    await touchDragPlan(page, cdp, c0, [c0[0] - 2, c0[1]], 16);
+    const box = async () => bbox((await activeVariant(page)).blocks.find((b) => b.id === unit.id)?.polygon.map((q) => q.p) ?? []);
+    await expect.poll(async () => (await box()).x0).toBeLessThan(b0.x0 - 1.5);
+    const b1 = await box();
+    expect(b1.x1 - b1.x0, 'the width is unchanged').toBeCloseTo(2, 3);
+    expect(b1.y1 - b1.y0, 'the depth is unchanged').toBeCloseTo(1.5, 3);
+  });
+
+  test('the Egenskaper sheet for a wall leaves the wall in view above it', async ({ page }) => {
+    await phoneProposal(page);
+    await tapPlan(page, [18.4, 3.4]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'wall', id: 'w-gang-n' });
+    await page.getByTestId('mini-properties').tap();
+    const sheet = page.getByTestId('properties-sheet');
+    await expect(sheet).toBeVisible();
+    await expect(sheet).toHaveAttribute('data-stop', 'basic');
+    const wall = (await activeVariant(page)).walls.find((w) => w.id === 'w-gang-n');
+    if (!wall) throw new Error('w-gang-n missing');
+    const vp = page.viewportSize();
+    // The plan pans (and the page scrolls) so the whole wall sits on screen above the sheet.
+    await expect
+      .poll(async () => {
+        const top = (await sheet.boundingBox())?.y ?? 0;
+        const ends = [await planToClient(page, wall.a), await planToClient(page, wall.b)];
+        const ys = ends.map((e) => e[1]);
+        const xs = ends.map((e) => e[0]);
+        return Math.max(...ys) < top - 4 && Math.min(...ys) > 0 && Math.min(...xs) >= 0 && Math.max(...xs) <= (vp?.width ?? 390);
+      })
+      .toBe(true);
+    // The basic fields are there (Tykkelse), the rest behind "Vis mer".
+    await expect(sheet.getByTestId('wall-thickness')).toBeVisible();
+  });
+
+  test('the tool row shows all six tools', async ({ page }, testInfo) => {
+    await phoneProposal(page);
+    await page.evaluate(() => document.querySelector('.toolbar-wrap')?.scrollIntoView({ block: 'start' }));
+    const vp = page.viewportSize();
+    for (const t of ['select', 'wall', 'opening', 'unit', 'furniture', 'measure']) {
+      const tool = page.getByTestId(`tool-${t}`);
+      await expect(tool).toBeVisible();
+      const box = await tool.boundingBox();
+      expect(box && box.x >= 0 && box.x + box.width <= (vp?.width ?? 390) + 0.5, `tool-${t} is fully on screen`).toBe(true);
+      const label = tool.locator('.tool-name');
+      await expect(label).toBeVisible();
+      const fits = await label.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+      expect(fits, `tool-${t}'s label is not clipped`).toBe(true);
+    }
+    await shoot(page, testInfo, 'phone-tools');
   });
 });

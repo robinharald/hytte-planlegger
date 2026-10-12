@@ -158,6 +158,11 @@ export async function planToClient(page: Page, p: Vec2): Promise<Vec2> {
   }, p);
 }
 
+/** The plan root's transform attribute (changes on every pan or zoom). */
+export async function planTransform(page: Page): Promise<string | null> {
+  return page.locator('[data-testid=plan-view] [data-plan-root]').getAttribute('transform');
+}
+
 /** Plan scale (px per metre) on screen. */
 export async function planScale(page: Page): Promise<number> {
   const a = await planToClient(page, [0, 0]);

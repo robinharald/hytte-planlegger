@@ -5,12 +5,21 @@
  *  (a) select the new wing's east exterior wall and drag it 1 m east: the wing follows, room areas change;
  *  (b) Nytt bygg → a Vedskjul on the terrace by the north railing: the deck pieces exclude it and the railing gets a
  *      gap; move it 1 m; attach it to the wing's north wall (a junction);
- *  (c) Vegg: a partition across Soverom (ny fløy): one room keeps its name, the other is unnamed until named;
+ *  (c) Vegg: a partition across Soverom (ny fløy): one room keeps its name, the other is unnamed until named (and
+ *      then selected);
  *  (d) Soverom (ny fløy) Dybde 2,40 in Egenskaper: w-gang-n moves;
  *  (e) + (f) ghosts: the EXISTING door-mellom-vf moved 0.5 m turns new and leaves a dashed ghost; deleting the
  *      existing wall w-104-103 merges two rooms and leaves a ghost; Angre and "Ta tilbake" restore both;
- *  (g) on Forslag D itself every edit is refused with the toast;
+ *  (g) on Forslag D itself every edit is refused with the toast, each attempt on its own (a drag of the selected
+ *      wall shows the toast and does not pan);
  *  (h) the hot tub moves.
+ * Fix round after 2a (the reviewers' findings, docs/phase2-plan.md §3.3–§3.5):
+ *  (i) a short drag (0.3 m at the starting zoom) of w-gang-n lands on 3.7 (snapping does not pull it back);
+ *  (j) the delete toast's Angre undoes only the delete (one toast for the delete + merge), and a later edit retires it;
+ *  (k) moving a tree in "Mitt forslag" leaves the site and Forslag D unchanged (trees per proposal);
+ *  (l) blk-main's west gable moved to x −1: the three west windows turn new and leave ghosts;
+ *  (m) the whole wing moved 3 m east: every room keeps its name;
+ *  (n) a placed Vedskjul turns 90° with "Roter 90°" in Egenskaper.
  * No state may produce a 'generic' warning (a failed derive or a geometry fallback).
  *
  * Screenshots (e2e/screenshots/): plan-editing.png (the deck selected: vertex and "+" handles), plan-unit-on-deck.png,
@@ -25,10 +34,12 @@ import {
   collectPageErrors,
   createNewProposal,
   derivedRooms,
+  dismissToasts,
   dragPlan,
   type HytteWindow,
   loadAndWaitReady,
   planToClient,
+  planTransform,
   projectOnScreen,
   selectAt,
   selection,
@@ -206,9 +217,9 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     await freshProposal(page);
     const wallCount = (await activeVariant(page)).walls.length;
     await page.getByTestId('tool-wall').click();
-    await expect(page.getByTestId('hint-line')).toContainText('Klikk der veggen skal begynne');
+    await expect(page.getByTestId('hint-line')).toContainText('Trykk der veggen skal begynne');
     await clickPlan(page, [18.95, 3.4]);
-    await expect(page.getByTestId('hint-line')).toContainText('Klikk der den skal slutte');
+    await expect(page.getByTestId('hint-line')).toContainText('Trykk der den skal slutte');
     await clickPlan(page, [18.95, 6.2]);
     await expect.poll(async () => (await activeVariant(page)).walls.length).toBe(wallCount + 1);
     const wall = (await activeVariant(page)).walls.at(-1);
@@ -232,6 +243,11 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     await expect.poll(async () => (await derivedRooms(page)).filter((r) => r.name === null).length).toBe(0);
     expect((await derivedRooms(page)).map((r) => r.name)).toContain('Kontor');
     await expect(page.getByTestId('room-schedule')).toContainText('Kontor');
+    // The newly named room is selected and shown in Egenskaper (not "Det som var valgt finnes ikke lenger").
+    const kontor = (await derivedRooms(page)).find((r) => r.name === 'Kontor');
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'room', id: kontor?.id });
+    await expect(page.getByTestId('properties')).toContainText('Kontor');
+    await expect(page.getByTestId('properties')).not.toContainText('finnes ikke lenger');
   });
 
   test('(d) Dybde 2,40 for Soverom (ny fløy) moves w-gang-n', async ({ page }) => {
@@ -308,28 +324,40 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     const before = JSON.stringify(await activeVariant(page));
     expect((await activeVariant(page)).locked).toBe(true);
     await expect(page.getByTestId('plan-view')).toHaveAttribute('data-plan-editable', 'false');
+    const lockedToast = page.getByTestId('toast').filter({ hasText: LOCKED_TEXT });
+    /** Each refused attempt shows the locked toast on its own (closed again before the next attempt). */
+    const expectRefused = async (step: string) => {
+      await expect(lockedToast, `${step}: the locked toast`).toHaveCount(1);
+      await dismissToasts(page);
+      await expect(lockedToast).toHaveCount(0);
+    };
 
     // An editing tool (greyed with aria-disabled, but still clickable: the click explains why).
     await page.getByTestId('tool-wall').click({ force: true });
-    await expect(page.getByTestId('toast').filter({ hasText: LOCKED_TEXT })).toHaveCount(1);
+    await expectRefused('tool');
     await expect(page.getByTestId('plan-view')).toHaveAttribute('data-plan-tool', 'select');
-    // A drag of a selected wall pans instead.
+    // A drag of the selected wall: the toast, and the plan does not pan.
     await selectAt(page, [20.8, 4.8], { kind: 'wall' });
+    const t0 = await planTransform(page);
     await dragPlan(page, [20.8, 4.8], [21.8, 4.8]);
+    await expectRefused('drag of the selected wall');
+    expect(await planTransform(page), 'the plan did not pan').toBe(t0);
     // Delete on a selected stored wall.
     await selectAt(page, [19.5, 3.4], { kind: 'wall', id: 'w-gang-n' });
     await page.keyboard.press('Delete');
+    await expectRefused('Delete');
     // A number field in Egenskaper.
     await selectAt(page, [19.6, 5.2], { kind: 'room', id: 'room-sov-ny' });
     const field = page.getByTestId('room-size-d').locator('input');
     await field.click();
     await page.keyboard.type('3');
     await field.press('Enter');
+    await expectRefused('number field');
     // Arrow nudge.
     await selectAt(page, [19.5, 3.4], { kind: 'wall', id: 'w-gang-n' });
     await page.keyboard.press('ArrowUp');
+    await expect(lockedToast, 'arrow nudge: the locked toast').toHaveCount(1);
 
-    await expect(page.getByTestId('toast').filter({ hasText: LOCKED_TEXT })).toHaveCount(1);
     expect(JSON.stringify(await activeVariant(page)), 'Forslag D is unchanged').toBe(before);
     expect((await projectOnScreen(page)).variants).toHaveLength(1);
 
@@ -357,5 +385,143 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     await expect.poll(async () => (await activeVariant(page)).outdoor.hotTubs[0].centre[0]).toBeLessThan(tub0[0] - 1.5);
     const tub1 = (await activeVariant(page)).outdoor.hotTubs[0].centre;
     expect(near(tub1[0], 19.7, 0.25) && near(tub1[1], -3.4, 0.25), `tub at ${tub1.join(', ')}`).toBe(true);
+  });
+
+  test('(i) a short drag of w-gang-n (0.3 m at the starting zoom) lands on 3.7', async ({ page }) => {
+    await freshProposal(page);
+    await selectAt(page, [19.5, 3.4], { kind: 'wall', id: 'w-gang-n' });
+    await dragPlan(page, [19.5, 3.4], [19.5, 3.7]);
+    await expect.poll(async () => (await activeVariant(page)).walls.find((w) => w.id === 'w-gang-n')?.a[1]).toBeCloseTo(3.7, 3);
+    const w = (await activeVariant(page)).walls.find((x) => x.id === 'w-gang-n');
+    expect(w?.b[1]).toBeCloseTo(3.7, 3);
+  });
+
+  test("(j) the delete toast's Angre undoes only the delete; a later edit retires it", async ({ page }) => {
+    await freshProposal(page);
+    const gangY = async () => (await activeVariant(page)).walls.find((w) => w.id === 'w-gang-n')?.a[1];
+    const wallStatus = async () => (await activeVariant(page)).walls.find((w) => w.id === 'w-104-103')?.status;
+    // An unrelated edit first: w-gang-n 10 cm north (one undo step).
+    await selectAt(page, [19.5, 3.4], { kind: 'wall', id: 'w-gang-n' });
+    await page.keyboard.press('Shift+ArrowUp');
+    await expect.poll(gangY).toBeCloseTo(3.5, 3);
+    await dismissToasts(page);
+
+    // Delete w-104-103: ONE toast for the action ("Slettet." + the merge) with one Angre.
+    await selectAt(page, [3.05, 5.6], { kind: 'wall', id: 'w-104-103' });
+    await page.getByTestId('wall-delete').click();
+    await expect.poll(wallStatus).toBe('removed');
+    const deleted = page.getByTestId('toast').filter({ hasText: 'Slettet.' });
+    await expect(deleted).toHaveCount(1);
+    await expect(deleted).toContainText('er nå ett rom');
+    await expect(page.getByTestId('toast-undo')).toHaveCount(1);
+    await deleted.getByTestId('toast-undo').click();
+    await expect.poll(wallStatus).toBe('existing');
+    expect(await gangY(), 'the earlier edit stays').toBeCloseTo(3.5, 3);
+    expect((await derivedRooms(page)).map((r) => r.id)).toEqual(expect.arrayContaining(['room-sov1', 'room-bad']));
+    await expect(deleted).toHaveCount(0);
+
+    // Delete again, then another edit: the delete toast can no longer undo (closed or disabled).
+    await selectAt(page, [3.05, 5.6], { kind: 'wall', id: 'w-104-103' });
+    await page.getByTestId('wall-delete').click();
+    await expect.poll(wallStatus).toBe('removed');
+    await expect(deleted).toHaveCount(1);
+    await selectAt(page, [19.5, 3.4], { kind: 'wall', id: 'w-gang-n' });
+    await page.keyboard.press('Shift+ArrowUp');
+    await expect.poll(gangY).toBeCloseTo(3.6, 3);
+    await expect(deleted.getByTestId('toast-undo').and(page.locator(':enabled'))).toHaveCount(0);
+    expect(await wallStatus(), 'nothing was undone').toBe('removed');
+  });
+
+  test('(k) moving a tree in "Mitt forslag" leaves the site and Forslag D unchanged', async ({ page }) => {
+    await freshProposal(page);
+    const p0 = await projectOnScreen(page);
+    const site0 = JSON.stringify(p0.site);
+    const base0 = JSON.stringify(p0.variants.find((v) => v.id === 'forslag-d'));
+    await selectAt(page, [-4, 4], { kind: 'tree', id: 'tree-1' });
+    await dragPlan(page, [-4, 4], [-2, 7]);
+    await expect
+      .poll(async () => (await activeVariant(page)).trees?.find((t) => t.id === 'tree-1')?.position[0] ?? -4)
+      .toBeGreaterThan(-2.3);
+    const moved = (await activeVariant(page)).trees?.find((t) => t.id === 'tree-1');
+    expect(near(moved?.position[1] ?? NaN, 7, 0.3), `tree at ${moved?.position.join(', ')}`).toBe(true);
+    const p1 = await projectOnScreen(page);
+    expect(JSON.stringify(p1.site), 'the site is unchanged').toBe(site0);
+    expect(JSON.stringify(p1.variants.find((v) => v.id === 'forslag-d')), 'Forslag D is unchanged').toBe(base0);
+    // In the plan and 3D (derived), Forslag D still has the tree where it was.
+    await page.getByTestId('variant-select').selectOption('forslag-d');
+    await expect
+      .poll(() => page.evaluate(() => (window as HytteWindow).__hytte?.derived?.site.trees.find((t) => t.tree.id === 'tree-1')?.tree.position))
+      .toEqual([-4, 4]);
+  });
+
+  test("(l) blk-main's west gable moved to x −1: the three west windows turn new and leave ghosts", async ({ page }) => {
+    await freshProposal(page);
+    const ids = ['win-104-w', 'win-hems-w1', 'win-hems-w2'];
+    const v0 = await activeVariant(page);
+    for (const id of ids) expect(v0.openings.find((o) => o.id === id)?.status).toBe('existing');
+    await selectAt(page, [0, 1.0], { kind: 'wall', id: /^blk-main\// });
+    await dragPlan(page, [0, 1.0], [-1, 1.0]);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), 'blk-main')).x0).toBeCloseTo(-1, 2);
+    const v = await activeVariant(page);
+    for (const id of ids) {
+      const o = v.openings.find((x) => x.id === id);
+      expect(o?.status, `${id} is new`).toBe('new');
+      const ghost = v.openings.find((x) => x.id === `${id}/ghost`);
+      expect(ghost?.status, `${id} leaves a ghost`).toBe('removed');
+    }
+    expect(v.ghosts?.length ?? 0, 'the old gable line is a ghost').toBeGreaterThan(0);
+    expect((await derivedRooms(page)).filter((r) => r.name === null), 'no unnamed rooms').toEqual([]);
+  });
+
+  test('(m) the whole wing moved 3 m east: every room keeps its name', async ({ page }) => {
+    await freshProposal(page);
+    const before = await derivedRooms(page);
+    const named = (rooms: typeof before) => rooms.map((r) => `${r.id}=${r.name}`).sort();
+    await selectAt(page, [20.8, 4.8], { kind: 'wall', id: /^blk-wing\// });
+    await page.getByRole('button', { name: 'Velg bygningsdelen' }).click();
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: 'blk-wing' });
+    await dragPlan(page, [18.4, 1.0], [21.4, 1.0], 20);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), 'blk-wing')).x0).toBeCloseTo(19, 1);
+    const wing = bbox(blockPolygon(await activeVariant(page), 'blk-wing'));
+    expect(wing.x1 - wing.x0, 'the wing keeps its size').toBeCloseTo(4.8, 3);
+    const after = await derivedRooms(page);
+    expect(after.filter((r) => r.name === null), 'no unnamed rooms').toEqual([]);
+    expect(named(after), 'the same rooms with the same names').toEqual(named(before));
+    const lost = await page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.warnings ?? []).filter((w) => w.kind === 'room-anchor-lost').length);
+    expect(lost, 'no room lost its place').toBe(0);
+    // The rooms moved with the wing: Hovedbad's label is now east of x 19.
+    const hovedbad = await page.evaluate(() => (window as HytteWindow).__hytte?.derived?.rooms.find((r) => r.id === 'room-hovedbad')?.labelPoint);
+    expect(hovedbad?.[0]).toBeGreaterThan(19);
+  });
+
+  test('(n) a placed Vedskjul turns 90° with "Roter 90°"', async ({ page }) => {
+    await freshProposal(page);
+    await page.getByTestId('tool-unit').click();
+    await page.getByTestId('unit-vedskjul').click();
+    const [x, y] = await planToClient(page, [14, 11.3]);
+    await page.mouse.move(x - 20, y - 20);
+    await page.mouse.move(x, y, { steps: 5 });
+    await page.mouse.click(x, y);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(5);
+    const unit = (await activeVariant(page)).blocks[4];
+    const b0 = bbox(unit.polygon.map((q) => q.p));
+    expect(b0.x1 - b0.x0).toBeCloseTo(2, 3);
+    expect(b0.y1 - b0.y0).toBeCloseTo(1.5, 3);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: unit.id });
+
+    await page.getByTestId('block-rotate').click();
+    await expect.poll(async () => {
+      const b = bbox(blockPolygon(await activeVariant(page), unit.id));
+      return Math.round((b.x1 - b.x0) * 100) / 100;
+    }).toBe(1.5);
+    const b1 = bbox(blockPolygon(await activeVariant(page), unit.id));
+    expect(b1.y1 - b1.y0).toBeCloseTo(2, 3);
+    expect(near((b1.x0 + b1.x1) / 2, (b0.x0 + b0.x1) / 2, 0.11) && near((b1.y0 + b1.y1) / 2, (b0.y0 + b0.y1) / 2, 0.11), 'turned about its centre').toBe(true);
+    // One undo step turns it back.
+    await page.getByTestId('undo').click();
+    await expect.poll(async () => {
+      const b = bbox(blockPolygon(await activeVariant(page), unit.id));
+      return Math.round((b.x1 - b.x0) * 100) / 100;
+    }).toBe(2);
   });
 });
