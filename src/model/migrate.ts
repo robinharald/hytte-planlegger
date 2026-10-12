@@ -12,6 +12,24 @@
  *
  * v1 = validate the required fields and fill defaults for optional collections (empty arrays, default settings,
  * timestamps, seedRevision 0). Geometry is NOT validated here; that is the derivation pipeline's job (warnings).
+ *
+ * v2 (docs/phase2-plan.md §2) = the v1 rules (re-applied to a document that already claims v2, so a v2 document gets
+ * the same defaults), then, field-wise idempotent — a field that is present is never overwritten:
+ *  - deck vertices: plain `[x, y]` points become `{ id: \`${deckId}-v${i}\`, p }`; vertices that already have an id keep it;
+ *  - `outdoor.railings`, only when it is a non-empty array: per deck, `deck.railing` from the FIRST railing on that deck
+ *    (style, height); every gap with `steps: true` becomes a `DeckSteps { id: \`${railingId}/steps/${gapIndex}\`, edgeId,
+ *    offset, width }` on the stored deck edge nearest to the gap centre (offset = the centre projected on that edge,
+ *    width = the gap length, both rounded to the millimetre); a gap without steps that covers a whole deck edge
+ *    lying on the railing path puts that edge into `noRailingEdges` (other step-less gaps cannot be represented and
+ *    are dropped). `deck.steps` / `deck.noRailingEdges` / `deck.railing` are only filled when absent. A railing
+ *    whose deck does not exist is dropped. Deck edges that were not on any railing path get a railing in v2 where
+ *    they are free (for Forslag D they all run along buildings, so nothing changes there);
+ *  - then `railings` is deleted and `deck.noRailingEdges` / `deck.steps` default to [];
+ *  - furniture items without a valid `size` get the catalogue preset (`furnitureSizeFallback`; phase 1 never stored
+ *    furniture, so this only matters for hand-made files until the phase-2b catalogue replaces the table).
+ * The variant fields `notes`, `locked`, `meta`, `ghosts` and the block fields `template`, `templateFrontEdgeId`,
+ * `floorMaterial` are optional and get no defaults; in particular a migrated variant is NOT locked (only the bundled
+ * Forslag D carries `locked: true`; a user's old copy stays editable).
  */
 import { CURRENT_SCHEMA_VERSION, type Project } from './types';
 
@@ -175,11 +193,186 @@ const toV1: Migration = (doc) => {
 };
 
 // ---------------------------------------------------------------------------
+// v2
+// ---------------------------------------------------------------------------
+
+type Pt = [number, number];
+
+const isPt = (v: unknown): v is Pt => Array.isArray(v) && v.length >= 2 && typeof v[0] === 'number' && typeof v[1] === 'number';
+const mm = (v: number): number => Math.round(v * 1000) / 1000;
+const dist = (a: Pt, b: Pt): number => Math.hypot(a[0] - b[0], a[1] - b[1]);
+/** Points within this distance (m) count as lying on a railing path. */
+const ON_PATH = 0.001;
+
+/**
+ * Size of a furniture item without a stored size: the catalogue preset. Phase 1 never stored furniture and the
+ * catalogue arrives in phase 2b, so this is a neutral 1 × 1 × 1 m box until then.
+ */
+export function furnitureSizeFallback(catalogId: string, sizeVariant?: string): { w: number; d: number; h: number } {
+  void catalogId;
+  void sizeVariant;
+  return { w: 1, d: 1, h: 1 };
+}
+
+function isSize(v: unknown): v is { w: number; d: number; h: number } {
+  return isRecord(v) && [v.w, v.d, v.h].every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0);
+}
+
+/** Closest point of segment a–b to p: distance along the segment and the distance to it. */
+function project(p: Pt, a: Pt, b: Pt): { s: number; d: number; len: number } {
+  const len = dist(a, b);
+  if (len < 1e-12) return { s: 0, d: dist(p, a), len };
+  const ux = (b[0] - a[0]) / len;
+  const uy = (b[1] - a[1]) / len;
+  const s = Math.max(0, Math.min(len, (p[0] - a[0]) * ux + (p[1] - a[1]) * uy));
+  return { s, d: dist(p, [a[0] + ux * s, a[1] + uy * s]), len };
+}
+
+interface Path {
+  pts: Pt[];
+  cum: number[];
+  total: number;
+}
+
+function pathOf(raw: unknown): Path {
+  const pts = Array.isArray(raw) ? raw.filter(isPt).map((p): Pt => [p[0], p[1]]) : [];
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + dist(pts[i - 1], pts[i]));
+  return { pts, cum, total: cum[cum.length - 1] ?? 0 };
+}
+
+/** Point at distance s along the path (clamped). */
+function pathPoint(path: Path, s: number): Pt {
+  const { pts, cum, total } = path;
+  if (pts.length === 0) return [0, 0];
+  const d = Math.min(Math.max(s, 0), total);
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const len = cum[i + 1] - cum[i];
+    if (d <= cum[i + 1] + 1e-12 && len > 1e-12) {
+      const t = (d - cum[i]) / len;
+      return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t];
+    }
+  }
+  return pts[pts.length - 1];
+}
+
+/** Distance along the path to a point lying on it (≤ 1 mm), or null. */
+function alongPath(path: Path, p: Pt): number | null {
+  for (let i = 0; i + 1 < path.pts.length; i++) {
+    const hit = project(p, path.pts[i], path.pts[i + 1]);
+    if (hit.d <= ON_PATH) return path.cum[i] + hit.s;
+  }
+  return null;
+}
+
+/** A deck vertex list with ids: plain points get `${deckId}-v${i}`, vertices with an id keep it. */
+function v2DeckPolygon(raw: unknown, deckId: string, path: string): Doc[] {
+  return arrayOrEmpty(raw, path).map((v, i) => {
+    if (isPt(v)) return { id: `${deckId}-v${i}`, p: [v[0], v[1]] };
+    if (isRecord(v) && isPt(v.p)) return { ...v, id: typeof v.id === 'string' && v.id.length > 0 ? v.id : `${deckId}-v${i}` };
+    throw new ProjectValidationError(`${path}[${i}]`, 'expected a point or a deck vertex');
+  });
+}
+
+interface DeckWork {
+  doc: Doc;
+  /** Fields the stored deck already had (never overwritten). */
+  had: { railing: boolean; steps: boolean; noRailingEdges: boolean };
+  steps: Doc[];
+  noRailingEdges: string[];
+}
+
+/** Stored edges of a deck: id = start vertex id, a → b. */
+function deckEdges(polygon: Doc[]): { id: string; a: Pt; b: Pt }[] {
+  return polygon.map((v, i) => ({ id: String(v.id), a: v.p as Pt, b: polygon[(i + 1) % polygon.length].p as Pt }));
+}
+
+/** Folds one v1 railing into its deck (see the header). */
+function foldRailing(railing: Doc, deck: DeckWork): void {
+  if (!deck.had.railing && deck.doc.railing === undefined) {
+    deck.doc.railing = {
+      style: railing.style === 'boards' ? 'boards' : 'glass',
+      height: typeof railing.height === 'number' && Number.isFinite(railing.height) ? railing.height : 1.05,
+    };
+  }
+  const path = pathOf(railing.path);
+  const edges = deckEdges(deck.doc.polygon as Doc[]);
+  if (path.pts.length < 2 || edges.length < 2) return;
+  const railingId = typeof railing.id === 'string' ? railing.id : String(deck.doc.id);
+  const gaps = Array.isArray(railing.gaps) ? railing.gaps : [];
+  gaps.forEach((g, gapIndex) => {
+    if (!isRecord(g) || typeof g.from !== 'number' || typeof g.to !== 'number') return;
+    const from = Math.max(0, Math.min(g.from, g.to, path.total));
+    const to = Math.min(path.total, Math.max(g.from, g.to, 0));
+    if (to - from <= 1e-9) return;
+    if (g.steps === true) {
+      const centre = pathPoint(path, (from + to) / 2);
+      let best: { id: string; s: number; d: number } | null = null;
+      for (const e of edges) {
+        const hit = project(centre, e.a, e.b);
+        if (hit.len > 1e-9 && (best === null || hit.d < best.d - 1e-12)) best = { id: e.id, s: hit.s, d: hit.d };
+      }
+      if (best) deck.steps.push({ id: `${railingId}/steps/${gapIndex}`, edgeId: best.id, offset: mm(best.s), width: mm(to - from) });
+      return;
+    }
+    for (const e of edges) {
+      const da = alongPath(path, e.a);
+      const db = alongPath(path, e.b);
+      if (da === null || db === null || Math.abs(Math.abs(db - da) - dist(e.a, e.b)) > ON_PATH) continue;
+      if (Math.min(da, db) >= from - ON_PATH && Math.max(da, db) <= to + ON_PATH && !deck.noRailingEdges.includes(e.id)) deck.noRailingEdges.push(e.id);
+    }
+  });
+}
+
+function v2Variant(raw: unknown, path: string): Doc {
+  const v = requireRecord(raw, path);
+  const outdoorRaw = isRecord(v.outdoor) ? v.outdoor : {};
+  const decks: DeckWork[] = arrayOrEmpty(outdoorRaw.decks, `${path}.outdoor.decks`).map((d, i) => {
+    const deckPath = `${path}.outdoor.decks[${i}]`;
+    const deck = requireRecord(d, deckPath);
+    const id = requireString(deck.id, `${deckPath}.id`);
+    return {
+      doc: { ...deck, polygon: v2DeckPolygon(deck.polygon, id, `${deckPath}.polygon`) },
+      had: { railing: deck.railing !== undefined, steps: Array.isArray(deck.steps), noRailingEdges: Array.isArray(deck.noRailingEdges) },
+      steps: [],
+      noRailingEdges: [],
+    };
+  });
+  const railings = Array.isArray(outdoorRaw.railings) ? outdoorRaw.railings : [];
+  for (const r of railings) {
+    if (!isRecord(r)) continue;
+    const deck = decks.find((d) => d.doc.id === r.deckId);
+    if (deck) foldRailing(r, deck);
+  }
+  for (const d of decks) {
+    if (!d.had.steps) d.doc.steps = d.steps;
+    if (!d.had.noRailingEdges) d.doc.noRailingEdges = d.noRailingEdges;
+  }
+  const outdoor: Doc = { ...outdoorRaw, decks: decks.map((d) => d.doc), hotTubs: arrayOrEmpty(outdoorRaw.hotTubs, `${path}.outdoor.hotTubs`) };
+  delete outdoor.railings;
+  const furniture = arrayOrEmpty(v.furniture, `${path}.furniture`).map((f, i) => {
+    const item = requireRecord(f, `${path}.furniture[${i}]`);
+    if (isSize(item.size)) return item;
+    const catalogId = typeof item.catalogId === 'string' ? item.catalogId : '';
+    return { ...item, size: furnitureSizeFallback(catalogId, typeof item.sizeVariant === 'string' ? item.sizeVariant : undefined) };
+  });
+  return { ...v, outdoor, furniture };
+}
+
+/** v2: the v1 rules, then decks with vertex ids, railing and steps; furniture sizes. Idempotent. */
+const toV2: Migration = (doc) => {
+  const v1 = doc.schemaVersion === 1 ? doc : toV1(doc);
+  const variants = (v1.variants as unknown[]).map((v, i) => v2Variant(v, `variants[${i}]`));
+  return { ...v1, schemaVersion: 2, variants };
+};
+
+// ---------------------------------------------------------------------------
 // Table and entry point
 // ---------------------------------------------------------------------------
 
 export const migrations: Record<number, Migration> = {
   1: toV1,
+  2: toV2,
 };
 
 /** Version a raw document claims. Missing or invalid → 1. */

@@ -6,6 +6,10 @@
  *
  * Heights: metres relative to the main floor (level "main" = 0). Plan coords as in types.ts.
  * Ids of derived objects are stable across unrelated edits (see architecture.md "Derived ids").
+ *
+ * Ghosts (docs/phase2-plan.md §1.2): walls and openings with status 'removed' are "ghosts" (`isGhost`). They stay in
+ * `walls` / `openings` for the plan (dashed, "Fjernet") but take no part in room detection, areas or 3D. Moved
+ * existing block edges leave `ghosts` (outline segments).
  */
 import type {
   Block,
@@ -13,6 +17,7 @@ import type {
   Cardinal,
   ElementStatus,
   FloorMaterial,
+  FurnitureItem,
   GroundWork,
   Id,
   Level,
@@ -25,8 +30,13 @@ import type {
   Vec3,
 } from './types';
 
+/** Level id at plan point p on a storey (see geometry/levels.ts). */
+export { levelAt } from '../geometry/levels';
+
 export interface DerivedVariant {
   variantId: Id;
+  /** The variant is the bundled base proposal (`Variant.locked`): every edit action refuses it. */
+  locked: boolean;
   levels: Level[];
   storeys: { id: Id; name: string; levelIds: Id[] }[];
   blocks: DerivedBlock[];
@@ -36,10 +46,12 @@ export interface DerivedVariant {
   rooms: DerivedRoom[];
   floors: DerivedFloor[];
   roofs: DerivedRoof[];
-  outdoor: { decks: DerivedDeck[]; railings: DerivedRailing[]; hotTubs: DerivedHotTub[] };
+  outdoor: { decks: DerivedDeck[]; railings: DerivedRailing[]; steps: DerivedSteps[]; hotTubs: DerivedHotTub[] };
   structure: DerivedStructure[];
-  /** Phase 3. Empty until then. */
+  /** Furniture with footprints (phase 2b fills in catalogue data, clearances and collisions). */
   furniture: DerivedFurniture[];
+  /** Old places of moved existing block edges (`Variant.ghosts`), drawn dashed in the plan with "Vis hva som er nytt". */
+  ghosts: { id: Id; a: Vec2; b: Vec2 }[];
   foundations: DerivedFoundation[];
   dimensions: DerivedDimension[];
   site: { trees: { tree: Tree; baseZ: number }[]; waterZ?: number };
@@ -66,7 +78,11 @@ export interface DerivedBlock {
   outer: Vec2[];
   /** Outline at the inner wall face, per edge: own inner offset where this block keeps the wall; the other block's outerOffset where the other block keeps a 'wall' junction; 0 where 'open'. */
   inner: Vec2[];
-  /** Parts clipped to the block; includes the implicit remainder (`isImplicit`). Outer/inner offsets only along block-boundary edges. */
+  /**
+   * Parts clipped to the block; includes the implicit remainder (`isImplicit`, id `${blockId}-implicit`). The
+   * remainder of a block WITH explicit parts is new (`isNew: true`); without explicit parts it has the block's isNew.
+   * Outer/inner offsets only along block-boundary edges.
+   */
   parts: { part: BlockPart; outer: Vec2[]; inner: Vec2[]; isImplicit: boolean }[];
   /** Floor zones clipped to the block polygon (kind 'replace' and 'add'). */
   zones: { zoneId: Id; levelId: Id; kind: 'replace' | 'add'; polygon: Vec2[] }[];
@@ -81,6 +97,22 @@ export interface DerivedBlock {
   lowestFloorZ: number;
   /** Minimum terrain height under the outer outline (after ground works). */
   groundZ: number;
+  /**
+   * Edge segments shared with other blocks (collinear within 1 cm / 0.5°, opposite directions, overlap > 1 cm), per
+   * edge of this block: distances s0 < s1 along edge `edgeIndex` from its start, the partner block and its edge
+   * index, and what happens to this block's wall there: 'owner' = this block keeps the one wall, 'removed' = the
+   * partner keeps it (this block's piece is cut away), 'open' = no wall.
+   */
+  junctions: DerivedJunction[];
+}
+
+export interface DerivedJunction {
+  edgeIndex: number;
+  s0: number;
+  s1: number;
+  otherBlockId: Id;
+  otherEdgeIndex: number;
+  role: 'owner' | 'removed' | 'open';
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +120,8 @@ export interface DerivedBlock {
 // ---------------------------------------------------------------------------
 
 export type WallSource =
-  | { kind: 'blockEdge'; blockId: Id; edgeId: Id; partId: Id; zoneId: Id | null }
+  /** s0 / s1: the piece's range as distances from the start of the block edge (s0 < s1). */
+  | { kind: 'blockEdge'; blockId: Id; edgeId: Id; partId: Id; zoneId: Id | null; s0: number; s1: number }
   | { kind: 'wall'; wallId: Id };
 
 /**
@@ -122,6 +155,8 @@ export interface DerivedWall {
   isDivider: boolean;
   status: ElementStatus;
   isNew: boolean;
+  /** status === 'removed': drawn dashed in the plan only; no room detection, areas or 3D. */
+  isGhost: boolean;
   /** Level whose floor is `baseZ`. */
   levelId: Id;
   /** All levels whose room graph the wall takes part in (z range covers level.elevation + 1.0). */
@@ -149,6 +184,13 @@ export interface DerivedOpening {
   type: OpeningType;
   status: ElementStatus;
   isNew: boolean;
+  /** status === 'removed' (see DerivedWall.isGhost). Ghost openings still leave infill `patches` in their wall. */
+  isGhost: boolean;
+  /**
+   * Level whose floor the sill is measured from: `opening.levelId`, else the floor zone containing the point 0.2 m
+   * inside the host at the centre, else the host's level.
+   */
+  levelId: Id;
   /** Distance along the reference line from `a` to the opening centre. */
   offset: number;
   width: number;
@@ -264,32 +306,53 @@ export interface RoofSlope {
 
 export interface DerivedDeck {
   id: Id;
+  /** The stored outline (plain points, stored order). */
   polygon: Vec2[];
+  /** Vertex ids parallel to `polygon`; edge i (vertex i → i+1) has the id `vertexIds[i]`. */
+  vertexIds: Id[];
+  /**
+   * The deck minus every block's outer outline (what is actually built): MultiPolygon [piece][ring][point], open
+   * rings, ring 0 the outer ring (CCW), further rings holes (CW; a unit standing on the deck). The stored outline
+   * itself when the clipping fails.
+   */
+  pieces: Vec2[][][];
   topZ: number;
   thickness: number; // 0.15
-  /** Bottom of the skirt board at each polygon vertex (terrain z there minus 0.05). */
-  skirtBottomZ: number[];
+  /** Bottom of the skirt board at each vertex of each piece's OUTER ring (terrain z there minus 0.05): [piece][vertex]. */
+  skirtBottomZ: number[][];
   boardDirection: 'x' | 'y';
   isNew: boolean;
+  /**
+   * Free runs: the parts of the stored edges that remain on the boundary of `pieces` and do not run along any
+   * block's outer outline (within 1 mm). `edgeId` = the stored edge; `s0 < s1` distances from the edge start, `a` /
+   * `b` the end points. Ordered by edge, then by s0. Railings and steps live on free runs.
+   */
+  freeRuns: { edgeId: Id; a: Vec2; b: Vec2; s0: number; s1: number }[];
 }
 
 export interface DerivedRailing {
+  /** `${deckId}/railing` */
   id: Id;
   deckId: Id;
   baseZ: number; // deck top
   height: number;
   style: 'glass' | 'boards';
-  /** Panel segments between gaps, at base height (z = baseZ). */
+  /**
+   * Straight panel segments at base height (z = baseZ): the free runs minus `noRailingEdges` minus the step gaps,
+   * chained where runs meet at a deck corner and split at the corners.
+   */
   panels: { a: Vec3; b: Vec3 }[];
-  /** Post positions (corners, gap ends, every <= 1.5 m), at base height. */
+  /** Post positions (corners, run ends, gap ends, every <= 1.5 m), at base height. */
   posts: Vec3[];
-  steps: DerivedSteps[];
   isNew: boolean;
 }
 
 export interface DerivedSteps {
+  /** `DeckSteps.id` */
   id: Id;
-  /** Centre of the gap on the railing path and the outward (away from the deck) unit direction. */
+  deckId: Id;
+  edgeId: Id;
+  /** Centre on the stored deck edge and the outward (away from the deck) unit normal of that edge. */
   at: Vec2;
   outward: Vec2;
   width: number;
@@ -299,6 +362,11 @@ export interface DerivedSteps {
   riserHeight: number;
   going: number; // 0.3
   treads: { polygon: Vec2[]; z: number }[];
+  /**
+   * The centre is not on a free run of its edge (a building stands there, or the edge is gone): warning
+   * 'deck-steps-blocked'; the steps stay in the data and in the plan, but get no railing gap and no 3D mesh.
+   */
+  blocked: boolean;
 }
 
 export interface DerivedHotTub {
@@ -330,13 +398,35 @@ export type DerivedStructure =
       isNew: boolean;
     };
 
+/** Catalogue data a derived furniture item carries (phase 2b widens this with the full catalogue entry). */
+export interface DerivedFurnitureCatalog {
+  id: string;
+  name: string;
+}
+
 export interface DerivedFurniture {
   id: Id;
-  catalogId: string;
-  position: Vec2;
-  rotationDeg: number;
+  item: FurnitureItem;
+  /** The catalogue entry, null when the catalogue id is unknown ('furniture-unknown'). */
+  catalog: DerivedFurnitureCatalog | null;
+  /** Plan footprint: the item's size rectangle rotated by rotationDeg about its position (CCW). */
+  footprint: Vec2[];
+  bbox: { min: Vec2; max: Vec2 };
   levelId: Id;
+  /** Room (derived room id) on the item's storey containing the item's position. */
+  roomId?: Id;
+  /** Floor z under the item (its level's elevation). */
+  floorZ: number;
+  /** Bottom z of the item (floorZ + the catalogue elevation; = floorZ until phase 2b). */
   z: number;
+  /** Clearance zones (plan polygons) in front of the item. */
+  clearances: Vec2[][];
+  /** Ids of furniture items whose footprints collide with this one. */
+  collisions: Id[];
+  /** Ids of doors whose swing this item blocks. */
+  blocksDoors: Id[];
+  /** The item needs a drain (WC, shower): 'furniture-needs-wet-room' when it is not in a wet room. */
+  needsDrain: boolean;
   isNew: boolean;
 }
 
@@ -399,4 +489,16 @@ export type ModelWarning =
   | { kind: 'parts-overlap'; blockId: Id }
   | { kind: 'roof-no-meet'; blockId: Id; end: 'start' | 'end' }
   | { kind: 'area-limit'; limit: number; actual: number }
+  /** Two furniture items overlap in plan and height on the same storey (phase 2b). */
+  | { kind: 'furniture-overlap'; furnitureIds: [Id, Id] }
+  /** A furniture item stands in a wall (phase 2b). */
+  | { kind: 'furniture-in-wall'; furnitureId: Id; wallId: Id }
+  /** A furniture item is outside every room and every deck (phase 2b). */
+  | { kind: 'furniture-outside'; furnitureId: Id }
+  /** The catalogue has no entry for the item's catalogId (drawn as a plain box). */
+  | { kind: 'furniture-unknown'; furnitureId: Id; catalogId: string }
+  /** An item that needs a drain stands outside a wet room (phase 2b). */
+  | { kind: 'furniture-needs-wet-room'; furnitureId: Id; roomId?: Id }
+  /** Deck steps whose centre is not on a free run of their edge (a building stands there, or the edge is gone). */
+  | { kind: 'deck-steps-blocked'; stepsId: Id; deckId: Id }
   | { kind: 'generic'; message: string };

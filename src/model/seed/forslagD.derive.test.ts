@@ -267,3 +267,57 @@ describe('Forslag D derived: review fixes', () => {
     expect(loft.area).toBeCloseTo(12.536, 2);
   });
 });
+
+describe('Forslag D derived: schema 2 (phase 2)', () => {
+  it('is the locked base proposal with 27 named rooms, no ghosts and no warnings', () => {
+    expect(derived.locked).toBe(true);
+    expect(derived.rooms.filter((r) => r.room)).toHaveLength(27);
+    expect(derived.ghosts).toEqual([]);
+    expect(derived.walls.filter((w) => w.isGhost)).toEqual([]);
+    expect(derived.warnings).toEqual([]);
+  });
+
+  it('keeps the BYA of phase 1: 235.50 m² (buildings 178.33 + terrace 57.18; existing 102.18)', () => {
+    const { bya } = derived.areas;
+    expect(bya.total).toBeCloseTo(235.5, 2);
+    expect(bya.buildings).toBeCloseTo(178.33, 2);
+    expect(bya.decks).toBeCloseTo(57.18, 2);
+    expect(bya.existing).toBeCloseTo(102.18, 2);
+  });
+
+  it('the terrace still starts at x 9 and has its glass railing with three stairs', () => {
+    const [deck] = derived.outdoor.decks;
+    expect(Math.min(...deck.polygon.map((p) => p[0]))).toBe(9);
+    expect(Math.min(...deck.pieces.flatMap((piece) => piece[0].map((p) => p[0])))).toBe(9);
+    expect(derived.outdoor.railings).toHaveLength(1);
+    expect(derived.outdoor.railings[0]).toMatchObject({ id: 'deck-terrasse/railing', style: 'glass', height: 1.05 });
+    expect(derived.outdoor.steps.map((s) => [s.id, s.blocked])).toEqual([
+      ['rail-terrasse/steps/0', false],
+      ['rail-terrasse/steps/1', false],
+      ['rail-terrasse/steps/2', false],
+    ]);
+    for (const s of derived.outdoor.steps) expect(s.treads.length, s.id).toBeGreaterThan(0);
+  });
+
+  it('records the block junctions: glass bump and wing open to the main house, the bod wing on a wall', () => {
+    const roles = (id: string) => derived.blocks.find((b) => b.block.id === id)!.junctions.map((j) => `${j.otherBlockId}:${j.role}`);
+    expect(roles('blk-main').sort()).toEqual(['blk-bod:owner', 'blk-glass:open', 'blk-wing:open']);
+    for (const db of derived.blocks) {
+      for (const j of db.junctions) {
+        const partner = derived.blocks.find((b) => b.block.id === j.otherBlockId)!;
+        const back = partner.junctions.find((k) => k.otherBlockId === db.block.id && k.edgeIndex === j.otherEdgeIndex);
+        expect(back, `${db.block.id} → ${j.otherBlockId}`).toBeDefined();
+        expect(back!.otherEdgeIndex).toBe(j.edgeIndex);
+        expect(back!.s1 - back!.s0).toBeCloseTo(j.s1 - j.s0, 9);
+      }
+    }
+  });
+
+  it('gives every exterior piece its range on the block edge', () => {
+    for (const w of derived.walls) {
+      if (w.source.kind !== 'blockEdge') continue;
+      const { s0, s1 } = w.source;
+      expect(s1 - s0, w.id).toBeCloseTo(Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]), 9);
+    }
+  });
+});

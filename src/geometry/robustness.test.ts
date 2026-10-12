@@ -47,8 +47,7 @@ function rotatedSeed(deg: number, centre: Vec2 = [10, 4]): Variant {
     w.b = r(w.b);
   }
   for (const room of v.rooms) room.anchor = r(room.anchor);
-  for (const d of v.outdoor.decks) d.polygon = d.polygon.map(r);
-  for (const rl of v.outdoor.railings) rl.path = rl.path.map(r);
+  for (const d of v.outdoor.decks) for (const vx of d.polygon) vx.p = r(vx.p);
   for (const t of v.outdoor.hotTubs) t.centre = r(t.centre);
   v.structure = v.structure.map((e): StructureElement => {
     switch (e.kind) {

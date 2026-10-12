@@ -6,6 +6,7 @@
 import LZString from 'lz-string';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SEED_REVISION } from '../model/seed/forslagD';
+import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Project } from '../model/types';
 import {
   acceptExternalChange,
@@ -160,7 +161,7 @@ describe('share links', () => {
 
   it('opening a link made against an older seed shows the rebased notice', () => {
     const delta = JSON.parse(
-      JSON.stringify({ v: 1, seedRevision: SEED_REVISION - 1, base: 'forslag-d', project: { id: 'x', activeVariantId: 'forslag-d' }, variants: [{ id: 'forslag-d', set: { name: 'Gammel' } }] }),
+      JSON.stringify({ v: CURRENT_SCHEMA_VERSION, seedRevision: SEED_REVISION - 1, base: 'forslag-d', project: { id: 'x', activeVariantId: 'forslag-d' }, variants: [{ id: 'forslag-d', set: { name: 'Gammel' } }] }),
     ) as unknown;
     openSharedLink(LZString.compressToEncodedURIComponent(JSON.stringify(delta)));
     expect(appStore.getState().project.variants[0].name).toBe('Gammel');

@@ -93,6 +93,7 @@ function makeBlock(
     pitchDeg: 28,
     lowestFloorZ: zones.some((z) => z.kind === 'replace') ? -1 : 0,
     groundZ: -1,
+    junctions: [],
   };
 }
 
@@ -121,14 +122,18 @@ const blockB = makeBlock('blk-b', 'Fløy', [10, 0, 14, 6], true, { W: true }, [
   { id: 'blk-b/implicit', name: 'Resten', x0: 10, x1: 14, isNew: true, implicit: true },
 ]);
 
+/** An untrimmed deck (its pieces overlap the buildings: BYA subtracts them again). */
 const deck = (id: string, r: Rect, isNew: boolean): DerivedDeck => ({
   id,
   polygon: rect(r),
+  vertexIds: rect(r).map((_, i) => `${id}-v${i}`),
+  pieces: [[rect(r)]],
   topZ: 0,
   thickness: 0.15,
-  skirtBottomZ: [],
+  skirtBottomZ: [[]],
   boardDirection: 'x',
   isNew,
+  freeRuns: [],
 });
 
 function derivedRoom(id: string, room: Room | undefined, levelId: string, poly: Vec2[], split: [number, number]): DerivedRoom {
@@ -389,7 +394,8 @@ describe('partitionByParts', () => {
 
   it('orders block parts: derived parts first, then whole blocks as fallback', () => {
     const regions = blockPartRegions([blockA, blockB], 'inner');
-    expect(regions.map((r) => r.isNew)).toEqual([false, true, true, false, true]);
+    // Fallbacks are flagged like the implicit remainder: new for a block with explicit parts (blockA has them).
+    expect(regions.map((r) => r.isNew)).toEqual([false, true, true, true, true]);
     expect(area(regions[3].polygon)).toBeCloseTo(9.84 * 5.68, 9);
     const axis = blockPartRegions([blockA, blockB], 'axis');
     expect(axis.map((r) => area(r.polygon))).toEqual([36, 24, 24, 60, 24]);

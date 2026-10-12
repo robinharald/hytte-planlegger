@@ -1,6 +1,13 @@
 /**
- * deriveVariant — docs/architecture.md "Derivation pipeline", steps 1–8. Pure: the stored Variant + Site + terrain
- * asset in, the DerivedVariant every renderer reads out. Memoised on the (variant, site, terrain) object identities.
+ * deriveVariant — docs/architecture.md "Derivation pipeline", steps 1–9. Pure: the stored Variant + Site + terrain
+ * asset in, the DerivedVariant every renderer reads out. Memoised on the (variant, site, terrain) object identities,
+ * and assembled from three stages memoised on the sub-collections they read (docs/phase2-plan.md §2, "memo split"):
+ *  - building (site, terrain, levels, blocks, walls, openings, rooms, structure): steps 1–5, 7, 8 without BYA;
+ *  - outdoor (building, outdoor.decks, outdoor.hotTubs): step 6 (decks trimmed by the building), BYA, bounds;
+ *  - furniture (building, furniture): step 9.
+ * The assembled DerivedVariant reuses the stage results, so an edit of the furniture or of the outdoor collections
+ * keeps the building's arrays (walls, rooms, floors …) as the same instances. `locked` and `ghosts` come straight
+ * from the variant; ghost walls (status 'removed', `isGhost`) are left out of room detection and dangling checks.
  *
  *  1. Blocks (`deriveBlocks`), block warnings (`block-overlap`, `parts-overlap`).
  *  2. Roofs (`buildRoofsWithWarnings`, `roof-no-meet`); `combinedUndersideAt` is the one underside query used below.
@@ -30,13 +37,18 @@
  *     `${stairId}/stairwell` is added at the bottom z (level = the stair's lower level). 'ceiling' per block with
  *     `ceilingHeight`: the inner outline at block level + ceilingHeight + 0.05 (top of a 5 cm ceiling board), id
  *     `${blockId}/ceiling`.
- *  6. Outdoor (`deriveOutdoor`), 7. structure (`deriveStructure`), both with the terrain / underside callbacks.
+ *  6. Outdoor (`deriveOutdoorWithWarnings` with the derived blocks: deck pieces, free runs, railings, steps,
+ *     'deck-steps-blocked'), 7. structure (`deriveStructure`), both with the terrain / underside callbacks.
  *     Terrain: `groundWorks` = the site's ground works plus one implicit cut per block (`gw-<blockId>`: its outer
  *     outline, maxZ = lowestFloorZ − 0.1), applied by EVERY terrain query here (blocks' groundZ, deck skirts, steps,
  *     hot tubs, trees, deck BYA) and by the renderers (`terrainZAt(…, derived.groundWorks)`).
- *  8. Areas (`computeAreas`), foundations (outer outline, top = lowest floor, bottom = groundZ − 0.3), site trees
- *     (terrain baseZ) and water (waterLevel − floorElevation), dimensions, bounds (outer outlines + decks), wall
- *     unions per storey and status, furniture (z = level elevation), `area-limit`.
+ *  8. Areas (`computeBuildingAreas` in the building stage, `computeBya` in the outdoor stage), foundations (outer
+ *     outline, top = lowest floor, bottom = groundZ − 0.3), site trees (terrain baseZ) and water (waterLevel −
+ *     floorElevation), dimensions, bounds (outer outlines + stored deck outlines), wall unions per storey and status,
+ *     `area-limit`.
+ *  9. Furniture — placeholder until phase 2b: footprint = the size rectangle rotated by rotationDeg about the
+ *     position (`furnitureFootprint`), floorZ = z = the level's elevation, roomId = the room of the item's storey
+ *     containing the position, catalog null, no clearances / collisions / warnings.
  *
  * Dimensions: per cardinal side the "profile" of the block axis polygons seen from that side. Its breakpoints are
  * the block and part vertex coordinates; consecutive intervals with the same outermost edge (same position, block
@@ -63,10 +75,11 @@ import type {
   DerivedWall,
   ModelWarning,
 } from '../model/derived';
-import type { FloorMaterial, GroundWork, Id, Level, Room, RoomType, Site, TerrainAsset, Variant, Vec2 } from '../model/types';
-import { blockPartRegions, computeAreas, partitionRough, splitAreaByParts } from './areas';
+import type { FloorMaterial, FurnitureItem, GroundWork, Id, Level, Room, RoomType, Site, TerrainAsset, Variant, Vec2 } from '../model/types';
+import { blockPartRegions, computeBuildingAreas, computeBya, partitionRough, splitAreaByParts } from './areas';
 import type { PartRegion } from './areas';
-import { deriveOutdoor, deriveStructure } from './outdoor';
+import { locateLevel } from './levels';
+import { deriveOutdoorWithWarnings, deriveStructure } from './outdoor';
 import {
   area,
   bbox,
@@ -172,31 +185,11 @@ function splitSafe(polygon: Vec2[], holes: Vec2[][], parts: PartRegion[], where:
 // Rooms
 // ---------------------------------------------------------------------------
 
-interface Located {
-  levelId: Id;
-  blockId: Id;
-}
-
-/** Level (and block) of a point on one storey, or null when the storey has no floor there. */
-function locate(p: Vec2, storeyLevels: Set<Id>, blocks: DerivedBlock[]): Located | null {
-  for (const db of blocks) {
-    if (db.axis.length < 3 || !pointInPolygon(p, db.axis)) continue;
-    for (const z of db.zones) {
-      if (storeyLevels.has(z.levelId) && z.polygon.length >= 3 && pointInPolygon(p, z.polygon)) return { levelId: z.levelId, blockId: db.block.id };
-    }
-    if (storeyLevels.has(db.block.levelId)) {
-      const carved = db.zones.some((z) => z.kind === 'replace' && z.polygon.length >= 3 && pointInPolygon(p, z.polygon));
-      if (!carved) return { levelId: db.block.levelId, blockId: db.block.id };
-    }
-  }
-  return null;
-}
-
-/** Reference lines of one storey's room graph: walls of the storey plus the floor-zone edges. */
+/** Reference lines of one storey's room graph: walls of the storey (ghosts excluded) plus the floor-zone edges. */
 function storeyLines(storeyId: Id, walls: DerivedWall[], blocks: DerivedBlock[], storeyOfLevel: Map<Id, Id>): WallLine[] {
   const lines: WallLine[] = [];
   for (const w of walls) {
-    if (w.status === 'removed' || !w.storeyIds.includes(storeyId)) continue;
+    if (w.isGhost || !w.storeyIds.includes(storeyId)) continue;
     lines.push({ id: w.id, a: w.a, b: w.b, footprint: w.isDivider ? [] : w.footprint });
   }
   for (const db of blocks) {
@@ -237,7 +230,7 @@ function deriveRooms(variant: Variant, storeys: DerivedVariant['storeys'], block
     const { rooms, dangling } = detectRooms(storeyLines(s.id, walls, blocks, storeyOfLevel));
     for (const id of dangling) danglingIds.add(id);
     for (const det of rooms) {
-      const at = locate(det.labelPoint, levels, blocks);
+      const at = locateLevel(det.labelPoint, levels, blocks);
       if (!at) continue;
       for (const id of det.wallIds) boundingIds.add(id);
       faces.push({ det, storeyId: s.id, levelId: at.levelId, blockId: at.blockId });
@@ -258,6 +251,7 @@ function deriveRooms(variant: Variant, storeys: DerivedVariant['storeys'], block
   }
 
   const innerParts = blockPartRegions(blocks, 'inner');
+  const blockById = new Map(blocks.map((db) => [db.block.id, db.block]));
   const rooms: DerivedRoom[] = faces.map((f) => {
     const { det } = f;
     const split = splitSafe(det.innerPolygon, det.holes, innerParts, 'existing / new split of a room');
@@ -275,7 +269,7 @@ function deriveRooms(variant: Variant, storeys: DerivedVariant['storeys'], block
       dims: det.dims,
       labelPoint: det.labelPoint,
       blockId: f.blockId,
-      floorMaterial: f.room?.floorMaterial ?? FLOOR_BY_TYPE[f.room?.type ?? 'annet'],
+      floorMaterial: f.room?.floorMaterial ?? blockById.get(f.blockId)?.floorMaterial ?? FLOOR_BY_TYPE[f.room?.type ?? 'annet'],
       facePolygon: det.facePolygon,
       wallIds: det.wallIds.filter((id) => !id.startsWith(ZONE_LINE)),
     };
@@ -296,7 +290,7 @@ function deriveRooms(variant: Variant, storeys: DerivedVariant['storeys'], block
   const stored = new Map(walls.filter((w) => w.source.kind === 'wall').map((w) => [w.id, w]));
   for (const id of danglingIds) {
     const w = stored.get(id);
-    if (w && w.status !== 'removed' && !boundingIds.has(id)) warnings.push({ kind: 'wall-dangling', wallId: id });
+    if (w && !w.isGhost && !boundingIds.has(id)) warnings.push({ kind: 'wall-dangling', wallId: id });
   }
   return { rooms, warnings };
 }
@@ -686,108 +680,258 @@ export function blockGroundWorks(blocks: DerivedBlock[]): GroundWork[] {
   return out;
 }
 
-function emptyAreas(): AreaSummary {
+function emptyBuildingAreas(): Omit<AreaSummary, 'bya'> {
   const zero = { total: 0, existing: 0, new: 0 };
-  return { bya: { ...zero, buildings: 0, decks: 0, perBlock: [] }, bra: { ...zero, perLevel: [] }, axis: { ...zero }, rooms: [] };
+  return { bra: { ...zero, perLevel: [] }, axis: { ...zero }, rooms: [] };
 }
 
-function computeParts(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
-  const levels = new Map(variant.levels.map((l) => [l.id, l]));
-  const storeys = storeysOf(variant.levels);
-  const stage = <T>(name: string, fn: () => T, fallback: () => T): T => withClipFallback(`${name} (stage)`, fn, fallback);
+function emptyBya(): AreaSummary['bya'] {
+  return { total: 0, existing: 0, new: 0, buildings: 0, decks: 0, perBlock: [] };
+}
 
-  // Outlines do not depend on the terrain: blocks first, then the implicit cuts under them, then their ground height.
-  const outlines = deriveBlocks(variant, site, terrain, { terrainZ: () => 0 });
-  const implicit = blockGroundWorks(outlines);
-  const terrainZ = (x: number, y: number) => terrainZAt(terrain, site, x, y, implicit);
-  const blocks = outlines.map((db) => ({ ...db, groundZ: blockGroundZ(db, terrainZ) }));
+const stage = <T>(name: string, fn: () => T, fallback: () => T): T => withClipFallback(`${name} (stage)`, fn, fallback);
 
-  const { roofs, warnings: roofWarnings } = stage('roofs', () => buildRoofsWithWarnings(variant), () => ({ roofs: [], warnings: [] }));
-  const undersideAt = (x: number, y: number) => combinedUndersideAt(roofs, x, y);
-  const { walls, warnings: wallWarnings } = stage('walls', () => deriveWalls(variant, blocks, roofs, { undersideAt }), () => ({ walls: [], warnings: [] }));
-  const { rooms, warnings: roomWarnings } = stage('rooms', () => deriveRooms(variant, storeys, blocks, walls), () => ({ rooms: [], warnings: [] }));
-  const outdoor = deriveOutdoor(variant, site, terrain, { terrainZ });
-  const structure = deriveStructure(variant, roofs, { undersideAt });
-  const floors = stage('floors', () => deriveFloors(variant, blocks, walls, rooms, levels), () => []);
-  const areas = stage('areas', () => computeAreas({ variant, blocks, rooms, decks: outdoor.decks, undersideAt, terrainZ, roofs }), emptyAreas);
+/** `fn` with the clip fallbacks it took, as the `where` names (rooms' own per-room warnings excepted). */
+function withFallbacks<T>(fn: () => T): { result: T; fallbacks: string[] } {
+  const { result, fallbacks } = collectClipFallbacks(fn);
+  return { result, fallbacks: fallbacks.map((f) => f.where).filter((w) => w !== ROOM_FACE_FALLBACK) };
+}
 
-  const furniture: DerivedFurniture[] = variant.furniture.map((f) => ({
-    id: f.id,
-    catalogId: f.catalogId,
-    position: f.position,
-    rotationDeg: f.rotationDeg,
-    levelId: f.levelId,
-    z: levels.get(f.levelId)?.elevation ?? 0,
-    isNew: f.isNew,
-  }));
+// ---------------------------------------------------------------------------
+// Stages (memoised on the identities of the sub-collections they read)
+// ---------------------------------------------------------------------------
 
-  const blockWarnings = stage('block checks', () => deriveBlockWarnings(blocks), () => []);
-  const warnings: ModelWarning[] = [...blockWarnings, ...roofWarnings, ...wallWarnings, ...roomWarnings];
+/**
+ * Building stage: everything that depends only on `site`, the terrain and the variant's levels, blocks, walls,
+ * openings, rooms and structure — blocks, roofs, walls and openings, rooms, floors, structure, foundations,
+ * dimensions, wall unions, ground works, trees, BRA / axis / room areas and their warnings. (It reads no other
+ * variant field, which is what makes the memo key correct.)
+ */
+interface BuildingStage {
+  levels: Level[];
+  storeys: DerivedVariant['storeys'];
+  blocks: DerivedBlock[];
+  roofs: DerivedVariant['roofs'];
+  walls: DerivedWall[];
+  wallUnion: DerivedVariant['wallUnion'];
+  rooms: DerivedRoom[];
+  floors: DerivedFloor[];
+  structure: DerivedVariant['structure'];
+  foundations: DerivedVariant['foundations'];
+  dimensions: DerivedDimension[];
+  site: DerivedVariant['site'];
+  groundWorks: GroundWork[];
+  buildingAreas: Omit<AreaSummary, 'bya'>;
+  /** Terrain after the site's and the blocks' implicit ground works (relative to the main floor). */
+  terrainZ: (x: number, y: number) => number;
+  warnings: ModelWarning[];
+  fallbacks: string[];
+}
+
+function buildingStage(variant: Variant, site: Site, terrain: TerrainAsset | null): BuildingStage {
+  const { result, fallbacks } = withFallbacks(() => {
+    const levels = new Map(variant.levels.map((l) => [l.id, l]));
+    const storeys = storeysOf(variant.levels);
+    // Outlines do not depend on the terrain: blocks first, then the implicit cuts under them, then their ground height.
+    const outlines = deriveBlocks(variant, site, terrain, { terrainZ: () => 0 });
+    const implicit = blockGroundWorks(outlines);
+    const terrainZ = (x: number, y: number) => terrainZAt(terrain, site, x, y, implicit);
+    const blocks = outlines.map((db) => ({ ...db, groundZ: blockGroundZ(db, terrainZ) }));
+
+    const { roofs, warnings: roofWarnings } = stage('roofs', () => buildRoofsWithWarnings(variant), () => ({ roofs: [], warnings: [] }));
+    const undersideAt = (x: number, y: number) => combinedUndersideAt(roofs, x, y);
+    const { walls, warnings: wallWarnings } = stage('walls', () => deriveWalls(variant, blocks, roofs, { undersideAt }), () => ({ walls: [], warnings: [] }));
+    const { rooms, warnings: roomWarnings } = stage('rooms', () => deriveRooms(variant, storeys, blocks, walls), () => ({ rooms: [], warnings: [] }));
+    const structure = deriveStructure(variant, roofs, { undersideAt });
+    const floors = stage('floors', () => deriveFloors(variant, blocks, walls, rooms, levels), () => []);
+    const buildingAreas = stage('areas', () => computeBuildingAreas({ variant, blocks, rooms, undersideAt, roofs }), emptyBuildingAreas);
+    const blockWarnings = stage('block checks', () => deriveBlockWarnings(blocks), () => []);
+
+    const derivedSite: DerivedVariant['site'] = {
+      trees: site.trees.map((tree) => ({ tree, baseZ: terrainZ(tree.position[0], tree.position[1]) })),
+    };
+    if (site.waterLevel !== undefined) derivedSite.waterZ = site.waterLevel - site.floorElevation;
+
+    const out: Omit<BuildingStage, 'fallbacks'> = {
+      levels: variant.levels,
+      storeys,
+      blocks,
+      roofs,
+      walls,
+      wallUnion: wallUnions(walls, storeys),
+      rooms,
+      floors,
+      structure,
+      foundations: blocks
+        .filter((db) => db.outer.length >= 3)
+        .map((db) => ({ blockId: db.block.id, polygon: db.outer, topZ: db.lowestFloorZ, bottomZ: db.groundZ - FOUNDATION_DEPTH })),
+      dimensions: deriveDimensions(blocks),
+      site: derivedSite,
+      groundWorks: [...site.groundWorks, ...implicit],
+      buildingAreas,
+      terrainZ,
+      warnings: [...blockWarnings, ...roofWarnings, ...wallWarnings, ...roomWarnings],
+    };
+    return out;
+  });
+  return { ...result, fallbacks };
+}
+
+/** Outdoor stage: decks (trimmed by the building), railings, steps, hot tubs, BYA, bounds; depends on the building. */
+interface OutdoorStage {
+  outdoor: DerivedVariant['outdoor'];
+  bya: AreaSummary['bya'];
+  bounds: DerivedVariant['bounds'];
+  warnings: ModelWarning[];
+  fallbacks: string[];
+}
+
+function outdoorStage(variant: Variant, site: Site, terrain: TerrainAsset | null, building: BuildingStage): OutdoorStage {
+  const { result, fallbacks } = withFallbacks(() => {
+    const { outdoor, warnings } = stage(
+      'outdoor',
+      () => deriveOutdoorWithWarnings(variant, site, terrain, { terrainZ: building.terrainZ, blocks: building.blocks }),
+      () => ({ outdoor: { decks: [], railings: [], steps: [], hotTubs: [] }, warnings: [] }),
+    );
+    const bya = stage('areas', () => computeBya({ blocks: building.blocks, decks: outdoor.decks, terrainZ: building.terrainZ }), emptyBya);
+    const bounds = boundsOf([...building.blocks.map((db) => db.outer), ...outdoor.decks.map((d) => d.polygon)]);
+    return { outdoor, bya, bounds, warnings };
+  });
+  return { ...result, fallbacks };
+}
+
+/** Furniture stage (placeholder until phase 2b): footprint = the size rectangle rotated about the position. */
+interface FurnitureStage {
+  furniture: DerivedFurniture[];
+  warnings: ModelWarning[];
+}
+
+/** The item's size rectangle (w along its local x, d along local y) rotated by rotationDeg (CCW) about its position. */
+export function furnitureFootprint(item: FurnitureItem): Vec2[] {
+  const w = item.size?.w ?? 1;
+  const d = item.size?.d ?? 1;
+  const t = (item.rotationDeg * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  const [x, y] = item.position;
+  const corners: Vec2[] = [
+    [-w / 2, -d / 2],
+    [w / 2, -d / 2],
+    [w / 2, d / 2],
+    [-w / 2, d / 2],
+  ];
+  return corners.map(([u, v]): Vec2 => [x + u * c - v * s, y + u * s + v * c]);
+}
+
+function furnitureStage(items: FurnitureItem[], building: BuildingStage): FurnitureStage {
+  const levels = new Map(building.levels.map((l) => [l.id, l]));
+  const furniture = items.map((item): DerivedFurniture => {
+    const level = levels.get(item.levelId);
+    const floorZ = level?.elevation ?? 0;
+    const footprint = furnitureFootprint(item);
+    const room = building.rooms.find(
+      (r) => r.storeyId === level?.storeyId && r.polygon.length >= 3 && inPolygonWithHoles(item.position, r.polygon, r.holes),
+    );
+    const out: DerivedFurniture = {
+      id: item.id,
+      item,
+      catalog: null,
+      footprint,
+      bbox: bbox(footprint),
+      levelId: item.levelId,
+      floorZ,
+      z: floorZ,
+      clearances: [],
+      collisions: [],
+      blocksDoors: [],
+      needsDrain: false,
+      isNew: item.isNew,
+    };
+    if (room) out.roomId = room.id;
+    return out;
+  });
+  return { furniture, warnings: [] };
+}
+
+/** Memo over a fixed-length list of object identities (nested WeakMaps). */
+class IdentityMemo<T> {
+  private readonly root = new WeakMap<object, unknown>();
+
+  get(keys: object[], compute: () => T): T {
+    let map = this.root;
+    for (let i = 0; i < keys.length - 1; i++) {
+      let next = map.get(keys[i]) as WeakMap<object, unknown> | undefined;
+      if (!next) {
+        next = new WeakMap();
+        map.set(keys[i], next);
+      }
+      map = next;
+    }
+    const last = keys[keys.length - 1];
+    if (map.has(last)) return map.get(last) as T;
+    const value = compute();
+    map.set(last, value);
+    return value;
+  }
+}
+
+/** Key for a null terrain in the identity memos. */
+const NO_TERRAIN = {};
+const buildingMemo = new IdentityMemo<BuildingStage>();
+const outdoorMemo = new IdentityMemo<OutdoorStage>();
+const furnitureMemo = new IdentityMemo<FurnitureStage>();
+const variantMemo = new IdentityMemo<DerivedVariant>();
+
+function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
+  const terrainKey: object = terrain ?? NO_TERRAIN;
+  const building = buildingMemo.get(
+    [site, terrainKey, variant.levels, variant.blocks, variant.walls, variant.openings, variant.rooms, variant.structure],
+    () => buildingStage(variant, site, terrain),
+  );
+  const outdoor = outdoorMemo.get([building, variant.outdoor.decks, variant.outdoor.hotTubs], () => outdoorStage(variant, site, terrain, building));
+  const furniture = furnitureMemo.get([building, variant.furniture], () => furnitureStage(variant.furniture, building));
+
+  const areas: AreaSummary = { bya: outdoor.bya, ...building.buildingAreas };
+  const warnings: ModelWarning[] = [...building.warnings, ...outdoor.warnings, ...furniture.warnings];
   const limit = variant.settings.areaLimit;
   if (limit !== null && areas.bya.total > limit) warnings.push({ kind: 'area-limit', limit, actual: areas.bya.total });
-
-  const derivedSite: DerivedVariant['site'] = {
-    trees: site.trees.map((tree) => ({ tree, baseZ: terrainZ(tree.position[0], tree.position[1]) })),
-  };
-  if (site.waterLevel !== undefined) derivedSite.waterZ = site.waterLevel - site.floorElevation;
+  const seen = new Set<string>();
+  for (const where of [...building.fallbacks, ...outdoor.fallbacks]) {
+    if (seen.has(where)) continue;
+    seen.add(where);
+    warnings.push({ kind: 'generic', message: `${GEOMETRY_FALLBACK}: ${where} (polygon clipping failed)` });
+  }
 
   return {
     variantId: variant.id,
-    levels: variant.levels,
-    storeys,
-    blocks,
-    walls,
-    wallUnion: wallUnions(walls, storeys),
-    rooms,
-    floors,
-    roofs,
-    outdoor,
-    structure,
-    furniture,
-    foundations: blocks
-      .filter((db) => db.outer.length >= 3)
-      .map((db) => ({ blockId: db.block.id, polygon: db.outer, topZ: db.lowestFloorZ, bottomZ: db.groundZ - FOUNDATION_DEPTH })),
-    dimensions: deriveDimensions(blocks),
-    site: derivedSite,
-    groundWorks: [...site.groundWorks, ...implicit],
-    bounds: boundsOf([...blocks.map((db) => db.outer), ...outdoor.decks.map((d) => d.polygon)]),
+    locked: variant.locked === true,
+    levels: building.levels,
+    storeys: building.storeys,
+    blocks: building.blocks,
+    walls: building.walls,
+    wallUnion: building.wallUnion,
+    rooms: building.rooms,
+    floors: building.floors,
+    roofs: building.roofs,
+    outdoor: outdoor.outdoor,
+    structure: building.structure,
+    furniture: furniture.furniture,
+    ghosts: (variant.ghosts ?? []).map((g) => ({ id: g.id, a: [g.a[0], g.a[1]], b: [g.b[0], g.b[1]] })),
+    foundations: building.foundations,
+    dimensions: building.dimensions,
+    site: building.site,
+    groundWorks: building.groundWorks,
+    bounds: outdoor.bounds,
     areas,
     warnings,
   };
 }
 
-function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
-  const { result, fallbacks } = collectClipFallbacks(() => computeParts(variant, site, terrain));
-  const seen = new Set<string>();
-  for (const f of fallbacks) {
-    if (f.where === ROOM_FACE_FALLBACK || seen.has(f.where)) continue;
-    seen.add(f.where);
-    result.warnings.push({ kind: 'generic', message: `${GEOMETRY_FALLBACK}: ${f.where} (polygon clipping failed)` });
-  }
-  return result;
-}
-
-/** Key for a null terrain in the identity memo. */
-const NO_TERRAIN = {};
-const memo = new WeakMap<Variant, WeakMap<Site, WeakMap<object, DerivedVariant>>>();
-
-/** Derive everything the renderers need from a stored variant (memoised on the argument identities). */
+/**
+ * Derive everything the renderers need from a stored variant. Memoised on the argument identities, and inside on
+ * the stages (building / outdoor / furniture), so an edit that only touches the furniture or the outdoor collections
+ * reuses the building's walls, rooms, floors … (the same array instances).
+ */
 export function deriveVariant(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
-  let bySite = memo.get(variant);
-  if (!bySite) {
-    bySite = new WeakMap();
-    memo.set(variant, bySite);
-  }
-  let byTerrain = bySite.get(site);
-  if (!byTerrain) {
-    byTerrain = new WeakMap();
-    bySite.set(site, byTerrain);
-  }
-  const key: object = terrain ?? NO_TERRAIN;
-  let derived = byTerrain.get(key);
-  if (!derived) {
-    derived = computeVariant(variant, site, terrain);
-    byTerrain.set(key, derived);
-  }
-  return derived;
+  return variantMemo.get([variant, site, terrain ?? NO_TERRAIN], () => computeVariant(variant, site, terrain));
 }

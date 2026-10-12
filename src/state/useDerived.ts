@@ -31,6 +31,7 @@ export function emptyDerived(variant: Variant, message: string): DerivedVariant 
   const storeyIds = [...new Set(variant.levels.map((l) => l.storeyId))];
   return {
     variantId: variant.id,
+    locked: variant.locked === true,
     levels: variant.levels,
     storeys: storeyIds.map((id) => ({ id, name: id, levelIds: variant.levels.filter((l) => l.storeyId === id).map((l) => l.id) })),
     blocks: [],
@@ -39,9 +40,10 @@ export function emptyDerived(variant: Variant, message: string): DerivedVariant 
     rooms: [],
     floors: [],
     roofs: [],
-    outdoor: { decks: [], railings: [], hotTubs: [] },
+    outdoor: { decks: [], railings: [], steps: [], hotTubs: [] },
     structure: [],
     furniture: [],
+    ghosts: [],
     foundations: [],
     dimensions: [],
     site: { trees: [] },

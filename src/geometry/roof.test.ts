@@ -84,7 +84,7 @@ function variantOf(blocks: Block[]): Variant {
     openings: [],
     rooms: [],
     furniture: [],
-    outdoor: { decks: [], railings: [], hotTubs: [] },
+    outdoor: { decks: [], hotTubs: [] },
     structure: [],
     settings: { defaultExteriorWall: { thickness: 0.27, outerOffset: 0.11 }, defaultInteriorThickness: 0.12, areaLimit: null },
   };
@@ -667,17 +667,18 @@ describe('buildRoof (types and edge cases)', () => {
   });
 
   it('parts: a part inside the block splits the slopes into hole-free pieces without overlap', () => {
-    const b = block('b', [0, 0, 10, 6], gable(), { parts: [part('mid', [4, 1, 6, 2], true)] });
+    // An existing part inside the block: the implicit remainder around it is new (docs/phase2-plan.md §3.4).
+    const b = block('b', [0, 0, 10, 6], gable(), { parts: [part('mid', [4, 1, 6, 2], false)] });
     const r = buildRoof(b, variantOf([b]), []);
     const south = r.slopes.filter((s) => s.facing === 'S');
     const southArea = 10.7 * (3 + 0.51);
     const pieces = south.map((s) => plan(s.polygon));
     expect(pieces.reduce((acc, p) => acc + area(p), 0)).toBeCloseTo(southArea, 6);
     expect(unionArea(pieces)).toBeCloseTo(southArea, 6);
-    const newArea = south.filter((s) => s.isNew).reduce((acc, s) => acc + area(plan(s.polygon)), 0);
-    expect(newArea).toBeCloseTo(2, 6);
-    expect(south.filter((s) => !s.isNew).length).toBeGreaterThanOrEqual(2); // cut around the hole
-    expect(r.slopes.filter((s) => s.facing === 'N').every((s) => !s.isNew)).toBe(true);
+    const existingArea = south.filter((s) => !s.isNew).reduce((acc, s) => acc + area(plan(s.polygon)), 0);
+    expect(existingArea).toBeCloseTo(2, 6);
+    expect(south.filter((s) => s.isNew).length).toBeGreaterThanOrEqual(2); // cut around the hole
+    expect(r.slopes.filter((s) => s.facing === 'N').every((s) => s.isNew)).toBe(true);
   });
 
   it('drops eave overhang strips inside another block, keeps them elsewhere', () => {

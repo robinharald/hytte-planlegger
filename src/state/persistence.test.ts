@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import LZString from 'lz-string';
+import { migrateProject } from '../model/migrate';
 import { createForslagD, SEED_REVISION } from '../model/seed/forslagD';
+import { FROZEN_SEED_REVISION, frozenSchema1Project, frozenSchema1Variant } from '../model/seed/frozenSeed';
 import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Project, Variant } from '../model/types';
 import {
   applyCollection,
   AUTOSAVE_DELAY_MS,
+  backupOlderAutosave,
   decodeShare,
   deltaPayload,
   diffCollection,
+  diffVariant,
   deleteVersion,
   encodeShare,
   getStorage,
@@ -23,6 +27,7 @@ import {
   loadVersion,
   makeOwnCopy,
   makeShareLink,
+  OUTDOOR_COLLECTIONS,
   parseProjectText,
   PREFS_VERSION,
   projectFileName,
@@ -142,6 +147,14 @@ describe('ui prefs', () => {
     const stored = JSON.parse(localStorage.getItem(KEYS.ui) ?? '{}') as Record<string, unknown>;
     expect(stored.v).toBe(PREFS_VERSION);
     expect('activeView' in stored).toBe(false);
+  });
+
+  it('reads highlightNew only from prefs of version 3 on (older prefs saved the old default false)', () => {
+    expect(sanitizeUiPrefs({ v: 2, highlightNew: false, showGrid: false })).toEqual({ showGrid: false });
+    expect(sanitizeUiPrefs({ highlightNew: false })).toEqual({});
+    expect(sanitizeUiPrefs({ v: 3, highlightNew: false })).toEqual({ highlightNew: false });
+    saveUiPrefs(localStorage, { ...DEFAULT_UI, highlightNew: false });
+    expect(loadUiPrefs(localStorage).highlightNew).toBe(false);
   });
 
   it('drops malformed fields', () => {
@@ -391,11 +404,26 @@ describe('share links as a delta against the bundled seed', () => {
     expect(r.status === 'ok' && r.project).toEqual(withTimes(edited, now.toISOString()));
   });
 
-  it('sends the full project when it is not at the bundled seed revision', () => {
+  it('sends a delta also for a project of an older seed revision, keeping that revision', () => {
     const p = { ...userSeed(), seedRevision: SEED_REVISION - 1 };
     const json = JSON.parse(sharePayloadJson(p, { allVariants: false })) as Record<string, unknown>;
-    expect(json.base).toBeUndefined();
-    expect(json.project).toBeDefined();
+    expect(json.base).toBe('forslag-d');
+    expect(json.seedRevision).toBe(SEED_REVISION);
+    expect((json.project as Record<string, unknown>).seedRevision).toBe(SEED_REVISION - 1);
+    const r = decodeShare(encodeShare(p, { allVariants: false }), now);
+    expect(r.status === 'ok' && r.rebased).toBeFalsy();
+    expect(r.status === 'ok' && r.project).toEqual(withTimes(p, now.toISOString()));
+  });
+
+  it('diffs the outdoor collections of schema 2 (decks and hot tubs)', () => {
+    expect(OUTDOOR_COLLECTIONS).toEqual(['decks', 'hotTubs']);
+    const p = userSeed();
+    const v = p.variants[0];
+    const deck = { ...v.outdoor.decks[0], noRailingEdges: [v.outdoor.decks[0].polygon[0].id] };
+    const edited: Project = { ...p, variants: [{ ...v, outdoor: { ...v.outdoor, decks: [deck] } }] };
+    expect(Object.keys(deltaPayload(edited).variants[0].changes ?? {})).toEqual(['outdoor.decks']);
+    const r = decodeShare(encodeShare(edited, { allVariants: false }), now);
+    expect(r.status === 'ok' && r.project.variants[0].outdoor.decks[0].noRailingEdges).toEqual(['deck-terrasse-v0']);
   });
 
   it('applies a link from an older seed revision to the current seed (rebased) and rejects a newer one', () => {
@@ -406,6 +434,65 @@ describe('share links as a delta against the bundled seed', () => {
     expect(decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(newer))).status).toBe('too-new');
     const broken = { ...delta, variants: [{ set: {} }] };
     expect(decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(broken))).status).toBe('invalid');
+  });
+
+  it('a phase-1 link (schema 1, revision 3) is rebuilt on the frozen seed and migrated: railing and 3 steps kept', () => {
+    // As phase 1 made it: a delta against the schema-1 seed, here with a renamed room and a railing gap removed.
+    const base = frozenSchema1Variant();
+    const edited = structuredClone(base);
+    const rooms = edited.rooms as { name: string }[];
+    rooms[3].name = 'Gjesterom';
+    const railings = (edited.outdoor as { railings: { gaps: unknown[] }[] }).railings;
+    railings[0].gaps = railings[0].gaps.slice(0, 2);
+    const delta = {
+      v: 1,
+      seedRevision: FROZEN_SEED_REVISION,
+      base: 'forslag-d',
+      project: { id: 'fase1', activeVariantId: 'forslag-d' },
+      variants: [diffVariant(edited as unknown as Variant, base as unknown as Variant)],
+    };
+    expect(Object.keys(delta.variants[0].changes ?? {}).sort()).toEqual(['outdoor.railings', 'rooms']);
+    const r = decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(delta)), now);
+    expect(r.status).toBe('ok');
+    if (r.status !== 'ok') return;
+    expect(r.rebased).toBeUndefined();
+    expect(r.project.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(r.project.seedRevision).toBe(FROZEN_SEED_REVISION);
+    const v = r.project.variants[0];
+    expect(v.rooms[3].name).toBe('Gjesterom');
+    expect('railings' in v.outdoor).toBe(false);
+    const deck = v.outdoor.decks[0];
+    expect(deck.railing).toEqual({ style: 'glass', height: 1.05 });
+    expect(deck.steps.map((s) => s.id)).toEqual(['rail-terrasse/steps/0', 'rail-terrasse/steps/1']);
+    // An unchanged phase-1 link gives the deck of the current seed: the glass railing and all three steps.
+    const plain = { ...delta, variants: [{ id: 'forslag-d', set: { name: 'Forslag D' } }] };
+    const r2 = decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(plain)), now);
+    expect(r2.status === 'ok' && r2.project.variants[0].outdoor).toEqual(createForslagD().variants[0].outdoor);
+    // A phase-1 link made against revision 2 is rebased on the frozen revision 3.
+    const older = decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify({ ...plain, seedRevision: 2 })), now);
+    expect(older.status === 'ok' && older.rebased).toBe(true);
+  });
+
+  it('a full phase-1 project (link, file or autosave) migrates to schema 2', () => {
+    const v1 = { ...frozenSchema1Project(), id: 'fase1-full' };
+    const full = { v: 1, project: v1 };
+    const r = decodeShare(LZString.compressToEncodedURIComponent(JSON.stringify(full)), now);
+    expect(r.status === 'ok' && r.project.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(r.status === 'ok' && r.project.variants[0].outdoor.decks[0].steps).toHaveLength(3);
+    expect(parseProjectText(JSON.stringify(v1)).status).toBe('ok');
+    localStorage.setItem(KEYS.project, JSON.stringify(v1));
+    const saved = loadAutosave(localStorage);
+    expect(saved.status === 'ok' && saved.project.variants[0].outdoor.decks[0].railing).toEqual({ style: 'glass', height: 1.05 });
+  });
+
+  it('a revision-3 project (migrated from phase 1) is shared as a delta under 2 kB', () => {
+    const p = { ...migrateProject(frozenSchema1Project('2026-10-11T18:00:00.000Z')), id: 'AbCdEfGhIjKl' };
+    expect(p.seedRevision).toBe(3);
+    const json = sharePayloadJson(p, { allVariants: false });
+    expect((JSON.parse(json) as Record<string, unknown>).base).toBe('forslag-d');
+    expect(json.length).toBeLessThan(2048);
+    const r = decodeShare(encodeShare(p, { allVariants: false }), now);
+    expect(r.status === 'ok' && r.project).toEqual(withTimes(p, now.toISOString()));
   });
 
   it('a delta payload is accepted as an imported file too', () => {
@@ -499,6 +586,30 @@ describe('startAutosave', () => {
     vi.advanceTimersByTime(200);
     const r = loadAutosave(localStorage);
     expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('B');
+    ctl.stop();
+  });
+
+  it('backs up a phase-1 (older schema) autosave to project.backup-v1 before its first write', () => {
+    const v1Text = JSON.stringify({ ...frozenSchema1Project(), id: 'fase1' });
+    localStorage.setItem(KEYS.project, v1Text);
+    const loaded = loadAutosave(localStorage);
+    expect(loaded.status).toBe('ok');
+    if (loaded.status !== 'ok') return;
+    const store = createAppStore(loaded.project);
+    const ctl = startAutosave(store, { storage: localStorage, target: window });
+    // Nothing changed yet: the stored phase-1 document stays and needs no backup.
+    ctl.flush();
+    expect(localStorage.getItem(KEYS.project)).toBe(v1Text);
+    expect(localStorage.getItem(KEYS.projectBackupV1)).toBeNull();
+    store.getState().renameVariant('forslag-d', 'Mitt forslag');
+    ctl.flush();
+    expect(localStorage.getItem(KEYS.projectBackupV1)).toBe(v1Text);
+    const r = loadAutosave(localStorage);
+    expect(r.status === 'ok' && r.project.variants[0].name).toBe('Mitt forslag');
+    expect((JSON.parse(localStorage.getItem(KEYS.project) ?? '{}') as Record<string, unknown>).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    // A current document is never copied there.
+    expect(backupOlderAutosave(localStorage)).toBe(false);
+    expect(localStorage.getItem(KEYS.projectBackupV1)).toBe(v1Text);
     ctl.stop();
   });
 

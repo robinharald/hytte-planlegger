@@ -11,14 +11,20 @@
  *  - `hytte-planlegger:versions`  `StoredVersion[]` (any project); listed per projectId newest first, at most
  *                                 `VERSION_LIMIT` per project (the oldest of that project is dropped first).
  *  - `hytte-planlegger:project.bak` copy of an autosave that could not be read, so it is never silently lost.
+ *  - `hytte-planlegger:project.backup-v1` copy of an autosave of an OLDER schema version, written right before the
+ *                                 first write that would replace it with the current schema (docs/phase2-plan.md §2).
  *
  * Share link: `#d=` + lz-string `compressToEncodedURIComponent(JSON.stringify(payload))`. The payload is a DELTA
  * against the bundled Forslag D seed (`DeltaSharePayload`: per variant the changed top-level fields and, per
- * collection, the added and changed entities in full plus the removed ids) when the project is at the bundled
- * `SEED_REVISION`, else the full `{ v, project }`. Timestamps are never sent. `v` is the schema version (lets a
- * decoder reject a too-new link before reading it). Only the active variant is included unless `allVariants`.
- * The terrain is never part of a project, so never part of a link. A delta made against an older seed revision is
- * applied to the current seed (`rebased`); one from a newer revision is 'too-new'.
+ * collection, the added and changed entities in full plus the removed ids) whenever that is smaller than the full
+ * `{ v, project }` (whatever the project's own seed revision: the delta records it in `project.seedRevision`).
+ * Timestamps are never sent. `v` is the schema version (lets a decoder reject a too-new link before reading it).
+ * Only the active variant is included unless `allVariants`. The terrain is never part of a project, so never part of
+ * a link. Decoding: a delta of an older schema (`v` < CURRENT_SCHEMA_VERSION, made by phase 1) is applied to the
+ * FROZEN schema-1 seed (model/seed/frozenSeed.ts) and then migrated; a current one to the current seed. A delta made
+ * against an older seed revision than its base is applied to that base (`rebased`); one from a newer revision than
+ * the bundled seed is 'too-new'. Outdoor collections are keyed `outdoor.<name>` (schema 2: decks, hotTubs; the frozen
+ * base also knows `outdoor.railings`).
  *
  * Multi-tab: a saved document is identified by `projectKey` = `id@updatedAt` (the store gives the project a fresh
  * `updatedAt` on every change, undo and restore included). Autosave remembers the key it last wrote (or found and
@@ -27,8 +33,9 @@
  */
 import LZString from 'lz-string';
 import { nanoid } from 'nanoid';
-import { migrateProject, SchemaTooNewError } from '../model/migrate';
+import { migrateProject, rawSchemaVersion, SchemaTooNewError } from '../model/migrate';
 import { createForslagD, createForslagDVariant, SEED_REVISION, SEED_VARIANT_ID } from '../model/seed/forslagD';
+import { FROZEN_SEED_REVISION, frozenSchema1Project, frozenSchema1Variant } from '../model/seed/frozenSeed';
 import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Id, Project, Site, Variant } from '../model/types';
 import { CAMERA_PRESET_KEYS } from './store';
@@ -39,6 +46,7 @@ export const KEYS = {
   ui: 'hytte-planlegger:ui',
   versions: 'hytte-planlegger:versions',
   projectBackup: 'hytte-planlegger:project.bak',
+  projectBackupV1: 'hytte-planlegger:project.backup-v1',
 } as const;
 
 export const AUTOSAVE_DELAY_MS = 500;
@@ -158,6 +166,17 @@ export function backupInvalidAutosave(storage: KeyValueStorage | null): void {
   if (text !== null) writeRaw(storage, KEYS.projectBackup, text);
 }
 
+/**
+ * Copy the stored autosave to KEYS.projectBackupV1 when it is of an older schema version (a phase-1 project), so
+ * the first write of the migrated project never loses the original. Returns true when a backup was written.
+ */
+export function backupOlderAutosave(storage: KeyValueStorage | null): boolean {
+  const text = readRaw(storage, KEYS.project);
+  const raw = parseJson(text);
+  if (text === null || !isRecord(raw) || rawSchemaVersion(raw) >= CURRENT_SCHEMA_VERSION) return false;
+  return writeRaw(storage, KEYS.projectBackupV1, text);
+}
+
 /** Identity of a saved document: `id@updatedAt`. */
 export function projectKey(p: { id?: unknown; updatedAt?: unknown }): string {
   return `${String(p.id)}@${String(p.updatedAt)}`;
@@ -186,8 +205,13 @@ export function isNewer(a: string, b: string): boolean {
  * saved whether or not the user chose it, so it is never read (the chosen view is `chosenView`, from version 2).
  * Prefs of version 2 may still hold `cutHeight` / `cutHeightBeforePreset` from the removed cut-height slider: they
  * are ignored and dropped on the next save (the cut height follows the camera preset, see `cutHeightFor`).
+ * Version 3 (phase 2): "Vis hva som er nytt" became on by default; older prefs saved the old default `false` whether
+ * or not the user chose it, so their `highlightNew` is not read (`HIGHLIGHT_NEW_PREFS_VERSION`).
  */
-export const PREFS_VERSION = 2;
+export const PREFS_VERSION = 3;
+
+/** Prefs from this version on hold a `highlightNew` the user meant (before it, it was the old default `false`). */
+export const HIGHLIGHT_NEW_PREFS_VERSION = 3;
 
 /** Fields of older prefs that are no longer read; `saveUiPrefs` removes them from the stored object. */
 const STALE_PREF_KEYS = ['activeView', 'cutHeight', 'cutHeightBeforePreset'] as const;
@@ -235,7 +259,11 @@ export function sanitizeUiPrefs(raw: unknown): Partial<UiState> {
   if (typeof raw.activeStoreyId === 'string' && raw.activeStoreyId) out.activeStoreyId = raw.activeStoreyId;
   if (oneOf(raw.mode3d, ['ute', 'inne'] as const)) out.mode3d = raw.mode3d;
   if (oneOf(raw.preset, CAMERA_PRESET_KEYS)) out.preset = raw.preset;
-  for (const k of BOOL_PREFS) if (typeof raw[k] === 'boolean') out[k] = raw[k];
+  const version = typeof raw.v === 'number' ? raw.v : 0;
+  for (const k of BOOL_PREFS) {
+    if (k === 'highlightNew' && version < HIGHLIGHT_NEW_PREFS_VERSION) continue;
+    if (typeof raw[k] === 'boolean') out[k] = raw[k];
+  }
   const sun = raw.sun;
   if (
     isRecord(sun) &&
@@ -499,7 +527,7 @@ export interface DeltaSharePayload {
 
 /** Array collections of a Variant; the outdoor ones are keyed `outdoor.<name>`. */
 const VARIANT_COLLECTIONS = ['levels', 'blocks', 'walls', 'openings', 'rooms', 'furniture', 'structure'] as const;
-const OUTDOOR_COLLECTIONS = ['decks', 'railings', 'hotTubs'] as const;
+export const OUTDOOR_COLLECTIONS = ['decks', 'hotTubs'] as const;
 /** Top-level variant fields that are not diffed as plain values. */
 const VARIANT_SPECIAL = new Set<string>(['id', 'createdAt', 'outdoor', ...VARIANT_COLLECTIONS]);
 
@@ -576,6 +604,8 @@ export function applyCollection(base: readonly unknown[], d: CollectionDelta | u
   return [...ordered, ...byId.values()];
 }
 
+const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
 export function diffVariant(variant: Variant, seed: Variant): VariantDelta {
   const v = variant as unknown as Record<string, unknown>;
   const b = seed as unknown as Record<string, unknown>;
@@ -594,8 +624,11 @@ export function diffVariant(variant: Variant, seed: Variant): VariantDelta {
     const d = diffCollection(variant[key], seed[key]);
     if (d) changes[key] = d;
   }
-  for (const key of OUTDOOR_COLLECTIONS) {
-    const d = diffCollection(variant.outdoor[key], seed.outdoor[key]);
+  // OUTDOOR_COLLECTIONS plus any other outdoor array either side has (a schema-1 document's `railings`).
+  const outdoor = variant.outdoor as unknown as Record<string, unknown>;
+  const seedOutdoor = seed.outdoor as unknown as Record<string, unknown>;
+  for (const key of new Set<string>([...OUTDOOR_COLLECTIONS, ...Object.keys(outdoor), ...Object.keys(seedOutdoor)])) {
+    const d = diffCollection(asArray(outdoor[key]), asArray(seedOutdoor[key]));
     if (d) changes[`outdoor.${key}`] = d;
   }
   const out: VariantDelta = { id: variant.id, set };
@@ -604,15 +637,22 @@ export function diffVariant(variant: Variant, seed: Variant): VariantDelta {
   return out;
 }
 
-/** Rebuild a variant document (not yet migrated) from a delta and a fresh seed variant. */
-export function applyVariantDelta(seed: Variant, d: VariantDelta, createdAt: string): Record<string, unknown> {
-  const doc: Record<string, unknown> = { ...(seed as unknown as Record<string, unknown>) };
+/**
+ * Rebuild a variant document (not yet migrated) from a delta and a fresh seed variant: the current `Variant`, or the
+ * raw frozen schema-1 variant for a phase-1 link (its outdoor collections, `railings` included, are rebuilt too).
+ */
+export function applyVariantDelta(seed: Variant | Record<string, unknown>, d: VariantDelta, createdAt: string): Record<string, unknown> {
+  const base = seed as Record<string, unknown>;
+  const doc: Record<string, unknown> = { ...base };
   for (const k of Array.isArray(d.unset) ? d.unset : []) delete doc[k];
   if (isRecord(d.set)) for (const [k, value] of Object.entries(d.set)) if (!VARIANT_SPECIAL.has(k)) doc[k] = value;
   const changes = isRecord(d.changes) ? (d.changes as Record<string, CollectionDelta>) : {};
-  for (const key of VARIANT_COLLECTIONS) doc[key] = applyCollection(seed[key], changes[key]);
-  const outdoor: Record<string, unknown> = { ...seed.outdoor };
-  for (const key of OUTDOOR_COLLECTIONS) outdoor[key] = applyCollection(seed.outdoor[key], changes[`outdoor.${key}`]);
+  for (const key of VARIANT_COLLECTIONS) doc[key] = applyCollection(asArray(base[key]), changes[key]);
+  const baseOutdoor = isRecord(base.outdoor) ? base.outdoor : {};
+  const outdoor: Record<string, unknown> = { ...baseOutdoor };
+  for (const key of new Set([...Object.keys(baseOutdoor), ...OUTDOOR_COLLECTIONS])) {
+    outdoor[key] = applyCollection(asArray(baseOutdoor[key]), changes[`outdoor.${key}`]);
+  }
   doc.outdoor = outdoor;
   doc.id = d.id;
   doc.createdAt = createdAt;
@@ -659,14 +699,14 @@ export function deltaPayload(project: Project): DeltaSharePayload {
 }
 
 /**
- * JSON of the share payload: the delta against the seed when the project is at the bundled seed revision (and the
- * delta is the smaller of the two), else the full project. No timestamps either way.
+ * JSON of the share payload: the delta against the current seed when it is the smaller of the two (also for a project
+ * of an older seed revision: the delta keeps that revision in `project.seedRevision`), else the full project. No
+ * timestamps either way.
  */
 export function sharePayloadJson(project: Project, opts: { allVariants: boolean }): string {
   const p = sharedProject(project, opts.allVariants);
   const full: SharePayload = { v: p.schemaVersion, project: withoutTimestamps(p) };
   const fullJson = JSON.stringify(full);
-  if (p.seedRevision !== SEED_REVISION) return fullJson;
   const deltaJson = JSON.stringify(deltaPayload(p));
   return deltaJson.length < fullJson.length ? deltaJson : fullJson;
 }
@@ -675,7 +715,11 @@ export function encodeShare(project: Project, opts: { allVariants: boolean }): s
   return LZString.compressToEncodedURIComponent(sharePayloadJson(project, opts));
 }
 
-/** Rebuild the project of a delta payload from the bundled seed. Never throws. */
+/**
+ * Rebuild the project of a delta payload from the bundled seed — the frozen schema-1 seed (revision 3) when the
+ * payload's schema `v` is older than the current one (a phase-1 link), else the current seed — then migrate it.
+ * `rebased` when the payload was made against an older seed revision than the base it is applied to. Never throws.
+ */
 export function decodeDeltaPayload(raw: Record<string, unknown>, now: Date = new Date()): LoadResult {
   if (typeof raw.v === 'number' && raw.v > CURRENT_SCHEMA_VERSION) return { status: 'too-new', version: raw.v };
   const seedRevision = typeof raw.seedRevision === 'number' ? raw.seedRevision : 0;
@@ -683,11 +727,13 @@ export function decodeDeltaPayload(raw: Record<string, unknown>, now: Date = new
   if (!isRecord(raw.project) || !Array.isArray(raw.variants)) return { status: 'invalid', error: 'not a delta payload' };
   const iso = now.toISOString();
   const meta = raw.project;
+  const legacy = typeof raw.v === 'number' && raw.v < CURRENT_SCHEMA_VERSION;
+  const baseRevision = legacy ? FROZEN_SEED_REVISION : SEED_REVISION;
   try {
-    const seedProject = createForslagD(iso);
+    const seedProject: Record<string, unknown> = legacy ? frozenSchema1Project(iso) : (createForslagD(iso) as unknown as Record<string, unknown>);
     const variants = raw.variants.map((d) => {
       if (!isRecord(d) || typeof d.id !== 'string') throw new Error('variant delta without id');
-      return applyVariantDelta(createForslagDVariant(iso), d as unknown as VariantDelta, iso);
+      return applyVariantDelta(legacy ? frozenSchema1Variant(iso) : createForslagDVariant(iso), d as unknown as VariantDelta, iso);
     });
     const doc: Record<string, unknown> = {
       schemaVersion: typeof raw.v === 'number' ? raw.v : CURRENT_SCHEMA_VERSION,
@@ -702,7 +748,7 @@ export function decodeDeltaPayload(raw: Record<string, unknown>, now: Date = new
     };
     if (typeof meta.basedOnProjectId === 'string') doc.basedOnProjectId = meta.basedOnProjectId;
     const result = migrateRaw(doc);
-    return result.status === 'ok' && seedRevision < SEED_REVISION ? { ...result, rebased: true } : result;
+    return result.status === 'ok' && seedRevision < baseRevision ? { ...result, rebased: true } : result;
   } catch (e) {
     return { status: 'invalid', error: errorMessage(e) };
   }
@@ -858,6 +904,8 @@ export interface AutosaveController {
  * At start the stored document counts as this tab's own; when there is none the project is written right away
  * (so its id survives a reload). A stored document with another key than the one this tab last wrote or adopted
  * belongs to another tab: it is reported once (`onExternalChange`) and never overwritten (see `adopt`).
+ * Before the first write, a stored document of an older schema version (a phase-1 project, migrated in memory) is
+ * copied to KEYS.projectBackupV1 (`backupOlderAutosave`).
  * Without storage (localStorage blocked) it does nothing and never calls `onSaveError`: the start-up notice
  * 'storage-unavailable' already says that nothing is saved, so edits must not add a "lite plass?" banner on top.
  */
@@ -870,6 +918,8 @@ export function startAutosave(store: AppStore, opts: AutosaveOptions): AutosaveC
   let lastPrefs = JSON.stringify(pickUiPrefs(store.getState().ui));
   let timer: ReturnType<typeof setTimeout> | null = null;
   let reportedExternal: string | null = null;
+  /** Whether the stored document was checked for an older schema (and backed up) before this tab's first write. */
+  let checkedOlder = false;
 
   const reportExternal = (p: Project) => {
     const key = projectKey(p);
@@ -895,6 +945,11 @@ export function startAutosave(store: AppStore, opts: AutosaveOptions): AutosaveC
       const other = loadAutosave(storage);
       if (other.status === 'ok') reportExternal(other.project);
       return false;
+    }
+    if (!checkedOlder) {
+      // The first write replaces what was stored at start-up: keep a phase-1 (older schema) document first.
+      backupOlderAutosave(storage);
+      checkedOlder = true;
     }
     if (saveAutosave(storage, project)) {
       lastSaved = project;

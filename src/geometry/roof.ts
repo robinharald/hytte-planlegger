@@ -45,7 +45,7 @@
  *    rectangular roof (model L-shapes as two blocks).
  *  - Pitch is clamped to [0°, 85°]; the ridge is never below the eave (drive 'height' with a lower ridge → pitch 0).
  *    Degenerate blocks (< 3 points, zero area) give an empty roof (no slopes, no outline).
- *  - Parts: each part polygon (clipped to the block; the uncovered remainder is an implicit part with `block.isNew`)
+ *  - Parts: each part polygon (clipped to the block; the uncovered remainder is an implicit part that is new)
  *    is grown by pushing its edges that lie on the block boundary 100 m outwards (mitre joins), so overhangs and
  *    extensions belong to the part they continue. Earlier parts win where grown regions overlap; leftovers take
  *    `block.isNew`. Pieces with the same isNew are merged (existing pieces first, then new). Polygons with holes are
@@ -726,7 +726,8 @@ function partRegions(block: Block, points: Vec2[]): PartRegion[] | null {
         }
       }
       for (const poly of differencePolygons([blockPoly], block.parts.map((p) => p.polygon))) {
-        regions.push({ poly: growPart(poly[0], blockPoly), isNew: block.isNew });
+        // The implicit remainder of a block with explicit parts is new work (docs/phase2-plan.md §3.4).
+        regions.push({ poly: growPart(poly[0], blockPoly), isNew: true });
       }
       return regions;
     },

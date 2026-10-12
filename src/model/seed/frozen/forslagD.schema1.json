@@ -1,0 +1,2132 @@
+{
+  "schemaVersion": 1,
+  "id": "hytte-merkesvatnet",
+  "name": "Hytta ved Merkesvatnet",
+  "createdAt": "2026-10-11T12:00:00.000Z",
+  "updatedAt": "2026-10-11T12:00:00.000Z",
+  "seedRevision": 3,
+  "site": {
+    "originLatLon": {
+      "lat": 68.61305,
+      "lon": 14.968157
+    },
+    "planNorthBearing": 106,
+    "floorElevation": 161,
+    "waterLevel": 152,
+    "terrainId": "merkesvatnet-2026-10",
+    "groundWorks": [
+      {
+        "id": "gw-tomt",
+        "polygon": [
+          [4.5, -5.1],
+          [23.7, -5.1],
+          [23.7, 12.6],
+          [4.5, 12.6]
+        ],
+        "maxZ": -0.45
+      }
+    ],
+    "timezone": "Europe/Oslo",
+    "trees": [
+      {
+        "id": "tree-1",
+        "position": [-4, 4],
+        "height": 5,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-2",
+        "position": [-6, 12],
+        "height": 6,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-3",
+        "position": [-3, -8],
+        "height": 5,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-4",
+        "position": [33, 12],
+        "height": 6,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-5",
+        "position": [29, 22],
+        "height": 7,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-6",
+        "position": [25, 26],
+        "height": 5,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-7",
+        "position": [2, 24],
+        "height": 6,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-8",
+        "position": [13, 25],
+        "height": 5.5,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-9",
+        "position": [-9, 30],
+        "height": 6,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-10",
+        "position": [32, -10],
+        "height": 5,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-11",
+        "position": [36, -16],
+        "height": 6.5,
+        "kind": "bjork"
+      },
+      {
+        "id": "tree-12",
+        "position": [-10, -2],
+        "height": 5.5,
+        "kind": "bjork"
+      }
+    ]
+  },
+  "variants": [
+    {
+      "id": "forslag-d",
+      "name": "Forslag D",
+      "description": "Stua forlenget 4 m mot øst, ny tverrfløy 4,8 × 8,2 m med soverom, bad, WC, pantry og badstue, ny bod og ved i enden av bod-fløya, terrasse med badestamp.",
+      "createdAt": "2026-10-11T12:00:00.000Z",
+      "levels": [
+        {
+          "id": "lower",
+          "name": "Underetasje (soverom)",
+          "storeyId": "ground",
+          "elevation": -1,
+          "ceilingHeight": 2.3,
+          "floorThickness": 0
+        },
+        {
+          "id": "main",
+          "name": "Hovedplan",
+          "storeyId": "ground",
+          "elevation": 0,
+          "floorThickness": 0
+        },
+        {
+          "id": "loft",
+          "name": "Hems",
+          "storeyId": "loft",
+          "elevation": 1.47,
+          "floorThickness": 0.17
+        }
+      ],
+      "blocks": [
+        {
+          "id": "blk-main",
+          "name": "Hytta, hoveddel",
+          "polygon": [
+            {
+              "id": "v-main-sw",
+              "p": [0, 0]
+            },
+            {
+              "id": "v-main-se",
+              "p": [16, 0]
+            },
+            {
+              "id": "v-main-ne",
+              "p": [16, 6.2]
+            },
+            {
+              "id": "v-main-nw",
+              "p": [0, 6.2]
+            }
+          ],
+          "levelId": "main",
+          "wall": {
+            "thickness": 0.27,
+            "outerOffset": 0.11
+          },
+          "eaveHeight": 2.22,
+          "floorZones": [
+            {
+              "id": "zone-lower",
+              "levelId": "lower",
+              "kind": "replace",
+              "polygon": [
+                [0, 0],
+                [5.1, 0],
+                [5.1, 2.18],
+                [4.3, 2.18],
+                [4.3, 4.24],
+                [5.05, 4.24],
+                [5.05, 6.2],
+                [0, 6.2]
+              ]
+            },
+            {
+              "id": "zone-loft",
+              "levelId": "loft",
+              "kind": "add",
+              "polygon": [
+                [0, 0],
+                [5.1, 0],
+                [5.1, 2.18],
+                [3.85, 2.18],
+                [3.85, 3.1],
+                [3.8, 3.1],
+                [3.8, 4.24],
+                [5.05, 4.24],
+                [5.05, 6.2],
+                [0, 6.2]
+              ]
+            }
+          ],
+          "parts": [
+            {
+              "id": "part-main-old",
+              "name": "Eksisterende",
+              "polygon": [
+                [0, 0],
+                [12, 0],
+                [12, 6.2],
+                [0, 6.2]
+              ],
+              "isNew": false
+            },
+            {
+              "id": "part-stue-ext",
+              "name": "Stue forlenget",
+              "polygon": [
+                [12, 0],
+                [16, 0],
+                [16, 6.2],
+                [12, 6.2]
+              ],
+              "isNew": true
+            }
+          ],
+          "isNew": false,
+          "roof": {
+            "type": "gable",
+            "ridgeAxis": "x",
+            "drive": "pitch",
+            "pitchDeg": 28,
+            "ridgeHeight": 3.87,
+            "thickness": 0.31,
+            "overhangEave": 0.51,
+            "overhangGable": 0.51,
+            "material": "turf"
+          },
+          "junctions": [
+            {
+              "otherBlockId": "blk-glass",
+              "policy": "open"
+            },
+            {
+              "otherBlockId": "blk-bod",
+              "policy": "wall"
+            },
+            {
+              "otherBlockId": "blk-wing",
+              "policy": "open"
+            }
+          ]
+        },
+        {
+          "id": "blk-glass",
+          "name": "Glassutbygg (leseskrok)",
+          "polygon": [
+            {
+              "id": "v-glass-sw",
+              "p": [5, -2]
+            },
+            {
+              "id": "v-glass-se",
+              "p": [9, -2]
+            },
+            {
+              "id": "v-glass-ne",
+              "p": [9, 0]
+            },
+            {
+              "id": "v-glass-nw",
+              "p": [5, 0]
+            }
+          ],
+          "levelId": "main",
+          "wall": {
+            "thickness": 0.27,
+            "outerOffset": 0.11
+          },
+          "eaveHeight": 2.22,
+          "floorZones": [],
+          "parts": [],
+          "isNew": false,
+          "roof": {
+            "type": "gable",
+            "ridgeAxis": "y",
+            "drive": "pitch",
+            "pitchDeg": 28,
+            "ridgeHeight": 3.28,
+            "thickness": 0.31,
+            "overhangEave": 0.51,
+            "overhangGable": 0.51,
+            "material": "turf"
+          },
+          "junctions": []
+        },
+        {
+          "id": "blk-bod",
+          "name": "Bod-fløy",
+          "polygon": [
+            {
+              "id": "v-bod-sw",
+              "p": [5, 6.2]
+            },
+            {
+              "id": "v-bod-se",
+              "p": [9, 6.2]
+            },
+            {
+              "id": "v-bod-ne",
+              "p": [9, 12.1]
+            },
+            {
+              "id": "v-bod-nw",
+              "p": [5, 12.1]
+            }
+          ],
+          "levelId": "main",
+          "wall": {
+            "thickness": 0.27,
+            "outerOffset": 0.11
+          },
+          "eaveHeight": 2.22,
+          "floorZones": [],
+          "parts": [
+            {
+              "id": "part-bod-old",
+              "name": "Bod-fløy i dag",
+              "polygon": [
+                [5, 6.2],
+                [9, 6.2],
+                [9, 10.1],
+                [5, 10.1]
+              ],
+              "isNew": false
+            },
+            {
+              "id": "part-bod-new",
+              "name": "Ny bod + ved",
+              "polygon": [
+                [5, 10.1],
+                [9, 10.1],
+                [9, 12.1],
+                [5, 12.1]
+              ],
+              "isNew": true
+            }
+          ],
+          "isNew": false,
+          "roof": {
+            "type": "gable",
+            "ridgeAxis": "y",
+            "drive": "pitch",
+            "pitchDeg": 28,
+            "ridgeHeight": 3.28,
+            "thickness": 0.31,
+            "overhangEave": 0.51,
+            "overhangGable": 0.51,
+            "material": "turf"
+          },
+          "junctions": []
+        },
+        {
+          "id": "blk-wing",
+          "name": "Ny tverrfløy",
+          "polygon": [
+            {
+              "id": "v-wing-sw",
+              "p": [16, -2]
+            },
+            {
+              "id": "v-wing-se",
+              "p": [20.8, -2]
+            },
+            {
+              "id": "v-wing-ne",
+              "p": [20.8, 6.2]
+            },
+            {
+              "id": "v-wing-nw",
+              "p": [16, 6.2]
+            }
+          ],
+          "levelId": "main",
+          "wall": {
+            "thickness": 0.27,
+            "outerOffset": 0.11
+          },
+          "eaveHeight": 2.22,
+          "floorZones": [],
+          "parts": [],
+          "isNew": true,
+          "ceilingHeight": 2.4,
+          "roof": {
+            "type": "gable",
+            "ridgeAxis": "y",
+            "drive": "height",
+            "pitchDeg": 34.5,
+            "ridgeHeight": 3.87,
+            "thickness": 0.31,
+            "overhangEave": 0.51,
+            "overhangGable": 0.51,
+            "material": "turf"
+          },
+          "junctions": []
+        }
+      ],
+      "walls": [
+        {
+          "id": "w-104-103",
+          "a": [3.05, 4.24],
+          "b": [3.05, 6.2],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-103-korr",
+          "a": [3.05, 4.24],
+          "b": [5.05, 4.24],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-103-102",
+          "a": [5.05, 4.24],
+          "b": [5.05, 6.2],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "roof"
+        },
+        {
+          "id": "w-104-diag",
+          "a": [2.25, 3.1],
+          "b": [3.05, 4.24],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-104-s",
+          "a": [0, 3.1],
+          "b": [2.25, 3.1],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-105-diag",
+          "a": [3.1, 2.18],
+          "b": [2.25, 3.1],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-105-106",
+          "a": [3.1, 0],
+          "b": [3.1, 2.18],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-106-korr",
+          "a": [3.1, 2.18],
+          "b": [5.1, 2.18],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "roof"
+        },
+        {
+          "id": "w-106-stue",
+          "a": [5.1, 0],
+          "b": [5.1, 2.18],
+          "thickness": 0.12,
+          "levelId": "lower",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "roof"
+        },
+        {
+          "id": "w-korr-stue",
+          "a": [5.1, 2.18],
+          "b": [6.97, 2.18],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "fixed",
+          "height": 2.5
+        },
+        {
+          "id": "w-peis-w",
+          "a": [6.97, 2.18],
+          "b": [6.97, 3.1],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "fixed",
+          "height": 2.5
+        },
+        {
+          "id": "w-peis-n",
+          "a": [6.97, 3.1],
+          "b": [9, 3.1],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "fixed",
+          "height": 2.5
+        },
+        {
+          "id": "w-vf-korr",
+          "a": [5.05, 4.24],
+          "b": [9, 4.24],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "fixed",
+          "height": 2.5
+        },
+        {
+          "id": "w-vf-kjk",
+          "a": [8.35, 4.24],
+          "b": [8.35, 6.2],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "fixed",
+          "height": 2.5
+        },
+        {
+          "id": "w-mellom-boder",
+          "a": [5, 7.62],
+          "b": [9, 7.62],
+          "thickness": 0.27,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "exterior-old",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-do-109",
+          "a": [6.2, 7.62],
+          "b": [6.2, 10.1],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-109-108",
+          "a": [7.6, 7.62],
+          "b": [7.6, 10.1],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-bod-gavl",
+          "a": [5, 10.1],
+          "b": [9, 10.1],
+          "thickness": 0.27,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "exterior-old",
+          "heightMode": "auto",
+          "faceLeft": 0.11,
+          "faceRight": 0.16
+        },
+        {
+          "id": "dv-leseskrok",
+          "a": [5, 0],
+          "b": [9, 0],
+          "thickness": 0,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "divider",
+          "heightMode": "auto"
+        },
+        {
+          "id": "dv-kjk-w",
+          "a": [9, 2.2],
+          "b": [9, 4.24],
+          "thickness": 0,
+          "levelId": "main",
+          "status": "existing",
+          "kind": "divider",
+          "heightMode": "auto"
+        },
+        {
+          "id": "dv-stue-n",
+          "a": [9, 2.2],
+          "b": [16, 2.2],
+          "thickness": 0,
+          "levelId": "main",
+          "status": "new",
+          "kind": "divider",
+          "heightMode": "auto"
+        },
+        {
+          "id": "dv-kjk-e",
+          "a": [12, 2.2],
+          "b": [12, 6.2],
+          "thickness": 0,
+          "levelId": "main",
+          "status": "new",
+          "kind": "divider",
+          "heightMode": "auto"
+        },
+        {
+          "id": "dv-pass-n",
+          "a": [12, 3.4],
+          "b": [16, 3.4],
+          "thickness": 0,
+          "levelId": "main",
+          "status": "new",
+          "kind": "divider",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-bod-ved",
+          "a": [5, 11.1],
+          "b": [9, 11.1],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "new",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-wing-w",
+          "a": [16, 0],
+          "b": [16, 6.2],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "new",
+          "kind": "interior",
+          "heightMode": "roof"
+        },
+        {
+          "id": "w-gang-s",
+          "a": [16, 2.2],
+          "b": [20.8, 2.2],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "new",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-gang-n",
+          "a": [16, 3.4],
+          "b": [20.8, 3.4],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "new",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-pantry-wc",
+          "a": [17.4, 0],
+          "b": [17.4, 2.2],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "new",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-sauna-n",
+          "a": [16, 0],
+          "b": [18.6, 0],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "new",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "w-wc-bad",
+          "a": [18.6, -2],
+          "b": [18.6, 2.2],
+          "thickness": 0.12,
+          "levelId": "main",
+          "status": "new",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "lw-split",
+          "a": [0, 3.1],
+          "b": [3.85, 3.1],
+          "thickness": 0.12,
+          "levelId": "loft",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "lw-landing",
+          "a": [2.65, 2.18],
+          "b": [2.65, 3.1],
+          "thickness": 0.12,
+          "levelId": "loft",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "lw-106-top",
+          "a": [2.6, 2.18],
+          "b": [3.1, 2.18],
+          "thickness": 0.12,
+          "levelId": "loft",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "lw-hems2-s",
+          "a": [3.8, 4.24],
+          "b": [5.05, 4.24],
+          "thickness": 0.12,
+          "levelId": "loft",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        },
+        {
+          "id": "lw-hems2-w",
+          "a": [3.8, 3.1],
+          "b": [3.8, 4.24],
+          "thickness": 0.12,
+          "levelId": "loft",
+          "status": "existing",
+          "kind": "interior",
+          "heightMode": "auto"
+        }
+      ],
+      "openings": [
+        {
+          "id": "win-105-s",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-sw"
+          },
+          "offset": 1.73,
+          "width": 1.11,
+          "height": 1.21,
+          "sill": 0.8,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-106-s",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-sw"
+          },
+          "offset": 3.68,
+          "width": 1.1,
+          "height": 1.2,
+          "sill": 0.8,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "door-stue-s",
+          "type": "glassDoor",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-sw"
+          },
+          "offset": 10.5,
+          "width": 1.6,
+          "height": 2.05,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "leaves": 2,
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "win-ext-s1",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-sw"
+          },
+          "offset": 13.2,
+          "width": 1.1,
+          "height": 1.2,
+          "sill": 0.8,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-ext-s2",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-sw"
+          },
+          "offset": 14.8,
+          "width": 1.1,
+          "height": 1.2,
+          "sill": 0.8,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-bad-n",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-ne"
+          },
+          "offset": 12.49,
+          "width": 0.61,
+          "height": 1.21,
+          "sill": 0.8,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-kjk-n",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-ne"
+          },
+          "offset": 5.41,
+          "width": 1.11,
+          "height": 1.21,
+          "sill": 0.8,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "door-mellom-vf",
+          "type": "door",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-ne"
+          },
+          "offset": 8.99,
+          "width": 0.91,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "left"
+          }
+        },
+        {
+          "id": "door-spis-n",
+          "type": "glassDoor",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-ne"
+          },
+          "offset": 3.3,
+          "width": 0.9,
+          "height": 2,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "win-spis-n",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-ne"
+          },
+          "offset": 1.4,
+          "width": 1.1,
+          "height": 1.2,
+          "sill": 0.8,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-104-w",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-nw"
+          },
+          "offset": 2.39,
+          "width": 1.11,
+          "height": 1.21,
+          "sill": 0.8,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-hems-w1",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-nw"
+          },
+          "offset": 3.76,
+          "width": 1.11,
+          "height": 1.01,
+          "sill": 0.53,
+          "levelId": "loft",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-hems-w2",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-nw"
+          },
+          "offset": 2.44,
+          "width": 1.11,
+          "height": 1.01,
+          "sill": 0.53,
+          "levelId": "loft",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-glass-s1",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-glass",
+            "edgeId": "v-glass-sw"
+          },
+          "offset": 1.07,
+          "width": 1.61,
+          "height": 1.61,
+          "sill": 0.4,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [3, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-glass-s2",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-glass",
+            "edgeId": "v-glass-sw"
+          },
+          "offset": 2.94,
+          "width": 1.61,
+          "height": 1.61,
+          "sill": 0.4,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [3, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-glass-e",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-glass",
+            "edgeId": "v-glass-se"
+          },
+          "offset": 1.04,
+          "width": 1.61,
+          "height": 1.61,
+          "sill": 0.4,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [3, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-glass-w",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-glass",
+            "edgeId": "v-glass-nw"
+          },
+          "offset": 0.96,
+          "width": 1.61,
+          "height": 1.61,
+          "sill": 0.4,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [3, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "door-green-e",
+          "type": "door",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-bod",
+            "edgeId": "v-bod-se"
+          },
+          "offset": 0.69,
+          "width": 0.91,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "green",
+            "leaf": "green"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "door-teknisk",
+          "type": "door",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-bod",
+            "edgeId": "v-bod-se"
+          },
+          "offset": 2.7,
+          "width": 0.8,
+          "height": 2,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "door-bod-ny",
+          "type": "door",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-bod",
+            "edgeId": "v-bod-se"
+          },
+          "offset": 4.4,
+          "width": 0.9,
+          "height": 2,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "green",
+            "leaf": "green"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "open-ved",
+          "type": "opening",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-bod",
+            "edgeId": "v-bod-se"
+          },
+          "offset": 5.4,
+          "width": 1,
+          "height": 2.22,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "fullHeight": true
+        },
+        {
+          "id": "door-green-w",
+          "type": "door",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-bod",
+            "edgeId": "v-bod-nw"
+          },
+          "offset": 5.21,
+          "width": 0.91,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "green",
+            "leaf": "green"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "end",
+            "side": "right"
+          }
+        },
+        {
+          "id": "win-do-w",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-bod",
+            "edgeId": "v-bod-nw"
+          },
+          "offset": 3.28,
+          "width": 0.61,
+          "height": 1.21,
+          "sill": 0.8,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "existing"
+        },
+        {
+          "id": "win-badstue-s",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-sw"
+          },
+          "offset": 1.3,
+          "width": 1.2,
+          "height": 0.9,
+          "sill": 0.7,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-gavl-s",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-sw"
+          },
+          "offset": 2.4,
+          "width": 0.8,
+          "height": 0.7,
+          "sill": 2.75,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-bad-s",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-sw"
+          },
+          "offset": 4.15,
+          "width": 0.6,
+          "height": 0.6,
+          "sill": 1.1,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-bad-e1",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-se"
+          },
+          "offset": 1.7,
+          "width": 0.6,
+          "height": 0.6,
+          "sill": 1.1,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-bad-e2",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-se"
+          },
+          "offset": 3.5,
+          "width": 0.5,
+          "height": 0.6,
+          "sill": 1.3,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "door-gang-e",
+          "type": "glassDoor",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-se"
+          },
+          "offset": 4.8,
+          "width": 1,
+          "height": 2.05,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "win-sov-n",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-ne"
+          },
+          "offset": 2.8,
+          "width": 1.6,
+          "height": 1.3,
+          "sill": 0.5,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-gavl-n",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-ne"
+          },
+          "offset": 2.4,
+          "width": 0.8,
+          "height": 0.7,
+          "sill": 2.75,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-badstue-w",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-wing",
+            "edgeId": "v-wing-nw"
+          },
+          "offset": 7.2,
+          "width": 1,
+          "height": 0.9,
+          "sill": 0.7,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "new"
+        },
+        {
+          "id": "win-stue-s-old",
+          "type": "window",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-sw"
+          },
+          "offset": 10.36,
+          "width": 1.11,
+          "height": 1.21,
+          "sill": 0.8,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white",
+            "mullions": [2, 2]
+          },
+          "status": "removed"
+        },
+        {
+          "id": "door-106-old",
+          "type": "door",
+          "host": {
+            "kind": "blockEdge",
+            "blockId": "blk-main",
+            "edgeId": "v-main-sw"
+          },
+          "offset": 3.68,
+          "width": 0.91,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "removed",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "d-bad",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-103-korr"
+          },
+          "offset": 0.56,
+          "width": 0.81,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "left"
+          }
+        },
+        {
+          "id": "d-104",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-104-diag"
+          },
+          "offset": 0.53,
+          "width": 0.81,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "end",
+            "side": "left"
+          }
+        },
+        {
+          "id": "d-105",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-105-diag"
+          },
+          "offset": 0.71,
+          "width": 0.81,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "left"
+          }
+        },
+        {
+          "id": "d-106",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-106-korr"
+          },
+          "offset": 0.58,
+          "width": 0.81,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "lower",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "o-vf",
+          "type": "opening",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-vf-korr"
+          },
+          "offset": 1.85,
+          "width": 1.2,
+          "height": 2.1,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing"
+        },
+        {
+          "id": "d-do",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-mellom-boder"
+          },
+          "offset": 0.64,
+          "width": 0.81,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "left"
+          }
+        },
+        {
+          "id": "d-bod109",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-mellom-boder"
+          },
+          "offset": 2.01,
+          "width": 0.91,
+          "height": 2.01,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "left"
+          }
+        },
+        {
+          "id": "o-stue-gang",
+          "type": "opening",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-wing-w"
+          },
+          "offset": 2.8,
+          "width": 1.2,
+          "height": 2.1,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new"
+        },
+        {
+          "id": "d-pantry",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-gang-s"
+          },
+          "offset": 0.7,
+          "width": 0.7,
+          "height": 2,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "d-wc",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-gang-s"
+          },
+          "offset": 2,
+          "width": 0.7,
+          "height": 2,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "d-bad2",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-gang-s"
+          },
+          "offset": 3.5,
+          "width": 0.8,
+          "height": 2,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "end",
+            "side": "right"
+          }
+        },
+        {
+          "id": "d-sov-ny",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-gang-n"
+          },
+          "offset": 1.3,
+          "width": 0.8,
+          "height": 2,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "left"
+          }
+        },
+        {
+          "id": "d-badstue",
+          "type": "saunaDoor",
+          "host": {
+            "kind": "wall",
+            "wallId": "w-wc-bad"
+          },
+          "offset": 1,
+          "width": 0.7,
+          "height": 1.9,
+          "sill": 0,
+          "levelId": "main",
+          "style": {
+            "frameColour": "wood"
+          },
+          "status": "new",
+          "swing": {
+            "hinge": "start",
+            "side": "right"
+          }
+        },
+        {
+          "id": "d-hems2",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "lw-split"
+          },
+          "offset": 3.24,
+          "width": 0.81,
+          "height": 1.81,
+          "sill": 0,
+          "levelId": "loft",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "end",
+            "side": "left"
+          }
+        },
+        {
+          "id": "d-hems1",
+          "type": "door",
+          "host": {
+            "kind": "wall",
+            "wallId": "lw-landing"
+          },
+          "offset": 0.48,
+          "width": 0.71,
+          "height": 1.81,
+          "sill": 0,
+          "levelId": "loft",
+          "style": {
+            "frameColour": "white"
+          },
+          "status": "existing",
+          "swing": {
+            "hinge": "start",
+            "side": "left"
+          }
+        }
+      ],
+      "rooms": [
+        {
+          "id": "room-sov1",
+          "name": "Soverom 1",
+          "type": "soverom",
+          "levelId": "lower",
+          "anchor": [1.5, 5.2]
+        },
+        {
+          "id": "room-bad",
+          "name": "Bad",
+          "type": "bad",
+          "levelId": "lower",
+          "anchor": [4.05, 5.2]
+        },
+        {
+          "id": "room-sov2",
+          "name": "Soverom 2",
+          "type": "soverom",
+          "levelId": "lower",
+          "anchor": [1.2, 1.4]
+        },
+        {
+          "id": "room-sov3",
+          "name": "Soverom 3",
+          "type": "soverom",
+          "levelId": "lower",
+          "anchor": [4.1, 1.1]
+        },
+        {
+          "id": "room-korr-nedre",
+          "name": "Korridor (nedre)",
+          "type": "gang",
+          "levelId": "lower",
+          "anchor": [3.6, 3.6]
+        },
+        {
+          "id": "room-korr-ovre",
+          "name": "Korridor (øvre)",
+          "type": "gang",
+          "levelId": "main",
+          "anchor": [5.9, 3.6]
+        },
+        {
+          "id": "room-vindfang",
+          "name": "Vindfang",
+          "type": "vindfang",
+          "levelId": "main",
+          "anchor": [6.7, 5.3]
+        },
+        {
+          "id": "room-leseskrok",
+          "name": "Leseskrok",
+          "type": "leseskrok",
+          "levelId": "main",
+          "anchor": [7, -1]
+        },
+        {
+          "id": "room-stue",
+          "name": "Stue",
+          "type": "stue",
+          "levelId": "main",
+          "anchor": [13.9, 1]
+        },
+        {
+          "id": "room-kjokken",
+          "name": "Kjøkken",
+          "type": "kjokken",
+          "levelId": "main",
+          "anchor": [10.6, 4.9]
+        },
+        {
+          "id": "room-passasje",
+          "name": "Passasje",
+          "type": "gang",
+          "levelId": "main",
+          "anchor": [14, 2.8]
+        },
+        {
+          "id": "room-spiseplass",
+          "name": "Spiseplass",
+          "type": "spiseplass",
+          "levelId": "main",
+          "anchor": [14, 4.9]
+        },
+        {
+          "id": "room-mellombygg",
+          "name": "Mellombygg",
+          "type": "vindfang",
+          "levelId": "main",
+          "anchor": [7, 6.9]
+        },
+        {
+          "id": "room-do",
+          "name": "Do",
+          "type": "wc",
+          "levelId": "main",
+          "anchor": [5.6, 8.8]
+        },
+        {
+          "id": "room-bod",
+          "name": "Bod",
+          "type": "bod",
+          "levelId": "main",
+          "anchor": [6.9, 8.8]
+        },
+        {
+          "id": "room-teknisk",
+          "name": "Teknisk / vask",
+          "type": "teknisk",
+          "levelId": "main",
+          "anchor": [8.3, 8.8],
+          "note": "Tidligere bod 108"
+        },
+        {
+          "id": "room-bod-ny",
+          "name": "Bod (ny)",
+          "type": "bod",
+          "levelId": "main",
+          "anchor": [7, 10.6]
+        },
+        {
+          "id": "room-ved",
+          "name": "Ved",
+          "type": "bod",
+          "levelId": "main",
+          "anchor": [7, 11.6],
+          "floorMaterial": "deck",
+          "note": "Åpent mot terrassen"
+        },
+        {
+          "id": "room-gang",
+          "name": "Gang",
+          "type": "gang",
+          "levelId": "main",
+          "anchor": [18.4, 2.8]
+        },
+        {
+          "id": "room-sov-ny",
+          "name": "Soverom (ny fløy)",
+          "type": "soverom",
+          "levelId": "main",
+          "anchor": [18.4, 4.8]
+        },
+        {
+          "id": "room-pantry",
+          "name": "Pantry",
+          "type": "pantry",
+          "levelId": "main",
+          "anchor": [16.7, 1.1]
+        },
+        {
+          "id": "room-wc",
+          "name": "WC",
+          "type": "wc",
+          "levelId": "main",
+          "anchor": [18, 1.1]
+        },
+        {
+          "id": "room-hovedbad",
+          "name": "Hovedbad",
+          "type": "bad",
+          "levelId": "main",
+          "anchor": [19.7, 0.3]
+        },
+        {
+          "id": "room-badstue",
+          "name": "Badstue",
+          "type": "badstue",
+          "levelId": "main",
+          "anchor": [17.3, -1]
+        },
+        {
+          "id": "room-hems1",
+          "name": "Hems 1 (soverom)",
+          "type": "hems",
+          "levelId": "loft",
+          "anchor": [2.5, 1.1]
+        },
+        {
+          "id": "room-hems2",
+          "name": "Hems 2 (soverom)",
+          "type": "hems",
+          "levelId": "loft",
+          "anchor": [2, 5]
+        },
+        {
+          "id": "room-repos",
+          "name": "Trapperepos",
+          "type": "gang",
+          "levelId": "loft",
+          "anchor": [3.25, 2.6]
+        }
+      ],
+      "furniture": [],
+      "outdoor": {
+        "decks": [
+          {
+            "id": "deck-terrasse",
+            "polygon": [
+              [9, -4.6],
+              [23.2, -4.6],
+              [23.2, 12.1],
+              [9, 12.1],
+              [9, 6.2],
+              [20.8, 6.2],
+              [20.8, -2],
+              [16, -2],
+              [16, 0],
+              [9, 0]
+            ],
+            "topHeight": -0.02,
+            "isNew": true
+          }
+        ],
+        "railings": [
+          {
+            "id": "rail-terrasse",
+            "deckId": "deck-terrasse",
+            "path": [
+              [9, -2],
+              [9, -4.6],
+              [23.2, -4.6],
+              [23.2, 12.1],
+              [9, 12.1]
+            ],
+            "height": 1.05,
+            "style": "glass",
+            "gaps": [
+              {
+                "from": 5.2,
+                "to": 6.6,
+                "steps": true
+              },
+              {
+                "from": 23.5,
+                "to": 24.9,
+                "steps": true
+              },
+              {
+                "from": 29.8,
+                "to": 31.2,
+                "steps": true
+              }
+            ],
+            "isNew": true
+          }
+        ],
+        "hotTubs": [
+          {
+            "id": "tub-1",
+            "centre": [21.7, -3.2],
+            "diameter": 2,
+            "isNew": true
+          }
+        ]
+      },
+      "structure": [
+        {
+          "id": "post-1",
+          "kind": "post",
+          "position": [5.1, 3.1],
+          "size": 0.11,
+          "bottom": 0,
+          "top": 3.5,
+          "isNew": false
+        },
+        {
+          "id": "post-2",
+          "kind": "post",
+          "position": [8.95, 3.1],
+          "size": 0.11,
+          "bottom": 0,
+          "top": 3.5,
+          "isNew": false
+        },
+        {
+          "id": "post-3",
+          "kind": "post",
+          "position": [11.9, 3.1],
+          "size": 0.11,
+          "bottom": 0,
+          "top": 3.5,
+          "isNew": false
+        },
+        {
+          "id": "post-ved",
+          "kind": "post",
+          "position": [8.93, 12.03],
+          "size": 0.14,
+          "bottom": 0,
+          "top": 2.22,
+          "isNew": true
+        },
+        {
+          "id": "beam-ridge-old",
+          "kind": "beam",
+          "a": [0.03, 3.1],
+          "b": [11.97, 3.1],
+          "width": 0.12,
+          "bottom": 3.5,
+          "top": 3.86,
+          "isNew": false
+        },
+        {
+          "id": "beam-ridge-new",
+          "kind": "beam",
+          "a": [11.97, 3.1],
+          "b": [18.4, 3.1],
+          "width": 0.12,
+          "bottom": 3.5,
+          "top": 3.86,
+          "isNew": true
+        },
+        {
+          "id": "tie-1",
+          "kind": "beam",
+          "a": [5.04, 3.1],
+          "b": [7.01, 3.1],
+          "width": 0.12,
+          "bottom": 2.3,
+          "top": 2.5,
+          "isNew": false
+        },
+        {
+          "id": "tie-2",
+          "kind": "beam",
+          "a": [8.89, 3.1],
+          "b": [11.97, 3.1],
+          "width": 0.12,
+          "bottom": 2.3,
+          "top": 2.5,
+          "isNew": false
+        },
+        {
+          "id": "tie-3",
+          "kind": "beam",
+          "a": [8.95, 0.07],
+          "b": [8.95, 3.15],
+          "width": 0.12,
+          "bottom": 2.3,
+          "top": 2.5,
+          "isNew": false
+        },
+        {
+          "id": "chimney-1",
+          "kind": "chimney",
+          "min": [7.08, 2.48],
+          "max": [7.63, 3.03],
+          "bottom": 0,
+          "top": 5.2,
+          "isNew": false
+        },
+        {
+          "id": "stair-loft",
+          "kind": "stair",
+          "min": [3.85, 2.24],
+          "max": [6.1, 3.04],
+          "fromLevelId": "main",
+          "toLevelId": "loft",
+          "upDirection": "W",
+          "isNew": false
+        },
+        {
+          "id": "stair-level",
+          "kind": "stair",
+          "min": [4.3, 3.17],
+          "max": [5.55, 4.17],
+          "fromLevelId": "lower",
+          "toLevelId": "main",
+          "upDirection": "E",
+          "isNew": false
+        }
+      ],
+      "settings": {
+        "defaultExteriorWall": {
+          "thickness": 0.27,
+          "outerOffset": 0.11
+        },
+        "defaultInteriorThickness": 0.12,
+        "areaLimit": null
+      }
+    }
+  ],
+  "activeVariantId": "forslag-d"
+}

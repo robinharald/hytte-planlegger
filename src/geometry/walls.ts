@@ -17,7 +17,8 @@
  *  - Piece id `${blockId}/${edgeId}/${partId}/${zoneId ?? 'base'}`; if one edge yields the same id twice (a removed
  *    segment between two runs of the same part and zone) the later pieces get `/2`, `/3`, ….
  *  - Implicit part: id `${blockId}-implicit`, name = the block name (with " (resten)" when the block has explicit
- *    parts), isNew = block.isNew. Clipped parts / zones / remainders that fall apart give one entry per polygon
+ *    parts), isNew = true when the block has explicit parts (phase 2: the remainder is new work), else block.isNew
+ *    (`implicitIsNew`). Clipped parts / zones / remainders that fall apart give one entry per polygon
  *    (same id); holes of clipped polygons are dropped (outer ring only).
  *  - Mitres at block vertices meet the adjacent edge's face lines. A "free" end (next to a removed segment or a
  *    removed adjacent edge) that meets another block's free piece end at the same point (≤ 1 mm, not parallel) is
@@ -231,6 +232,8 @@ export interface EdgeJunction {
   s0: number;
   s1: number;
   otherBlockId: Id;
+  /** Index of the partner block's edge that shares the segment. */
+  otherEdgeIndex: number;
   role: JunctionRole;
   /** The other block's `wall.outerOffset` (its wall face reaches that far into this block when it keeps the wall). */
   otherOuterOffset: number;
@@ -280,8 +283,8 @@ export function resolveJunctions(variant: Variant): Map<Id, EdgeJunction[][]> {
           if (onA === null || onB === null) return;
           const [a0, a1] = overlapRange(e, onA);
           const [b0, b1] = overlapRange(f, onB);
-          out.get(A.id)?.[ei].push({ s0: a0, s1: a1, otherBlockId: B.id, role: roleFor(A.id, policy), otherOuterOffset: B.wall.outerOffset });
-          out.get(B.id)?.[fi].push({ s0: b0, s1: b1, otherBlockId: A.id, role: roleFor(B.id, policy), otherOuterOffset: A.wall.outerOffset });
+          out.get(A.id)?.[ei].push({ s0: a0, s1: a1, otherBlockId: B.id, otherEdgeIndex: fi, role: roleFor(A.id, policy), otherOuterOffset: B.wall.outerOffset });
+          out.get(B.id)?.[fi].push({ s0: b0, s1: b1, otherBlockId: A.id, otherEdgeIndex: ei, role: roleFor(B.id, policy), otherOuterOffset: A.wall.outerOffset });
         });
       });
     }
@@ -443,6 +446,14 @@ function roofHeightsOf(block: Block, levels: Levels): { eaveZ: number; ridgeZ: n
   return { eaveZ, ridgeZ, pitchDeg };
 }
 
+/**
+ * Whether the implicit remainder of a block is new: always for a block with explicit parts (an explicit existing part
+ * never grows, so area added by dragging an edge outwards is new work, docs/phase2-plan.md §3.4), else the block's isNew.
+ */
+export function implicitIsNew(block: Block): boolean {
+  return block.parts.length > 0 || block.isNew;
+}
+
 function implicitPartName(block: Block): string {
   return block.parts.length > 0 ? `${block.name} (resten)` : block.name;
 }
@@ -479,7 +490,7 @@ function deriveBlock(block: Block, junctions: EdgeJunction[][], levels: Levels, 
           () => [],
         ).filter((r) => r !== undefined && r.length >= 3 && area(r) > MIN_AREA);
   for (const ring of remainder) {
-    const part = { id: `${block.id}-implicit`, name: implicitPartName(block), polygon: ring, isNew: block.isNew };
+    const part = { id: `${block.id}-implicit`, name: implicitPartName(block), polygon: ring, isNew: implicitIsNew(block) };
     parts.push({ part, ...outlinesOf(ring, segs), isImplicit: true });
   }
 
@@ -513,6 +524,16 @@ function deriveBlock(block: Block, junctions: EdgeJunction[][], levels: Levels, 
     ...roofHeightsOf(block, levels),
     lowestFloorZ: Math.min(...floors),
     groundZ: minTerrainUnder(outer.length >= 3 ? outer : axis, terrainZ),
+    junctions: junctions.flatMap((list, edgeIndex) =>
+      list.map((j) => ({
+        edgeIndex,
+        s0: j.s0,
+        s1: j.s1,
+        otherBlockId: j.otherBlockId,
+        otherEdgeIndex: j.otherEdgeIndex,
+        role: j.role === 'own' ? ('owner' as const) : j.role === 'other' ? ('removed' as const) : ('open' as const),
+      })),
+    ),
   };
 }
 
@@ -801,7 +822,7 @@ function partAt(db: DerivedBlock, p: Vec2): { id: Id; isNew: boolean } {
       }
     }
   }
-  return best ? { id: best.part.id, isNew: best.part.isNew } : { id: `${db.block.id}-implicit`, isNew: db.block.isNew };
+  return best ? { id: best.part.id, isNew: best.part.isNew } : { id: `${db.block.id}-implicit`, isNew: implicitIsNew(db.block) };
 }
 
 function replaceZoneAt(db: DerivedBlock, p: Vec2): DerivedBlock['zones'][number] | undefined {
@@ -1051,7 +1072,7 @@ function exteriorWalls(bl: BlockLayout, ends: FreeEnd[], ctx: Ctx, usedIds: Set<
       const levelIds = orderLevels(ctx.levels, ids);
       const wall: DerivedWall = {
         id: pieceId(db, layout, spec, usedIds),
-        source: { kind: 'blockEdge', blockId: db.block.id, edgeId: layout.edgeId, partId: spec.partId, zoneId: spec.zoneId },
+        source: { kind: 'blockEdge', blockId: db.block.id, edgeId: layout.edgeId, partId: spec.partId, zoneId: spec.zoneId, s0: spec.s0, s1: spec.s1 },
         a,
         b,
         thickness: db.block.wall.thickness,
@@ -1063,6 +1084,7 @@ function exteriorWalls(bl: BlockLayout, ends: FreeEnd[], ctx: Ctx, usedIds: Set<
         isDivider: false,
         status: spec.isNew ? 'new' : 'existing',
         isNew: spec.isNew,
+        isGhost: false,
         levelId: spec.levelId,
         levelIds,
         storeyIds: storeysOf(ctx.levels, levelIds),
@@ -1155,6 +1177,7 @@ function storedWall(w: Wall, ctx: Ctx): DerivedWall {
     isDivider,
     status: w.status,
     isNew: w.status === 'new',
+    isGhost: w.status === 'removed',
     levelId: w.levelId,
     levelIds,
     storeyIds: storeysOf(ctx.levels, levelIds),
@@ -1243,6 +1266,8 @@ function buildOpening(o: Opening, wall: DerivedWall, offset: number, levelId: Id
     type: o.type,
     status: o.status,
     isNew: o.status === 'new',
+    isGhost: o.status === 'removed',
+    levelId,
     offset,
     width: o.width,
     sillZ,

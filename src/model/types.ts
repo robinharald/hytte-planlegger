@@ -14,9 +14,16 @@
  *  - Ids are stable strings. Seed data uses readable ids ("blk-main"); user-created ids use nanoid.
  *  - The terrain heightmap is NOT part of the project document (too large for links/undo); the site only
  *    references a bundled asset by id.
+ *
+ * Schema history (src/model/migrate.ts):
+ *  - 1: phase 1.
+ *  - 2: phase 2 (docs/phase2-plan.md §2). Decks carry their railing (`Deck.railing`, `noRailingEdges`) and their
+ *       steps (`DeckSteps`, hosted on a deck edge like an opening); deck vertices have stable ids; `Outdoor.railings`
+ *       is gone. Variants gain `notes`, `locked` (the bundled base proposal), `meta` and `ghosts`; blocks gain
+ *       `template`, `templateFrontEdgeId`, `floorMaterial`; furniture items store their `size`.
  */
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export type Vec2 = [number, number];
 export type Vec3 = [number, number, number];
@@ -117,6 +124,31 @@ export interface Variant {
   outdoor: Outdoor;
   structure: StructureElement[];
   settings: VariantSettings;
+  /** Free-text notes about the proposal ("Merknader"). */
+  notes?: string;
+  /** The bundled base proposal (Forslag D): read-only in the UI and in every edit action. Copies are unlocked. */
+  locked?: boolean;
+  /** Shared-store metadata (undefined for the bundled base). */
+  meta?: VariantMeta;
+  /**
+   * Outlines of existing block edges that were moved (status bookkeeping, docs/phase2-plan.md §3.4): drawn dashed
+   * ("Fjernet") in the plan while "Vis hva som er nytt" is on, never in 3D. Undefined = none.
+   */
+  ghosts?: VariantGhost[];
+}
+
+export interface VariantMeta {
+  author?: string;
+  createdBy?: string;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+/** The old place of a moved existing block edge (plan coordinates, axis line). */
+export interface VariantGhost {
+  id: Id;
+  a: Vec2;
+  b: Vec2;
 }
 
 /**
@@ -174,7 +206,8 @@ export interface Block {
   floorZones: FloorZone[];
   /**
    * Sub-areas flagged existing/new for colouring and the area split. Clipped to the block polygon at derive time;
-   * the uncovered remainder is an implicit part with the block's `isNew`. Empty = whole block is `isNew`.
+   * the uncovered remainder is an implicit part that is NEW (`isNew: true`): an explicit existing part never grows, so
+   * a block edge dragged outwards adds new area (docs/phase2-plan.md §3.4). Empty = the whole block is `isNew`.
    */
   parts: BlockPart[];
   isNew: boolean;
@@ -191,6 +224,12 @@ export interface Block {
   roof: Roof;
   /** How edges shared with other blocks are treated. Missing entry = 'wall'. */
   junctions: Junction[];
+  /** Unit template the block was placed from ('vedskjul', 'bod', 'badstue', 'anneks', 'eget'); undefined for drawn blocks. */
+  template?: string;
+  /** Edge (vertex id) that is the template's front (the open front of a woodshed). */
+  templateFrontEdgeId?: Id;
+  /** Floor material of the block's rooms when their Room records do not set one (a woodshed: 'deck'). */
+  floorMaterial?: FloorMaterial;
 }
 
 export interface BlockVertex {
@@ -396,7 +435,7 @@ export interface Room {
 }
 
 // ---------------------------------------------------------------------------
-// Furniture (phase 3; types defined now so the schema is stable)
+// Furniture (phase 2b fills the catalogue; the schema is fixed now)
 // ---------------------------------------------------------------------------
 
 export interface FurnitureItem {
@@ -406,6 +445,11 @@ export interface FurnitureItem {
   position: Vec2; // centre, plan coordinates
   rotationDeg: number; // CCW, 0 = catalogue default orientation
   levelId: Id;
+  /**
+   * Dimensions (m) written at placement from the chosen preset: w along the item's local x, d along its local y,
+   * h the height. Catalogue changes never resize saved items.
+   */
+  size: { w: number; d: number; h: number };
   /** Size variant key when the catalogue item has several (e.g. bed width). */
   sizeVariant?: string;
   colour?: string;
@@ -418,29 +462,37 @@ export interface FurnitureItem {
 
 export interface Outdoor {
   decks: Deck[];
-  railings: Railing[];
   hotTubs: HotTub[];
 }
 
 export interface Deck {
   id: Id;
-  polygon: Vec2[];
+  /**
+   * Outline on the deck's own line, with stable vertex ids (edge i runs from vertex i to i+1; its id is vertex i's
+   * id). May overlap buildings: derive trims it by every block's outer outline (`DerivedDeck.pieces`).
+   */
+  polygon: DeckVertex[];
   /** Top of deck boards, metres relative to the main floor (0 = flush with the main floor). */
   topHeight: number;
   isNew: boolean;
+  /** Railing along every free run (parts of edges not touching a building), unless the edge id is in noRailingEdges. */
+  railing?: { style: 'glass' | 'boards'; height: number };
+  /** Edge ids whose free runs get no railing. */
+  noRailingEdges: Id[];
+  steps: DeckSteps[];
 }
 
-export interface Railing {
+export interface DeckVertex {
   id: Id;
-  /** Deck the railing stands on (gives its base height). */
-  deckId: Id;
-  /** Open polyline along the deck edge. */
-  path: Vec2[];
-  height: number; // 1.05
-  style: 'glass' | 'boards';
-  /** Gaps as distances along the path from its start. `steps` = a stair down to the terrain is built in the gap. */
-  gaps: { from: number; to: number; steps: boolean }[];
-  isNew: boolean;
+  p: Vec2;
+}
+
+/** Steps down from the deck, hosted like an opening: on an edge, offset (m) from the edge start to the centre, width. */
+export interface DeckSteps {
+  id: Id;
+  edgeId: Id;
+  offset: number;
+  width: number;
 }
 
 export interface HotTub {

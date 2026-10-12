@@ -85,7 +85,8 @@ function collectIds(project: Project): string[] {
     }
     ids.push(...v.walls.map((w) => w.id), ...v.openings.map((o) => o.id), ...v.rooms.map((r) => r.id));
     ids.push(...v.structure.map((s) => s.id), ...v.furniture.map((f) => f.id));
-    ids.push(...v.outdoor.decks.map((d) => d.id), ...v.outdoor.railings.map((r) => r.id), ...v.outdoor.hotTubs.map((h) => h.id));
+    for (const d of v.outdoor.decks) ids.push(d.id, ...d.polygon.map((p) => p.id), ...d.steps.map((s) => s.id));
+    ids.push(...v.outdoor.hotTubs.map((h) => h.id));
   }
   return ids;
 }
@@ -128,8 +129,10 @@ describe('createForslagD', () => {
     expect(project.id).toBe('hytte-merkesvatnet');
     expect(project.name).toBe('Hytta ved Merkesvatnet');
     expect(project.seedRevision).toBe(SEED_REVISION);
-    expect(SEED_REVISION).toBe(3);
+    expect(SEED_REVISION).toBe(4);
     expect(project.variants).toHaveLength(1);
+    // The bundled base proposal is read-only (docs/phase2-plan.md §1.1).
+    expect(variant.locked).toBe(true);
     expect(project.activeVariantId).toBe(variant.id);
     expect(variant.id).toBe('forslag-d');
     expect(variant.name).toBe('Forslag D');
@@ -458,33 +461,39 @@ describe('structure, outdoor, site', () => {
     expect(variant.structure.find((s) => s.id === 'post-ved')).toMatchObject({ kind: 'post', size: 0.14, top: 2.22, isNew: true });
   });
 
-  it('deck is CCW, railing references the deck and its gaps match the spec coordinates', () => {
-    const { decks, railings, hotTubs } = variant.outdoor;
+  it('deck (schema 2) is CCW with vertex ids, a glass railing and three steps on its edges at the spec coordinates', () => {
+    const { decks, hotTubs } = variant.outdoor;
     expect(decks).toHaveLength(1);
-    expect(signedArea(decks[0].polygon)).toBeGreaterThan(0);
-    expect(decks[0]).toMatchObject({ id: 'deck-terrasse', topHeight: -0.02, isNew: true });
-    expect(railings).toHaveLength(1);
-    const rail = railings[0];
-    expect(decks.some((d) => d.id === rail.deckId)).toBe(true);
-    expect(rail).toMatchObject({ height: 1.05, style: 'glass', isNew: true });
-    expect(rail.gaps).toEqual([
-      { from: 5.2, to: 6.6, steps: true },
-      { from: 23.5, to: 24.9, steps: true },
-      { from: 29.8, to: 31.2, steps: true },
+    const deck = decks[0];
+    const pts = deck.polygon.map((v) => v.p);
+    expect(signedArea(pts)).toBeGreaterThan(0);
+    expect(deck).toMatchObject({ id: 'deck-terrasse', topHeight: -0.02, isNew: true, railing: { style: 'glass', height: 1.05 }, noRailingEdges: [] });
+    expect(deck.polygon.map((v) => v.id)).toEqual(pts.map((_, i) => `deck-terrasse-v${i}`));
+    // Ids and numbers as the v1 → v2 migration makes them from the phase-1 railing gaps [5,2; 6,6], [23,5; 24,9],
+    // [29,8; 31,2] along the old railing path.
+    expect(deck.steps).toEqual([
+      { id: 'rail-terrasse/steps/0', edgeId: 'deck-terrasse-v0', offset: 3.3, width: 1.4 },
+      { id: 'rail-terrasse/steps/1', edgeId: 'deck-terrasse-v1', offset: 7.4, width: 1.4 },
+      { id: 'rail-terrasse/steps/2', edgeId: 'deck-terrasse-v1', offset: 13.7, width: 1.4 },
     ]);
-    let pathLength = 0;
-    for (let i = 0; i + 1 < rail.path.length; i++) pathLength += dist(rail.path[i], rail.path[i + 1]);
-    for (const g of rail.gaps) {
-      expect(g.to).toBeGreaterThan(g.from);
-      expect(g.to).toBeLessThanOrEqual(pathLength + 1e-9);
-    }
-    // the railing path runs along deck edges
-    for (const p of rail.path) expect(pointInPolygon(p, decks[0].polygon), `${p}`).toBe(true);
-    // no deck in front of the glass bump (x 5–9): it starts at the bump's east wall, the railing too
-    expect(Math.min(...decks[0].polygon.map((p) => p[0]))).toBe(9);
-    expect(rail.path[0]).toEqual([9, -2]);
-    expect(rail.path[1]).toEqual([9, -4.6]);
-    expect(Math.abs(signedArea(decks[0].polygon))).toBeCloseTo(14.2 * 16.7 - 11.8 * 6.2 - 4.8 * 2, 9); // 164.38 m² (10.4 less than before)
+    // Centres: just east of the living-room door on the south edge, opposite the corridor door and further north.
+    const centres = deck.steps.map((s): Vec2 => {
+      const i = deck.polygon.findIndex((v) => v.id === s.edgeId);
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const L = dist(a, b);
+      expect(s.offset - s.width / 2, s.id).toBeGreaterThanOrEqual(0);
+      expect(s.offset + s.width / 2, s.id).toBeLessThanOrEqual(L);
+      return [a[0] + ((b[0] - a[0]) * s.offset) / L, a[1] + ((b[1] - a[1]) * s.offset) / L];
+    });
+    const close = (p: Vec2, q: Vec2) => expect(dist(p, q)).toBeLessThan(1e-9);
+    close(centres[0], [12.3, -4.6]);
+    close(centres[1], [23.2, 2.8]);
+    close(centres[2], [23.2, 9.1]);
+    for (const c of centres) expect(pointInPolygon(c, pts)).toBe(true);
+    // no deck in front of the glass bump (x 5–9): it starts at the bump's east wall
+    expect(Math.min(...pts.map((p) => p[0]))).toBe(9);
+    expect(Math.abs(signedArea(pts))).toBeCloseTo(14.2 * 16.7 - 11.8 * 6.2 - 4.8 * 2, 9); // 164.38 m² (10.4 less than before)
     expect(hotTubs).toEqual([{ id: 'tub-1', centre: [21.7, -3.2], diameter: 2.0, isNew: true }]);
   });
 

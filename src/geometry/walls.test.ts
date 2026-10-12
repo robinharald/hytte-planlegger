@@ -87,7 +87,7 @@ function mkVariant(extra: Partial<Variant>): Variant {
     openings: [],
     rooms: [],
     furniture: [],
-    outdoor: { decks: [], railings: [], hotTubs: [] },
+    outdoor: { decks: [], hotTubs: [] },
     structure: [],
     settings: { defaultExteriorWall: { thickness: 0.27, outerOffset: 0.11 }, defaultInteriorThickness: 0.12, areaLimit: null },
     ...extra,
@@ -184,9 +184,10 @@ describe('deriveBlocks', () => {
       parts: [{ id: 'p-new', name: 'Ny', polygon: rect(-1, -1, 2, 5), isNew: true }],
     });
     const [db] = deriveBlocks(mkVariant({ blocks: [b] }), SITE, null, { terrainZ: () => 0 });
+    // The remainder of a block with explicit parts is new work (docs/phase2-plan.md §3.4), even in an existing block.
     expect(db.parts.map((p) => [p.part.id, p.isImplicit, p.part.isNew])).toEqual([
       ['p-new', false, true],
-      ['b-implicit', true, false],
+      ['b-implicit', true, true],
     ]);
     expect(area(db.parts[0].part.polygon)).toBeCloseTo(8, 9);
     expect(db.parts[1].part.name).toBe('b (resten)');
@@ -388,7 +389,8 @@ describe('deriveWalls: exterior pieces', () => {
       'b/b-v3/b-implicit/base',
     ]);
     const s = walls[0];
-    expect(s.source).toEqual({ kind: 'blockEdge', blockId: 'b', edgeId: 'b-v0', partId: 'b-implicit', zoneId: null });
+    expect(s.source).toEqual({ kind: 'blockEdge', blockId: 'b', edgeId: 'b-v0', partId: 'b-implicit', zoneId: null, s0: 0, s1: 4 });
+    expect(walls.every((w) => !w.isGhost)).toBe(true);
     expectPts([s.a, s.b], [
       [0, 0],
       [4, 0],

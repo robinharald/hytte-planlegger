@@ -2,6 +2,7 @@
  * Tiny but complete Project fixture for unit tests (store, persistence, selection). Not used by the app.
  * One gable block 6 × 4 m on level `main`, one room, no openings.
  */
+import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Project, Variant } from '../model/types';
 
 export const TEST_ISO = '2026-10-11T10:00:00.000Z';
@@ -54,7 +55,7 @@ export function makeVariant(id: string, name: string): Variant {
       { id: 'room-2', name: 'Soverom', type: 'soverom', levelId: 'main', anchor: [4.5, 2] },
     ],
     furniture: [],
-    outdoor: { decks: [], railings: [], hotTubs: [] },
+    outdoor: { decks: [], hotTubs: [] },
     structure: [],
     settings: {
       defaultExteriorWall: { thickness: 0.27, outerOffset: 0.11 },
@@ -66,7 +67,7 @@ export function makeVariant(id: string, name: string): Variant {
 
 export function makeTestProject(overrides: Partial<Project> = {}): Project {
   return {
-    schemaVersion: 1,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     id: 'test-project',
     name: 'Testhytte',
     createdAt: TEST_ISO,

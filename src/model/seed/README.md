@@ -11,6 +11,8 @@ numbers come from and how to regenerate the terrain.
 |---|---|
 | `forslagD.ts` | `createForslagD(now?)` → fresh `Project`; `createForslagDVariant(now?)`; `SEED_REVISION`, `SEED_PROJECT_ID`, `SEED_VARIANT_ID`, `TERRAIN_ASSET_ID`, `SEED_TIMESTAMP` |
 | `forslagD.test.ts` | Seed invariants (areas, opening fit, anchors, ids, references) and terrain asset checks |
+| `frozen/forslagD.schema1.json` | The phase-1 seed (schema 1, `SEED_REVISION` 3), written once by `scripts/freeze-seed-schema1.mjs` before the seed moved to schema 2. **Never edit.** Phase-1 share links are deltas against it. |
+| `frozenSeed.ts` | `frozenSchema1Project(now?)` / `frozenSchema1Variant(now?)` (raw schema-1 JSON, fresh copies), `FROZEN_SEED_REVISION` |
 | `terrain-merkesvatnet.json` | `TerrainAsset` (`id: 'merkesvatnet-2026-10'`), two plan-aligned grids in metres a.s.l. **Generated — do not edit by hand.** |
 
 `createForslagD()` builds everything programmatically from small helpers (rectangles, `wall(a, b, …)`,
@@ -67,6 +69,14 @@ Bump `SEED_REVISION` whenever the seed content changes; the app compares it with
   strip south of the bump was already counted as building). The railing starts at (9, −2): the piece along the bump's
   east wall (y 0..−2) is wall. The south steps moved from x 7–8.4 to x 11.6–13.0, just east of the living-room door
   (`door-stue-s`, x 9.7–11.3); railing gaps [5.2, 6.6], [23.5, 24.9], [29.8, 31.2]. The hot tub stays at (21.7, −3.2).
+- Schema 2 (`SEED_REVISION` 4, phase 2): the deck carries its railing and steps. Its vertices have the ids
+  `deck-terrasse-v0…v9`; `railing: { style: 'glass', height: 1.05 }`, `noRailingEdges: []`; the three steps are hosted
+  on deck edges with the phase-1 gap centres and widths: `rail-terrasse/steps/0` on the south edge (offset 3.3 → centre
+  (12.3, −4.6)), `/1` and `/2` on the east edge (offsets 7.4 and 13.7 → (23.2, 2.8) and (23.2, 9.1)), all 1.4 m wide.
+  These are exactly the ids and numbers the v1 → v2 migration gives the phase-1 seed (tested), so a migrated phase-1
+  project has this deck. The railing is derived along the free runs of the deck edges (outside the buildings' cladding):
+  (9; −2.11) → (9; −4.6) → (23.2; −4.6) → (23.2; 12.1) → (9.11; 12.1). The variant is `locked: true` (the read-only base
+  proposal; "Nytt forslag" copies it unlocked). BYA, rooms and areas are unchanged.
 - Decided after the phase-1 report: the existing partitions stay 2.5 m, the free ridge post at (11.9, 3.1) stays, the new
   wing keeps its 2.4 m ceiling (the high gable windows `win-gavl-s/n` light the cold loft), and the mellombygg wall
   thickness deviation (−0.14 m² against the IFC) is accepted.

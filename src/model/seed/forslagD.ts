@@ -24,6 +24,8 @@ import type {
   BlockPart,
   BlockVertex,
   Deck,
+  DeckSteps,
+  DeckVertex,
   ElementStatus,
   FloorZone,
   GroundWork,
@@ -34,7 +36,6 @@ import type {
   OpeningStyle,
   OpeningType,
   Project,
-  Railing,
   Room,
   RoomType,
   Site,
@@ -47,8 +48,12 @@ import type {
   WallKind,
 } from '../types';
 
-/** Bump when the seed content changes; the app offers "Hent ny Forslag D" to projects with an older revision. */
-export const SEED_REVISION = 3;
+/**
+ * Bump when the seed content changes; the app offers "Hent ny Forslag D" to projects with an older revision.
+ * 3: terrace from x 9 (phase 1, frozen in frozen/forslagD.schema1.json). 4: schema 2 — the deck carries its glass railing
+ * and its three steps (hosted on deck edges), the variant is locked (the base proposal).
+ */
+export const SEED_REVISION = 4;
 export const SEED_PROJECT_ID = 'hytte-merkesvatnet';
 export const SEED_VARIANT_ID = 'forslag-d';
 /** Id of the bundled terrain asset (src/model/seed/terrain-merkesvatnet.json). */
@@ -106,26 +111,6 @@ function along(a: Vec2, b: Vec2, p: Vec2): number {
   if (l === 0) throw new Error('degenerate line');
   const v = sub(p, a);
   return (v[0] * d[0] + v[1] * d[1]) / l;
-}
-
-/** Distance from p to the segment a–b. */
-function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
-  const d = sub(b, a);
-  const l2 = d[0] * d[0] + d[1] * d[1];
-  const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2));
-  return len(sub(p, [a[0] + t * d[0], a[1] + t * d[1]]));
-}
-
-/** Distance along an open polyline to a point lying on it (throws if the point is not on the path). */
-function alongPath(path: Vec2[], p: Vec2): number {
-  let acc = 0;
-  for (let i = 0; i + 1 < path.length; i++) {
-    const a = path[i];
-    const b = path[i + 1];
-    if (distanceToSegment(p, a, b) < 1e-6) return mm(acc + len(sub(p, a)));
-    acc += len(sub(b, a));
-  }
-  throw new Error(`point (${p[0]}, ${p[1]}) is not on the path`);
 }
 
 /** Roof pitch (deg, 1 decimal) from the half width and the rise eave → ridge. */
@@ -641,49 +626,48 @@ function buildStructure(): StructureElement[] {
 }
 
 function buildOutdoor(): Variant['outdoor'] {
-  const deck: Deck = {
-    id: 'deck-terrasse',
-    // Starts at the glass bump's east wall (x 9): no deck in front of the leseskrok (Robin, 2026-10-11).
-    polygon: [
-      [9, -4.6],
-      [23.2, -4.6],
-      [23.2, 12.1],
-      [9, 12.1],
-      [9, 6.2],
-      [20.8, 6.2],
-      [20.8, -2],
-      [16, -2],
-      [16, 0],
-      [9, 0],
-    ],
-    topHeight: -0.02,
-    isNew: true,
-  };
-  // Along the deck's free edges; from (9, 0) to (9, -2) the deck runs along the glass bump's east wall (no railing).
-  const path: Vec2[] = [
-    [9, -2],
+  const deckId = 'deck-terrasse';
+  // Starts at the glass bump's east wall (x 9): no deck in front of the leseskrok (Robin, 2026-10-11). The deck
+  // overlaps the buildings along its inner edges; derive trims it by their outer outlines, and the railing runs along
+  // every FREE run: (9; −2,11) → (9; −4,6) → (23,2; −4,6) → (23,2; 12,1) → (9,11; 12,1). From (9; 0) to (9; −2) the
+  // deck runs along the glass bump's east wall (no railing).
+  const points: Vec2[] = [
     [9, -4.6],
     [23.2, -4.6],
     [23.2, 12.1],
     [9, 12.1],
+    [9, 6.2],
+    [20.8, 6.2],
+    [20.8, -2],
+    [16, -2],
+    [16, 0],
+    [9, 0],
   ];
-  const gap = (from: Vec2, to: Vec2): Railing['gaps'][number] => ({ from: alongPath(path, from), to: alongPath(path, to), steps: true });
-  const railing: Railing = {
-    id: 'rail-terrasse',
-    deckId: deck.id,
-    path,
-    height: 1.05,
-    style: 'glass',
-    gaps: [
-      gap([11.6, -4.6], [13, -4.6]), // steps down from the south edge, just east of the living-room door (x 9.7–11.3)
-      gap([23.2, 2.1], [23.2, 3.5]), // opposite the corridor door
-      gap([23.2, 8.4], [23.2, 9.8]),
-    ],
+  // Vertex ids `${deckId}-v${i}` and step ids `rail-terrasse/steps/${gap}` are what the v1 → v2 migration produces
+  // from the phase-1 seed, so a migrated phase-1 project has exactly this deck.
+  const polygon: DeckVertex[] = points.map((p, i) => ({ id: `${deckId}-v${i}`, p }));
+  /** Steps on edge `edge` between two points of that edge: offset of the centre from the edge start, width. */
+  const steps = (gapIndex: number, edge: number, from: Vec2, to: Vec2): DeckSteps => {
+    const a = points[edge];
+    const b = points[(edge + 1) % points.length];
+    const centre: Vec2 = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
+    return { id: `rail-terrasse/steps/${gapIndex}`, edgeId: polygon[edge].id, offset: mm(along(a, b, centre)), width: mm(len(sub(to, from))) };
+  };
+  const deck: Deck = {
+    id: deckId,
+    polygon,
+    topHeight: -0.02,
     isNew: true,
+    railing: { style: 'glass', height: 1.05 },
+    noRailingEdges: [],
+    steps: [
+      steps(0, 0, [11.6, -4.6], [13, -4.6]), // down from the south edge, just east of the living-room door (x 9.7–11.3)
+      steps(1, 1, [23.2, 2.1], [23.2, 3.5]), // opposite the corridor door
+      steps(2, 1, [23.2, 8.4], [23.2, 9.8]),
+    ],
   };
   return {
     decks: [deck],
-    railings: [railing],
     hotTubs: [{ id: 'tub-1', centre: [21.7, -3.2], diameter: 2.0, isNew: true }],
   };
 }
@@ -757,6 +741,8 @@ export function createForslagDVariant(now: string = SEED_TIMESTAMP): Variant {
       defaultInteriorThickness: INTERIOR_THICKNESS,
       areaLimit: null,
     },
+    // The bundled base proposal is read-only (docs/phase2-plan.md §1.1); duplicateVariant makes an unlocked copy.
+    locked: true,
   };
 }
 

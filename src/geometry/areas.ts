@@ -8,13 +8,15 @@
  * Partition rule (BYA, BRA and axis existing/new; `partitionByParts`): parts are tried in order and every point
  * of the region belongs to the FIRST part containing it; the pieces of the region outside every part go whole to
  * the part nearest to their label point. `blockPartRegions` orders the parts as: the derived parts of all blocks
- * (block order, part order), then every block's whole outline with the block's `isNew` as a fallback (this
- * covers an implicit remainder that walls.ts may or may not list, and slivers between part outlines).
+ * (block order, part order), then every block's whole outline as a fallback, flagged like the implicit remainder
+ * (new for a block with explicit parts, else the block's `isNew`; this covers an implicit remainder that walls.ts may
+ * or may not list, and slivers between part outlines).
  *
  * BYA
  *  - buildings = area of the union of the blocks' outer outlines; existing/new = that union partitioned by the
  *    parts' `outer` polygons.
- *  - decks: each deck polygon minus the buildings and minus the decks listed before it (overlaps count once, for
+ *  - decks: each deck's `pieces` (already trimmed by the buildings) minus the buildings and minus the decks listed
+ *    before it (overlaps count once, for
  *    the first deck), measured on a 0.25 m grid aligned to multiples of 0.25 m: a cell contributes the EXACT area
  *    of the deck piece inside it (Sutherland–Hodgman clip) when deck.topZ − terrainZ(cell centre) > 0.5 m.
  *    existing/new by `deck.isNew`.
@@ -199,7 +201,8 @@ export function blockPartRegions(blocks: DerivedBlock[], outline: 'axis' | 'oute
       }
     }
   }
-  for (const b of blocks) parts.push({ polygon: b[outline], isNew: b.block.isNew });
+  // Fallback flag = the implicit remainder's (walls.ts implicitIsNew): new for a block with explicit parts.
+  for (const b of blocks) parts.push({ polygon: b[outline], isNew: b.block.parts.length > 0 || b.block.isNew });
   return parts;
 }
 
@@ -323,7 +326,7 @@ function deckArea(decks: DerivedDeck[], buildings: MP, terrainZ: AreaInput['terr
   const result = { existing: 0, new: 0 };
   let claimed = buildings;
   for (const deck of decks) {
-    const shape: MP = [[deck.polygon]];
+    const shape: MP = deck.pieces;
     const before = claimed;
     const piece = withClipFallback('BYA: deck minus buildings', () => mpDifference(shape, before), () => shape);
     claimed = withClipFallback('BYA: deck union', () => mpUnion(before, shape), () => [...before, ...shape]);
@@ -336,7 +339,8 @@ function deckArea(decks: DerivedDeck[], buildings: MP, terrainZ: AreaInput['terr
   return result;
 }
 
-function computeBya(input: AreaInput): AreaSummary['bya'] {
+/** BYA: union of the block outer outlines + deck pieces more than 0.5 m above the terrain (see the header). */
+export function computeBya(input: Pick<AreaInput, 'blocks' | 'decks' | 'terrainZ'>): AreaSummary['bya'] {
   const { blocks } = input;
   const outers: MP = blocks.filter((b) => b.outer.length >= 3).map((b) => [b.outer]);
   const union = withClipFallback('BYA: union of the buildings', () => mpUnion(outers), () => outers);
@@ -524,7 +528,7 @@ function gridMeasurer(region: MP, level: Level, undersideAt: AreaInput['undersid
   return (mp) => areaInCells(mp, (i, j) => isOn(counted, i, j));
 }
 
-function computeBra(input: AreaInput): AreaSummary['bra'] {
+function computeBra(input: Omit<AreaInput, 'decks' | 'terrainZ'>): AreaSummary['bra'] {
   const innerParts = blockPartRegions(input.blocks, 'inner');
   const perLevel: AreaSummary['bra']['perLevel'] = [];
   const sum: AreaSplit = { total: 0, existing: 0, new: 0 };
@@ -557,9 +561,9 @@ function computeAxis(blocks: DerivedBlock[]): AreaSplit {
   return { total: multiPolygonArea(union), existing: multiPolygonArea(split.existing), new: multiPolygonArea(split.new) };
 }
 
-export function computeAreas(input: AreaInput): AreaSummary {
+/** BRA, axis and room areas: everything except BYA (does not depend on the decks; derive memoises it with the building). */
+export function computeBuildingAreas(input: Omit<AreaInput, 'decks' | 'terrainZ'>): Omit<AreaSummary, 'bya'> {
   return {
-    bya: computeBya(input),
     bra: computeBra(input),
     axis: computeAxis(input.blocks),
     rooms: input.rooms.map((r) => ({
@@ -572,4 +576,9 @@ export function computeAreas(input: AreaInput): AreaSummary {
       isNew: r.isNew,
     })),
   };
+}
+
+/** Everything: BYA (buildings + decks) and `computeBuildingAreas`. */
+export function computeAreas(input: AreaInput): AreaSummary {
+  return { bya: computeBya(input), ...computeBuildingAreas(input) };
 }
