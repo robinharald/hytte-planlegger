@@ -7,7 +7,8 @@
  *  - the mini-bar's Egenskaper opens the properties bottom sheet; type a number (the wall's Tykkelse);
  *  - Dør/vindu → Dør, tap on a wall: a door is placed and the tool goes back to Velg (the door selected).
  * Fix round after 2a, all at the starting zoom (about 11.6 px/m):
- *  - taps on 8 rooms' label points select the room (at least 7 of 8; before, walls and doors won most taps);
+ *  - taps on 8 rooms' label points select the room (at least 7 of 8; before, walls and doors won most taps); since
+ *    2b on the drawn name, else on the floor beside the furniture, 9 rooms with «Bod (ny)» (at least 8 of 9);
  *  - a selected door dragged 1.5 m moves and keeps its width (before, the end handles covered it and it shrank);
  *  - a freshly placed Vedskjul dragged by its body moves and keeps its size;
  *  - the Egenskaper sheet for a wall leaves the wall in view above the sheet (the plan pans);
@@ -37,6 +38,7 @@ import {
   planToClient,
   planTransform,
   projectOnScreen,
+  roomTapPoint,
   selection,
   shoot,
   skipFirstRun,
@@ -135,10 +137,13 @@ test.describe('editing on an iPhone', () => {
     await page.waitForTimeout(300);
     await shoot(page, testInfo, 'phone-edit');
 
-    // Egenskaper as a bottom sheet: type the wall's thickness.
-    await page.getByTestId('mini-properties').tap();
+    // Egenskaper as a bottom sheet: type the wall's thickness. (Chromium's touch emulation sometimes drops the click
+    // of a tap that follows a pinch and a drag closely; tap again then.)
     const sheet = page.getByTestId('properties-sheet');
-    await expect(sheet).toBeVisible();
+    await expect(async () => {
+      if ((await sheet.count()) === 0) await page.getByTestId('mini-properties').tap();
+      await expect(sheet).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 15_000 });
     const thickness = sheet.getByTestId('wall-thickness').locator('input');
     await thickness.tap();
     await thickness.fill('0,15');
@@ -179,14 +184,14 @@ test.describe('editing on an iPhone at the starting zoom (fix round after 2a)', 
     expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
   });
 
-  test('taps on room label points select the rooms', async ({ page }) => {
+  test('taps on rooms select them: on the name where one is drawn, else on the floor beside the furniture', async ({ page }) => {
     await phoneProposal(page);
-    const names = ['Stue', 'Kjøkken', 'Spiseplass', 'Soverom (ny fløy)', 'Hovedbad', 'Soverom 1', 'Soverom 2', 'Vindfang'];
+    const names = ['Stue', 'Kjøkken', 'Spiseplass', 'Soverom (ny fløy)', 'Hovedbad', 'Soverom 1', 'Soverom 2', 'Vindfang', 'Bod (ny)'];
     const rooms = await page.evaluate(
       (wanted) =>
         ((window as HytteWindow).__hytte?.derived?.rooms ?? [])
           .filter((r) => r.room && wanted.includes(r.room.name))
-          .map((r) => ({ id: r.id, name: r.room?.name ?? '', p: r.labelPoint })),
+          .map((r) => ({ id: r.id, name: r.room?.name ?? '' })),
       names,
     );
     expect(rooms.map((r) => r.name).sort()).toEqual([...names].sort());
@@ -197,15 +202,18 @@ test.describe('editing on an iPhone at the starting zoom (fix round after 2a)', 
     for (const r of rooms) {
       await page.keyboard.press('Escape');
       await expect.poll(() => selection(page)).toBeNull();
-      const at = await planToClient(page, r.p);
-      expect(await onPlan(page, at), `${r.name}'s label point is on screen`).toBe(true);
+      // Since 2b the seed is furnished: where no name is drawn, a tap on the bed selects the bed, so tap the floor.
+      const at = await roomTapPoint(page, r.id);
+      expect(await onPlan(page, at), `${r.name}'s tap point is on screen`).toBe(true);
       await page.touchscreen.tap(at[0], at[1]);
       await expect.poll(() => selection(page)).not.toBeNull();
       const s = await selection(page);
       if (s?.kind === 'room' && s.id === r.id) ok++;
       else misses.push(`${r.name} → ${s?.kind}:${s?.id}`);
     }
-    expect(ok, `rooms selected by a tap on their label (misses: ${misses.join('; ') || 'none'})`).toBeGreaterThanOrEqual(7);
+    expect(ok, `rooms selected by a tap (misses: ${misses.join('; ') || 'none'})`).toBeGreaterThanOrEqual(8);
+    // «Bod (ny)» (0,83 m deep, its name 5,5 px from w-bod-ved) is selected by a tap on its name (the second review).
+    expect(misses.filter((m) => m.startsWith('Bod (ny)'))).toEqual([]);
   });
 
   test('a selected door dragged 1.5 m moves and keeps its width', async ({ page }) => {

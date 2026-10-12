@@ -1,6 +1,7 @@
 /**
  * Smoke test: the app loads, derives Forslag D, renders the plan and the 3D view, and the headline UI is there.
- * A fresh start uses the bundled seed revision; an autosave of an older revision gets "Hent ny Forslag D".
+ * A fresh start uses the bundled seed revision (Forslag D is always the bundled one since phase 2b; an old autosave
+ * turned into proposals is tested in proposals.spec.ts).
  *
  * Screenshots are written to e2e/screenshots/*.png (committed, so a diff shows what changed visually):
  *   plan.png, 3d-ute-oversikt.png, 3d-ute-framsiden.png, 3d-ute-langsiden.png, 3d-ute-inne-stua.png (Ute + the
@@ -12,8 +13,7 @@
  * editing.spec.ts (desktop) and phone-editing.spec.ts (the iPhone project).
  */
 import { expect, test, type Page } from '@playwright/test';
-import { createForslagD, SEED_REVISION } from '../src/model/seed/forslagD';
-import type { DeckVertex, Vec2 } from '../src/model/types';
+import { SEED_REVISION } from '../src/model/seed/forslagD';
 import { collectPageErrors, type HytteWindow, loadAndWaitReady, PLAN_SETTLE_MS, SETTLE_MS, shoot, skipFirstRun } from './helpers';
 
 /** The active variant's terrace: its westmost x and its steps as [from, to] along their edge (from the project on screen). */
@@ -119,7 +119,9 @@ test.describe('desktop 1400×900', () => {
 
     await showPlan(page, 'ground');
     const { labels, withArea } = await planLabelsWithArea(page);
-    expect(withArea, `plan room labels with an m² line (of ${labels} labels)`).toBeGreaterThanOrEqual(15);
+    // Since 2b the seed is furnished: a name moved off the furniture may drop its m² line (11 of 21 at this zoom;
+    // 17 before; Romskjema and Egenskaper have every area).
+    expect(withArea, `plan room labels with an m² line (of ${labels} labels)`).toBeGreaterThanOrEqual(10);
     await shoot(page, testInfo, 'plan');
 
     await show3d(page, 'ute', 'oversikt');
@@ -145,37 +147,6 @@ test.describe('desktop 1400×900', () => {
     await showPlan(page, 'loft');
     await shoot(page, testInfo, 'plan-hems');
 
-    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
-  });
-
-  test('an autosave of an older Forslag D revision is offered "Hent ny Forslag D"', async ({ page }) => {
-    const pageErrors = collectPageErrors(page);
-    // The autosave of a user who started before the terrace cut: older revision, deck in front of the glass bump, and
-    // (like every migrated phase-1 proposal) not locked.
-    const old = createForslagD();
-    old.seedRevision = SEED_REVISION - 1;
-    delete old.variants[0].locked;
-    const oldPoints: Vec2[] = [[5, -4.6], [23.2, -4.6], [23.2, 12.1], [9, 12.1], [9, 6.2], [20.8, 6.2], [20.8, -2], [16, -2], [16, 0], [9, 0], [9, -2], [5, -2]];
-    const oldDeck: DeckVertex[] = oldPoints.map((p, i) => ({ id: `deck-terrasse-v${i}`, p }));
-    old.variants[0].outdoor.decks[0].polygon = oldDeck;
-    await page.addInitScript((json) => {
-      if (!localStorage.getItem('hytte-planlegger:project')) localStorage.setItem('hytte-planlegger:project', json);
-    }, JSON.stringify(old));
-    await loadAndWaitReady(page);
-    expect(await activeDeck(page)).toMatchObject({ seedRevision: SEED_REVISION - 1, deckMinX: 5, locked: false });
-
-    const fetchSeed = page.getByRole('button', { name: 'Hent ny Forslag D' });
-    await expect(page.getByText(`Forslag D er oppdatert (revisjon ${SEED_REVISION}).`)).toBeVisible();
-    await fetchSeed.click();
-    await expect(fetchSeed, 'the banner goes away').toHaveCount(0);
-    await expect.poll(async () => (await activeDeck(page)).seedRevision).toBe(SEED_REVISION);
-    // The new seed is added as a (locked) variant next to the user's own (kept unchanged) and becomes the active one.
-    expect(await activeDeck(page)).toMatchObject({
-      variants: ['Forslag D', `Forslag D (revisjon ${SEED_REVISION})`],
-      active: `Forslag D (revisjon ${SEED_REVISION})`,
-      locked: true,
-      deckMinX: 9,
-    });
     expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
   });
 });

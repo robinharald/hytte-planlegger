@@ -30,6 +30,8 @@ export const SETTLE_MS = 1_500;
 export const PLAN_SETTLE_MS = 500;
 /** localStorage key of the first-run card ("Skjønner" hides it for good, src/ui/FirstRunCard.tsx). */
 export const FIRST_RUN_KEY = 'hytte-planlegger:first-run-seen';
+/** … and of the home-screen card shown in its place afterwards (src/ui/InstallCard.tsx; iPhone and installable browsers). */
+export const INSTALL_CARD_KEY = 'hytte-planlegger:install-card-seen';
 
 mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
@@ -40,15 +42,15 @@ export function collectPageErrors(page: Page): string[] {
   return errors;
 }
 
-/** Hide the first-run card (it covers the bottom of the stage) unless a test wants to see it. */
+/** Hide the first-run card and the home-screen card (they cover the bottom of the stage) unless a test wants them. */
 export async function skipFirstRun(page: Page): Promise<void> {
-  await page.addInitScript((key) => {
+  await page.addInitScript((keys) => {
     try {
-      if (!localStorage.getItem(key)) localStorage.setItem(key, '1');
+      for (const key of keys) if (!localStorage.getItem(key)) localStorage.setItem(key, '1');
     } catch {
-      /* storage blocked: the card shows, nothing else changes */
+      /* storage blocked: the cards show, nothing else changes */
     }
-  }, FIRST_RUN_KEY);
+  }, [FIRST_RUN_KEY, INSTALL_CARD_KEY]);
 }
 
 /** Loads '/', waits until the UI reports ready and checks that the derive pipeline produced no 'generic' warning. */
@@ -225,4 +227,93 @@ export async function touchDragPlan(page: Page, cdp: CDPSession, from: Vec2, to:
 export async function tapPlan(page: Page, p: Vec2): Promise<void> {
   const [x, y] = await planToClient(page, p);
   await page.touchscreen.tap(x, y);
+}
+
+// ---------------------------------------------------------------------------
+// Rooms and furniture
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a tap selects a room (client px): the middle of its drawn name when the plan shows one — on touch names lie
+ * above the furniture; with a mouse only where no (solid) item lies under the name's middle — else the point of its
+ * floor nearest its label point that is clear of furniture (by 0.25 m) and of the room's outline (by 0.35 m): a tap on
+ * a bed selects the bed.
+ */
+export async function roomTapPoint(page: Page, roomId: string): Promise<Vec2> {
+  const hit = page.locator(`[data-testid=plan-view] [data-room-label-hit="${roomId}"]`).first();
+  let name: Vec2 | null = null;
+  if ((await hit.count()) > 0) {
+    const b = await hit.boundingBox();
+    if (b && b.width > 0 && b.height > 0) name = [b.x + b.width / 2, b.y + b.height / 2];
+  }
+  if (name) {
+    const at = name;
+    const free = await page.evaluate(([x, y]) => {
+      if (matchMedia('(pointer: coarse)').matches) return true;
+      const el = document.elementFromPoint(x, y);
+      return !el?.closest('[data-furniture-id]');
+    }, at);
+    if (free) return at;
+  }
+  const p = await page.evaluate((id) => {
+    type P = [number, number];
+    const d = (window as HytteWindow).__hytte?.derived;
+    const room = d?.rooms.find((r) => r.id === id);
+    if (!d || !room) throw new Error(`room ${id} missing`);
+    const inside = (q: P, r: P[]) => {
+      let c = false;
+      for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+        if (r[i][1] > q[1] !== r[j][1] > q[1] && q[0] < ((r[j][0] - r[i][0]) * (q[1] - r[i][1])) / (r[j][1] - r[i][1]) + r[i][0]) c = !c;
+      }
+      return c;
+    };
+    const distSeg = (q: P, s: P, e: P) => {
+      const dx = e[0] - s[0];
+      const dy = e[1] - s[1];
+      const l2 = dx * dx + dy * dy;
+      const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((q[0] - s[0]) * dx + (q[1] - s[1]) * dy) / l2));
+      return Math.hypot(q[0] - s[0] - t * dx, q[1] - s[1] - t * dy);
+    };
+    const edge = (q: P, r: P[]) => Math.min(...r.map((s, i) => distSeg(q, s, r[(i + 1) % r.length])));
+    // Every item drawn on the room's storey (Plan 1 shows the lower and the main level).
+    const storeyOf = (levelId: string) => d.levels.find((l) => l.id === levelId)?.storeyId;
+    const items = d.furniture.filter((f) => storeyOf(f.levelId) === storeyOf(room.levelId)).map((f) => f.footprint as P[]);
+    const xs = room.polygon.map((q) => q[0]);
+    const ys = room.polygon.map((q) => q[1]);
+    let best: P | null = null;
+    let bestD = Infinity;
+    for (let x = Math.min(...xs); x <= Math.max(...xs); x += 0.05) {
+      for (let y = Math.min(...ys); y <= Math.max(...ys); y += 0.05) {
+        const q: P = [x, y];
+        if (!inside(q, room.polygon as P[]) || edge(q, room.polygon as P[]) < 0.35) continue;
+        if (items.some((f) => inside(q, f) || edge(q, f) < 0.25)) continue;
+        const dl = Math.hypot(x - room.labelPoint[0], y - room.labelPoint[1]);
+        if (dl < bestD) {
+          bestD = dl;
+          best = q;
+        }
+      }
+    }
+    return best;
+  }, roomId);
+  if (p) return planToClient(page, p);
+  if (name) return name;
+  throw new Error(`no free floor in ${roomId}`);
+}
+
+/**
+ * Select a room by a click where nothing else lies over it (`roomTapPoint`); where only furniture is left to click (a
+ * bed filling the room), the second click on the selected item gives the room under it. Waits for the selection.
+ */
+export async function selectRoom(page: Page, roomId: string): Promise<void> {
+  const at = await roomTapPoint(page, roomId);
+  await page.mouse.click(at[0], at[1]);
+  await expect.poll(async () => (await selection(page))?.kind ?? 'none').not.toBe('none');
+  if ((await selection(page))?.kind === 'furniture') await page.mouse.click(at[0], at[1]);
+  await expect.poll(async () => (await selection(page))?.id).toBe(roomId);
+}
+
+/** The derived furniture items of the active proposal (a JSON copy). */
+export async function derivedFurniture(page: Page): Promise<DerivedVariant['furniture']> {
+  return page.evaluate(() => (window as HytteWindow).__hytte?.derived?.furniture ?? []);
 }

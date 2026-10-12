@@ -52,7 +52,9 @@ import {
   planToClient,
   planTransform,
   projectOnScreen,
+  roomTapPoint,
   selectAt,
+  selectRoom,
   selection,
   shoot,
   skipFirstRun,
@@ -204,9 +206,11 @@ async function derivedLine(page: Page, id: string): Promise<{ a: Vec2; b: Vec2 }
   }, id);
 }
 
-/** Select the glass bump (Leseskrok) itself: tap its room, then "Velg bygningsdelen". */
+/** Select the glass bump (Leseskrok) itself: tap its room (its name; the room is furnished), then "Velg bygningsdelen". */
 async function selectGlassBump(page: Page): Promise<void> {
-  await selectAt(page, [7, -1.3], { kind: 'room', id: 'room-leseskrok' });
+  const at = await roomTapPoint(page, 'room-leseskrok');
+  await page.mouse.click(at[0], at[1]);
+  await expect.poll(() => selection(page)).toMatchObject({ kind: 'room', id: 'room-leseskrok' });
   await page.getByRole('button', { name: 'Velg bygningsdelen' }).click();
   await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: 'blk-glass' });
 }
@@ -323,9 +327,10 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     const wallCount = (await activeVariant(page)).walls.length;
     await page.getByTestId('tool-wall').click();
     await expect(page.getByTestId('hint-line')).toContainText('Trykk der veggen skal begynne');
-    await clickPlan(page, [18.95, 3.4]);
+    // Between the rug (to x 18.4) and the bed (from x 18.64): a wall through furniture would warn about it too.
+    await clickPlan(page, [18.5, 3.4]);
     await expect(page.getByTestId('hint-line')).toContainText('Trykk der den skal slutte');
-    await clickPlan(page, [18.95, 6.2]);
+    await clickPlan(page, [18.5, 6.2]);
     await expect.poll(async () => (await activeVariant(page)).walls.length).toBe(wallCount + 1);
     // The unnamed piece is announced once, as a warning toast.
     const warningToast = page.getByTestId('toast').filter({ hasText: /advarsel/i });
@@ -345,8 +350,9 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     const unnamed = rooms.filter((r) => r.name === null);
     expect(unnamed).toHaveLength(1);
 
-    // Name the other piece in Egenskaper ("Gi navn").
-    await selectAt(page, [19.9, 4.8], { kind: 'room', id: unnamed[0].id });
+    // Name the other piece in Egenskaper ("Gi navn"): the bed fills it, so a click on the bed, then a second one there
+    // for the room under it.
+    await selectRoom(page, unnamed[0].id);
     await page.getByTestId('name-face-input').fill('Kontor');
     await page.getByTestId('name-face').click();
     await expect.poll(async () => (await derivedRooms(page)).filter((r) => r.name === null).length).toBe(0);
@@ -363,7 +369,7 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
 
   test('(d) Dybde 2,40 for Soverom (ny fløy) moves w-gang-n', async ({ page }) => {
     await freshProposal(page);
-    await selectAt(page, [19.6, 5.2], { kind: 'room', id: 'room-sov-ny' });
+    await selectRoom(page, 'room-sov-ny');
     const field = page.getByTestId('room-size-d').locator('input');
     await expect(field).toHaveValue(/^2,58/);
     await field.fill('2,40');
@@ -461,7 +467,7 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     await page.keyboard.press('Delete');
     await expectRefused('Delete');
     // A number field in Egenskaper.
-    await selectAt(page, [19.6, 5.2], { kind: 'room', id: 'room-sov-ny' });
+    await selectRoom(page, 'room-sov-ny');
     const field = page.getByTestId('room-size-d').locator('input');
     await field.click();
     await page.keyboard.type('3');
@@ -562,7 +568,8 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     expect(JSON.stringify(p1.site), 'the site is unchanged').toBe(site0);
     expect(JSON.stringify(p1.variants.find((v) => v.id === 'forslag-d')), 'Forslag D is unchanged').toBe(base0);
     // In the plan and 3D (derived), Forslag D still has the tree where it was.
-    await page.getByTestId('variant-select').selectOption('forslag-d');
+    await page.getByTestId('proposals-menu').click();
+    await page.getByTestId('proposal-item-forslag-d').click();
     await expect
       .poll(() => page.evaluate(() => (window as HytteWindow).__hytte?.derived?.site.trees.find((t) => t.tree.id === 'tree-1')?.tree.position))
       .toEqual([-4, 4]);
