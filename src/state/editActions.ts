@@ -53,6 +53,17 @@
  * id, 90 | −90)` turns a placed unit (template blocks only; one standing against a wall or a deck edge keeps that
  * contact, geometry/edit.ts `contactTurn`); `nameFace` returns the derived room id to select;
  * `deleteDeckVertex` toasts EDIT_STRINGS.deckVertexCrosses when the outline would cross itself.
+ *
+ * Last fix round, fifth review: a template unit never ends up on another building. `snapPoint` (Nytt bygg) shifts
+ * the ghost clear within its reach (a tap outside every building: within half the unit's size), else sets `hint` and
+ * `placeUnit` refuses with the toast `EDIT_STRINGS.unitOnBlock`; a block drag shifts the unit clear within that
+ * reach or stops it at the contact with `DragFeedback.hint`; `moveBlock`, `rotateBlock`, `moveBlockEdge` and
+ * `moveBlockVertex` stop or refuse with the toast; `duplicateBlock` puts a unit's copy beside it. Whole-block moves and
+ * turns run with `follow: false` (nothing follows the block's walls). "Ta tilbake" carries back only walls whose
+ * `Wall.carriedBy` names the restored wall and still holds (`carriedBy`), never a wall moved on its own (`notCarriedBy`,
+ * kept out of every cascade back, and a neighbour end such a wall meets stays); merged-away names revive only into
+ * faces the restore changed (with the toast `roomsBack`), and a `Variant.mergedRooms` record goes when another edit
+ * redraws its face.
  */
 import { current, isDraft, produce } from 'immer';
 import { useMemo } from 'react';
@@ -94,7 +105,9 @@ import {
   applySetWallProps,
   applySplitWall,
   applyToggleRailingEdge,
+  blockEdgeMoveClamp,
   blockHasExistingArea,
+  blockVertexMoveClamp,
   deckOfEdge,
   ghostRef,
   healGhosts,
@@ -104,6 +117,10 @@ import {
   reconcileRooms,
   reviveRoomRecords,
   roomResizeMove,
+  turnedAxis,
+  unitClearShift,
+  unitMoveFraction,
+  unitOverlaps,
   wallEndsFree,
   wallMoveFraction,
 } from '../geometry/edit';
@@ -113,10 +130,10 @@ import { levelAt } from '../geometry/levels';
 import { buildSnapContext, chipsAcross, gridStep, rayToWall, roundTo, snap, snapCircle, snapFootprint, snapLineOffset, snapPolygon } from '../geometry/snap';
 import type { DimensionChip, SnapContext, SnapIndicator, SnapResult } from '../geometry/snap';
 import { distancePointSegment, pointInPolygon } from '../geometry/polygon';
-import type { DerivedVariant } from '../model/derived';
+import type { DerivedRoom, DerivedVariant } from '../model/derived';
 import { catalogPlacementSpec, convexOverlap, insideRoom, placementObstacles, rectFootprint, tapPlacement } from '../plan2d/furniturePlacement';
 import type { Obstacle, PlacementSpec } from '../plan2d/furniturePlacement';
-import { catalogItem, clampSize, placementSize } from '../furniture/catalog';
+import { WET_ROOM_TYPES, catalogItem, clampSize, placementSize } from '../furniture/catalog';
 import type { FurnitureItem, Id, MergedRoom, OpeningHost, OpeningType, Project, Room, RoomType, Site, Tree, Variant, Vec2, Wall } from '../model/types';
 import { unitFootprint, unitTemplate } from '../model/unitTemplates';
 import { appStore } from './appStore';
@@ -201,6 +218,12 @@ interface RunOpts {
   /** Toast room merges right away (default true; drags toast on endDrag). */
   toastMerges?: boolean;
   /**
+   * Let furniture backed onto a moved wall face follow it (`followWallFaces`, default true). Off for whole-block moves
+   * and turns (last fix round, fifth review): the block carries its own furniture, and nothing else follows its walls
+   * (the house's armchair backed onto a unit standing on the house went along with it).
+   */
+  follow?: boolean;
+  /**
    * Reconcile the rooms (default true). Off for edits that cannot change a room face (openings, the deck, steps, hot
    * tubs, trees, furniture): no derive of the result and no matching inside the action.
    */
@@ -231,6 +254,7 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
   const from = opts.from ?? { variant: base, derived };
   const carried = new Map<Id, PlanTransform>();
   const pushed: Id[] = [];
+  let revived: string[] = [];
   let result: R | undefined;
   const next = produce(from.variant, (draft) => {
     result = recipe(draft as Variant, { base: from.variant, derived: from.derived, carried, pushed });
@@ -250,10 +274,14 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
         });
       }
       // Furniture backed onto a wall face that moved goes with it (§4, `followWallFaces`).
-      final = followWallFaces(base, derived, final, nextDerived);
+      if (opts.follow !== false) final = followWallFaces(base, derived, final, nextDerived);
       if (opts.revive) {
         const fd = deriveOf(site, final);
-        const back = fd ? reviveRoomRecords(final, fd, opts.revive()) : { add: [], anchors: new Map<Id, Vec2>() };
+        // Only into faces this restore changed (last fix round, fifth review: a name merged away days ago came back
+        // into a face drawn since, on an unrelated «Ta tilbake»).
+        const changedFace = (f: DerivedRoom) => !derived.rooms.some((b) => sameFaceShape(b, f));
+        const back = fd ? reviveRoomRecords(final, fd, opts.revive(), changedFace) : { add: [], anchors: new Map<Id, Vec2>() };
+        revived = back.add.map((r) => r.name);
         if (back.add.length > 0 || back.anchors.size > 0) {
           final = produce(final, (d) => {
             for (const r of d.rooms) {
@@ -264,12 +292,26 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
           });
         }
       }
-      final = withMergedRooms(final, base, merges);
+      final = withMergedRooms(final, base, merges, nextDerived, !opts.revive);
     }
   }
   if (final !== current) store.getState().replaceVariant(current.id, final, { transaction: opts.transaction });
   if (opts.toastMerges !== false) mergeToasts(store, merges);
+  if (revived.length > 0) store.getState().showToast({ text: EDIT_STRINGS.roomsBack(revived), undo: true });
   return { result: result as R, merges, variant: final, pushed };
+}
+
+/** Faces with the same outline (area, bounding box and storey within 1 µm). */
+const sameFaceShape = (a: Pick<DerivedRoom, 'area' | 'bbox' | 'storeyId'>, b: Pick<DerivedRoom, 'area' | 'bbox' | 'storeyId'>): boolean =>
+  a.storeyId === b.storeyId &&
+  Math.abs(a.area - b.area) < 1e-6 &&
+  dist(a.bbox.min, b.bbox.min) < 1e-6 &&
+  dist(a.bbox.max, b.bbox.max) < 1e-6;
+
+/** The face of `derived` on the storey of `room` whose outline holds its anchor (for `Variant.mergedRooms`). */
+function faceAt(v: Variant, derived: DerivedVariant, room: Room): DerivedRoom | undefined {
+  const storey = v.levels.find((l) => l.id === room.levelId)?.storeyId;
+  return derived.rooms.find((f) => f.storeyId === storey && pointInPolygon(room.anchor, f.facePolygon));
 }
 
 /** How many merged-away rooms a variant keeps (`Variant.mergedRooms`), newest first. */
@@ -279,13 +321,20 @@ const MERGED_ROOMS_KEPT = 40;
  * The rooms a merge removed are kept on the variant with the anchors of the rooms of their storey alive with them
  * before the edit (`Variant.mergedRooms`, final fix round after 2b), so "Ta tilbake" can give a merged-away name its
  * face back also after a reload, when the undo history is gone (`roomsFromHistory` covers the session). Rooms that are
- * back are dropped from the list; at most MERGED_ROOMS_KEPT are kept.
+ * back are dropped from the list; at most MERGED_ROOMS_KEPT are kept. Each keeps the outline of the face it was merged
+ * into (`MergedRoom.face`, in `derived`); an edit other than a restore (`prune`) that redraws that face drops it (last
+ * fix round, fifth review: the name no longer belongs anywhere there).
  */
-function withMergedRooms(v: Variant, before: Variant, merges: readonly RoomMerge[]): Variant {
+function withMergedRooms(v: Variant, before: Variant, merges: readonly RoomMerge[], derived: DerivedVariant, prune: boolean): Variant {
   const live = new Set(v.rooms.map((r) => r.id));
   const gone = merges.map((m) => m.removed).filter((r, i, all) => !live.has(r.id) && all.findIndex((x) => x.id === r.id) === i);
   const old = v.mergedRooms ?? [];
-  const kept = old.filter((m) => !live.has(m.room.id) && !gone.some((r) => r.id === m.room.id));
+  const redrawn = (m: MergedRoom): boolean => {
+    if (!prune || !m.face) return false;
+    const f = faceAt(before, derived, m.room);
+    return !f || !sameFaceShape(f, { area: m.face.area, bbox: { min: m.face.min, max: m.face.max }, storeyId: f.storeyId });
+  };
+  const kept = old.filter((m) => !live.has(m.room.id) && !gone.some((r) => r.id === m.room.id) && !redrawn(m));
   if (gone.length === 0 && kept.length === old.length) return v;
   const storeyOf = (levelId: Id) => before.levels.find((l) => l.id === levelId)?.storeyId;
   const peersOf = (room: Room): Record<Id, Vec2> => {
@@ -293,7 +342,13 @@ function withMergedRooms(v: Variant, before: Variant, merges: readonly RoomMerge
     for (const r of before.rooms) if (storeyOf(r.levelId) === storeyOf(room.levelId)) out[r.id] = copy(r.anchor);
     return out;
   };
-  const next: MergedRoom[] = [...gone.map((r) => ({ room: JSON.parse(JSON.stringify(r)) as Room, peers: peersOf(r) })), ...kept].slice(0, MERGED_ROOMS_KEPT);
+  const record = (r: Room): MergedRoom => {
+    const f = faceAt(before, derived, r);
+    const m: MergedRoom = { room: JSON.parse(JSON.stringify(r)) as Room, peers: peersOf(r) };
+    if (f) m.face = { area: f.area, min: copy(f.bbox.min), max: copy(f.bbox.max) };
+    return m;
+  };
+  const next: MergedRoom[] = [...gone.map(record), ...kept].slice(0, MERGED_ROOMS_KEPT);
   return produce(v, (d) => {
     if (next.length > 0) d.mergedRooms = next;
     else delete d.mergedRooms;
@@ -422,6 +477,8 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
   let carried: Id[] = [];
   // Walls no step since the wall was first touched has changed (the undo history): the way back leaves them alone.
   let still: ReadonlySet<Id> = new Set();
+  // Moved walls the restored wall's move did not carry (last fix round, fifth review): never moved by the way back.
+  let own: ReadonlySet<Id> = new Set();
   // Opening ghosts parked on removed walls (the ghost being restored, or the ghosts of walls a cascade touched): restored
   // when their host goes (the endpoint cascade back may already have healed the wall itself).
   const parked = new Map<Id, Id>();
@@ -440,8 +497,10 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       // Not just translated (an endpoint drag, or a move and an endpoint drag): drag each end back to the ghost's
       // end with the endpoint cascades (coincident ends, T-junctions), one end after the other. Continuations the
       // forward step carried sideways stay out of that and go back whole afterwards (fix round after 2b).
-      carried = carriedSideways(v, live, g, ghostStep(store, v, id));
-      still = new Set([...unchangedSince(store, v, id), ...carried]);
+      carried = carriedSideways(v, live, g);
+      // Walls moved on their own (or carried by another wall's move) stay where they are (last fix round, fifth review).
+      own = notCarriedBy(v, live);
+      still = new Set([...unchangedSince(store, v, id), ...carried, ...own]);
       if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g, still);
       neighbours = neighbourEnds(v, live, g).filter((n) => !carried.includes(n.wallId));
     }
@@ -461,9 +520,9 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
         const ok = applyRestoreWall(d, id);
         healGhosts(d);
         // Neighbours the forward step left just off the wall's line: their ends back onto the junction too.
-        bringBackNeighbours(d, s.project.site, neighbours);
+        bringBackNeighbours(d, s.project.site, neighbours, own);
         // Continuations it carried along sideways: back whole.
-        bringBackCarried(d, s.project.site, carried);
+        bringBackCarried(d, s.project.site, carried, own);
         // Openings the cascade moved on the walls it touched (their ghosts sat on those walls' ghosts): back too.
         for (const [oid, hostId] of parked) if (!d.walls.some((w) => w.id === hostId)) applyRestoreOpening(d, oid);
         healGhosts(d);
@@ -503,7 +562,9 @@ const NEIGHBOUR_REACH = 0.05;
 function neighbourEnds(v: Variant, live: Wall, g: Wall): NeighbourEnd[] {
   const out: NeighbourEnd[] = [];
   for (const w of v.walls) {
-    if (w.id === live.id || w.status === 'removed') continue;
+    // Only walls the forward move of `live` carried and that still stand where it left them (final fix round, fourth
+    // review: w-103-korr, moved by itself onto w-vf-korr's line, was turned by «Ta tilbake» on w-vf-korr).
+    if (w.id === live.id || w.status === 'removed' || !carriedBy(w, live.id)) continue;
     const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
     if (!wg) continue;
     for (const end of ['a', 'b'] as const) {
@@ -586,16 +647,39 @@ function unchangedSince(store: EditStore, v: Variant, ghostId: Id): Set<Id> {
 }
 
 /** Drag each neighbour end (that is not back yet) to its ghost end with the endpoint cascades, then heal. */
-function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[]): void {
+function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[], own: ReadonlySet<Id> = new Set()): void {
   for (const n of neighbours) {
     const w = d.walls.find((x) => x.id === n.wallId && x.status !== 'removed');
     if (!w || dist(w[n.end], n.to) < 1e-9) continue;
+    // An end that a wall moved on its own (`own`) now meets stays with it (last fix round, fifth review: w-103-102
+    // dragged back turned w-vf-korr, which the user had moved onto that corner).
+    const end = w[n.end];
+    if (d.walls.some((x) => own.has(x.id) && x.status !== 'removed' && (dist(x.a, end) <= COINCIDE_M || dist(x.b, end) <= COINCIDE_M))) continue;
     const base = isDraft(d) ? current(d) : (JSON.parse(JSON.stringify(d)) as Variant);
     const derived = deriveOf(site, base);
     if (!derived) continue;
-    applyMoveWallEndpoint(d, { base, derived }, n.wallId, n.end, n.to, { keep: untouched(base) });
+    applyMoveWallEndpoint(d, { base, derived }, n.wallId, n.end, n.to, { keep: new Set([...untouched(base), ...own]) });
     healGhosts(d);
   }
+}
+
+/**
+ * Whether wall `w` was last moved by a carry of wall `byId`'s move and still stands where that left it (`Wall.carriedBy`,
+ * recorded by geometry/edit.ts applyMoveWall / applyMoveWallEndpoint; last fix round, fifth review).
+ */
+function carriedBy(w: Wall, byId: Id): boolean {
+  const c = w.carriedBy;
+  return c !== undefined && c.by === byId && dist(c.a, w.a) < 1e-9 && dist(c.b, w.b) < 1e-9;
+}
+
+/**
+ * Moved walls (new, with a ghost) that `live`'s own move did not leave where they are (`carriedBy`): the user moved them
+ * in a step of their own, or another wall's move carried them. "Ta tilbake" on `live` never moves them — in particular
+ * not the wall whose move carried `live` (last fix round, fifth review).
+ */
+function notCarriedBy(v: Variant, live: Wall): Set<Id> {
+  const ghosts = new Set(v.walls.filter((w) => w.status === 'removed').map((w) => w.id));
+  return new Set(v.walls.filter((w) => w.id !== live.id && w.status === 'new' && ghosts.has(`${w.id}/ghost`) && !carriedBy(w, live.id)).map((w) => w.id));
 }
 
 /**
@@ -603,14 +687,14 @@ function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[])
  * `carryParallel`: a continuation in line, such as the loft piece lw-106-top beside w-106-korr): new, with a ghost
  * that ends on one of g's ends, parallel to that ghost but off its line. "Ta tilbake" keeps them out of the cascades
  * back (an endpoint drag back would turn them) and then moves each back whole (`bringBackCarried`). Only walls that
- * step actually moved (final fix round after 2b: a wall in line that the user moved in a step of its own — also on
- * another floor — stays where they put it): from the undo history (`step`, the states either side of the step that
- * made g), else (no history, after a reload) only one moved across by exactly as much as `live` at that end.
+ * `live`'s move carried and that still stand where it left them (`Wall.carriedBy`, last fix round, fifth review: also
+ * after a reload; a wall in line that the user moved in a step of its own — also on another floor — stays where they
+ * put it, and so does the wall whose move carried `live`).
  */
-function carriedSideways(v: Variant, live: Wall, g: Wall, step: GhostStep | null): Id[] {
+function carriedSideways(v: Variant, live: Wall, g: Wall): Id[] {
   const out: Id[] = [];
   for (const w of v.walls) {
-    if (w.id === live.id || w.status !== 'new') continue;
+    if (w.id === live.id || w.status !== 'new' || !carriedBy(w, live.id)) continue;
     const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
     const e = wg ? (['a', 'b'] as const).find((k) => dist(wg.a, g[k]) <= COINCIDE_M || dist(wg.b, g[k]) <= COINCIDE_M) : undefined;
     if (!wg || !e) continue;
@@ -622,44 +706,16 @@ function carriedSideways(v: Variant, live: Wall, g: Wall, step: GhostStep | null
     const n = leftNormal(unit(ug));
     const across = dot(sub(w.a, wg.a), n);
     if (Math.abs(across) <= 1e-9) continue;
-    if (step) {
-      const w0 = step.before.walls.find((x) => x.id === w.id);
-      const w1 = step.after.walls.find((x) => x.id === w.id);
-      if (!w1 || (w0 && w0.status === w1.status && dist(w0.a, w1.a) < 1e-9 && dist(w0.b, w1.b) < 1e-9)) continue;
-    } else if (Math.abs(across - dot(sub(live[e], g[e]), n)) > 1e-6) continue;
     out.push(w.id);
   }
   return out;
-}
-
-/** The variant just before the step that made a ghost and just after it (`ghostStep`). */
-interface GhostStep {
-  before: Variant;
-  after: Variant;
-}
-
-/**
- * The states either side of the undo step that made the ghost `ghostId` (the newest run of history states that have
- * it, back to the one before): `after` is the current variant when the newest step made it. Null when the history
- * does not reach back that far (after a reload).
- */
-function ghostStep(store: EditStore, v: Variant, ghostId: Id): GhostStep | null {
-  const past = store.getState().history().past;
-  let after = v;
-  for (let i = past.length - 1; i >= 0; i--) {
-    const pv = past[i].variants.find((x) => x.id === v.id);
-    if (!pv) return null;
-    if (!pv.walls.some((w) => w.id === ghostId)) return { before: pv, after };
-    after = pv;
-  }
-  return null;
 }
 
 /**
  * Move each carried wall (`carriedSideways`) back across itself onto its ghost's line (applyMoveWall: walls with a
  * T-junction on it follow), then give it its ghost's exact geometry (applyRestoreWall) and heal.
  */
-function bringBackCarried(d: Variant, site: Site, ids: readonly Id[]): void {
+function bringBackCarried(d: Variant, site: Site, ids: readonly Id[], own: ReadonlySet<Id> = new Set()): void {
   for (const id of ids) {
     const w = d.walls.find((x) => x.id === id && x.status !== 'removed');
     const wg = d.walls.find((x) => x.id === `${id}/ghost` && x.status === 'removed');
@@ -669,7 +725,7 @@ function bringBackCarried(d: Variant, site: Site, ids: readonly Id[]): void {
     if (Math.abs(across) > 1e-9) {
       const base = isDraft(d) ? current(d) : (JSON.parse(JSON.stringify(d)) as Variant);
       const derived = deriveOf(site, base);
-      if (derived) applyMoveWall(d, { base, derived }, id, scale(n, across), { keep: untouched(base) });
+      if (derived) applyMoveWall(d, { base, derived }, id, scale(n, across), { keep: new Set([...untouched(base), ...own]) });
     }
     applyRestoreWall(d, `${id}/ghost`);
     healGhosts(d);
@@ -703,17 +759,52 @@ function endpointsBack(site: Site, v: Variant, wallId: Id, g: Wall, still: Reado
 // Blocks
 // ---------------------------------------------------------------------------
 
-export function moveBlockEdge(store: EditStore, blockId: Id, edgeId: Id, delta: Vec2, opts: { transaction?: string } = {}): boolean {
-  return changed(run(store, (d, ctx) => applyMoveBlockEdge(d, ctx, blockId, edgeId, delta), opts));
+/** "Bygget kan ikke stå oppå et annet bygg." (no Angre): a unit edit refused or stopped against another building. */
+function unitOnBlockToast(store: EditStore): void {
+  store.getState().showToast({ text: `${EDIT_STRINGS.unitOnBlock}.` });
 }
 
+/**
+ * Move a block edge. Where a template unit would end up on another building the edge stops against it, or the move is
+ * refused, with the toast (last fix round, fifth review; geometry/edit.ts `blockEdgeMoveClamp`); terrace furniture a
+ * unit's edge now covers is pushed out of it, with the `placeUnit` toast.
+ */
+export function moveBlockEdge(store: EditStore, blockId: Id, edgeId: Id, delta: Vec2, opts: { transaction?: string } = {}): boolean {
+  let onBlock = false;
+  const r = run(
+    store,
+    (d, ctx) => {
+      onBlock = blockEdgeMoveClamp(ctx, blockId, edgeId, delta).onBlock;
+      return applyMoveBlockEdge(d, ctx, blockId, edgeId, delta);
+    },
+    opts,
+  );
+  if (onBlock) unitOnBlockToast(store);
+  if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
+  return changed(r);
+}
+
+/** Move a block corner; as `moveBlockEdge` for a unit that would end up on another building and for terrace furniture. */
 export function moveBlockVertex(store: EditStore, blockId: Id, vertexId: Id, p: Vec2, opts: { transaction?: string } = {}): boolean {
-  return changed(run(store, (d, ctx) => applyMoveBlockVertex(d, ctx, blockId, vertexId, p), opts));
+  let onBlock = false;
+  const r = run(
+    store,
+    (d, ctx) => {
+      onBlock = blockVertexMoveClamp(ctx, blockId, vertexId, p).onBlock;
+      return applyMoveBlockVertex(d, ctx, blockId, vertexId, p);
+    },
+    opts,
+  );
+  if (onBlock) unitOnBlockToast(store);
+  if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
+  return changed(r);
 }
 
 /**
  * Move a whole block; refused (toast) for a block with existing area. Furniture it now stands on and did not own is
- * pushed out of it, with the toast of `placeUnit` (final fix round after 2b; geometry/edit.ts `pushFurnitureOut`).
+ * pushed out of it, with the toast of `placeUnit` (final fix round after 2b; geometry/edit.ts `pushFurnitureOut`). A
+ * template unit never ends up on another building (last fix round, fifth review): the move stops at the contact, or
+ * is refused, with the toast `unitOnBlock` (geometry/edit.ts `unitMoveFraction`); nothing follows its walls.
  */
 export function moveBlock(store: EditStore, blockId: Id, delta: Vec2, opts: { transaction?: string } = {}): boolean {
   const v = editable(store);
@@ -723,10 +814,24 @@ export function moveBlock(store: EditStore, blockId: Id, delta: Vec2, opts: { tr
     store.getState().showToast({ text: EDIT_STRINGS.existingBlockMove });
     return false;
   }
-  const r = run(store, (d, ctx) => applyMoveBlock(d, ctx, blockId, delta), opts);
+  let onBlock = false;
+  const r = run(
+    store,
+    (d, ctx) => {
+      const b0 = ctx.base.blocks.find((b) => b.id === blockId);
+      const t = b0 ? unitMoveFraction(ctx.base, b0.polygon.map((x) => x.p), delta, b0) : 1;
+      onBlock = t < 1;
+      return t > 0 ? applyMoveBlock(d, ctx, blockId, scale(delta, t)) : false;
+    },
+    { ...opts, follow: false },
+  );
+  if (onBlock) unitOnBlockToast(store);
   if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
   return changed(r, (x) => x === true);
 }
+
+/** How far (m) "Roter 90°" shifts a turned unit to keep it off another building (else the turn is refused). */
+const TURN_CLEAR_REACH = 0.25;
 
 /**
  * Turn a placed unit (a block with a template) a quarter turn about its centre: 90 = counter-clockwise, −90 =
@@ -747,7 +852,27 @@ export function rotateBlock(store: EditStore, blockId: Id, deg: 90 | -90): boole
     return false;
   }
   if (!block.template) return false;
-  const r = run(store, (d, ctx) => applyRotateBlock(d, ctx, blockId, q === 1 ? 90 : -90));
+  const turn = q === 1 ? 90 : -90;
+  let onBlock = false;
+  const r = run(
+    store,
+    (d, ctx) => {
+      // Never onto another building (last fix round, fifth review): shifted clear when that is a short way, else refused.
+      const b0 = ctx.base.blocks.find((b) => b.id === blockId);
+      const turned = turnedAxis(ctx, blockId, turn);
+      let shift: Vec2 | undefined;
+      if (b0 && turned && unitOverlaps(ctx.base, turned, b0)) {
+        shift = unitClearShift(ctx.base, turned, TURN_CLEAR_REACH, b0) ?? undefined;
+        if (!shift) {
+          onBlock = true;
+          return false;
+        }
+      }
+      return applyRotateBlock(d, ctx, blockId, turn, { shift });
+    },
+    { follow: false },
+  );
+  if (onBlock) unitOnBlockToast(store);
   if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
   return changed(r, (x) => x === true);
 }
@@ -759,6 +884,15 @@ export function rotateBlock(store: EditStore, blockId: Id, deg: 90 | -90): boole
  * «Vedskjul».", Angre undoes the placement). A shed placed with its open front against a block turns half round.
  */
 export function placeUnit(store: EditStore, templateId: string, at: Vec2, rotation90 = 0): Id | null {
+  const v = editable(store);
+  if (!v) return null;
+  // Never on another building (last fix round, fifth review): `snapPoint` shifts the ghost clear when it can; a unit
+  // that would still stand on one is refused with the toast (attached along a wall is fine).
+  const t = unitTemplate(templateId);
+  if (t && unitOverlaps(v, unitFootprint(t, at, rotation90), null)) {
+    unitOnBlockToast(store);
+    return null;
+  }
   const r = run(store, (d, ctx) => applyPlaceUnit(d, ctx, templateId, at, rotation90));
   if (r?.result) pushedToast(store, r.variant, r.result.blockId, r.result.pushedFurniture ?? []);
   return r?.result?.blockId ?? null;
@@ -783,14 +917,48 @@ export function setBlockProps(store: EditStore, blockId: Id, patch: BlockPatch):
   return changed(run(store, (d) => applySetBlockProps(d, blockId, patch)));
 }
 
-/** Bredde / Dybde of a block: moves the east / north edge (`side` 'max', default) or the west / south one. */
+/**
+ * Bredde / Dybde of a block: moves the east / north edge (`side` 'max', default) or the west / south one. A unit grown
+ * over terrace furniture pushes it out, with the `placeUnit` toast (last fix round, fifth review).
+ */
 export function setBlockSize(store: EditStore, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): boolean {
-  return changed(run(store, (d, ctx) => applySetBlockSize(d, ctx, blockId, axis, value, side)));
+  const r = run(store, (d, ctx) => applySetBlockSize(d, ctx, blockId, axis, value, side));
+  if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
+  return changed(r);
 }
 
-/** Copy a block (and what stands in it) `delta` away (default 1 m east and 1 m north); returns the copy's id. */
+/** Gap (m) between a unit and its copy when the copy goes beside it (`duplicateBlock`). */
+const COPY_GAP = 0.5;
+
+/**
+ * Copy a block (and what stands in it) `delta` away (default 1 m east and 1 m north); returns the copy's id. A copy of
+ * a template unit that would stand on a building there (the unit itself, at the default delta) goes beside the unit
+ * instead — east, south, west or north, COPY_GAP away — or is refused with the toast `unitOnBlock` (last fix round,
+ * fifth review: a unit never stands on another building).
+ */
 export function duplicateBlock(store: EditStore, blockId: Id, delta: Vec2 = [1, 1]): Id | null {
-  return run(store, (d) => applyDuplicateBlock(d, blockId, delta))?.result ?? null;
+  const v = editable(store);
+  if (!v) return null;
+  const b = v.blocks.find((x) => x.id === blockId);
+  let at = delta;
+  if (b) {
+    const axis = b.polygon.map((x) => x.p);
+    // The copy is another block: the original is in its way too.
+    const clear = (d: Vec2) => !unitOverlaps(v, axis.map((p) => add(p, d)), { id: '', template: b.template });
+    if (!clear(at)) {
+      const xs = axis.map((p) => p[0]);
+      const ys = axis.map((p) => p[1]);
+      const w = Math.max(...xs) - Math.min(...xs) + COPY_GAP;
+      const h = Math.max(...ys) - Math.min(...ys) + COPY_GAP;
+      const beside = ([[w, 0], [0, -h], [-w, 0], [0, h]] as Vec2[]).find(clear);
+      if (!beside) {
+        unitOnBlockToast(store);
+        return null;
+      }
+      at = beside;
+    }
+  }
+  return run(store, (d) => applyDuplicateBlock(d, blockId, at))?.result ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1263,22 +1431,40 @@ function duplicateOffsets(): readonly (readonly [number, number])[] {
 
 const round6 = (v: number) => Math.round(v * 1e6) / 1e6 || 0;
 
-/** Rooms whose outline comes this close (m) to the original's room are its neighbours (only a wall between them). */
-const DUP_NEIGHBOUR_GAP_M = 0.6;
+/** A copy goes to a neighbouring room only this close (m, centre to centre) to the original (last fix round). */
+const DUP_NEIGHBOUR_REACH_M = 3;
+/** Openings that lead from one room to another: every door and the frameless opening (not windows). */
+const DUP_PASSAGES: ReadonlySet<OpeningType> = new Set<OpeningType>(['door', 'glassDoor', 'slidingDoor', 'saunaDoor', 'opening']);
+/** How far (m) beyond each side of an opening's cut through the wall the room there is probed. */
+const DUP_PASSAGE_PROBE_M = 0.05;
 
-/** Smallest distance (m) between two polygons' outlines (0 when a vertex of one lies inside the other). */
-function polygonGap(a: readonly Vec2[], b: readonly Vec2[]): number {
-  let best = Infinity;
-  for (const [p, q] of [
-    [a, b],
-    [b, a],
-  ] as const) {
-    for (const v of p) {
-      if (pointInPolygon(v, q as Vec2[])) return 0;
-      for (let i = 0; i < q.length; i++) best = Math.min(best, distancePointSegment(v, q[i], q[(i + 1) % q.length]));
+type DupRoom = DerivedVariant['rooms'][number];
+
+/**
+ * The rooms of the storey a door or opening of `room` leads to (no ghosts, no windows): the rooms 5 cm beyond the
+ * sides of the opening's cut through the wall, when `room` is one of them. Rooms that only share a wall or a divider
+ * with `room` are not among them.
+ */
+function roomsThroughPassages(derived: DerivedVariant, room: DupRoom, storeyId: Id): DupRoom[] {
+  const same = (a: DupRoom, b: DupRoom) => a.id === b.id && a.levelId === b.levelId;
+  const rooms = derived.rooms.filter((r) => r.storeyId === storeyId && r.polygon.length >= 3);
+  const out: DupRoom[] = [];
+  for (const w of derived.walls) {
+    if (w.isGhost) continue;
+    for (const o of w.openings) {
+      const fp = o.footprint;
+      if (o.isGhost || !DUP_PASSAGES.has(o.type) || fp.length < 3) continue;
+      const c = scale(fp.reduce((s, q) => add(s, q), [0, 0] as Vec2), 1 / fp.length);
+      const probes = fp.map((q, i) => {
+        const m = scale(add(q, fp[(i + 1) % fp.length]), 0.5);
+        return add(m, scale(unit(sub(m, c)), DUP_PASSAGE_PROBE_M));
+      });
+      const sides = rooms.filter((r) => probes.some((p) => pointInPolygon(p, r.polygon)));
+      if (!sides.some((r) => same(r, room))) continue;
+      for (const r of sides) if (!same(r, room) && !out.some((x) => same(x, r))) out.push(r);
     }
   }
-  return best;
+  return out;
 }
 
 /**
@@ -1290,13 +1476,15 @@ function polygonGap(a: readonly Vec2[], b: readonly Vec2[]): number {
  *  - free and flat items, and wall items without a free wall spot: the original's turn, on a 5 cm grid in the item's
  *    own frame around it, nearest first (beside before in front / behind), within DUP_REACH_M; outside the rooms on the
  *    deck the original stands on, if any;
- *  - nothing free in the room (final fix round): the same in the neighbouring rooms (outlines within
- *    DUP_NEIGHBOUR_GAP_M of the room's), nearest the original first, and anywhere free in such a room beyond the
- *    grid's reach; the copy then gets that room's level (`levelId`).
+ *  - nothing free in the room (final fix round): the same in a room a door or opening of the room leads to
+ *    (`roomsThroughPassages`; last fix round: not a room behind a wall or a divider), nearest the original first, the
+ *    copy within DUP_NEIGHBOUR_REACH_M of the original, and never a dry room for an item that needs a drain (no new
+ *    'furniture-needs-wet-room'; door zones are obstacles anyway). The copy then gets that room's level (`levelId`),
+ *    and `room` names the room (for the toast).
  * Null when nothing is free (`duplicateFurniture` refuses with a toast): a copy never stands in a wall or on another
  * item (before, a full room fell back to a spot that overlapped other furniture, or to a fixed offset into the walls).
  */
-export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem): { position: Vec2; rotationDeg: number; levelId?: Id } | null {
+export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem): { position: Vec2; rotationDeg: number; levelId?: Id; room?: DupRoom } | null {
   const df = derived.furniture.find((x) => x.id === item.id);
   if (!df || df.footprint.length < 3) return null;
   const size = { w: item.size?.w ?? 1, d: item.size?.d ?? 1, h: item.size?.h ?? 1 };
@@ -1322,38 +1510,42 @@ export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem)
   };
   type DRoom = DerivedVariant['rooms'][number];
   // A free spot in room `r` (null: outside the rooms, on the original's deck if any), nearest the original first;
-  // `anywhere`: else wherever the room has one (a neighbouring room beyond the grid's reach).
-  const spotIn = (r: DRoom | null, anywhere: boolean): { position: Vec2; rotationDeg: number } | null => {
+  // `anywhere`: else wherever the room has one (a neighbouring room beyond the grid's reach); `ok`: where it may stand.
+  const spotIn = (r: DRoom | null, anywhere: boolean, ok: (p: Vec2) => boolean = () => true): { position: Vec2; rotationDeg: number } | null => {
     if (r && !spec.flat && spec.mode !== 'free') {
       // Tap placement searches from the room's label point: start it at the original instead.
       const p = tapPlacement(derived, storeyId, spec, item.position, { ...r, labelPoint: item.position });
-      if (p.free) return { position: p.position, rotationDeg: p.rotationDeg };
+      if (p.free && ok(p.position)) return { position: p.position, rotationDeg: p.rotationDeg };
     }
     for (const [i, j] of duplicateOffsets()) {
       const u = i * DUP_STEP_M;
       const v = j * DUP_STEP_M;
       const at: Vec2 = [round6(item.position[0] + c * u - sn * v), round6(item.position[1] + sn * u + c * v)];
       if (r && !pointInPolygon(at, r.polygon)) continue;
+      if (!ok(at)) continue;
       const fp = rectFootprint(at, item.rotationDeg, size.w, size.d);
       if (r ? !insideRoom(fp, r) : deck && !fp.every((q) => pointInPolygon(q, deck.polygon))) continue;
       if (clear(fp)) return { position: at, rotationDeg: item.rotationDeg };
     }
     if (r && anywhere) {
       const p = tapPlacement(derived, storeyId, spec, r.labelPoint, r);
-      if (p.free) return { position: p.position, rotationDeg: p.rotationDeg };
+      if (p.free && ok(p.position)) return { position: p.position, rotationDeg: p.rotationDeg };
     }
     return null;
   };
   const here = spotIn(room, false);
   if (here || !room) return here;
   const away = (r: DRoom) => (pointInPolygon(item.position, r.polygon) ? 0 : Math.min(...r.polygon.map((q, i) => distancePointSegment(item.position, q, r.polygon[(i + 1) % r.polygon.length]))));
-  const neighbours = derived.rooms
-    .filter((r) => r.storeyId === storeyId && r.polygon.length >= 3 && !(r.id === room.id && r.levelId === room.levelId) && polygonGap(room.polygon, r.polygon) <= DUP_NEIGHBOUR_GAP_M)
+  const drain = catalogItem(item.catalogId)?.needsDrain === true;
+  const wet = (r: DRoom) => r.room?.type !== undefined && WET_ROOM_TYPES.has(r.room.type);
+  const neighbours = roomsThroughPassages(derived, room, storeyId)
+    .filter((r) => !drain || wet(r))
     .map((r) => ({ r, d: away(r) }))
     .sort((a, b) => a.d - b.d);
+  const close = (p: Vec2) => dist(p, item.position) <= DUP_NEIGHBOUR_REACH_M + 1e-9;
   for (const { r } of neighbours) {
-    const there = spotIn(r, true);
-    if (there) return { ...there, levelId: r.levelId };
+    const there = spotIn(r, true, close);
+    if (there) return { ...there, levelId: r.levelId, room: r };
   }
   return null;
 }
@@ -1363,9 +1555,11 @@ export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem)
  * back-to-wall item against the nearest free wall spot, anything else with the original's turn), else in a
  * neighbouring room (with that room's level); returns the copy's id. Final fix round: with no free spot there either,
  * nothing is added and the toast EDIT_STRINGS.duplicateNoSpace says so (before: a fixed 0,3 m offset, into the walls).
+ * Last fix round: a copy in another room says where it is (EDIT_STRINGS.copyIn: «Kopien står i «Gang».»).
  */
 export function duplicateFurniture(store: EditStore, furnitureId: Id): Id | null {
   let noSpace = false as boolean;
+  let elsewhere: DupRoom | null = null;
   const id =
     run(
       store,
@@ -1378,6 +1572,7 @@ export function duplicateFurniture(store: EditStore, furnitureId: Id): Id | null
           noSpace = true;
           return null;
         }
+        elsewhere = at.room ?? null;
         return applyAddFurniture(d, {
           catalogId: f.catalogId,
           position: at.position,
@@ -1391,6 +1586,8 @@ export function duplicateFurniture(store: EditStore, furnitureId: Id): Id | null
       FURNITURE_RUN,
     )?.result ?? null;
   if (noSpace) store.getState().showToast({ text: EDIT_STRINGS.duplicateNoSpace });
+  const there = elsewhere as DupRoom | null;
+  if (id && there) store.getState().showToast({ text: EDIT_STRINGS.copyIn(there.room?.name?.trim() || null) });
   return id;
 }
 
@@ -2028,9 +2225,13 @@ function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers)
       const shift = scale(nL, sres.offset);
       const inner = block.wall.thickness - block.wall.outerOffset;
       const sign = signedAreaOf(block.polygon.map((x) => x.p)) >= 0 ? 1 : -1;
-      const [na, nb] = [add(a, shift), add(b, shift)];
+      // A unit's edge stops against another building (last fix round, fifth review): the outline stops there too.
+      const clamp = blockEdgeMoveClamp({ base, derived: session.baseDerived }, block.id, session.targetId, shift);
+      const shown = clamp.onBlock ? scale(shift, clamp.k) : shift;
+      const [na, nb] = [add(a, shown), add(b, shown)];
+      const hint = clamp.onBlock ? { hint: EDIT_STRINGS.unitOnBlock } : {};
       return {
-        feedback: { indicators: sres.indicators, chips: edgeChips(session, ctx, block.id, inner, sign, na, nb), ghost: [[copy(a), copy(b)]] },
+        feedback: { indicators: sres.indicators, chips: edgeChips(session, ctx, block.id, inner, sign, na, nb), ghost: [[copy(a), copy(b)]], ...hint },
         target: [[na, nb]],
         recipe: (dr, c) => applyMoveBlockEdge(dr, c, block.id, session.targetId, shift),
         resultChips: (v) => {
@@ -2048,10 +2249,14 @@ function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers)
       const v = block.polygon[i];
       const sres = snap(ctx, add(v.p, delta), { radius, fine });
       const pts = block.polygon.map((x) => x.p);
+      // A unit's corner stops against another building (last fix round, fifth review): the outline stops there too.
+      const clamp = blockVertexMoveClamp({ base, derived: session.baseDerived }, block.id, v.id, sres.point);
+      const shown = clamp.onBlock ? add(v.p, scale(sub(sres.point, v.p), clamp.k)) : sres.point;
+      const hint = clamp.onBlock ? { hint: EDIT_STRINGS.unitOnBlock } : {};
       // Gable / mono blocks keep their rectangle (geometry/edit.ts keepsRectangle): both adjacent edges move.
       return {
-        feedback: { indicators: sres.indicators, chips: [], ghost: [pts.map(copy)] },
-        target: [vertexMoved(pts, i, sres.point, block.roof.type !== 'flat')],
+        feedback: { indicators: sres.indicators, chips: [], ghost: [pts.map(copy)], ...hint },
+        target: [vertexMoved(pts, i, shown, block.roof.type !== 'flat')],
         recipe: (dr, c) => applyMoveBlockVertex(dr, c, block.id, v.id, sres.point),
       };
     }
@@ -2063,9 +2268,22 @@ function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers)
       // shorter drag is a tap, so a phone could not attach a unit otherwise (polish round 2b).
       const contactReach = modifiers.dragThresholdM ?? radius * DRAG_THRESHOLD_PER_SNAP_RADIUS;
       const sres = snapPolygon(ctx, poly, { radius, fine, contactReach });
-      const d = add(delta, sres.delta);
+      let d = add(delta, sres.delta);
+      // Never onto another building (last fix round, fifth review): shifted clear within the placement reach (a unit
+      // slides along the wall it is pushed into), else stopped where it touches it, with the hint.
+      const axis = block.polygon.map((x) => x.p);
+      let hint: { hint?: string } = {};
+      const at = axis.map((p) => add(p, d));
+      if (unitOverlaps(base, at, block)) {
+        const clear = unitClearShift(base, at, unitPlacementReach(radius, modifiers.coarse === true), block);
+        if (clear) d = add(d, clear);
+        else {
+          d = scale(d, unitMoveFraction(base, axis, d, block));
+          hint = { hint: EDIT_STRINGS.unitOnBlock };
+        }
+      }
       return {
-        feedback: { indicators: sres.indicators, chips: [], ghost: [block.polygon.map((x) => copy(x.p))] },
+        feedback: { indicators: sres.indicators, chips: [], ghost: [block.polygon.map((x) => copy(x.p))], ...hint },
         target: [block.polygon.map((x) => add(x.p, d))],
         recipe: (dr, c) => applyMoveBlock(dr, c, block.id, d),
       };
@@ -2188,7 +2406,14 @@ export function updateDrag(store: EditStore, session: DragSession | null, pointe
   const plan = dragPlan(session, pointer, modifiers);
   if (!plan) return EMPTY_FEEDBACK;
   // Openings and outdoor things never change a room face: no room reconciliation (and no derive) per frame.
-  const runOpts: RunOpts = { base: session.baseVariant, baseDerived: session.baseDerived, toastMerges: false, reconcile: !NO_ROOM_DRAGS.has(session.kind) };
+  const runOpts: RunOpts = {
+    base: session.baseVariant,
+    baseDerived: session.baseDerived,
+    toastMerges: false,
+    reconcile: !NO_ROOM_DRAGS.has(session.kind),
+    // A whole block carries its own furniture; nothing else follows its walls (moveBlock).
+    follow: session.kind !== 'block',
+  };
   const r = run(store, plan.recipe, runOpts);
   if (r) {
     session.merges = r.merges;
@@ -2358,7 +2583,7 @@ export function endDrag(store: EditStore, session: DragSession | null): void {
   session.done = true;
   store.getState().commitTransaction();
   mergeToasts(store, session.merges);
-  if (session.kind === 'block' && session.ownerId && session.pushed?.length) {
+  if ((session.kind === 'block' || session.kind === 'blockEdge' || session.kind === 'blockVertex') && session.ownerId && session.pushed?.length) {
     pushedToast(store, selectActiveVariant(store.getState()), session.ownerId, session.pushed);
   }
 }
@@ -2388,6 +2613,11 @@ export interface ToolSnapOptions {
 export interface ToolSnapResult extends SnapResult {
   /** Nytt bygg: the unit's footprint at the snapped centre. */
   ghost?: Vec2[][];
+  /**
+   * Nytt bygg: the ghost stands on another building and cannot be shifted clear within reach, so a tap there is
+   * refused (`placeUnit`): EDIT_STRINGS.unitOnBlock for the hint line (last fix round, fifth review).
+   */
+  hint?: string;
   /** Dør/vindu: the host under the point and the offset of the point along it. */
   host?: { host: OpeningHost; offset: number };
 }
@@ -2439,9 +2669,39 @@ export function snapPoint(store: EditStore, p: Vec2, opts: ToolSnapOptions): Too
       const t = unitTemplate(opts.templateId);
       if (!t) return snap(ctx, p, { radius, fine, points: false, lines: false });
       const poly = unitFootprint(t, p, opts.rotation90 ?? 0);
-      const sres = snapPolygon(ctx, poly, { radius: unitPlacementReach(radius, opts.modifiers?.coarse === true), fine });
-      const at = add(p, sres.delta);
-      return { point: at, kind: sres.indicators.length > 0 ? 'line' : 'grid', indicators: sres.indicators, chips: [], ghost: [unitFootprint(t, at, opts.rotation90 ?? 0)] };
+      const reach = unitPlacementReach(radius, opts.modifiers?.coarse === true);
+      const sres = snapPolygon(ctx, poly, { radius: reach, fine });
+      let at = add(p, sres.delta);
+      let indicators = sres.indicators;
+      // Never on another building (last fix round, fifth review): shifted clear when that is within reach — or, for a
+      // tap outside every building, within half the unit's size, so it stands against the wall it was tapped beside —
+      // from the snapped place, else from the tapped one (a snap may have pulled it in); else `placeUnit` refuses it, and
+      // `hint` says so while the ghost stands there.
+      const v = selectActiveVariant(s);
+      let hint: { hint?: string } = {};
+      if (unitOverlaps(v, unitFootprint(t, at, opts.rotation90 ?? 0), null)) {
+        const outside = !v.blocks.some((b) => pointInPolygon(p, b.polygon.map((x) => x.p)));
+        const far = outside ? Math.max(reach, Math.max(t.w, t.d) / 2) : reach;
+        const clearOf = (c: Vec2): Vec2 | null => {
+          const shift = unitClearShift(v, unitFootprint(t, c, opts.rotation90 ?? 0), far, null);
+          return shift ? add(c, shift) : null;
+        };
+        const snapped = clearOf(at);
+        const tapped = snapped ? null : clearOf(p);
+        if (snapped) at = snapped;
+        else if (tapped) {
+          at = tapped;
+          indicators = [];
+        } else hint = { hint: EDIT_STRINGS.unitOnBlock };
+      }
+      return {
+        point: at,
+        kind: indicators.length > 0 ? 'line' : 'grid',
+        indicators,
+        chips: [],
+        ghost: [unitFootprint(t, at, opts.rotation90 ?? 0)],
+        ...hint,
+      };
     }
     case 'opening': {
       const near = hostNear(derived, storeyId, p, Math.max(radius * 2, REHOST_DISTANCE));

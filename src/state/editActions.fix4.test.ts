@@ -133,15 +133,19 @@ describe('a unit placed against or over the house leaves the house\'s furniture 
   });
 
   it('the review\'s other cases: north of the main house, at Hovedbad, over Pantry, over Stue — every item stays', () => {
-    const cases: [Vec2, boolean][] = [
-      [[14.4, 6.4], true],
-      [[21.0, 1.1], true],
-      [[17.2, -1.2], false],
-      [[16, 0.8], false],
+    // Over Pantry and over Stue (unsnapped) the unit would stand on the house: refused since the last fix round
+    // (fifth review), so nothing changes there either.
+    const cases: [Vec2, boolean, boolean][] = [
+      [[14.4, 6.4], true, true],
+      [[21.0, 1.1], true, true],
+      [[17.2, -1.2], false, false],
+      [[16, 0.8], false, false],
     ];
-    for (const [tap, snapped] of cases) {
+    for (const [tap, snapped, placed] of cases) {
       const s = proposal();
-      expect(place(s, tap, 'vedskjul', snapped ? LAPTOP : null), J(tap)).not.toBeNull();
+      const id = place(s, tap, 'vedskjul', snapped ? LAPTOP : null);
+      if (placed) expect(id, J(tap)).not.toBeNull();
+      else expect(id, J(tap)).toBeNull();
       expect(J(V(s).furniture), J(tap)).toBe(J(SEED.furniture));
     }
   });
@@ -252,7 +256,8 @@ describe('a unit moved, dragged or turned onto terrace furniture pushes it out i
 
   it('its own furniture still goes with it, and a turned Anneks over the terrace owns none of the terrace furniture', () => {
     const s = proposal();
-    const id = A.placeUnit(s, 'anneks', [14.5, -1.5], 0) as string;
+    // (At 14,5 the Anneks reached 0,5 m into the wing, which is refused since the final fix round.)
+    const id = A.placeUnit(s, 'anneks', [13.9, -1.5], 0) as string;
     expect(A.rotateBlock(s, id, 90)).toBe(true);
     for (const f of ['fu-terrasse-1', 'fu-terrasse-2', 'fu-terrasse-3', 'fu-terrasse-4']) expect(furnitureRoom(s, f), f).toBeUndefined();
     const shed = A.placeUnit(s, 'vedskjul', [13, 9.35], 0) as string;
@@ -433,8 +438,9 @@ describe('a shed attached with its open front against a building turns half roun
       expect(kinds, `${gap}`).not.toContain('opening-on-removed-edge');
       // The wing's gable end rises above the shed (a placed unit never asks the wing's ridge to meet it): no warning.
       expect(D(s).warnings, `${gap}`).toEqual([]);
-      // The roof turns with it (the low side now against the wing).
-      expect(V(s).blocks.find((x) => x.id === id)?.roof).toMatchObject({ type: 'mono', slopeTo: 'S' });
+      // A lean-to against the wing: high against its wall, draining north, away from it (final fix round, fourth
+      // review; before, the low eave stood against the wing).
+      expect(V(s).blocks.find((x) => x.id === id)?.roof).toMatchObject({ type: 'mono', slopeTo: 'N' });
     }
   });
 

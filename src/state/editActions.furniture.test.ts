@@ -175,16 +175,57 @@ describe('placing and editing', () => {
     const [a, b] = backEdge(copy.item);
     const onEdge = (p: Vec2) => room.polygon.some((q, i) => distancePointSegment(p, q, room.polygon[(i + 1) % room.polygon.length]) < 1e-6);
     expect(onEdge(a) && onEdge(b)).toBe(true);
-    // The kitchen's tall cabinet has no free spot left in Kjøkken: the copy goes to the room next door (final fix
-    // round; before, it overlapped the counter and the island), free of walls and furniture.
-    const tall = A.duplicateFurniture(store, 'fu-kjokken-1') as string;
-    const d2 = D(store);
-    const tallCopy = d2.furniture.find((f) => f.id === tall)!;
-    expect(tallCopy.roomId).toBeDefined();
-    expect(tallCopy.roomId).not.toBe('room-kjokken');
-    expect(tallCopy.collisions).toEqual([]);
-    expect(tallCopy.blocksDoors).toEqual([]);
-    expect(d2.warnings.filter((w) => JSON.stringify(w).includes(tall))).toEqual([]);
+    // The kitchen's tall cabinet has no free spot left in Kjøkken (before the final fix round it overlapped the
+    // counter and the island). Last fix round: Kjøkken has no door or opening to another room (only dividers), so
+    // nothing is added (before: the copy went into the Vindfang).
+    const n = V(store).furniture.length;
+    expect(A.duplicateFurniture(store, 'fu-kjokken-1')).toBeNull();
+    expect(V(store).furniture.length).toBe(n);
+    expect(store.getState().toasts.map((t) => t.text)).toContain(nb.editor.duplicateNoSpace);
+  });
+
+  it('duplicate into another room (last fix round): only through a door or opening, within 3 m, never a new warning; the toast names the room', () => {
+    // The review's copies that made no sense are refused: the sauna bench (before: into Stue, 11.5 m away), the
+    // washing machine (before: into Bod, with 'furniture-needs-wet-room'), the dining table for 8 (before: into
+    // Passasje, behind a divider), and the toilet, the 90 bed, the pantry shelf and the reading nook's rug.
+    for (const id of ['fu-badstue-1', 'fu-teknisk-1', 'fu-spiseplass-1', 'fu-wc-1', 'fu-sov3-1', 'fu-pantry-1', 'fu-leseskrok-5']) {
+      const store = proposal();
+      const n = V(store).furniture.length;
+      const warnings = D(store).warnings.length;
+      expect(A.duplicateFurniture(store, id), id).toBeNull();
+      expect(V(store).furniture.length, id).toBe(n);
+      expect(D(store).warnings.length, id).toBe(warnings);
+      expect(store.getState().toasts.map((t) => t.text), id).toEqual([nb.editor.duplicateNoSpace]);
+    }
+    // The Mellombygg's bench: no room beside it, so the copy goes through door-mellom-vf into the Vindfang, 0.62 m
+    // away, with the toast; Gang's rug through d-sov-ny into Soverom (ny fløy).
+    for (const [id, roomId, name] of [
+      ['fu-mellombygg-1', 'room-vindfang', 'Vindfang'],
+      ['fu-gang-1', 'room-sov-ny', 'Soverom (ny fløy)'],
+    ] as const) {
+      const store = proposal();
+      const warnings = D(store).warnings.length;
+      const copyId = A.duplicateFurniture(store, id) as string;
+      expect(copyId, id).toBeTruthy();
+      const d = D(store);
+      const copy = d.furniture.find((f) => f.id === copyId)!;
+      expect(copy.roomId, id).toBe(roomId);
+      expect(Math.hypot(copy.item.position[0] - pos(store, id)[0], copy.item.position[1] - pos(store, id)[1]), id).toBeLessThanOrEqual(3);
+      expect(copy.collisions, id).toEqual([]);
+      expect(copy.blocksDoors, id).toEqual([]);
+      expect(d.warnings.length, id).toBe(warnings);
+      expect(store.getState().toasts.map((t) => t.text), id).toEqual([`Kopien står i «${name}».`]);
+    }
+    // The armchair in Soverom (ny fløy): four copies fit in the room itself (no toast), then nothing is added.
+    const store = proposal();
+    let cur = 'fu-sov-ny-6';
+    for (let k = 0; k < 4; k++) {
+      cur = A.duplicateFurniture(store, cur) as string;
+      expect(D(store).furniture.find((f) => f.id === cur)?.roomId, `copy ${k + 1}`).toBe('room-sov-ny');
+    }
+    expect(store.getState().toasts).toEqual([]);
+    expect(A.duplicateFurniture(store, cur)).toBeNull();
+    expect(store.getState().toasts.map((t) => t.text)).toEqual([nb.editor.duplicateNoSpace]);
   });
 
   it('duplicate with no free spot in the room nor next to it (fu-sov1-1): refused with the toast, never into a wall', () => {

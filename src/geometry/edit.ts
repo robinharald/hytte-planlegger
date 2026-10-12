@@ -123,7 +123,16 @@
  * placed over the terrace table and moved later leaves the table (fix round after 2b). Final fix round after 2b: only
  * furniture outside every block is pushed (never the house's), clear of walls and door swings; a block moved or turned
  * onto terrace furniture pushes it out too (`EditContext.pushed`), so a unit never takes it over; a Vedskjul placed
- * with its open front against another block turns half round.
+ * with its open front against another block turns half round. Last fix round, fifth review: a template unit never
+ * ends up on another block (`unitOverlaps`: deeper than UNIT_OVERLAP_TOL; along a wall is fine) — edge and corner moves
+ * are cut back to the contact (`unitClampedPlan`; `blockEdgeMoveClamp` / `blockVertexMoveClamp` tell the drag), and for
+ * placements, whole-block moves and turns state/editActions.ts shifts it clear (`unitClearShift`), stops it at the
+ * contact (`unitMoveFraction`) or refuses; a whole-block move, turn or delete takes only what is the block's own
+ * (`blockOwnership`: new walls in no other block, its rooms — `Room.unitId` — furniture and structure in no other
+ * block), so a unit standing on the house leaves the house's walls, names and furniture; a unit's edge or corner moved
+ * over terrace furniture pushes it out (`applyUnitPolygons`); a Vedskjul with its back against a block gets a lean-to
+ * roof, high against that wall. Wall moves and end drags record on each wall they carry `Wall.carriedBy` (`markCarried`)
+ * for "Ta tilbake".
  *
  * Rooms (§3.5): `reconcileRooms(baseDerived, next, nextDerived, { carried })` — each Room stays with a face of its
  * storey that overlaps its previous inner polygon (unchanged faces are kept without clipping; a room a whole-block
@@ -543,6 +552,7 @@ export function healGhosts(draft: Variant): void {
     const live = draft.walls.find((w) => w.id === orig);
     if (!live || live.status !== 'new' || !sameWallGeometry(live, g)) continue;
     live.status = 'existing';
+    delete live.carriedBy;
     for (const o of draft.openings) {
       if (o.host.kind === 'wall' && o.host.wallId === g.id) o.host = { kind: 'wall', wallId: orig };
     }
@@ -1369,8 +1379,24 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
   if (!w) return false;
   w.a = copy(ends.a);
   w.b = copy(ends.b);
+  delete w.carriedBy;
   pullBackOpenings(draft, ctx, [...changedWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
+  markCarried(draft, ctx, wallId, changes.keys());
   return true;
+}
+
+/**
+ * Record on each moved wall among `ids` (new, with a ghost, changed by this edit) that wall `by`'s move carried it, and
+ * where to (`Wall.carriedBy`; last fix round, fifth review): "Ta tilbake" on `by` brings back only those still there.
+ */
+function markCarried(draft: Variant, ctx: EditContext, by: Id, ids: Iterable<Id>): void {
+  for (const id of ids) {
+    const w = draft.walls.find((x) => x.id === id);
+    const w0 = ctx.base.walls.find((x) => x.id === id);
+    if (!w || !w0 || w.status !== 'new' || !draft.walls.some((g) => g.id === ghostIdOf(id))) continue;
+    if (samePoint(w.a, w0.a, TINY) && samePoint(w.b, w0.b, TINY)) continue;
+    w.carriedBy = { by, a: copy(w.a), b: copy(w.b) };
+  }
 }
 
 /** Whether the clamped ends of a wall move (`wallEndPlans`) are all carried by a coincident wall that gets longer. */
@@ -1527,8 +1553,10 @@ export function applyMoveWallEndpoint(draft: Variant, ctx: EditContext, wallId: 
   if (!w) return false;
   w.a = copy(na);
   w.b = copy(nb);
+  delete w.carriedBy;
   keepWallOpenings(draft, wallId, w0.a, w0.b, true);
   pullBackOpenings(draft, ctx, [...changedWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
+  markCarried(draft, ctx, wallId, changes.keys());
   return true;
 }
 
@@ -2008,8 +2036,58 @@ function validBlockPolygon(old: Vec2[], next: Vec2[]): boolean {
   return Math.sign(a0) === Math.sign(a1) && Math.abs(a1) >= MIN_BLOCK_AREA && !isSelfIntersecting(next);
 }
 
-/** New polygons of the blocks in `shifts`, scaled back to the largest valid fraction (binary search). */
-function polygonsForShifts(ctx: EditContext, shifts: ShiftMap): Map<Id, Vec2[]> {
+/** What a block edge / corner edit applies (`shiftsPlan`, `vertexPlan`). */
+interface BlockEditPlan {
+  /** The new polygons of the blocks that change (empty: nothing). */
+  polys: Map<Id, Vec2[]>;
+  /** The fraction of the move they apply. */
+  k: number;
+  /** Cut back (or refused, k 0) because a template unit would end up on another block. */
+  onBlock: boolean;
+}
+
+/**
+ * Whether the new polygons `polys` put a template unit on another block (or another block on one) deeper than `tol`
+ * where the base had them apart (last fix round, fifth review).
+ */
+function unitsOnBlocks(ctx: EditContext, polys: ReadonlyMap<Id, Vec2[]>, tol: number): boolean {
+  const pieces = (b: Block, now: boolean) => convexPieces((now ? polys.get(b.id) : undefined) ?? b.polygon.map((x) => x.p));
+  for (const u of ctx.base.blocks) {
+    if (u.template === undefined) continue;
+    for (const o of ctx.base.blocks) {
+      if (o.id === u.id || (!polys.has(u.id) && !polys.has(o.id))) continue;
+      if (maxDepth(pieces(u, true), pieces(o, true)) <= tol) continue;
+      if (maxDepth(pieces(u, false), pieces(o, false)) > UNIT_OVERLAP_TOL) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * An edge / corner edit cut back so that no template unit ends up on another block (last fix round, fifth review):
+ * the moving edge stops at the contact; refused (k 0) when it cannot move at all. `build(k)`: the polygons for the
+ * fraction k of the move; `valid`: whether they are valid; `k0`: the largest valid fraction; `size`: the move (m).
+ */
+function unitClampedPlan(ctx: EditContext, build: (k: number) => Map<Id, Vec2[]>, valid: (polys: Map<Id, Vec2[]>) => boolean, k0: number, size: number): BlockEditPlan {
+  const polys = k0 > 0 ? build(k0) : new Map<Id, Vec2[]>();
+  if (k0 <= 0 || !unitsOnBlocks(ctx, polys, UNIT_OVERLAP_TOL)) return { polys, k: k0, onBlock: false };
+  let lo = 0;
+  let hi = k0;
+  for (let i = 0; i < 60; i++) {
+    const m = (lo + hi) / 2;
+    const p = build(m);
+    if (valid(p) && !unitsOnBlocks(ctx, p, 1e-10)) lo = m;
+    else hi = m;
+  }
+  return lo * size > SAME ? { polys: build(lo), k: lo, onBlock: true } : { polys: new Map(), k: 0, onBlock: true };
+}
+
+/**
+ * New polygons of the blocks in `shifts`, scaled back to the largest valid fraction (binary search), then further where
+ * a unit would end up on a block (`unitClampedPlan`).
+ */
+function shiftsPlan(ctx: EditContext, shifts: ShiftMap): BlockEditPlan {
   const build = (k: number) => {
     const out = new Map<Id, Vec2[]>();
     for (const [blockId, m] of shifts) {
@@ -2024,8 +2102,8 @@ function polygonsForShifts(ctx: EditContext, shifts: ShiftMap): Map<Id, Vec2[]> 
       const block = ctx.base.blocks.find((b) => b.id === id);
       return block ? validBlockPolygon(block.polygon.map((v) => v.p), p) : false;
     });
-  const full = build(1);
-  if (ok(full)) return full;
+  const size = Math.max(0, ...[...shifts.values()].flatMap((m) => [...m.values()].map(Math.abs)));
+  if (ok(build(1))) return unitClampedPlan(ctx, build, ok, 1, size);
   let lo = 0;
   let hi = 1;
   for (let i = 0; i < 20; i++) {
@@ -2033,7 +2111,7 @@ function polygonsForShifts(ctx: EditContext, shifts: ShiftMap): Map<Id, Vec2[]> 
     if (ok(build(m))) lo = m;
     else hi = m;
   }
-  return lo > 0 ? build(lo) : new Map();
+  return unitClampedPlan(ctx, build, ok, lo, size);
 }
 
 /** Point P on the old segment (oa, ob) mapped onto the new one: a translation keeps the along-coordinate, else affine. */
@@ -2166,27 +2244,42 @@ function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec
   return true;
 }
 
-/** Move block edge `edgeId` by `delta` (its component along the outward normal), junction partners following. */
-export function applyMoveBlockEdge(draft: Variant, ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): boolean {
+/** The plan of `applyMoveBlockEdge` (null: nothing to move). */
+function edgePlan(ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): BlockEditPlan | null {
   const block = ctx.base.blocks.find((b) => b.id === blockId);
   const i = block ? block.polygon.findIndex((v) => v.id === edgeId) : -1;
-  if (!block || i < 0) return false;
+  if (!block || i < 0) return null;
   const n = outwardNormal(block.polygon.map((v) => v.p), i);
   const shift = dot(delta, n);
-  if (Math.abs(shift) < TINY) return false;
-  const polys = polygonsForShifts(ctx, propagateShifts(ctx, [{ blockId, edgeIndex: i, shift }]));
-  return applyBlockPolygons(draft, ctx, polys);
+  if (Math.abs(shift) < TINY) return null;
+  return shiftsPlan(ctx, propagateShifts(ctx, [{ blockId, edgeIndex: i, shift }]));
 }
 
-/** Move block vertex `vertexId` to p: both adjacent edges for gable / mono blocks, the vertex alone for flat ones. */
-export function applyMoveBlockVertex(draft: Variant, ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): boolean {
+/** Move block edge `edgeId` by `delta` (its component along the outward normal), junction partners following. */
+export function applyMoveBlockEdge(draft: Variant, ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): boolean {
+  const plan = edgePlan(ctx, blockId, edgeId, delta);
+  return plan !== null && applyUnitPolygons(draft, ctx, plan.polys);
+}
+
+/**
+ * How much of an edge move `applyMoveBlockEdge` applies (last fix round, fifth review): `k` the fraction, `onBlock`
+ * when it was cut back (or refused, k 0) because a template unit would end up on another block. The drag preview
+ * draws the same clamp and shows the hint.
+ */
+export function blockEdgeMoveClamp(ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): { k: number; onBlock: boolean } {
+  const plan = edgePlan(ctx, blockId, edgeId, delta);
+  return plan ? { k: plan.k, onBlock: plan.onBlock } : { k: 1, onBlock: false };
+}
+
+/** The plan of `applyMoveBlockVertex` (null: nothing to move). */
+function vertexPlan(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): BlockEditPlan | null {
   const block = ctx.base.blocks.find((b) => b.id === blockId);
   const i = block ? block.polygon.findIndex((v) => v.id === vertexId) : -1;
-  if (!block || i < 0) return false;
+  if (!block || i < 0) return null;
   const pts = block.polygon.map((v) => v.p);
   const n = pts.length;
   const v = pts[i];
-  if (samePoint(v, p, TINY)) return false;
+  if (samePoint(v, p, TINY)) return null;
   if (keepsRectangle(block)) {
     const prev = (i - 1 + n) % n;
     const d = sub(p, v);
@@ -2194,20 +2287,55 @@ export function applyMoveBlockVertex(draft: Variant, ctx: EditContext, blockId: 
       { blockId, edgeIndex: prev, shift: dot(d, outwardNormal(pts, prev)) },
       { blockId, edgeIndex: i, shift: dot(d, outwardNormal(pts, i)) },
     ];
-    return applyBlockPolygons(draft, ctx, polygonsForShifts(ctx, propagateShifts(ctx, starts)));
+    return shiftsPlan(ctx, propagateShifts(ctx, starts));
   }
-  const polys = new Map<Id, Vec2[]>();
-  const next = pts.map((q, k) => (k === i ? copy(p) : copy(q)));
-  if (!validBlockPolygon(pts, next)) return false;
-  polys.set(blockId, next);
-  for (const other of ctx.base.blocks) {
-    if (other.id === blockId) continue;
-    const opts = other.polygon.map((x) => x.p);
-    if (!opts.some((q) => dist(q, v) <= COINCIDE)) continue;
-    const moved = opts.map((q) => (dist(q, v) <= COINCIDE ? copy(p) : copy(q)));
-    if (validBlockPolygon(opts, moved)) polys.set(other.id, moved);
-  }
-  return applyBlockPolygons(draft, ctx, polys);
+  const build = (k: number) => {
+    const q = copy(add(v, scale(sub(p, v), k)));
+    const polys = new Map<Id, Vec2[]>();
+    polys.set(
+      blockId,
+      pts.map((x, j) => (j === i ? q : copy(x))),
+    );
+    for (const other of ctx.base.blocks) {
+      if (other.id === blockId) continue;
+      const opts = other.polygon.map((x) => x.p);
+      if (!opts.some((x) => dist(x, v) <= COINCIDE)) continue;
+      const moved = opts.map((x) => (dist(x, v) <= COINCIDE ? q : copy(x)));
+      if (validBlockPolygon(opts, moved)) polys.set(other.id, moved);
+    }
+    return polys;
+  };
+  const valid = (polys: Map<Id, Vec2[]>) => {
+    const own = polys.get(blockId);
+    return own !== undefined && validBlockPolygon(pts, own);
+  };
+  if (!valid(build(1))) return null;
+  return unitClampedPlan(ctx, build, valid, 1, dist(v, p));
+}
+
+/** Move block vertex `vertexId` to p: both adjacent edges for gable / mono blocks, the vertex alone for flat ones. */
+export function applyMoveBlockVertex(draft: Variant, ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): boolean {
+  const plan = vertexPlan(ctx, blockId, vertexId, p);
+  return plan !== null && applyUnitPolygons(draft, ctx, plan.polys);
+}
+
+/** As `blockEdgeMoveClamp`, for `applyMoveBlockVertex`. */
+export function blockVertexMoveClamp(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): { k: number; onBlock: boolean } {
+  const plan = vertexPlan(ctx, blockId, vertexId, p);
+  return plan ? { k: plan.k, onBlock: plan.onBlock } : { k: 1, onBlock: false };
+}
+
+/**
+ * `applyBlockPolygons`, then the furniture that a template unit among the changed blocks now stands over and did not
+ * own before goes out of it (`pushOutOfMoved`, toasted by the caller; last fix round, fifth review: a unit enlarged
+ * by its edge over the terrace table owned it, carried it on the next move and deleted it with itself).
+ */
+function applyUnitPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec2[]>): boolean {
+  const units = ctx.base.blocks.filter((b) => b.template !== undefined && polys.has(b.id));
+  const owned = new Map(units.map((b) => [b.id, new Set(ctx.base.furniture.filter(blockOwnership(ctx.base, ctx, b).furniture).map((f) => f.id))]));
+  if (!applyBlockPolygons(draft, ctx, polys)) return false;
+  for (const b0 of units) pushOutOfMoved(draft, ctx, b0, owned.get(b0.id) ?? new Set());
+  return true;
 }
 
 /** On or inside a polygon within `tol`. */
@@ -2384,6 +2512,187 @@ function blockStoreys(v: Variant, block: Block): Set<Id> {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// A unit never stands on another block (last fix round, fifth review)
+// ---------------------------------------------------------------------------
+
+/**
+ * How far (m) a template unit may reach into another block's axis polygon before it counts as standing on it: float
+ * noise only. A unit attached along a wall (axis edge on axis edge) does not overlap.
+ */
+export const UNIT_OVERLAP_TOL = 0.001;
+
+/** Unit normals of a polygon's edges (the separating axes of a convex piece). */
+function edgeAxes(poly: Vec2[]): Vec2[] {
+  const out: Vec2[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const d = sub(poly[(i + 1) % poly.length], poly[i]);
+    if (len(d) > TINY) out.push(leftNormal(unit(d)));
+  }
+  return out;
+}
+
+function projection(poly: Vec2[], n: Vec2): [number, number] {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const p of poly) {
+    const s = dot(p, n);
+    lo = Math.min(lo, s);
+    hi = Math.max(hi, s);
+  }
+  return [lo, hi];
+}
+
+/** How deep two convex polygons overlap (separating axes): the least push that parts them; â‰¤ 0 when apart or touching. */
+function convexDepth(p: Vec2[], q: Vec2[]): number {
+  let depth = Infinity;
+  for (const n of [...edgeAxes(p), ...edgeAxes(q)]) {
+    const [p0, p1] = projection(p, n);
+    const [q0, q1] = projection(q, n);
+    depth = Math.min(depth, Math.min(p1, q1) - Math.max(p0, q0));
+    if (depth <= 0) return depth;
+  }
+  return depth;
+}
+
+/** The convex pieces of the blocks a block (`self`; null: a unit not placed yet) must not stand on: a unit on none. */
+function standOnPieces(v: Variant, self: Pick<Block, 'id' | 'template'> | null): Vec2[][] {
+  const unitMoves = self === null || self.template !== undefined;
+  return v.blocks
+    .filter((b) => b.id !== self?.id && (unitMoves || b.template !== undefined))
+    .flatMap((b) => convexPieces(b.polygon.map((x) => x.p)));
+}
+
+function maxDepth(pieces: Vec2[][], others: Vec2[][]): number {
+  let d = -Infinity;
+  for (const p of pieces) for (const q of others) d = Math.max(d, convexDepth(p, q));
+  return d;
+}
+
+/**
+ * Whether `poly` (the axis polygon of a template unit, or of a block moving near one) would stand on another block of
+ * `v` (`self`: the block itself, or null for a unit being placed), deeper than UNIT_OVERLAP_TOL. A template unit may
+ * stand on no block, any other block on no template unit.
+ */
+export function unitOverlaps(v: Variant, poly: Vec2[], self: Pick<Block, 'id' | 'template'> | null): boolean {
+  return maxDepth(convexPieces(poly), standOnPieces(v, self)) > UNIT_OVERLAP_TOL;
+}
+
+/** The open range of t over which convex `p` moved by tÂ·d overlaps convex `q` (separating axes); null when never. */
+function sweepRange(p: Vec2[], d: Vec2, q: Vec2[]): [number, number] | null {
+  let lo = -Infinity;
+  let hi = Infinity;
+  for (const n of [...edgeAxes(p), ...edgeAxes(q)]) {
+    const [p0, p1] = projection(p, n);
+    const [q0, q1] = projection(q, n);
+    const dn = dot(d, n);
+    if (Math.abs(dn) < 1e-12) {
+      if (Math.min(p1, q1) - Math.max(p0, q0) <= 0) return null;
+      continue;
+    }
+    const a = (q0 - p1) / dn;
+    const b = (q1 - p0) / dn;
+    lo = Math.max(lo, Math.min(a, b));
+    hi = Math.min(hi, Math.max(a, b));
+    if (lo >= hi) return null;
+  }
+  return [lo, hi];
+}
+
+/**
+ * The part of `delta` that a block with axis polygon `axis` can move by without standing on another block
+ * (`unitOverlaps`): 1 when it ends clear; else where the stretch of the move that ends on a block begins (exactly at
+ * the contact, so the unit stops against that block's wall); 0 when that stretch begins at the start (refused).
+ */
+export function unitMoveFraction(v: Variant, axis: Vec2[], delta: Vec2, self: Pick<Block, 'id' | 'template'>): number {
+  const pieces = convexPieces(axis);
+  const others = standOnPieces(v, self);
+  if (len(delta) < TINY || maxDepth(pieces.map((p) => p.map((q) => add(q, delta))), others) <= UNIT_OVERLAP_TOL) return 1;
+  const ranges: [number, number][] = [];
+  for (const p of pieces) {
+    for (const q of others) {
+      const r = sweepRange(p, delta, q);
+      if (r) ranges.push(r);
+    }
+  }
+  ranges.sort((x, y) => x[0] - y[0]);
+  let start = 1;
+  let end = -Infinity;
+  for (const [a, b] of ranges) {
+    if (a >= 1) break;
+    if (a > end + 1e-12) start = a;
+    end = Math.max(end, b);
+  }
+  return start > 1e-9 && start < 1 ? start : 0;
+}
+
+/**
+ * The shortest shift of at most `reach` (m) that puts `poly` clear of every block it must not stand on
+ * (`unitOverlaps`): straight out across a side of a block it overlaps, or out of a corner across two; [0, 0] when it is
+ * clear already, null when no such shift is in reach (the step is then refused).
+ */
+export function unitClearShift(v: Variant, poly: Vec2[], reach: number, self: Pick<Block, 'id' | 'template'> | null): Vec2 | null {
+  const pieces = convexPieces(poly);
+  const others = standOnPieces(v, self);
+  if (maxDepth(pieces, others) <= UNIT_OVERLAP_TOL) return [0, 0];
+  const single: Vec2[] = [];
+  for (const p of pieces) {
+    for (const q of others) {
+      if (convexDepth(p, q) <= 0) continue;
+      for (const n of [...edgeAxes(p), ...edgeAxes(q)]) {
+        const [p0, p1] = projection(p, n);
+        const [q0, q1] = projection(q, n);
+        single.push(scale(n, q1 - p0), scale(n, q0 - p1));
+      }
+    }
+  }
+  const candidates = [...single];
+  for (let i = 0; i < single.length; i++) {
+    for (let j = i + 1; j < single.length; j++) if (!isParallel(single[i], single[j])) candidates.push(add(single[i], single[j]));
+  }
+  const fits = candidates.filter((c) => len(c) <= reach + 1e-9).sort((a, b) => len(a) - len(b));
+  return fits.find((c) => maxDepth(pieces.map((p) => p.map((q) => add(q, c))), others) <= UNIT_OVERLAP_TOL) ?? null;
+}
+
+/**
+ * What a whole-block move, turn or delete takes along (last fix round, fifth review: a unit standing on the house took
+ * the house's walls, room names and furniture when it was deleted, moved or turned): stored walls that are new, have
+ * both ends on or inside its axis polygon and lie in no other block (no end, nor the middle or a point 2 cm to either
+ * side of it, strictly inside one: a wall along another block's edge is that block's); Room records created with it
+ * (`Room.unitId`) or anchored in it and in no other block; furniture standing in its own faces (`furnitureOfBlock`)
+ * whose centre is in no other block; structure inside it and in no other block. Never a ghost, and for a template unit
+ * never an existing wall (a drawn new block keeps the existing walls inside it, as before).
+ */
+function blockOwnership(v: Variant, ctx: Pick<EditContext, 'derived'> | undefined, block: Block) {
+  const axis = block.polygon.map((x) => x.p);
+  const storeys = blockStoreys(v, block);
+  const others = v.blocks.filter((b) => b.id !== block.id).map((b) => b.polygon.map((x) => x.p));
+  const inOther = (p: Vec2) =>
+    others.some((ax) => pointInPolygon(p, ax) && ax.every((q, i) => distancePointSegment(p, q, ax[(i + 1) % ax.length]) > COINCIDE));
+  const onStoreys = (levelId: Id) => {
+    const s = storeyOfLevel(v, levelId);
+    return s !== undefined && storeys.has(s);
+  };
+  const ownItem = furnitureOfBlock(v, ctx, block, axis, storeys);
+  const structurePoint = (s: StructureElement): Vec2 =>
+    s.kind === 'post' ? s.position : s.kind === 'beam' ? scale(add(s.a, s.b), 0.5) : scale(add(s.min, s.max), 0.5);
+  return {
+    axis,
+    storeys,
+    wall: (w: Wall): boolean => {
+      if (w.status === 'removed' || (block.template !== undefined && w.status !== 'new')) return false;
+      if (!onStoreys(w.levelId) || !insideOrOn(w.a, axis) || !insideOrOn(w.b, axis)) return false;
+      const m = scale(add(w.a, w.b), 0.5);
+      const side = scale(leftNormal(unit(sub(w.b, w.a))), 0.02);
+      return ![w.a, w.b, m, add(m, side), sub(m, side)].some(inOther);
+    },
+    room: (r: Room): boolean =>
+      onStoreys(r.levelId) && (r.unitId === block.id || (insideOrOn(r.anchor, axis, 0) && !others.some((ax) => insideOrOn(r.anchor, ax, 0)))),
+    furniture: (f: FurnitureItem): boolean => ownItem(f) && !others.some((ax) => pointInPolygon(f.position, ax)),
+    structure: (s: StructureElement): boolean => structureInside(s, axis) && !inOther(structurePoint(s)),
+  };
+}
+
 /**
  * Move a whole block (header: "moveBlock"). Returns 'existing' (refused) for a block with existing area, false when
  * nothing moved.
@@ -2394,15 +2703,13 @@ export function applyMoveBlock(draft: Variant, ctx: EditContext, blockId: Id, de
   if (!b0 || !b) return false;
   if (blockHasExistingArea(b0)) return 'existing';
   if (len(delta) < TINY) return false;
-  const axis = b0.polygon.map((v) => v.p);
-  const storeys = blockStoreys(ctx.base, b0);
+  // Only what is its own (blockOwnership): never the house's walls, names or furniture under a unit standing on it.
+  const owns = blockOwnership(ctx.base, ctx, b0);
   b.polygon.forEach((v) => (v.p = addc(v.p, delta)));
   for (const p of b.parts) p.polygon = p.polygon.map((q) => addc(q, delta));
   for (const z of b.floorZones) z.polygon = z.polygon.map((q) => addc(q, delta));
   for (const w0 of ctx.base.walls) {
-    if (w0.status === 'removed' || !insideOrOn(w0.a, axis) || !insideOrOn(w0.b, axis)) continue;
-    const s = storeyOfLevel(ctx.base, w0.levelId);
-    if (s && !storeys.has(s)) continue;
+    if (!owns.wall(w0)) continue;
     touchWallForMove(draft, w0.id);
     const w = draft.walls.find((x) => x.id === w0.id);
     if (!w) continue;
@@ -2410,15 +2717,14 @@ export function applyMoveBlock(draft: Variant, ctx: EditContext, blockId: Id, de
     w.b = addc(w0.b, delta);
   }
   for (const r of draft.rooms) {
-    const s = storeyOfLevel(ctx.base, r.levelId);
-    if (!s || !storeys.has(s) || !insideOrOn(r.anchor, axis, 0)) continue;
+    if (!owns.room(r)) continue;
     r.anchor = addc(r.anchor, delta);
     ctx.carried?.set(r.id, (p) => add(p, delta));
   }
   // Only its own furniture (in its rooms), not what stood on the terrace before it (furnitureOfBlock).
-  const own = new Set(draft.furniture.filter(furnitureOfBlock(ctx.base, ctx, b0, axis, storeys)).map((f) => f.id));
+  const own = new Set(draft.furniture.filter(owns.furniture).map((f) => f.id));
   for (const f of draft.furniture) if (own.has(f.id)) f.position = addc(f.position, delta);
-  for (const s of draft.structure) if (structureInside(s, axis)) translateStructure(s, delta);
+  for (const s of draft.structure) if (owns.structure(s)) translateStructure(s, delta);
   // What it now stands on and did not own goes out of it, as at placement (final fix round after 2b: a unit moved onto
   // the terrace table took it over, carried it on the next move and deleted it with itself).
   pushOutOfMoved(draft, ctx, b0, own);
@@ -2540,6 +2846,28 @@ function contactTurn(axis: Vec2[], turns: 1 | -1, contacts: Contact[]): (p: Vec2
 }
 
 /**
+ * The quarter turn `applyRotateBlock` gives block `b0`: about its centre on the grid (`gridTurn`), keeping a contact
+ * (`contactTurn`) or about its own centre off the grid (`centreTurn`).
+ */
+function blockTurn(ctx: EditContext, b0: Block, deg: 90 | -90): (p: Vec2) => Vec2 {
+  const turns = deg === 90 ? 1 : -1;
+  const axis = b0.polygon.map((v) => v.p);
+  const contacts = contactsOf(ctx, b0);
+  return contacts.length > 0 ? contactTurn(axis, turns, contacts) : onGrid(axis) ? gridTurn(axis, turns) : centreTurn(axis, turns);
+}
+
+/**
+ * The axis polygon `applyRotateBlock(â€¦, blockId, deg)` gives the block (without a `shift`); null for an unknown block.
+ * state/editActions.ts `rotateBlock` checks it against the other blocks first (last fix round, fifth review).
+ */
+export function turnedAxis(ctx: EditContext, blockId: Id, deg: 90 | -90): Vec2[] | null {
+  const b0 = ctx.base.blocks.find((b) => b.id === blockId);
+  if (!b0) return null;
+  const T = blockTurn(ctx, b0, deg);
+  return b0.polygon.map((v) => T(v.p));
+}
+
+/**
  * Turn a whole block with a template (a placed unit) a quarter turn (`deg` 90 = counter-clockwise) about its centre
  * (`quarterTurnCentre`), snapped to the 0.1 m grid — a unit against a wall or deck edge keeps that contact
  * (`contactTurn`), a free unit off the grid turns about its own centre without a snap (`centreTurn`) —, carrying what
@@ -2548,17 +2876,22 @@ function contactTurn(axis: Vec2[], turns: 1 | -1, contacts: Contact[]): (p: Vec2
  * edges; the roof's ridge axis / slope side and its manual extensions turn too. Returns 'existing' (refused) for a
  * block with existing area, 'no-template' for a drawn block, false when nothing turned.
  */
-export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, deg: 90 | -90): boolean | 'existing' | 'no-template' {
+export function applyRotateBlock(
+  draft: Variant,
+  ctx: EditContext,
+  blockId: Id,
+  deg: 90 | -90,
+  opts: { shift?: Vec2 } = {},
+): boolean | 'existing' | 'no-template' {
   const b0 = ctx.base.blocks.find((b) => b.id === blockId);
   const b = draft.blocks.find((x) => x.id === blockId);
   if (!b0 || !b) return false;
   if (blockHasExistingArea(b0)) return 'existing';
   if (!b0.template) return 'no-template';
   const turns = deg === 90 ? 1 : -1;
-  const axis = b0.polygon.map((v) => v.p);
-  const contacts = contactsOf(ctx, b0);
-  const T = contacts.length > 0 ? contactTurn(axis, turns, contacts) : onGrid(axis) ? gridTurn(axis, turns) : centreTurn(axis, turns);
-  const storeys = blockStoreys(ctx.base, b0);
+  const turn = blockTurn(ctx, b0, deg);
+  const T = opts.shift ? (p: Vec2): Vec2 => addc(turn(p), opts.shift as Vec2) : turn;
+  const owns = blockOwnership(ctx.base, ctx, b0);
   b.polygon.forEach((v) => (v.p = T(v.p)));
   for (const p of b.parts) p.polygon = p.polygon.map(T);
   for (const z of b.floorZones) z.polygon = z.polygon.map(T);
@@ -2577,9 +2910,7 @@ export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, 
     roof.slopeTo = cardinalOf(roof.slopeTo, turns === 1 ? 1 : 3);
   }
   for (const w0 of ctx.base.walls) {
-    if (w0.status === 'removed' || !insideOrOn(w0.a, axis) || !insideOrOn(w0.b, axis)) continue;
-    const s = storeyOfLevel(ctx.base, w0.levelId);
-    if (s && !storeys.has(s)) continue;
+    if (!owns.wall(w0)) continue;
     touchWallForMove(draft, w0.id);
     const w = draft.walls.find((x) => x.id === w0.id);
     if (!w) continue;
@@ -2587,19 +2918,18 @@ export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, 
     w.b = T(w0.b);
   }
   for (const r of draft.rooms) {
-    const s = storeyOfLevel(ctx.base, r.levelId);
-    if (!s || !storeys.has(s) || !insideOrOn(r.anchor, axis, 0)) continue;
+    if (!owns.room(r)) continue;
     r.anchor = T(r.anchor);
     ctx.carried?.set(r.id, T);
   }
-  const own = new Set(draft.furniture.filter(furnitureOfBlock(ctx.base, ctx, b0, axis, storeys)).map((f) => f.id));
+  const own = new Set(draft.furniture.filter(owns.furniture).map((f) => f.id));
   for (const f of draft.furniture) {
     if (!own.has(f.id)) continue;
     f.position = T(f.position);
     f.rotationDeg = (((f.rotationDeg + deg) % 360) + 360) % 360;
   }
   for (const s of draft.structure) {
-    if (!structureInside(s, axis)) continue;
+    if (!owns.structure(s)) continue;
     if (s.kind === 'post') s.position = T(s.position);
     else if (s.kind === 'beam') {
       s.a = T(s.a);
@@ -2637,28 +2967,16 @@ export function applyDeleteBlock(draft: Variant, blockId: Id, ctx?: Pick<EditCon
   const b = draft.blocks.find((x) => x.id === blockId);
   if (!b) return false;
   if (blockHasExistingArea(b)) return 'existing';
-  const axis = b.polygon.map((v) => copy(v.p));
-  const storeys = blockStoreys(draft, b);
-  const onStoreys = (levelId: Id) => {
-    const s = storeyOfLevel(draft, levelId);
-    return s !== undefined && storeys.has(s);
-  };
-  // Walls only inside this block (not shared with another block's interior).
-  const otherAxes = draft.blocks.filter((x) => x.id !== blockId).map((x) => x.polygon.map((v) => v.p));
-  const strictlyOther = (p: Vec2) => otherAxes.some((ax) => pointInPolygon(p, ax) && !insideOrOn(p, axis));
-  const goneWalls = new Set(
-    draft.walls
-      .filter((w) => onStoreys(w.levelId) && insideOrOn(w.a, axis) && insideOrOn(w.b, axis) && !strictlyOther(w.a) && !strictlyOther(w.b))
-      .map((w) => w.id),
-  );
+  // Only its own walls, rooms and furniture (blockOwnership): a unit deleted from over the house leaves the house's.
+  const owns = blockOwnership(draft, ctx, b);
+  const goneWalls = new Set(draft.walls.filter(owns.wall).map((w) => w.id));
   draft.walls = draft.walls.filter((w) => !goneWalls.has(w.id));
   draft.openings = draft.openings.filter(
     (o) => !(o.host.kind === 'blockEdge' && o.host.blockId === blockId) && !(o.host.kind === 'wall' && goneWalls.has(o.host.wallId)),
   );
-  draft.rooms = draft.rooms.filter((r) => !(onStoreys(r.levelId) && insideOrOn(r.anchor, axis, 0)));
+  draft.rooms = draft.rooms.filter((r) => !owns.room(r));
   // Its own furniture (in its rooms; with `ctx`, see furnitureOfBlock), not what stood there before it.
-  const own = furnitureOfBlock(draft, ctx, b, axis, storeys);
-  draft.furniture = draft.furniture.filter((f) => !own(f));
+  draft.furniture = draft.furniture.filter((f) => !owns.furniture(f));
   for (const other of draft.blocks) other.junctions = other.junctions.filter((j) => j.otherBlockId !== blockId);
   if (draft.ghosts) {
     draft.ghosts = draft.ghosts.filter((g) => parseEdgeGhostId(g.id)?.blockId !== blockId);
@@ -2728,7 +3046,11 @@ export function applyDuplicateBlock(draft: Variant, blockId: Id, delta: Vec2): I
   }
   for (const r of [...draft.rooms]) {
     if (!onStoreys(r.levelId) || !insideOrOn(r.anchor, axis, 0)) continue;
-    draft.rooms.push({ ...plain(r), id: newId('room'), anchor: addc(r.anchor, delta) });
+    const c: Room = { ...plain(r), id: newId('room'), anchor: addc(r.anchor, delta) };
+    // The copy of a unit owns the copies of its rooms (`Room.unitId`).
+    if (copyB.template !== undefined) c.unitId = copyB.id;
+    else delete c.unitId;
+    draft.rooms.push(c);
   }
   return copyB.id;
 }
@@ -2861,6 +3183,7 @@ export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: str
   if (!t) return null;
   let rot = quarterTurns(rotation90);
   let poly = unitFootprint(t, at, rot);
+  let leanTo = false;
   if (t.openFront) {
     const axes = ctx.base.blocks.map((b) => b.polygon.map((v) => v.p));
     const against = (i: number) => axes.some((ax) => collinearRanges(poly[i], poly[(i + 1) % poly.length], ax).length > 0);
@@ -2868,6 +3191,8 @@ export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: str
       rot = quarterTurns(rot + 2);
       poly = unitFootprint(t, at, rot);
     }
+    // Its back against a block (turned so, or placed so): a lean-to (last fix round, fifth review).
+    leanTo = against(2) && !against(0);
   }
   const blockId = ids.blockId ?? newId('blk');
   const vertexIds = poly.map(() => newId('v'));
@@ -2881,7 +3206,10 @@ export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: str
     const half = Math.min(t.w, t.d) / 2;
     roof = { type: 'gable', ridgeAxis, ...roofBase, ridgeHeight: round3(t.eaveHeight + Math.tan((t.pitchDeg * Math.PI) / 180) * half) };
   } else if (t.roofType === 'mono') {
-    roof = { type: 'mono', slopeTo: cardinalOf('N', rot), ...roofBase, ridgeHeight: round3(t.eaveHeight + Math.tan((t.pitchDeg * Math.PI) / 180) * t.d) };
+    // With its back against a block, a lean-to: high against that wall and draining away from it, to the open front
+    // (last fix round, fifth review: the low eave and its overhang stood against the wing). Else down to the back.
+    const slopeTo = cardinalOf('N', leanTo ? quarterTurns(rot + 2) : rot);
+    roof = { type: 'mono', slopeTo, ...roofBase, ridgeHeight: round3(t.eaveHeight + Math.tan((t.pitchDeg * Math.PI) / 180) * t.d) };
   } else {
     roof = { type: 'flat', ...roofBase, drive: 'height', ridgeHeight: t.eaveHeight };
   }
@@ -2909,6 +3237,7 @@ export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: str
     type: t.roomType,
     levelId,
     anchor: copy(centroid(poly)),
+    unitId: blockId,
   };
   if (t.floorMaterial) room.floorMaterial = t.floorMaterial;
   draft.rooms.push(room);
@@ -3223,9 +3552,15 @@ export interface RevivedRooms {
  * the tombstone's face when a later edit split the merged face again) comes back in its own face, and that room goes
  * back to the face its anchor was in (blk-bod west +0.2, "Ta tilbake" on w-bod-gavl/ghost and w-mellom-boder/ghost,
  * then on the edge ghost: «Bod (ny)» had taken Mellombygg's face and left its own unnamed; now 27 named rooms again).
- * Anchors that are not strictly inside their face go to its label point.
+ * Anchors that are not strictly inside their face go to its label point. `inFace` limits both to the faces it accepts
+ * (state/editActions.ts: the faces the restore changed; last fix round, fifth review).
  */
-export function reviveRoomRecords(v: Variant, derived: DerivedVariant, candidates: readonly (Room | RoomTombstone)[]): RevivedRooms {
+export function reviveRoomRecords(
+  v: Variant,
+  derived: DerivedVariant,
+  candidates: readonly (Room | RoomTombstone)[],
+  inFace: (face: DerivedRoom) => boolean = () => true,
+): RevivedRooms {
   const have = new Set(v.rooms.map((r) => r.id));
   const add: Room[] = [];
   const anchors = new Map<Id, Vec2>();
@@ -3235,7 +3570,7 @@ export function reviveRoomRecords(v: Variant, derived: DerivedVariant, candidate
   for (const { room: c } of stones) {
     if (have.has(c.id) || add.some((r) => r.id === c.id)) continue;
     const storey = storeyOfLevel(v, c.levelId);
-    const face = derived.rooms.find((f) => !f.room && !used.has(f) && f.storeyId === storey && pointInPolygon(c.anchor, f.facePolygon));
+    const face = derived.rooms.find((f) => !f.room && !used.has(f) && f.storeyId === storey && inFace(f) && pointInPolygon(c.anchor, f.facePolygon));
     if (!face) continue;
     used.add(face);
     add.push(placed(c, face));
@@ -3243,11 +3578,11 @@ export function reviveRoomRecords(v: Variant, derived: DerivedVariant, candidate
   for (const { room: c, peers } of stones) {
     if (!peers || have.has(c.id) || add.some((r) => r.id === c.id)) continue;
     const storey = storeyOfLevel(v, c.levelId);
-    const taken = derived.rooms.find((f) => f.room && !used.has(f) && f.storeyId === storey && pointInPolygon(c.anchor, f.facePolygon));
+    const taken = derived.rooms.find((f) => f.room && !used.has(f) && f.storeyId === storey && inFace(f) && pointInPolygon(c.anchor, f.facePolygon));
     const holder = taken?.room;
     const was = holder ? peers.get(holder.id) : undefined;
     if (!taken || !holder || !was || anchors.has(holder.id) || pointInPolygon(was, taken.facePolygon)) continue;
-    const back = derived.rooms.find((f) => !f.room && !used.has(f) && f.storeyId === storey && pointInPolygon(was, f.facePolygon));
+    const back = derived.rooms.find((f) => !f.room && !used.has(f) && f.storeyId === storey && inFace(f) && pointInPolygon(was, f.facePolygon));
     if (!back) continue;
     used.add(taken);
     used.add(back);

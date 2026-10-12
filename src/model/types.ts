@@ -154,6 +154,11 @@ export interface Variant {
 export interface MergedRoom {
   room: Room;
   peers: Record<Id, Vec2>;
+  /**
+   * The outline (area and bounding box) of the face it was merged into, right after the merge: an edit other than
+   * "Ta tilbake" that redraws that face drops the record (last fix round, fifth review). Undefined: not known.
+   */
+  face?: { area: number; min: Vec2; max: Vec2 };
 }
 
 export interface VariantMeta {
@@ -359,6 +364,14 @@ export interface Wall {
    */
   faceLeft?: number;
   faceRight?: number;
+  /**
+   * The wall whose move (or end drag) last carried this one along (geometry/edit.ts `applyMoveWall` /
+   * `applyMoveWallEndpoint`: a continuation in line, a follower at a shared end, a T-junction) and where that left
+   * it. "Ta tilbake" on that wall brings this one back only while it still stands there; "Ta tilbake" on this one never
+   * moves that wall (last fix round, fifth review). Set only on moved walls with a ghost; dropped when the wall is
+   * back on its ghost or moved on its own. Undefined = none; optional, no schema bump.
+   */
+  carriedBy?: { by: Id; a: Vec2; b: Vec2 };
 }
 
 export type OpeningType =
@@ -451,6 +464,12 @@ export interface Room {
   /** Override of the floor material implied by `type`. */
   floorMaterial?: FloorMaterial;
   note?: string;
+  /**
+   * The template unit (a block from "Nytt bygg") this room was created with: a whole-unit move, turn or delete takes
+   * it along even where its anchor lies in another block (last fix round, fifth review). Undefined = none; optional,
+   * no schema bump.
+   */
+  unitId?: Id;
 }
 
 // ---------------------------------------------------------------------------
