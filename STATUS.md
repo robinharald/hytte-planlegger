@@ -1,13 +1,197 @@
 # Status
 
-Oppdatert 2026-10-12 (fikserunde 2a, runde 2 integrert etter den andre gjennomgangen av fase 2a). Integratoren holder
-denne fila oppdatert: gjort / neste / kjente problemer.
+Oppdatert 2026-10-12 (fase 2b integrert: møbler, delte forslag i Firestore, offline/PWA og finpuss av redigeringen).
+Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
 - **Fase 1** – Forslag D vises riktig i plan og 3D med romskjema og arealer; lagring, versjoner, deling og publisering.
 - **Fase 2a** – redigering: egne forslag, vegger, dører/vinduer, rom, bygningsdeler, nye bygg på terrassen, terrassen,
   badestampen; spøkelser for det som er flyttet/fjernet fra hytta i dag; PC og iPhone (`docs/phase2-plan.md`, rev. 3).
-- **Fase 2b** – møbler, delte forslag for familien (Firestore), offline/PWA.
+- **Fase 2b** – møbler, delte forslag for familien (Firestore), offline/PWA (integrert 12. okt 2026).
+- **Fase 4/5** (senere) – eksport, gå-modus, sol-panel, drenering, IFC-overlegg (se «Neste» under fase 2b).
+
+## Fase 2b – møbler, delte forslag, offline (integrert 12. okt 2026)
+
+Fem parallelle deler (møbelkjernen, møbler i planen, møbler i 3D, delte forslag/offline, finpuss av redigeringen i
+kjernen og i planen) er satt sammen her, og alle funnene fra den andre gjennomgangen av 2a er tatt (dra-ytelsen for
+vegger, kanter og enheter fortsatt delvis, se «Ytelse»).
+
+### Gjort
+
+- **Møbler** (`src/furniture/catalog.ts`, `geometry/furnitureDerive.ts`, `state/editActions.ts`):
+  - Katalogen har 50 møbler i 7 kategorier (Soverom, Stue, Kjøkken, Bad/WC, Badstue, Annet, Ute) med størrelser,
+    strekkbare mål, farger, plassbehov, symbol og 3D-modell. Et ukjent møbel vises som en boks med advarselen.
+  - Avledningen finner rommet og nivået under møbelet (en seng dratt fra Korridor (øvre) til Soverom 1 står på
+    underetasjen), gulvhøyden (rom, terrasse eller terreng), plassbehov, kollisjoner (møbler, vegger, trapper, pipe,
+    stolper, badestamp; en stol i en døråpning står ikke «i veggen») og dører som blokkeres. Hjørnesofaen kolliderer
+    som en L, så salongbordet kan stå i hjørnet.
+  - Advarslene sier hva og hvor: «Døra i veggen mellom Gang og Hovedbad blokkeres av «Toalett».», «Møbelet «Seng 150»
+    står i trappa / i pipa / i en stolpe / i badestampen.», «Toalett trenger sluk …».
+  - Handlinger: sette inn (størrelse fra katalogen, nivå fra gulvet), flytte (nivået følger gulvet, også under drag),
+    rotere, duplisere (kopien blir valgt), slette, endre størrelse (bakkanten blir stående), farge. Forslag D nekter
+    alt. Møbler med ryggen mot en vegg som flyttes, følger veggen, og «Ta tilbake» setter dem nøyaktig tilbake.
+  - **Seeden er møblert** (`SEED_REVISION` 6, `seed/furniture.ts`, 57 møbler `fu-<rom>-<n>`) etter den gamle modellens
+    `buildD150()`, uten advarsler. Romskjema, arealer og farger for Forslag D er uendret.
+- **Møbler i planen** (`plan2d/layers/FurnitureLayer.tsx`, `furnitureSymbols.ts`): hvert katalogmøbel har sitt eget
+  symbol; det valgte får ramme, navn, plassbehov og et rotasjonshåndtak (trykk: 90°, dra: 15°-trinn, Alt: 1°); møbler
+  i en vegg, oppå hverandre eller i et dørslag blir røde. «Plassbehov for møbler» under Vis viser plassbehovet for alle
+  (huskes). Romnavn flytter seg bort fra møblene der de kan.
+- **Møbelbiblioteket** (`ui/FurnitureLibrary.tsx`): søk (store/små bokstaver og æ/ø/å likegyldig, noen synonymer som
+  «wc»), kategorier med antall (rommets kategori åpnes først), symbol, navn og mål. Trykk setter møbelet i det valgte
+  rommet (eller midt i planen) mot nærmeste ledige vegg, dusjer i et hjørne, bord og tepper mot midten; dra det inn i
+  planen (planen viser hvor det havner, rødt hvis plassen er opptatt) eller 3D-visningen (på telefon: hold fingeren på
+  det først). På telefon er biblioteket et ark som lukkes etter innsettingen.
+- **Møbel i Egenskaper** (`ui/properties/FurnitureProps.tsx`): Navn, Rom, Størrelse, Bredde/Dybde (der møbelet kan
+  strekkes, innenfor katalogens grenser), Farge, «Roter 90°», «Dupliser», «Slett».
+- **Møbler i 3D** (`view3d/Furniture.tsx`, `furnitureBuilders.ts`): en egen modell for hvert av de 50 møblene i den
+  gamle modellens farger og stil, i møbelets farge, rød ved kollisjon, kuttet i «Inne». Flytting og rotering gjenbruker
+  geometrien; hele seeden bygges på ca. 4 ms. Et møbel sluppet i 3D havner på gulvet der strålen treffer.
+- **Delte forslag** (`state/familyStore*.ts`, `ui/ProposalsMenu.tsx`, `StatusPill.tsx`, `ShareDialog.tsx`,
+  `TrashPanel.tsx`, `RevisionsPanel.tsx`): forslagene ligger i familiens plass i Firestore (Firebase er satt opp, reglene
+  er publisert og **uendret** i denne runden). Familielenken er `https://robinharald.github.io/hytte-planlegger/#f=<32
+  tegn>`, og `#f=…&p=<forslag>` åpner ett forslag. Forslag-menyen (Forslag D først, så familiens forslag med «sist endret
+  av …»), «+ Nytt forslag», Gi nytt navn, Slett med to bekreftelser og Papirkurv i 30 dager, Tidligere versjoner (inntil
+  20, høyst én per 5 minutter), «Hva heter du?» én gang per enhet, konfliktvakten («Hent endringene» / «Lagre over»),
+  Lagre som fil / Åpne fil / Eksporter JSON under Mer. Gamle `#d=`-lenker og den gamle autolagringen blir nye forslag.
+- **Statusen**: «Lagret for alle» etter den anonyme innloggingen og første lagring; «Lagret her – sendes når du er på
+  nett» uten nett (sendes av seg selv etterpå); «Kun på denne enheten (ingen delt plass satt opp)» uten
+  Firebase-oppsett. Ny ved integrasjonen: får appen ikke lastet Firebase i det hele tatt (blokkert), lagres forslagene
+  på enheten med «Kun på denne enheten (familiens plass kan ikke nås nå)», og når plassen kan nås (hvert 15. sekund og
+  når enheten kommer på nett, eller ved neste oppstart) legges de inn i familiens plass. En endring som kommer fra en
+  annen enhet viser ikke lenger «Lagrer …» et øyeblikk (og skrives ikke tilbake).
+- **Prøvd mot den ekte Firestore** (to nettleserkontekster mot `npm run dev`, tre engangsfamilier `e2e-…`, alle
+  dokumentene slettet etterpå, 0 igjen): statusen nådde «Lagret for alle» etter 1,6–4,2 s ved oppstart og 1,1–1,3 s
+  etter «Nytt forslag»; forslaget fra A var i B med en gang B var koblet til; badestampen flyttet i B kom fram i A
+  innen 2 ms etter at B hadde lagret («sist endret av Test B»); A uten nett: «Lagret her – sendes når du er på nett»,
+  tilbake på nett «Lagret for alle» etter 0,25 s, og B fikk endringen.
+- **Offline / PWA**: service worker (`./sw.js`, scope `./`) som mellomlagrer hele appen med fonter, ikoner og
+  Firebase-delen; «Ny versjon av appen er klar. [Oppdater]» (lagrer først); PNG-ikoner (180, 192, 512, 512 maskable),
+  manifest uten `start_url` (Hjem-skjerm-appen åpner adressen den ble lagt til fra, med familielenken); kortet «Legg
+  planleggeren på Hjem-skjermen» på iPhone; `navigator.storage.persist()`.
+- **Bygget for GitHub Pages**: relativ base `./`. Sjekket ved at pwa-testen nå serverer produksjonsbygget under
+  `/hytte-planlegger/` (`vite preview --base`): alle skript, stiler og fonter lastes fra den stien, service workeren
+  har scope `/hytte-planlegger/`, manifestets `scope` er `./`, og appen starter uten nett. Firebase er egne, lazy
+  deler (`familyStore.firestore-*.js` og Firebase-SDK-ene).
+- **Finpuss av redigeringen** (funnene fra den andre gjennomgangen):
+  - Glassutbygget: «Ta tilbake» etter hovedhusets sørvegg +0,3 og glassets østvegg +0,5 gir seeden igjen, møblene
+    også (før: et løst spøkelse inne i huset); to innoverflyttinger av glasset etterlater ingen spøkelser.
+  - En kant av hytta i dag som flyttes innover, blir «Nytt» (før: «Hytta i dag»).
+  - «Ta tilbake» etter et drag som snappet på et naboendepunkt drar ikke med seg urørte vegger.
+  - Dører og vinduer kommer tilbake på plass også når veggen flyttes tilbake i flere steg, og på en nabovegg som ble
+    dreid og satt tilbake.
+  - En kopi fra revisjon 4 med glasset gjort større får «i dag»-delen fra spøkelseslinjene.
+  - En fri enhet utenfor 10 cm-rutenettet dreies om sin egen midte og kommer tilbake etter +90/−90.
+  - Telefon: et vedskjul satt ut 0,4 m fra fløya fester seg (plasseringen når hele fingerradiusen igjen), og ved drag
+    når kontaktmål (fløyveggen, terrassekanten) minst så langt som dra-terskelen.
+  - Telefon: et trykk på det valgte som flyttes mer enn 5 px er et drag (en Vedskjul flyttes 0,5 m ved startzoom; før
+    trengtes 0,87 m).
+  - Telefon: «Bod (ny)» velges med et trykk på navnet; dører har endehåndtak fra halv håndtaksdiameter.
+  - Et klikk midt på `win-106-s` velger vinduet, neste klikk dørspøkelset under det.
+  - Endepunkt-drag: hjelpelinjer kan ikke dra enden mer enn 0,25 m forbi fingeren, og linjer i andre etasjer teller
+    ikke.
+  - `w-103-korr` dratt rett sørover blir parallell (enden i hjørnet følger med).
+  - Dra-sløyfa tegner et lett forhåndsbilde hvert skjermbilde og gjør den tunge oppdateringen bare hvert 2.–9. bilde
+    (se «Ytelse»).
+  - Løse vegger sier hvor de står («veggen nord i Stue», «på terrassen», «sør for «Bod-fløy»»), og like linjer slås
+    sammen («3 vegger nord i Stue henger løs …»); merket i Advarsler teller alle.
+  - Førstegangskortet sier riktig hvor det lagres (delt plass eller bare denne enheten) og nevner møbler.
+- **Integrasjonen ellers**: alle tekster ligger i `nb.ts` (biblioteket, Møbel-redigereren, rotasjonshåndtaket, stedene
+  for løse vegger, møbeladvarslene; de midlertidige `furnitureStrings.ts` og `warningStrings.ts` er borte);
+  Møbler-hintet «Trykk på et møbel i listen for å sette det inn, eller dra det inn i planen.»; de gamle dialogene
+  Send forslaget / Versjoner og plassholderne (`FurnitureEditor`, `FurnitureMeshes`, `buildFurnitureBox`) er fjernet;
+  ordbrukstesten for engelske ord virker igjen (regex-en hadde tilbaketegn i stedet for `\b`).
+- **Tester**: `npm test` 1613 tester i 93 filer, alle grønne (1245 før 2b). `npm run typecheck`, `npm run lint`,
+  `npm run build` og `npx tsc --noEmit -p e2e/tsconfig.json` er rene. `npm run e2e` 43 av 43 grønne i tre prosjekter
+  (`chromium`, `iphone`, `pwa`):
+  - `furniture.spec.ts` (PC): toalett i Hovedbad fra biblioteket (plassbehovet vises), dratt inn i dørslaget →
+    «… blokkeres av «Toalett»», rotert, duplisert, slettet; senga i Soverom (ny fløy) dratt fra veggen og tilbake →
+    snapper mot veggen; sørvegg +0,3, glass +0,5 og «Ta tilbake» på alle spøkelser → seeden med møbler; et klikk midt
+    på `win-106-s` velger det; 3D Inne ovenfra.
+  - `phone-furniture.spec.ts` (iPhone): stol fra arket og dratt 1 m; Forslag-menyen: lage og gi nytt navn; vedskjul
+    0,4 m fra fløya fester seg og flyttes 0,5 m ved startzoom; «Bod (ny)» på navnet.
+  - `proposals.spec.ts` (PC): lage, laste på nytt, gi nytt navn, slette med to bekreftelser, Papirkurv og tilbake,
+    status, Send forslaget, gammel `#d=`-lenke, gammel autolagring. `offline.spec.ts` (pwa): bygget under
+    `/hytte-planlegger/`, ny innlasting uten nett.
+  - Endret: trykk på rom i telefontesten treffer navnet eller gulvet ved siden av møblene (9 rom, minst 8, «Bod (ny)»
+    alltid); romnavn med areal ≥ 10 (før ≥ 15); «Hent ny Forslag D» er fjernet (Forslag D er alltid den nyeste).
+  - Nye skjermbilder: `plan-furnished.png`, `3d-inne-furnished.png`, `phone-library.png`, `proposals-menu.png`,
+    `share-dialog.png`; de andre er tatt på nytt (møblert).
+
+### Ytelse (målt 12. okt på denne maskinen)
+
+Produksjonsbygget i Chromium, 1400 × 900, «Mitt forslag», 30 musebevegelser med 16 ms mellomrom. Skjermbildene går
+jevnt mellom de lange oppgavene (median 16,7 ms); tabellen viser de lange oppgavene (antall, median, maks), det er
+oppdateringene av modellen.
+
+| Drag | Normal CPU | 4 × tregere CPU |
+|---|---|---|
+| Dør (`door-mellom-vf`) | ingen | 1 (71 ms) |
+| Vegg (`w-gang-n`) | 9 (81 ms, maks 95) | 11 (338 ms, maks 369) |
+| Kant (fløyas østkant) | 9 (71 ms, maks 79) | 10 (343 ms, maks 395) |
+| Enhet (Vedskjul, kroppen) | 9 (71 ms, maks 81) | 10 (393 ms, maks 411) |
+| Badestamp | ingen | 11 (68 ms, maks 76) |
+| Møbel (senga) | ingen | 1 (62 ms) |
+
+Før runden (andre gjennomgang): vegg og kant ga 27 lange oppgaver på 64–78 ms per 30 bevegelser (ca. 13–15 bilder i
+sekundet); med 4 × tregere CPU 14 på ca. 290 ms. Nå tegner planen forhåndsbildet (snapping og omriss, 0,02–0,06 ms) hvert
+skjermbilde og oppdaterer modellen hvert 150. ms når oppdateringen tar 75 ms: en tredjedel så mange stopp, men hver av
+dem er like lang. Avledning i Node: møbeltrinnet alene 0,3 ms, en endring av bare møbler ca. 0,5 ms (grense 5).
+
+### Avgjort i 2b (Robin kan endre)
+
+- **Tepper velges på kanten**; midt på teppet velger man rommet under (ellers var Leseskrok og Soverom (ny fløy)
+  nesten umulige å velge). Teppet tegnes under de andre møblene.
+- **Romnavn og møbler**: med mus vinner møbelet under et romnavn (senga i Soverom (ny fløy) kan dras fra midten),
+  på telefon vinner navnet (rom velges der på navnet). Et nytt trykk på det valgte møbelet gir rommet under, og et
+  nytt trykk på det valgte rommet gir møbelet under.
+- **Et romnavn som flytter seg bort fra møblene kan miste arealet** («Soverom (ny fløy)» alene); ved startzoom på PC
+  viser 11 av 21 navn arealet (17 uten møbler). Romskjema og Egenskaper har alle arealene.
+- **Dra-terskel på telefon for det valgte: 5 px** (planen sa 6; 0,5 m ved startzoom er 5,8 px). Et trykk på det valgte
+  som glir mer enn 5 px, flytter det (Angre retter det).
+- **Kopien fra «Dupliser» blir valgt.** Det valgte møbelet viser alltid plassbehovet sitt.
+- **Firebase som ikke lastes** gir lokal lagring for økten og flytting inn i familiens plass senere (se «Gjort»).
+- Seeden: sengehodene mot endeveggen; senga i Soverom 2 0,5 m sør (ut av slaget til `d-105`); Soverom 3 får en
+  90 × 190-seng; servantene flyttet ut av dørslag; hylla i pantryet er 0,28 m dyp; hylla i Bod (ny) og benken i
+  Mellombygg står ikke foran en dør; hjørnesofaens rygg på romdeleren y 2,2; den gamle peisen er en Vedovn i hytta i
+  dag; vasketårn i Hovedbad, vaskemaskin i Teknisk.
+- Forslag D lagres aldri i den delte plassen (alltid den som følger med appen); manifestet har ingen `start_url`.
+- Røyktesten «Hent ny Forslag D» er tatt bort; erstatningen er i `proposals.spec.ts`.
+
+### Neste
+
+1. Robin prøver møblene, Forslag-menyen og familielenken (`npm run dev`, eller etter push på nettsiden) og ser over
+   skjermbildene.
+2. Pushe `main` for å publisere (2a og 2b), og sende familielenken til familien.
+3. Fase 4/5 (rester): eksport til PDF/PNG av plan og 3D, gå-modus i 3D, finpuss av sol-panelet, hjelp til
+   drenering/fall (sluk, takvann), IFC-modellen som overlegg i plan og 3D.
+4. Dra-ytelse: inkrementell vegg- og romavledning (bare den delen av vegg-grafen som endres), så drag av vegger, kanter
+   og enheter blir jevne også på telefon.
+
+### Kjente problemer (fase 2b)
+
+- Møbler: ved konkave hjørner med åpne sammenføyninger stikker de avledede ytterveggene 0,16 m inn i rommet
+  (pantryets sørvesthjørne), så et møbel der får kollisjon. Bjelker teller ikke, vinduer blokkeres aldri, og
+  plassbehov gir ingen advarsel. Bokhylla i Leseskrok dekker vestvinduet (som i den gamle modellen).
+- Møbler i 3D: dusjveggen har alltid glass foran og på +x-siden, hjørnesofaen har ingen speilvendt utgave, rød
+  farge bare ved kollisjon (ikke når et møbel blokkerer en dør), og fargene blir litt lysere enn hex-verdien.
+  Ingen forhåndsvisning når et møbel dras over 3D-visningen (slippet virker).
+- Et romnavn som står over et lite møbel ved startzoom på telefon dekker det (et nytt trykk gir møbelet).
+- Delte forslag: en utgave som ble skrevet over av en lagring uten nett, reddes bare hvis enheten har appen åpen når
+  den sene lagringen kommer; en endring fra en annen enhet lukker en åpen Angre-toast; Papirkurven har ingen «Tøm nå»
+  (den tømmer seg selv etter 30 dager); å åpne en lenke til en annen familie laster siden på nytt (den gamle huskes);
+  uten IndexedDB viser delt modus uten nett bare Forslag D; `controllerchange` er ikke enhetstestet; den ekte delte
+  plassen er prøvd i Chromium på PC, ikke på en iPhone.
+- Chrome på PC tilbyr kanskje ikke «Installer» (manifestet har ingen `start_url`); iPhone påvirkes ikke.
+- Redigering: etter en flytting som slo sammen to rom (`w-bod-gavl` +1 mot `w-bod-ved`) kan «Ta tilbake» gi det
+  beholdte rommet den største flaten (26 navngitte rom; Angre virker). En enhet utenfor rutenettet i begge retninger
+  som dreies inn på rutenettet, kommer ikke helt tilbake (planen setter aldri ut en slik). En dør brukeren selv har
+  flyttet ≤ 15 cm kan bli trukket tilbake når veggen dreies og settes tilbake.
+- Dra-ytelse for vegger, kanter og enheter: se «Ytelse» (ca. 70–80 ms per oppdatering på PC, 340–390 ms med 4 ×
+  tregere CPU).
+- Playwright: Chromiums berøringsemulering mister av og til klikket fra et trykk rett etter en knipe-zoom og et drag;
+  telefontesten trykker da en gang til (ikke sett på ekte telefoner).
+- Det gamle tidsmålet for avledning (`derive.schema2.test.ts` «is fast») kan feile når hele testsettet kjører i
+  parallell; det tar nå beste av 20 kjøringer.
 
 ## Fikserunde 2a, runde 2 (12. okt 2026)
 
@@ -121,15 +305,17 @@ bare delvis rettet (se «Ytelse»).
 - **Glassutbygget har en egen «i dag»-del** (`SEED_REVISION` 5).
   - Eksisterende autolagringer får «Forslag D er oppdatert (revisjon 5)» med «Hent ny Forslag D».
   - Egne forslag lagret før dette beholder glassutbygget uten del. Det får delen fra omrisset første gang det endres.
-  - Et glassutbygg som alt var gjort større før revisjon 5, beholder den økningen som «hytta i dag».
+  - Et glassutbygg som alt var gjort større før revisjon 5, beholder den økningen som «hytta i dag» bare til første
+    endring (endret i 2b: da bygges «i dag»-delen fra spøkelseslinjene).
 - **BYA i dag kan synke litt** når en gammel kant flyttes ut: kledningsstripa som havner inne i bygget, telles som ny
   (glassets østvegg +0,5: 102,18 → 101,905), som vedtatt for vestgavlen.
 - **Treffbåndet ved berøring er minst 10 px, ikke 12.** Ved 11,6 px/m ligger hvert punkt i «Bod (ny)» innenfor 5,5 px
   av en vegglinje, så 12 px ville gitt bare 21 av 24 romnavn.
 - **Snapping når ting flyttes** legger aldri til mer enn halve draget (`SNAP_ADD_FRACTION` 0,5). Skyggen fra Nytt bygg
-  fester seg innen 0,25 m (Vedskjul satt ut 5 cm fra terrassekanten fester seg fortsatt).
-- **En enhet som dreies inntil noe**, kan bli stående 5 cm utenfor 10 cm-rutenettet; frie enheter dreies på
-  rutenettet som før.
+  fester seg innen hele pekerradiusen, 12 / 24 px (endret i 2b; i runde 2 bare 0,25 m, og en Vedskjul 0,4 m fra fløya
+  festet seg ikke på telefon).
+- **En enhet som dreies inntil noe**, kan bli stående 5 cm utenfor 10 cm-rutenettet; frie enheter på rutenettet dreies
+  på rutenettet, frie enheter utenfor det dreies om sin egen midte og beholder forskyvningen (2b).
 - **Snapping (erstatter «Punkter … beholder 12 / 24 px» fra første runde)**:
   - Under et drag gjelder samme regler for punkter som for linjer: høyst 0,25 m, ikke ved startpunktet, aldri mer enn
     halve draget tilbake, og Alt slår dem av.
@@ -311,16 +497,6 @@ sammen her.
   gjennom veggene og kantene.
 - Planen er standardvisning også på store skjermer; «Begge» huskes når brukeren velger den.
 
-### Neste
-
-1. Robin ser over skjermbildene og prøver redigeringen (lokalt med `npm run dev`, eller etter push på nettsiden).
-   3D starter nå i naturlige farger med en egen bryter (se «Avgjort i fikserunden»). Seeden er revisjon 5, så en
-   autolagring fra før får «Hent ny Forslag D» (se «Avgjort i runde 2»).
-2. Kjøre fase 2b (`docs/workflows/phase2b-furniture-offline.workflow.js`): møbelkatalog (biblioteket er en plassholder
-   nå; 3D-mottaket for slipp finnes), delte forslag i Firestore med Papirkurv og revisjoner, statuspillen, «Send
-   forslaget» med familielenke, PWA/offline.
-3. Pushe `main` for å publisere når 2b (eller 2a alene) er godkjent.
-
 ### Kjente problemer (fase 2a)
 
 - Spøkelser for flyttede ytterkanter tegnes i alle etasjer (også på Hems).
@@ -345,15 +521,11 @@ sammen her.
 - Telefon: topplinja med forslagsknappene bruker ca. 250 px før planen begynner (når Egenskaper-arket åpnes, rulles
   siden så verktøylinja står øverst).
 - Telefon: et trykk på etikettpunktet til Korridor (øvre) treffer trappa (etikettpunktet ligger i trappa).
-- Dra-ytelse for vegger og blokk-kanter: hvert bilde avleder hele byggetrinnet (ca. 40–48 ms i Node; lange
-  oppgaver ca. 65–70 ms i dev-bygget på PC, ca. 13–15 bilder i sekundet, tregere på telefon). Et bilde der
-  avstemmingen endrer rommene, avleder fortsatt to ganger. Neste steg: inkrementell vegg- og romavledning (bare den
-  delen av vegg-grafen som endres), eller et lettere forhåndsbilde under draget og full avledning ved slipp. Dører,
-  vinduer og ting ute er raske (se «Ytelse»).
+- Dra-ytelse for vegger, blokk-kanter og satt ut enheter: hver oppdatering avleder hele byggetrinnet (ca. 40–48 ms i
+  Node). Siden 2b tegnes et lett forhåndsbilde mellom oppdateringene (se «Ytelse» under fase 2b); et bilde der
+  avstemmingen endrer rommene, avleder fortsatt to ganger. Neste steg: inkrementell vegg- og romavledning.
 - BRA eks. kan stige litt når en gammel kant flyttes ut, fordi det høyere taket gir hemsen mer målbar høyde
   (nordkanten +1: 103,51 → 104,72).
-- Møbler: bare plassholdere (rektangel med navn, 1 × 1 × 1 m uten katalog); biblioteket er tomt (fase 2b).
-- Førstegangskortet sier at alt deles med familien; det gjelder først når fase 2b (Firestore) er på plass.
 - Midtknappen på musa virker som et trykk i plasseringsverktøyene.
 - iPhone-testen kjører i Chromium med iPhone 13-emulering (WebKit er ikke installert); berøring sendes gjennom
   DevTools-protokollen.
@@ -512,7 +684,7 @@ Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-
 2. Geometri: gi reserve-advarslene en egen `ModelWarning`-type i stedet for `'generic'` med «geometry fallback:», og
    legge eks./nytt-delingen av bygg og terrasse inn i `AreaSummary` (UI-en regner den ut selv i `ui/areaFigures.ts`).
 3. Husk: enhver endring av innholdet i Forslag D må øke `SEED_REVISION`, ellers dekodes gamle delingslenker mot en endret
-   seed (revisjon 4 er skjema 2, revisjon 5 glassutbyggets «i dag»-del; møblene i fase 2b blir revisjon 6).
+   seed (revisjon 4 er skjema 2, revisjon 5 glassutbyggets «i dag»-del, revisjon 6 møblene i fase 2b).
 
 ## Avgjort av Robin
 

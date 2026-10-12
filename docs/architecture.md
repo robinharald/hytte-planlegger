@@ -31,28 +31,38 @@ src/
                levels.ts (which level's floor is at a point: room detection and `levelAt`)
                edit.ts (phase 2: every edit rule as `apply…(draft, ctx, …)`, status bookkeeping, reconcileRooms)
                snap.ts (phase 2: snapping and dimension chips)
-  state/       store.ts (zustand + zundo + immer), selection.ts, persistence.ts (autosave, versions, share link),
-               editActions.ts (phase 2: the edit API and the drag protocol on a store; `useEditActions()`),
-               editStrings.ts (= nb.editor)
+               furnitureDerive.ts (phase 2b: the furniture stage: level / room / floor, collisions, door swings)
+  state/       store.ts (zustand + zundo + immer), selection.ts, persistence.ts (UI prefs, links, files, the legacy
+               autosave), appStore.ts (the app singleton, bootstrap, family session actions),
+               familyStore.ts (+ .local.ts, .firestore.ts, .sync.ts, .fake.ts; phase 2b: the family's proposals),
+               firebaseConfig.ts, editActions.ts (phase 2: the edit API and the drag protocol on a store;
+               `useEditActions()`), editStrings.ts (= nb.editor)
   plan2d/      SVG plan: PlanView.tsx and parts; editing: usePlanEditing.ts (gestures, tools), editModel.ts (handles,
                hit tests), editTypes.ts (the plan's side of the edit contract), editFeedback.ts, planSnap.ts,
-               layers/EditOverlay.tsx, Legend.tsx, GhostLayer.tsx, FurnitureLayer.tsx
+               layers/EditOverlay.tsx, Legend.tsx, GhostLayer.tsx; phase 2b: layers/FurnitureLayer.tsx (+ FurnitureSymbol.tsx,
+               furnitureSymbols.ts, furnitureLayerModel.ts), furniturePlacement.ts (tap / drop placement), furnitureDrop.ts
+               (DOM events between the library and the plan)
   view3d/      R3F scene: View3D.tsx, Scene.tsx, coords.ts, materials.ts, Walls.tsx, Roofs.tsx, Floors.tsx,
                Openings.tsx, Outdoor.tsx, Terrain.tsx (+ ground.ts), Trees.tsx, Labels.tsx (+ labelDefs.ts), StructureMeshes.tsx,
                cameras.ts, SunLight.tsx; phase 2: selection3d.ts (click selection tags), sceneParts.ts (group reuse),
-               drop.ts + dropEvent.ts (furniture drop target), FurnitureMeshes.tsx (placeholder boxes)
+               drop.ts + dropEvent.ts (furniture drop target); phase 2b: Furniture.tsx + furnitureBuilders.ts (models)
   ui/          App shell, panels, theme.css, format.ts, components; phase 2: Toolbar, HintLine, Toasts, NumberField,
                PropertiesEditor / PropertiesPanel (+ editors/), BottomSheet, SelectionMiniBar, LibraryPanel,
-               FirstRunCard, editorBridge.ts (UiEditActions context, tools, lock helpers), commands.ts, overlay.ts
+               FirstRunCard, editorBridge.ts (UiEditActions context, tools, lock helpers), commands.ts, overlay.ts;
+               phase 2b: FurnitureLibrary (+ furnitureLibraryModel.ts, libraryDrag.ts, furniturePlacer.ts,
+               useFurniturePlacer.ts), properties/FurnitureProps, ProposalsMenu, StatusPill (+ FamilyBanners,
+               NameDialog), ShareDialog, TrashPanel, RevisionsPanel, UpdateToast, InstallCard, familyUi.ts, family.css
   i18n/        nb.ts — every user-visible string lives here
-  furniture/   catalogue + components (phase 3)
-e2e/           Playwright: smoke.spec.ts, editing.spec.ts (desktop), phone-editing.spec.ts (iPhone project), helpers.ts,
+  furniture/   catalog.ts (phase 2b: the 50 catalogue entries, presets, stretch ranges, colours, clearances, frame helpers)
+e2e/           Playwright: smoke.spec.ts, editing.spec.ts + furniture.spec.ts + proposals.spec.ts (desktop),
+               phone-editing.spec.ts + phone-furniture.spec.ts (iPhone project), offline.spec.ts (pwa project), helpers.ts,
                screenshots (e2e/screenshots/*.png, committed)
-docs/          this file, kalibrering-ifc.md (IFC facts), seed-brief-forslag-d.md (what the seed contains)
+docs/          this file, phase2-plan.md, firebase-oppsett.md (the family space, for Robin), kalibrering-ifc.md (IFC facts),
+               seed-brief-forslag-d.md (what the seed contains)
 data/geo/      raw Kartverket elevation grids and the IFC element dump (inputs for scripts)
 scripts/       build-terrain.mjs (data/geo → src/model/seed/terrain-merkesvatnet.json),
                freeze-seed-schema1.mjs (one-off: wrote seed/frozen/forslagD.schema1.json; refuses to run on a newer seed)
-public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
+public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2); public/*.png the app icons (180, 192, 512, 512 maskable)
 ```
 
 ## Coordinate systems
@@ -233,9 +243,22 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
    side, broken at block and part vertices, pieces set back more than 6.5 m left out, chain 1.0 m and a total
    1.8 m outside the outermost edge, running counter-clockwise so the offsets are negative), bounds (outer outlines
    + decks), wall unions per storey and status, warnings (blocks, roofs, walls/openings, rooms, decks, `area-limit`).
-9. Furniture (placeholder until phase 2b): `DerivedFurniture` with `footprint` = the item's `size` rectangle rotated
-   by `rotationDeg` about its position (`furnitureFootprint`), bbox, floorZ = z = the level elevation, `roomId` = the
-   room of the item's storey containing the position, `catalog: null`, no clearances / collisions / warnings yet.
+9. Furniture (phase 2b, `deriveFurniture` in geometry/furnitureDerive.ts): `footprint` = the item's `size` rectangle
+   rotated by `rotationDeg` (CCW; 0 = back to the north, 90 west, 180 south, 270 east) about its position
+   (`furnitureFootprint`); `catalog` = the full catalogue entry (`FurnitureCatalogItem`, null for an unknown id:
+   'furniture-unknown', a plain box); `roomId` = the room of the item's storey under its centre and `levelId` = that
+   room's level (geometry wins over the stored level; a centre in a wall or doorway takes the floor there, one over a
+   void keeps the stored level); `floorZ` = that level's elevation, else the deck top, else the terrain; `z` = floorZ +
+   the catalogue elevation; `clearances` (front / sides / around); `collisions` = ids of other furniture (same level,
+   overlapping z), walls (a door or window the item fits through vertically counts as open), structure (posts,
+   chimney, stairs; beams ignored) and hot tubs, by separating axes on convex pieces with a 5 mm tolerance (an L-shaped
+   corner sofa collides as its two parts, `outline: 'l'` / `seat`); flat items (rugs, drains: mount 'flat') never
+   collide; `blocksDoors` = doors whose swing sector the item's z range reaches. Warnings in item order:
+   'furniture-unknown', 'furniture-outside' (an indoor item on no floor of its storey and not on a deck),
+   'furniture-needs-wet-room' (needsDrain outside bad / wc / teknisk / badstue / kjøkken), 'furniture-in-wall' (the
+   first wall, structure element or hot tub it stands in; `wallId` is that id), then 'furniture-overlap' per pair and
+   'door-blocked' per door and item (`by` = the item id; nb.ts names the item: «Døra … blokkeres av «Seng 150».»).
+   Unchanged derived items keep their identity across wall, deck and hot-tub edits (`shareUnchanged`).
 
 **Memo split** (docs/phase2-plan.md §2): `deriveVariant` is memoised on (variant, site, terrain) and is assembled from
 stages, each memoised on the identities of what it reads (nested WeakMaps, `IdentityMemo` in derive.ts):
@@ -248,13 +271,14 @@ stages, each memoised on the identities of what it reads (nested WeakMaps, `Iden
 - trees — (building, `treesOf(project, variant)`);
 - outdoor — (building, outdoor.decks, outdoor.hotTubs): decks, railings, steps, hot tubs, BYA (`computeBya`, it
   needs the deck pieces), bounds, deck warnings;
-- furniture — (building, furniture).
+- furniture — (building, opened (the opening stage), outdoor, furniture).
 With immer's structural sharing an edit of the furniture (or of the outdoor) reuses the building and opening stages:
 the derived `walls`, `rooms`, `floors` … are the same array instances (tested); an opening edit reuses rooms, roofs,
 areas and the outdoor stage and re-derives only the opening stage (tested deep-equal to a derive from scratch). Seed
 timings (this machine, Node, 20 runs each, 2026-10-12): an opening-only change 0.2–0.9 ms (median 0.3; limit 8), a
 stored-wall move ≈ 41 ms, a block-edge change ≈ 40 ms (target 60; the test allows × 1.5 locally, where the files run
-in parallel, × 3 on CI), a hot-tub move ≈ 4 ms, a furniture-only change ≈ 0.01 ms (limit 5).
+in parallel, × 3 on CI), a hot-tub move ≈ 4 ms, a furniture-only change ≈ 0.5 ms for the seed's 57 items
+(`deriveFurniture` ≈ 0.3 ms; limit 5).
 `DerivedVariant` additions: `locked`, `ghosts`, `outdoor.steps`, `DerivedBlock.junctions` (`{ edgeIndex, s0, s1,
 otherBlockId, otherEdgeIndex, role: 'owner' | 'removed' | 'open' }`), `WallSource` (blockEdge) `s0` / `s1` (the piece's
 range on its edge), `DerivedWall.isGhost`, `DerivedOpening.levelId` (the level the sill is measured from) /
@@ -411,13 +435,46 @@ measurement); then the app's Esc (tool → Velg, clear the selection) is skipped
 (null while dragging); it is re-reported after every render (pans, zooms, edits) and on window scroll / resize (at
 most once per frame).
 
+**Phase 2b in the plan.** Furniture (`layers/FurnitureLayer.tsx`) is drawn above the room-label hit areas and below the
+walls: each item is its catalogue symbol (`furnitureSymbols.ts`, one per catalogue id, built from the item's own size,
+front at local −y; appliances write "VM" / "TT" / "KJ" / "VV" when big enough), tappable through its footprint only;
+rugs (mount 'flat') are drawn under the other items and, until selected, take taps only on a 12 px band along their
+outline (`FLAT_EDGE_HIT_PX`), so a tap inside a rug selects the room. The selected item gets an accent outline, its name,
+its clearance zone (every item's with «Plassbehov for møbler», `ui.showClearances`, a persisted pref) and a rotate
+handle on its front edge (a tap turns 90°, a drag in 15° steps, 1° with Alt, applied once on release; its hit circle
+takes the fill only, so it never covers a small item's body). Colliding items (their own `collisions` / `blocksDoors`
+or the furniture warnings) get a red outline. Room names move off furniture where they can (the same text, else a
+shorter one: "name / m²", the name alone) and keep their place otherwise; on touch the hit area of a name that had to
+stay on furniture lies above the furniture (rooms are tapped by name on a phone), with a mouse the furniture under it
+wins. A second tap on the selected item selects the room under the tap, and a tap on the selected room over an item
+selects the item (`editModel.ts cycleFurnitureRoom`, next to `tapSelection` and `cycleOpeningGhost`). With the
+Møbler tool and no item armed the plan behaves as Velg. A library drag over the plan shows a ghost where the item
+will land (red when the spot is not free; `furniturePlacement.ts dropPlacement`), the release calls
+`onDropFurniture`; `furnitureDrop.ts` carries the drag, the drop and "the middle of the visible plan" as DOM events,
+so the library needs no reference to the plan (and the hidden plan or the 3D view work the same).
+Editor polish (phase 2b): the drag loop calls `previewDrag` (state/editActions.ts: the snap and the dragged element's
+target outline, no store change, no derive; 0.02–0.06 ms) every animation frame and `updateDrag` at most every
+`updateInterval(last)` = clamp(2 × its last duration, 16, 150) ms, and once more with the last position before
+`endDrag` (`usePlanEditing.ts`); a touch press the plan claims (on the selection or a handle) becomes a drag after
+5 px (`DRAG_THRESHOLD_TOUCH_SELECTED_PX`, a 0.5 m nudge at the phone's 11.56 px/m; elsewhere 10 px); a tap that the
+DOM gives to a wall, opening or ghost band but that lies inside a drawn room name selects the room unless it is within
+4.5 px of the element's line (`labelTap`, `data-label-box`); live openings' bodies lie above the ghosts and a second
+tap on a selected opening selects the ghost under it; on touch the end handles of an opening show from half a
+handle diameter; loose-wall warnings say where the wall stands ("veggen nord i Stue", "på terrassen", "sør for
+«Bod-fløy»") and identical lines merge with a count ("3 vegger nord i Stue henger løs …"; the Advarsler badge counts
+every warning).
+
 ## 3D view (R3F, `view3d/`)
 
 `<Canvas dpr={[1, 1.5]} frameloop="demand" shadows>` with `invalidate()` on store changes and control changes;
 shadow map 2048 (1024 and no soft shadows on `(pointer: coarse)`). Groups (phase 2, `sceneParts.ts`): `building` (walls,
 roofs, openings, foundations, floors, ceilings, structure), `outdoor` (decks (their `pieces`: boards on top, skirts
 along each piece's outer ring), one railing per deck, every deck steps that is not blocked as its own mesh tinted like
-its deck, hot tubs), `furniture` (placeholder pine boxes: footprint × stored height, cut in "Inne"; phase 2b) and
+its deck, hot tubs), `furniture` (phase 2b: `Furniture.tsx`, one parametric model per catalogue `model` key from
+`furnitureBuilders.ts` in the old model's materials, built in the item's own frame and memoised on the catalogue id,
+size, seat and cut height, so a move or turn reuses the geometry; one merged mesh per item plus shower glass without
+shadows; recoloured by the item's `colour`; red tint for `collisions`; cut at the structure cut plane in "Inne",
+items on hidden levels not built; about 4 ms and 20k vertices for the seed's 57 items) and
 `site` (terrain, water, trees). `sceneParts(derived, prev)` reuses a group's object while its contents are unchanged,
 so a furniture or deck edit keeps the wall, roof and floor meshes, and a wall edit rebuilds only that wall.
 Visibility depends only on levels and storeys. Ghosts (removed walls / openings) are never built.
@@ -431,7 +488,10 @@ highlight is a translucent overlay plus a blue outline drawn through everything.
 target** (`dropEvent.ts`, no three.js import): the library calls `dispatchFurnitureDrop(clientX, clientY, catalogId)`,
 which sends an event to the element under the pointer; View3D answers with `onDropFurniture(catalogId, planPoint,
 hit)` where the ray through walls and roofs lands on the nearest visible floor (room, threshold or slab, never a
-ceiling), deck piece or the shown ground (phase 2b wires it). Modes: `ute` (all), `inne` (roofs hidden; storeys above the active storey hidden; each
+ceiling), deck piece or the shown ground. `Stage.tsx` places the item with the same placer as the library's tap
+(`useFurniturePlacer`, back to the nearest wall within reach) on the level of the floor that was hit
+(`furnitureBuilders.ts furnitureDropLevel`, imported lazily: a deck or terrain hit takes the ground storey's level
+there). Modes: `ute` (all), `inne` (roofs hidden; storeys above the active storey hidden; each
 visible wall piece rebuilt with top = min(topProfile, level.elevation + cutHeight) and a cap material — geometry
 rebuild memoised per cut height, NOT renderer clipping planes). Wall meshes: per piece, sub-prisms (piers between
 openings, lintels, sills) over slices of the footprint with per-vertex top z from the profile; never overlapping
@@ -517,7 +577,34 @@ undo history aside. "Lag min egen kopi" ADDS the shared variant(s) to the user's
 Derived model via `useDerived()` = `deriveVariant(activeVariant, site, terrainAsset)`; when derive throws, an empty
 model with the warning `nb.warnings.deriveFailed(detail)`.
 
-`persistence.ts`: autosave of `project` (debounced 500 ms) to localStorage `hytte-planlegger:project`, written once
+**The family's proposals** (phase 2b, docs/phase2-plan.md §5; `familyStore.ts` holds the interface, the document
+format, the rules and the links). The project on screen is the bundled Forslag D (locked, never stored) plus the
+family's proposals. `FamilyStore`: `listProposals` (live), `saveProposal(variant, { base, force })` with the conflict
+guard (a stored `updatedAt` other than `base` → `conflict`), `createProposal`, `renameProposal`, soft
+`deleteProposal` / `restoreProposal`, `listTrash` / `purgeTrash` (30 days), `listRevisions` / `restoreRevision` /
+`keepRevision` (≤ 20, at most one per 5 minutes of edits), `whoAmI` / `setMyName`, `status` / `onStatus`, `flush`.
+Implementations: `familyStore.local.ts` (localStorage `hytte-planlegger:proposals` / `…:proposal-revisions`,
+lz-compressed) and `familyStore.firestore.ts` (`families/{familyId}/proposals/{id}` + `/revisions/{rid}`, the proposal
+as the JSON text of a one-variant Project because Firestore has no nested arrays; anonymous auth; the persistent
+IndexedDB cache answers and queues writes offline; Firebase itself is loaded with `import()`, a separate chunk).
+`familyStore.sync.ts` keeps the app store and a family store in step: debounced autosave (1 s shared, 500 ms local),
+remote changes merged without undo steps (the history is rebased, so Angre never brings back someone else's old
+version; a merge never counts as an edit to save), the conflict banner ("Hent endringene" / "Lagre over"), edits
+saved before a soft delete, an offline save that lands on a newer version kept as a revision with a notice. Mode
+(`resolveFamilyMode`): shared with a Firebase config, except in tests and under browser automation
+(`navigator.webdriver`), overridable by `VITE_FAMILY_STORE` or localStorage `hytte-planlegger:family-mode`. Shared
+mode whose Firebase cannot be loaded falls back to the local store for the session (`appStore.ts startFallback`,
+pill «Kun på denne enheten (familiens plass kan ikke nås nå)»), retries every 15 s and on `online`, and once connected
+saves what was kept locally into the family space (also at the next start: `importLeftovers`). Links: `#f=<family>`
+(24–64 characters; the address bar keeps `#f=…&p=<proposal>`), `#d=` (an old share link: imported as new
+proposal(s), ids derived from the link). The old whole-project autosave becomes proposals once and is kept as
+`hytte-planlegger:project.before-2b`. The PWA: vite-plugin-pwa, `registerType: 'prompt'`, `injectRegister: false`,
+`UpdateToast.tsx` registers `./sw.js` (scope `./`) and asks before an update; everything is precached (also the
+Firebase chunk and the fonts), navigations fall back to index.html; the manifest has no `start_url` (a home-screen
+app opens the page it was added from, `#f=` included).
+
+`persistence.ts` (phase 1 – 2a; since 2b only the UI prefs, links, files and reading the legacy autosave are in use):
+autosave of `project` (debounced 500 ms) to localStorage `hytte-planlegger:project`, written once
 at start-up when nothing is stored (so a fresh project keeps its id across a reload); `saveNamedVersion` forces a
 save first. Without storage (localStorage blocked) `startAutosave` does nothing and never reports a failed write: the
 start-up notice 'storage-unavailable' already says so. UI prefs under `hytte-planlegger:ui` with `v` =
@@ -525,7 +612,7 @@ start-up notice 'storage-unavailable' already says so. UI prefs under `hytte-pla
 tab; `cutHeight` / `cutHeightBeforePreset` saved by the removed slider are ignored and dropped on the next save;
 `PREFS_VERSION` 3: `highlightNew` is read only from prefs of version 3 on, since older prefs saved the old default
 `false` whether or not the user chose it; `PREFS_VERSION` 4 adds `highlightNew3d`, which older prefs lack, so 3D starts
-in natural colours);
+in natural colours; `showClearances` is persisted since 2b, absent = off);
 named versions `hytte-planlegger:versions` = `{ id, name, savedAt, projectId, schemaVersion, project }[]`, listed for
 the current projectId newest first, capped at 30 with size shown; export / import JSON file (a share-link delta is
 also accepted as a file). Share link `#d=` + lz-string `compressToEncodedURIComponent(JSON of payload)`: a DELTA
@@ -542,6 +629,8 @@ shown, warning above 8 kB with "send som JSON-fil" fallback; never includes terr
 current seed, or the frozen revision 3 for a phase-1 link) is applied to that base (banner `link-rebased`); one
 from a newer revision than the bundled seed is treated as too new; old full-format links still open (and migrate).
 **Any change to Forslag D's content must bump `SEED_REVISION`**, otherwise old links decode against the changed seed.
+Revision 6 (phase 2b) furnishes the seed (`seed/furniture.ts`, 57 items `fu-<room>-<n>`, ported from the old model's
+`buildD150()`).
 Revision 5 (second fix round after 2a) only adds the glass bump's existing part. A stored revision-4 copy
 (autosave, file, version) keeps `parts: []` and gets the part from its outline the first time an edit changes that
 outline (`todayPart`); a revision-4 share link decodes against the revision-5 seed, so an unchanged glass bump gets
@@ -613,8 +702,18 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   sends it to the face's label point. Whole-block moves and rotations hand the carried rooms to reconcile
   (`EditContext.carried`), which shifts their previous polygons the same way before matching.
 - **Drag protocol** (plan → actions): `beginDrag(selection, p, handle?)` → session (null: nothing to drag, then the
-  plan pans), `updateDrag(session, p, modifiers)` → `{ indicators, chips, ghost }`, `endDrag` / `cancelDrag`. Handles
-  'a' / 'b' (wall ends), 'start' / 'end' (opening jambs), 'insert' (deck "+").
+  plan pans), `updateDrag(session, p, modifiers)` → `{ indicators, chips, ghost }`, `previewDrag(session, p, modifiers)`
+  → the same plus `target` (the dragged element's outline at the snapped pointer) without changing or deriving
+  anything (phase 2b; the plan draws it every frame and applies `updateDrag` at most every few frames), `endDrag` /
+  `cancelDrag`. Handles 'a' / 'b' (wall ends), 'start' / 'end' (opening jambs), 'insert' (deck "+"). A furniture drag
+  updates the stored level too (`applyFurnitureMove`: the floor under the item, `levelAt`).
+- **Furniture** (phase 2b): `addFurniture(catalogId, p, { levelId?, size?, rotationDeg?, sizeVariant? })` (size and
+  `sizeVariant` from the catalogue preset, level from `levelAt`), `moveFurniture`, `rotateFurniture`, `duplicateFurniture`
+  (0.3 m east and south; the UI selects the copy), `deleteFurniture`, `setFurnitureProps` (a new size keeps the back
+  edge in place, stretch ranges clamp, presets and colours apply; false when nothing changed). They refuse Forslag D
+  and never reconcile rooms. Every action that moves walls (`run()`) lets furniture backed onto a moved wall face (≤ 1
+  cm, either face, block edges too, thickness changes too) follow it (`followWallFaces`), never onto another level's
+  floor, positions rounded to the micrometre, so "Ta tilbake" puts them back exactly.
 - **Snapping** (`snap.ts`): grid 0.10 m (0.01 with Alt); wall ends / midpoints, block axis vertices and edges (never
   cladding faces), deck edges and vertices, collinear extensions and perpendiculars (within 6 m of the ends), ortho
   from the start point; polygons (units, blocks) snap axis to axis; furniture back to wall; hot tubs to deck edges.
@@ -628,8 +727,14 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   `snapPolygon` / `snapFootprint` / `snapCircle` (unit, block and deck moves, furniture, the hot tub) reach at most
   0.25 m per direction, never put an edge back on its own starting line, never take back more than half the drag nor
   add more than `SNAP_ADD_FRACTION` = 0.5 of it, and keep an axis at its start while it has moved under 5 cm. Without
-  a drag (the placement tools) point targets and the ortho guides through the start keep the full radius; unit
-  placement gets the 0.25 m reach only.
+  a drag (the placement tools) point targets and the ortho guides through the start keep the full radius, and so does
+  the "Nytt bygg" ghost (12 / 24 px: a Vedskjul tapped 0.4 m from the wing attaches on a phone). Editor polish (phase
+  2b): in unit and block drags, contact targets (a block edge faced from outside, a deck edge the unit stands along
+  from inside, really overlapping) reach max(0.25 m, the drag threshold in metres, `DragModifiers.dragThresholdM`); a
+  unit edge that would end inside a block is pushed back out against that block's wall; the 0.25 m cap and the
+  half-drag rules apply to the snapped point's displacement; extensions and perpendiculars of walls on another level
+  are skipped; a free unit off the 0.1 m grid turns about its own centre (`centreTurn`); a clamped wall end is carried
+  along by a coincident wall that gets longer (w-103-korr stays parallel).
 - **Strings**: nb.ts `nb.editor` (editor core), `nb.plan2d.edit` (legend, hints, handle tooltips; the hints are
   `nb.hints`, one source each); the unit template names (`nb.editor.units`) become project data when a unit is placed.
 - **Toasts and undo** (fix round after 2a, `ui/toastRegistry.ts`): the store keeps plain toast records; the UI ties
@@ -651,17 +756,29 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
 
 ## UI (`ui/`)
 
-Layout (phase 2a): top bar (title, "Forslag:" selector with a "Grunnlag" tag on Forslag D, "+ Nytt forslag" (asks for a
-name, copies the proposal on screen; the primary button on Forslag D), Gi nytt navn, Slett (asks twice; not for Forslag
-D), Lagre versjon / Versjoner / Eksporter / Importer, "Send forslaget", Hjelp with the tools and shortcuts) · left
+Layout (phase 2a, top bar since 2b): top bar (title, the "Forslag: <navn> ▾" menu (`ProposalsMenu.tsx`: Forslag D first
+with a "Grunnlag" tag, then the family's proposals with "sist endret av …", "+ Nytt forslag", "Lag en kopi", Papirkurv),
+"+ Nytt forslag" (asks for a name, copies the proposal on screen; the primary button on Forslag D), Gi nytt navn, Slett
+(two steps: "Vil du slette «X»?" → "Er du sikker? …" → into the Papirkurv; not for Forslag D), the status pill
+(`StatusPill.tsx`), Mer (Tidligere versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and "Endre navnet
+ditt" in shared mode), "Send forslaget" (`ShareDialog.tsx`: the family link and the deep link, `navigator.share` on
+phones; locally a `#d=` copy), Hjelp; the conflict / overwritten / too-new banners and the app-update toast belong to
+the top bar too; "Hva heter du?" once per device in shared mode) · left
 column (view tabs Plan/3D/Begge, plan storey tabs, 3D mode + presets, toggles, sun date/time; no cut-height control:
-'Inne' cuts the walls 1.3 m above each floor, 2.3 m with 'Inne i stua'; while the Møbler tool is active the furniture
-library replaces it) · centre: toolbar (Velg · Vegg · Dør/vindu · Nytt bygg · Møbler · Mål, then Angre / Gjør om; the
+'Inne' cuts the walls 1.3 m above each floor, 2.3 m with 'Inne i stua'; Vis has «Plassbehov for møbler»; while the
+Møbler tool is active the furniture library (`FurnitureLibrary.tsx`: search ignoring case and æ/ø/å with a few
+synonyms, the categories as an accordion with counts — the selected room's category open first —, each item with
+its plan symbol, name and size in cm; a tap places it through `useFurniturePlacer` in the selected room (or the
+room of a selected item or one-room unit), else at the middle of the visible plan, back to the nearest free wall,
+corner items into a corner, tables and rugs near the middle; a mouse drag after 5 px or a 280 ms long press on touch
+carries it over the plan or the 3D view, Esc cancels) replaces it) · centre: toolbar (Velg · Vegg · Dør/vindu · Nytt bygg · Møbler · Mål, then Angre / Gjør om; the
 type chooser of Dør/vindu and the template chooser + "Roter" of Nytt bygg below it), hint line, then the plan and/or
 3D, the first-run card ("Slik kommer du i gang", hidden for good with "Skjønner") and toasts at the bottom centre ·
 right column, `clamp(360px, 24vw, 440px)` wide (340 px between 1100 and 1279 px): Egenskaper first (the editors per
 selection kind: basic fields, "Mer", action buttons, status tag "Hytta i dag" / "Nytt" / "Fjernet"; number fields
-accept "2,4" / "2,40" / "2.40", −/+ 10 cm, Enter / Tab / blur commit, Esc restores), Romskjema, Arealer with
+accept "2,4" / "2,40" / "2.40", −/+ 10 cm, Enter / Tab / blur commit, Esc restores; Møbel: `properties/FurnitureProps.tsx`
+with Navn, Rom (read-only), Størrelse presets, Bredde / Dybde within the stretch range, Farge from the catalogue
+swatches or Standard, Roter 90° / Dupliser / Slett), Romskjema, Arealer with
 explanations, Advarsler. Keyboard: Delete, arrows (1 cm, Shift 10 cm), R, Ctrl+D, Ctrl+Z / Ctrl+Y, Esc. Wording:
 proposals are "Forslag", statuses "Hytta i dag" / "Nytt" / "Fjernet" (never "rives"), the toggle is "Vis hva som er
 nytt". Romskjema columns: Rom · Bygningsdel · Status ·
@@ -680,8 +797,11 @@ below it when there is no room, never over the toolbar, the hint line or an open
 no anchor) opens the properties as a bottom sheet (schedule rows too). The sheet opens LOW (40dvh, basic fields only)
 and "Vis mer" / the handle opens it to 88dvh with everything; it reports its height (`overlay.ts setSheetHeight`),
 opening it scrolls the toolbar to the top of the screen, and `Stage.tsx` hands the plan the covered parts of its box
-as `viewportInsets` (`planInsets.ts`) while a sheet is open. The furniture library is a bottom sheet; below 600 px "Send forslaget" and Hjelp are icon buttons in the title row and Lagre versjon
-/ Versjoner / Eksporter / Importer sit in a "Mer" menu. Read-only (shared link): banner with "Lag min egen kopi";
+as `viewportInsets` (`planInsets.ts`) while a sheet is open. The furniture library is a bottom sheet that closes after a
+placement (the new item selected with its mini-bar); below 600 px "Send forslaget" and Hjelp are icon buttons in the
+title row and the pill shows a short text. After the first-run card the home-screen card (`InstallCard.tsx`) shows once
+where it applies (iOS Safari: Del → «Legg til på Hjem-skjerm» with the family link open; browsers with
+`beforeinstallprompt`: "Installer"). Read-only (shared link): banner with "Lag min egen kopi";
 edit panels/tools hidden, view controls, schedule and areas kept. Wording (fix round after 2a): "Trykk" in every
 hint, "Roter" the only rotate verb, `device.ts undoHow()` = "Angre" on touch and "Angre eller Ctrl+Z" with a keyboard;
 the ghost tag reads "Fra hytta i dag"; Romskjema, headline and Arealer say "i dag" ("Herav hytta i dag"); read-only
@@ -741,7 +861,7 @@ export interface View3DProps {
   selection: Selection | null;
   onSelect: (sel: Selection | null) => void;
   onReady?: () => void;            // first frame rendered
-  onDropFurniture?: (catalogId: string, planPoint: Vec2, hit: DropHit) => void;   // phase 2b (drop.ts / dropEvent.ts)
+  onDropFurniture?: (catalogId: string, planPoint: Vec2, hit: DropHit) => void;   // wired in ui/Stage.tsx (2b)
 }
 export type CameraPreset = 'oversikt' | 'terrassen' | 'framsiden' | 'baksiden' | 'langsiden' | 'ovenfra' | 'naert-tilbygget' | 'inne-stua';
 export function View3D(props: View3DProps): JSX.Element   // root <div data-testid="view-3d"> containing the <Canvas>
@@ -749,6 +869,9 @@ export function View3D(props: View3DProps): JSX.Element   // root <div data-test
 // src/state/selection.ts
 export type Selection = { kind: 'wall'|'blockEdge'|'blockVertex'|'opening'|'room'|'block'|'deck'|'railing'|'hotTub'|'structure'|'furniture'|'tree'
                                |'deckVertex'|'deckEdge'|'steps'|'ghost'; id: Id; levelId?: Id };
+
+// src/plan2d/editTypes.ts PlanEditActions (structural): beginDrag?, updateDrag?, previewDrag? (2b), endDrag?, cancelDrag?,
+// addWall?, addOpening?, placeUnit?, insertDeckVertex?, snapPoint?; the furniture rotate handle uses rotateFurniture?.
 
 // src/ui/editorBridge.ts — the UI's edit actions come from a context: App.tsx provides
 // uiEditActionsFrom(useEditActions()) through EditActionsProvider (rotateBlock falls back to a typed no-op for a core
@@ -761,7 +884,14 @@ Test hooks the UI must provide: `data-testid` = `view-tab-plan`, `view-tab-3d`, 
 `undo`, `redo`, `hint-line`, `hint-new-proposal`, `new-proposal`, `rename-proposal`, `delete-proposal`, `locked-tag`, `toast`,
 `toast-undo`, `toast-new-proposal`, `toast-show-warnings`, `toolbar-warnings`, `mini-bar`, `mini-properties`,
 `mini-rotate`, `mini-delete`, `properties-sheet`, `sheet-stop`, `block-rotate`,
-`furniture-library`, `first-run`, `first-run-ok`, the editor fields (`room-size-w` / `room-size-d`, `wall-thickness`,
+`furniture-library`, `first-run`, `first-run-ok`; phase 2b: `furniture-library-sheet`, `library-close`, `furniture-search`,
+`furniture-category-<id>`, `furniture-item-<catalogId>`, `furniture-drag-chip`, `furniture-rotate`, `furniture-duplicate`,
+`furniture-delete`, `furniture-size`, `furniture-width`, `furniture-depth`, `furniture-colour`, `toggle-clearances`,
+`proposals-menu`, `proposals-list`, `proposal-item-<id>`, `menu-new-proposal`, `menu-trash`, `delete-step-1`,
+`delete-next`, `delete-step-2`, `delete-confirm`, `status-pill` (`data-state`), `more-menu`, `more-revisions`,
+`more-trash`, `trash-panel`, `trash-item-<id>`, `trash-restore-<id>`, `revisions-panel`, `share-dialog`,
+`share-local-link`, `conflict-banner`; plan attributes `data-furniture-id`, `data-furniture-colliding`,
+`data-clearance-of`, `data-furniture-rotate`, `data-room-label-hit` (+ `data-label-box`); the editor fields (`room-size-w` / `room-size-d`, `wall-thickness`,
 `opening-corner`, …, a NumberField's `<input>` inside its test id), `ghost-restore`, `name-face-input`, `name-face`;
 and `window.__hytte = { ready: boolean; project: Project; derived: DerivedVariant; selection: Selection | null }` kept
 current (`ready` after the first 3D frame, or right away when only the plan is shown — the default).
@@ -876,7 +1006,7 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   steps, a full v1 project migrates, a revision-3 project shares as a delta < 2 kB, the backup-v1 copy before the first
   write), `outdoor.test.ts` (trimming, free runs, chained railings, steps hosted on edges, blocked steps),
   `derive.schema2.test.ts` (memo split: furniture-only and outdoor-only edits share the building arrays; timing;
-  junctions, ghosts, levelAt, the implicit remainder is new, the furniture placeholder).
+  junctions, ghosts, levelAt, the implicit remainder is new, the furnished seed's furniture stage).
 - `npm test` → Vitest (`src/**/*.test.ts`): geometry, room detection (incl. the seed through the real pipeline,
   `src/model/seed/forslagD.derive.test.ts`: all 27 rooms detected and named, no warnings at all, the locked base
   proposal, BYA 235.50 (178.33 + 57.18, existing 102.18) unchanged by schema 2, the terrace from x 9 with its glass
@@ -920,9 +1050,9 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   through the DevTools protocol). smoke.spec.ts loads the app, waits for `window.__hytte.ready`, checks that no 'generic'
   warning exists, that a fresh start has the bundled `SEED_REVISION` (terrace from x 9, the three steps, the locked
   base proposal, the plan as the default view), that the
-  Romskjema's Areal header ends inside the side panel without sideways scrolling, that the plan shows ≥ 15 room labels
-  with an m² line, that an autosave of an older seed revision gets the "Hent ny Forslag D" banner and the button adds
-  the new seed as the active variant, and that "Send forslaget" / Hjelp / the toolbar are on screen at 375 px, and writes
+  Romskjema's Areal header ends inside the side panel without sideways scrolling, that the plan shows ≥ 10 room labels
+  with an m² line (≥ 15 before the seed was furnished), and that "Send forslaget" / Hjelp / the toolbar are on screen at
+  375 px, and writes
   screenshots into `e2e/screenshots/`: `plan.png`, `3d-ute-oversikt.png`, `3d-ute-framsiden.png`,
   `3d-ute-langsiden.png`, `3d-ute-inne-stua.png` (Ute + the 'inne-stua' camera: the roof from inside),
   `3d-inne-stua.png`, `plan-hems.png`, `phone.png`. editing.spec.ts (desktop, each test from a fresh "Nytt forslag"):
@@ -942,13 +1072,38 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   handles at the starting zoom; screenshots `plan-editing.png` (deck handles), `plan-unit-on-deck.png`,
   `plan-ghosts.png`, `plan-glass-bump.png`.
   phone-editing.spec.ts (iPhone): "Nytt forslag", a one-finger pan and a pinch move nothing, a wall tapped and dragged,
-  a number typed in the properties bottom sheet, a door tap-placed; at the starting zoom: taps on 8 room label points
-  select the room (≥ 7), a selected door dragged 1.5 m keeps its width, a fresh Vedskjul dragged by its body keeps
+  a number typed in the properties bottom sheet, a door tap-placed; at the starting zoom: taps on 9 rooms (the drawn
+  name, else the floor beside the furniture) select the room (≥ 8, «Bod (ny)» always), a selected door dragged 1.5 m keeps its width, a fresh Vedskjul dragged by its body keeps
   its size, the Egenskaper sheet leaves the selected wall in view above it, all six tools fit the screen; second fix
   round: taps ±4 px beside w-gang-n, w-104-103, dv-pass-n and door-mellom-vf select them (`data-hit-band` ≥ 8), the
   Vedskjul dragged 2 m west moves 2 ± 0.25 m and 1 m north about 1 m, a first tap on a placed unit selects it and a
   second its room (whose mini-bar has "Velg bygningsdelen"), the delete toast does not cover the tool row or the hint
   line; `phone-edit.png`, `phone-sheet.png`, `phone-tools.png`, `phone-toast.png`.
+- Phase 2b: the catalogue (`catalog.test.ts`), the furniture stage (`furnitureDerive.test.ts`: frames, levels, floors,
+  collisions, door swings, the L sofa, identity reuse), the furnished seed (`seed/furniture.test.ts`: stable ids,
+  every item in a room of its level or on the deck, no warnings, backs on inner faces), the furniture actions and
+  walls carrying furniture (`editActions.furniture.test.ts`); symbols, the layer, placement, the drop hand-off, the
+  library and the Møbel editor (`furnitureSymbols`, `FurnitureLayer`, `furniturePlacement`, `PlanView.furniture`,
+  `FurnitureLibrary`, `furnitureLibraryModel`, `libraryDrag`, `furniturePlacer`, `FurnitureProps`); the 3D models
+  (`furnitureBuilders.test.ts`, `Furniture.dom.test.tsx`); the family store on the local store and a fake Firestore
+  (`familyStore.test.ts`: save, list, conflict guard, delete / restore, revisions, purge; `familyStore.sync.test.ts`: two
+  devices, offline, conflicts, a remote change not counted as saving), the Firebase fallback (`appStore.fallback.test.ts`),
+  the proposals UI (`proposalsUi.test.tsx`); editor polish (`snap.polish.test.ts`, `editActions.polish.test.ts`,
+  `editActions.restore.test.ts` — about 50 s —, `editActions.preview.test.ts`, `editModel.polish.test.ts`,
+  `usePlanEditing.test.tsx`, `OpeningLayer.test.tsx`, `LabelLayer.test.tsx`, `warnings.test.ts`); the furnished seed's taps
+  (`touchTaps.test.tsx`: names on the phone, furniture under names with a mouse, rugs by their edge).
+- `npm run e2e` since 2b also runs `furniture.spec.ts` (desktop: a toilet placed in Hovedbad from the library with its
+  clearance, dragged into the door swing → door-blocked naming it, turned, duplicated, deleted; the bed in Soverom (ny
+  fløy) dragged off the wall and back → snapped back; main south +0.3 then glass east +0.5 then "Ta tilbake" on every
+  ghost → the seed, furniture included; a click on win-106-s selects it, a second its ghost; screenshots
+  `plan-furnished.png`, `3d-inne-furnished.png`), `phone-furniture.spec.ts` (iPhone: a chair from the library sheet,
+  dragged 1 m; the proposals menu: create and rename; a Vedskjul tapped 0.4 m from the wing attaches and a 0.5 m nudge
+  at the starting zoom moves it; «Bod (ny)» by its name; `phone-library.png`), `proposals.spec.ts` (local mode: create,
+  reload, rename, delete with two confirmations, Papirkurv, restore, the pill, Send forslaget, an old `#d=` link, an old
+  autosave; `proposals-menu.png`, `share-dialog.png`) and `offline.spec.ts` (project 'pwa': `npm run build` served by
+  `vite preview --base /hytte-planlegger/`, assets and the service worker under that path, an offline reload with fonts
+  from the cache). Every project runs the app in local mode; the e2e helpers skip the first-run and home-screen
+  cards. The "Hent ny Forslag D" scenario is gone (Forslag D is always the bundled one).
 - `npm run build` must pass with zero TypeScript errors; `npm run lint` (oxlint) clean.
 
 ## Rules for contributors (humans and agents)
