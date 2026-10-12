@@ -1,14 +1,132 @@
 # Status
 
-Oppdatert 2026-10-11 (fase 1 integrert, rettinger etter gjennomgangen og etter den nye gjennomgangen integrert, Robins
-tilbakemelding på fase 1 integrert). Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
+Oppdatert 2026-10-12 (fase 2a integrert: skjema 2, redigering i plan og på telefon, 3D-klikk). Integratoren holder denne
+fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
 - **Fase 1** – Forslag D vises riktig i plan og 3D med romskjema og arealer; lagring, versjoner, deling og publisering.
-- **Fase 2** – redigering (dra blokkhjørner, vegger og åpninger; nye vegger, åpninger og rom).
-- **Fase 3** – møbelkatalog.
+- **Fase 2a** – redigering: egne forslag, vegger, dører/vinduer, rom, bygningsdeler, nye bygg på terrassen, terrassen,
+  badestampen; spøkelser for det som er flyttet/fjernet fra hytta i dag; PC og iPhone (`docs/phase2-plan.md`, rev. 3).
+- **Fase 2b** – møbler, delte forslag for familien (Firestore), offline/PWA.
 
-## Gjort
+## Fase 2a – redigering (integrert 12. okt 2026)
+
+### Gjort
+
+- **Skjema 2** (`src/model/types.ts`, `migrate.ts`): terrassen har hjørner med id-er, rekkverk langs alle frie kanter
+  (det følger byggene automatisk, `noRailingEdges` slår det av per kant) og trapper som sitter på en kant som en åpning;
+  `Outdoor.railings` er borte. `Variant.locked` (Forslag D), `Variant.ghosts`, `Block.template`, møbel-`size`. Migrering
+  v1 → v2 er feltvis idempotent; en migrert fase-1-variant er ikke låst. Fase 1-seeden er fryst i
+  `src/model/seed/frozen/forslagD.schema1.json`, så gamle `#d=`-lenker dekodes mot den (rekkverk og tre trapper beholdes).
+  En autolagring fra fase 1 kopieres til `hytte-planlegger:project.backup-v1` rett før første lagring i skjema 2.
+- **Seeden** (`SEED_REVISION` 4): Forslag D er låst; terrassen er uendret (fra x 9, glassrekkverk 1,05 m, tre trapper),
+  rekkverket går nå (9; −2,11) → … → (9,11; 12,1) – 11 cm kortere i hver ende enn før, fordi frie kanter stopper ved
+  kledningen. Eksisterende autolagringer får «Forslag D er oppdatert (revisjon 4)» med «Hent ny Forslag D» (legges til
+  som et nytt, låst forslag). BYA 235,50 (bygg 178,33 + terrasse 57,18, eks. 102,18), BRA 170,07, aksemål 170,16.
+- **Avledning** delt i tre trinn (bygg / ute / møbler) memoisert på delsamlingene: en møbel- eller terrasseendring
+  gjenbruker vegger, rom og gulv. Blokk-kant ca. 35–40 ms, møbel 0,01 ms. Terrassen trimmes av alle byggenes yttermål
+  (hull der et bygg står på den), frie kanter → rekkverk, trapper som står der det nå er et bygg får advarselen
+  «En trapp fra terrassen står der det nå er et bygg …» og ingen åpning i rekkverket. Spøkelser er med i planen, men
+  ikke i romdeteksjon, arealer eller 3D. `levelAt` for nivået på et punkt.
+- **Redigeringskjernen** (`src/geometry/edit.ts`, `snap.ts`, `src/state/editActions.ts`): alle handlingene i planen §3.6
+  med dra-protokollen, låsen (Forslag D nekter alt med toast og «Nytt forslag»), statusbokføring (flyttet eller slettet
+  del av hytta i dag blir «Nytt» og etterlater et «Fjernet»-spøkelse; tilbake på plass = eksisterende igjen; «Ta
+  tilbake»), dra-regler for vegger, blokk-kanter/-hjørner, åpninger, terrasse, trapper, badestamp og trær, nye bygg
+  (`placeUnit`: Vedskjul, Bod, Badstue, Anneks, Eget bygg), rom under redigering (`reconcileRooms`: slå sammen med toast,
+  «Gi navn» for en ny flate), `resizeRoom` (Bredde/Dybde flytter veggen på den siden), én angre-handling per drag og per
+  rekke med piltaster.
+- **Planen** (`src/plan2d/`): trykk for å velge, dra det valgte for å flytte (5 px mus / 10 px berøring), alt annet
+  panorerer; håndtak for hjørner, kanter, «+» på terrassekanter, veggender og åpningskanter; verktøyene Vegg, Dør/vindu,
+  Nytt bygg (skygge som snapper), Møbler (plassholder), Mål; snapping med indikatorer og målbrikker; tegnforklaring
+  «Hytta i dag / Nytt / Fjernet»; spøkelser stiplet med grå fyll og valgbare.
+- **UI** (`src/ui/`): verktøylinje med Angre/Gjør om, hjelpelinje, Egenskaper øverst i høyre kolonne med redigerere for
+  rom, vegg, åpning, bygningsdel, terrasse/kant/hjørne, trapp, badestamp, tre, møbel og spøkelse («Ta tilbake»); tallfelt
+  («2,4», «2,40», «2.40», −/+ 10 cm, Enter/Tab/blur, Esc angrer feltet); toaster med Angre / «Nytt forslag»; «+ Nytt
+  forslag», «Grunnlag»-merket, «Gi nytt navn», «Slett» (spør to ganger); førstegangskortet; telefon: verktøylinja
+  ruller, mini-linje over det valgte (Egenskaper · Roter · Slett) og Egenskaper som ark nedenfra; ny ordbruk «Forslag»,
+  «Hytta i dag / Nytt / Fjernet», «Vis hva som er nytt», «Send forslaget»; Hjelp med verktøy og hurtigtaster.
+- **3D** (`src/view3d/`): klikk for å velge (yttervegg → bygningsdelens kant, vegg, åpning, rom, tak/fundament →
+  bygningsdel, terrasse, rekkverk, trapp, badestamp, tre, møbel), markering med gjennomsiktig lag og blå kontur, 10 px
+  toleranse for berøring; gruppene bygg / ute / møbler / tomt gjenbrukes når innholdet er likt; spøkelser og blokkerte
+  trapper bygges ikke; mottak for møbler som slippes (kobles i 2b).
+- **Integrasjon** (denne runden):
+  - Tekstene fra `plan2d/editStrings.ts`, `state/editStrings.ts` og byggmalene ligger i `src/i18n/nb.ts`
+    (`nb.plan2d.edit`, `nb.editor`, `nb.editor.units`, `copyName`); 3D-hjelpeteksten nevner «trykk for å velge».
+  - Planen er standardvisningen på alle skjermer (også over 1600 px), og «Vis hva som er nytt» er på som standard
+    (`PREFS_VERSION` 3: en lagret `highlightNew` fra fase 1 var bare den gamle standarden og leses ikke).
+  - Rom under redigering: en vegg dratt forbi midten av rommet ved siden av (f.eks. `w-gang-n` fra 3,4 til 5,0) gjorde
+    at det største rommet «tok» den voksende flaten og naborommet ble slått sammen bort («Gang» forsvant og «Soverom»
+    havnet i gangen). Nå matches rommene mot flatene slik at flest mulig rom beholdes, deretter størst samlet overlapp
+    (`matchRoomsToFaces`, eksakt per komponent); sammenslåing skjer bare når det er færre flater enn rom (en slettet vegg).
+  - «+» på en terrassekant: å dra den setter inn hjørnet og drar det i ÉN angre-handling (kjernens `'insert'`-håndtak;
+    før to).
+  - Dør/vindu settes med midten på 10 cm-rutenettet langs veggen (1 cm med Alt), ikke på en tilfeldig desimal.
+  - «Fjernet»-spøkelser er tydeligere: mørkere grå strek (#6f6f6f) og grå fyll (18 %), 2 px for flyttede ytterkanter.
+  - Telefonarket har bare én lukkeknapp (redigererens × er skjult der).
+  - `window.__hytte.selection` for Playwright; tidstesten for avledningen tåler parallelle testfiler (× 1,5 lokalt).
+- **Tester**: `npm test` 1089 tester i 55 filer, alle grønne (782 før fase 2); `npm run typecheck`, `npm run lint`,
+  `npm run build` og `npx tsc --noEmit -p e2e/tsconfig.json` rene. `npm run e2e` 11 av 11 grønne (prosjektene
+  `chromium` 1400 × 900 og `iphone` = iPhone 13 med berøring i Chromium):
+  - `smoke.spec.ts`: seeden (låst, terrassen fra x 9, trappene på kant v0 / v1 / v1, ingen blokkert), planen som
+    standard, eldre revisjon → «Hent ny Forslag D» (låst), telefon 375 px;
+  - `editing.spec.ts` (hvert scenario fra et ferskt «Nytt forslag»): (a) fløyas østvegg dratt 1 m – fløya følger,
+    rommene vokser, ett angre-steg; (b) Vedskjul på terrassen ved nordkanten – terrassen mister flaten, rekkverket får
+    en åpning, flyttet 1 m, festet til fløyas nordvegg (felles vegg); (c) ny vegg tvers over Soverom (ny fløy) – det
+    største stykket beholder navnet, det andre får «Kontor» med «Gi navn»; (d) Dybde 2,40 → `w-gang-n` til y 3,58;
+    (e)+(f) døra `door-mellom-vf` flyttet 0,5 m blir ny med spøkelse, veggen `w-104-103` slettet → Soverom 1 og Bad
+    slås sammen, Angre og «Ta tilbake» setter alt tilbake; (g) Forslag D nekter verktøy, drag, Delete, tallfelt og
+    piltaster med toasten, og «Nytt forslag» i toasten lager en kopi; (h) badestampen flyttes, terrassen viser håndtak;
+  - `phone-editing.spec.ts` (iPhone): «Nytt forslag», panorering med én finger og zoom med to flytter ingenting, en ny
+    vegg trykkes og dras, tykkelsen skrives inn i arket nedenfra, en dør settes med et trykk.
+  - Nye skjermbilder: `plan-editing.png` (terrassen valgt med håndtak), `plan-unit-on-deck.png`, `plan-ghosts.png`,
+    `phone-edit.png`, `phone-sheet.png`; de gamle er tatt på nytt (planen med verktøylinje, 3D med «Vis hva som er nytt»).
+
+### Avgjort ved integrasjonen (Robin kan endre)
+
+- Gammel vestgavl flyttet fra x 0 til −1: aksemålet for eksisterende blir 98,00 (nytt +6,20), men BYA eksisterende går
+  fra 102,18 til 101,47, fordi kledningsstripa på 0,11 m langs den gamle gavlen nå ligger inne i det nye tilbygget og
+  telles som nytt. Planen sa 102,18; tallet som vises er det fysisk riktige (den kledningen er borte).
+- Når `dv-stue-n` dras, følger den delte enden av `dv-kjk-w` med (fri node), linja og den andre enden står. Planen sa
+  «uendret», men det ville latt en stump stå igjen.
+- En hel eksisterende bygningsdel kan ikke flyttes (samme regel og toast som for å slette den): hytta i dag endres
+  gjennom veggene og kantene.
+- Planen er standardvisning også på store skjermer; «Begge» huskes når brukeren velger den.
+
+### Neste
+
+1. Robin ser over skjermbildene og prøver redigeringen (lokalt med `npm run dev`, eller etter push på nettsiden).
+   Spørsmål til Robin: skal 3D starte med naturlige farger? «Vis hva som er nytt» er nå på som standard og farger
+   også det nye oransje i 3D (se `3d-ute-*.png`); alternativet er at 3D ignorerer bryteren eller får sin egen.
+2. Kjøre fase 2b (`docs/workflows/phase2b-furniture-offline.workflow.js`): møbelkatalog (biblioteket er en plassholder
+   nå; 3D-mottaket for slipp finnes), delte forslag i Firestore med Papirkurv og revisjoner, statuspillen, «Send
+   forslaget» med familielenke, PWA/offline.
+3. Pushe `main` for å publisere når 2b (eller 2a alene) er godkjent.
+
+### Kjente problemer (fase 2a)
+
+- Spøkelser for flyttede ytterkanter tegnes i alle etasjer (også på Hems).
+- 3D: å velge et hjørne, en terrassekant/-hjørne eller et spøkelse markerer ingenting i 3D; ingen markering ved
+  hover; et klikk på et dekke (slab) eller trappeåpning fjerner valget i stedet for å se gjennom; ingen dra i 3D.
+- Å flytte `w-106-korr` eller `lw-106-top` (ved trapperepoet på hemsen) på tvers av seg selv river opp reposet: rommene
+  slås sammen med toast, og Angre retter det (eneste unntak i robusthetstesten).
+- Et bygg satt inntil gavlen på en større bygningsdel gir `roof-no-meet` på den (takregelen i `roof.ts`).
+- Ingen advarsel når badestampen står utenfor terrassen.
+- Når fløyas østvegg flyttes, blir de høye gavlvinduene (`win-gavl-s/n`) stående der de var mens mønet flytter seg:
+  advarselen «stikker opp i taket». Flytt dem i Egenskaper eller i planen.
+- En vegg langs en gulvsone-kant (f.eks. trinnet i korridoren) etterlater en smal flate med «Gi navn» når den flyttes
+  (gulvtrinnet står der det står).
+- Flere separate endringer som krymper en vegg under en åpning, klemmer åpningen; den kommer ikke tilbake av seg selv
+  (ett sammenhengende drag gjør det).
+- Snapping med berøring har 24 px radius: med telefonens startzoom er det ca. 2 m, så en vegg kan hoppe til en
+  linje i nærheten. Zoom inn med to fingre for finarbeid (tallfeltene er alltid nøyaktige).
+- Telefon: topplinja med forslagsknappene bruker ca. 250 px før planen begynner.
+- Møbler: bare plassholdere (rektangel med navn, 1 × 1 × 1 m uten katalog); biblioteket er tomt (fase 2b).
+- Førstegangskortet sier at alt deles med familien; det gjelder først når fase 2b (Firestore) er på plass.
+- Midtknappen på musa virker som et trykk i plasseringsverktøyene.
+- iPhone-testen kjører i Chromium med iPhone 13-emulering (WebKit er ikke installert); berøring sendes gjennom
+  DevTools-protokollen.
+
+## Fase 1 – gjort
 
 - Prosjektoppsett: Vite 8, React 19, TypeScript 6 (strict, `verbatimModuleSyntax`, ingen enums), Vitest, Playwright, oxlint.
 - `docs/architecture.md`: prinsipp («alt er data»), koordinatsystemer, konvensjoner, avledningspipeline, takregler,
@@ -156,28 +274,13 @@ Arealer: BYA 235,50 m² (bygg 178,33 + terrasse 57,18; eks. 102,18 / nytt 133,32
 BRA 170,07 m² (underetasje 27,33, hovedplan 130,21, hems 12,54 målbart av 26,34 brutto; eks. 103,51 / nytt 66,56).
 Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-rommet 101 Korridor 10,1 m².
 
-## Fase 2 – klar til start (kveld 11. okt 2026)
+## Fase 1 – åpne punkter
 
-- Nettsiden er publisert: https://robinharald.github.io/hytte-planlegger/ (GitHub Pages, deployes automatisk ved push til `main`).
-- Planen for fase 2 ligger i `docs/phase2-plan.md` (revisjon 2 etter kritikk fra tre granskere): redigering av vegger, dører/vinduer, rom,
-  bygningsdeler og nye bygg på terrassen (terrassen tilpasser seg automatisk), lås på hytta i dag, møbler, lagring/deling og offline (PWA).
-- Kjøreplanen ligger i `docs/workflows/phase2a-editor.workflow.js` (skjema v2 + editor) og `phase2b-furniture-offline.workflow.js`
-  (møbler + lagring/offline). De kjøres i rekkefølge; hver har integrasjon og gransking til slutt.
-- Spørsmål til Robin før start: hvilke bygg-maler (vedskjul, bod, badstue, anneks), om riving av eksisterende innervegger/åpninger skal
-  være lov, hvilke enheter familien bruker (iPad/telefon/PC), prioritering hvis tiden blir knapp, og om lenker + filer er nok som lagring.
-
-## Neste
-
-1. Slå på GitHub Pages i repoet (Settings → Pages → Source: GitHub Actions), pushe `main` og verifisere den publiserte
-   appen, også på telefon.
-2. Åpent for Robin:
-   - Badstudøra (`d-badstue`) er lagret med `side: 'right'` (åpner ut mot badet, +x) – briefen sa 'left'.
-3. Vurdere å kjøre røyktesten i CI (`npx playwright install --with-deps chromium`) og legge `npm run lint` inn i `ci.yml`.
-4. Geometri: gi reserve-advarslene en egen `ModelWarning`-type i stedet for `'generic'` med «geometry fallback:», og
+1. Vurdere å kjøre røyktesten i CI (`npx playwright install --with-deps chromium`) og legge `npm run lint` inn i `ci.yml`.
+2. Geometri: gi reserve-advarslene en egen `ModelWarning`-type i stedet for `'generic'` med «geometry fallback:», og
    legge eks./nytt-delingen av bygg og terrasse inn i `AreaSummary` (UI-en regner den ut selv i `ui/areaFigures.ts`).
-5. Fase 2: redigering etter invariantene i `docs/architecture.md` («Editing invariants»). Husk: enhver endring av
-   innholdet i Forslag D må øke `SEED_REVISION`, ellers dekodes gamle delingslenker mot en endret seed.
-6. Fase 3: møbelkatalog (`src/furniture/`).
+3. Husk: enhver endring av innholdet i Forslag D må øke `SEED_REVISION`, ellers dekodes gamle delingslenker mot en endret
+   seed (revisjon 4 er skjema 2; møblene i fase 2b blir revisjon 5).
 
 ## Avgjort av Robin
 
@@ -192,8 +295,13 @@ Robin svarte «resten ser bra ut» på rapporten etter fase 1 (2026-10-11). Avgj
 - Den nye fløya beholder himlingen på 2,4 m med kaldloft over; de høye gavlvinduene (`win-gavl-s/n`, brystning 2,75)
   sitter over himlingen og lyser opp kaldloftet.
 - Avviket i veggtykkelsene i mellombygget godtas (se under).
+- Badstudøra åpner ut mot badet (`d-badstue` med `side: 'right'`, 11. okt kveld).
+- Fase 2 (11. okt kveld, `docs/phase2-plan.md` revisjon 3): hytta i dag kan redigeres i alle forslag, bare Forslag D er
+  låst; flyttet eller fjernet del av hytta i dag vises stiplet som «Fjernet» (ingen «rives»); nye bygg kan stå fritt
+  eller inntil andre, endres og slettes; alt nytt kan flyttes (badestampen også); forslagene deles i familien (2b);
+  pappa bruker iPhone; delt nivå bekreftet; vanlig BYA/BRA.
 
-## Kjente problemer
+## Kjente problemer (fase 1)
 
 - **Mellombygg −0,14 m² mot IFC**: veggene der er i virkeligheten 0,11 m (uisolert) og bod-fløyas 0,16 m; seeden
   bruker felles oppbygging 0,27 / 0,11 på bod-fløyas blokk-kanter, så rommet blir ca. 5 cm for smått per side.
@@ -208,7 +316,7 @@ Robin svarte «resten ser bra ut» på rapporten etter fase 1 (2026-10-11). Avgj
   `3d-inne-stua.png`.
 - Små rom får ingen etikett i planen ved standard zoom: på 1400 × 900 (Plan) mangler Soverom 3, Korridor (nedre) og
   Teknisk / vask (og Trapperepos på hemsen) – de dukker opp når man zoomer inn. I «Begge» på 1400 px er planen ca.
-  11 px/m, så der vises bare navn som får plass med liten skrift (standardvisningen er Plan under 1600 px).
+  11 px/m, så der vises bare navn som får plass med liten skrift (standardvisningen er Plan).
   3D-rometiketter som ville overlappe en viktigere etikett skjules; etiketter for bygningsdeler flyttes litt først.
 - Skjermbildene fra røyktesten (SwiftShader) har en kort grå strek øverst til venstre over målkjeden i planen; den finnes
   ikke i SVG-en og vises ikke uten SwiftShader (rasteriseringsfeil i den programvarebaserte GPU-en).
