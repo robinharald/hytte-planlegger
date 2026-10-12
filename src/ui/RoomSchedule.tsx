@@ -5,7 +5,7 @@
  * both shares under its area.
  *
  * Clicking a row (or Enter/Space on it) selects the room, switches the plan to the room's storey and scrolls the
- * Egenskaper panel into view.
+ * Egenskaper panel into view (on phones: opens the Egenskaper bottom sheet).
  */
 import { Fragment, useMemo } from 'react';
 import type { KeyboardEvent } from 'react';
@@ -13,7 +13,7 @@ import { nb } from '../i18n/nb';
 import { appStore, useAppStore } from '../state/appStore';
 import { useDerived } from '../state/useDerived';
 import { Panel } from './common';
-import { PROPERTIES_PANEL_ID, revealPanel } from './reveal';
+import { revealProperties } from './reveal';
 import { formatM2, formatNumber } from './format';
 import { buildSchedule, planStoreyOf } from './schedule';
 import type { ScheduleRow } from './schedule';
@@ -22,7 +22,7 @@ const S = nb.schedule;
 
 function choose(row: ScheduleRow): void {
   appStore.getState().setUi({ selection: row.selection, planStorey: planStoreyOf(row.storeyId), activeStoreyId: row.storeyId });
-  revealPanel(PROPERTIES_PANEL_ID);
+  revealProperties();
 }
 
 function StatusCell({ row }: { row: ScheduleRow }) {

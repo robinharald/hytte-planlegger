@@ -4,21 +4,36 @@
  * stay mounted (a hidden pane keeps its size, so the 3D camera and WebGL context survive tab switches).
  * Each pane subscribes only to the ui fields it uses, so e.g. dragging the sun slider does not re-render the plan.
  * `onReady3d` is View3D's onReady (first frame rendered).
+ *
+ * Phase 2: the plan gets the editing props (docs/phase2-plan.md §3.6 `PlanViewProps` += editable, tool, toolOptions,
+ * editActions, overlay): editable unless read-only or on the locked base proposal; the tool and its options from the
+ * store; the editor core's bound actions; the Egenskaper focus highlight (overlay.ts); the phone mini-bar anchor
+ * (`setSelectionAnchor`); the plan's own hint texts (`ui.hint`) and its "back to Velg" after a placement. A
+ * furniture item clicked or dropped onto the plan is added with `addFurniture` and selected.
  */
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { nb } from '../i18n/nb';
 import { PlanView } from '../plan2d/PlanView';
 import { appStore, useAppStore } from '../state/appStore';
+import { useEditActions } from '../state/editActions';
 import type { Selection } from '../state/selection';
-import { cutHeightFor } from '../state/store';
+import { cutHeightFor, selectActiveVariant } from '../state/store';
 import { terrainFor, useDerived } from '../state/useDerived';
 import { ErrorBoundary, PaneError } from './common';
+import { isVariantLocked, setTool } from './editorBridge';
+import type { ToolKind } from './editorBridge';
 import { useMediaQuery, useSun, WIDE_QUERY } from './hooks';
+import { setSelectionAnchor, usePanelHighlight } from './overlay';
+import type { Vec2 } from '../model/types';
 
 const View3D = lazy(() => import('../view3d/View3D').then((m) => ({ default: m.View3D })));
 
 const onSelect = (sel: Selection | null) => appStore.getState().select(sel);
+const onToolChange = (tool: ToolKind) => setTool(tool);
+const onHint = (hint: string | null) => {
+  if (appStore.getState().ui.hint !== hint) appStore.getState().setUi({ hint });
+};
 
 function Pane3D(props: { hidden: boolean; onReady: () => void }) {
   const derived = useDerived();
@@ -75,7 +90,21 @@ function PanePlan(props: { hidden: boolean }) {
       showGrid: s.ui.showGrid,
       showRoofPlan: s.ui.showRoofPlan,
       highlightNew: s.ui.highlightNew,
+      tool: s.ui.tool,
+      toolOptions: s.ui.toolOptions,
+      showClearances: s.ui.showClearances,
+      editable: !s.ui.readOnly && !isVariantLocked(selectActiveVariant(s)),
     })),
+  );
+  const actions = useEditActions();
+  const highlight = usePanelHighlight();
+  const overlay = useMemo(() => ({ highlight }), [highlight]);
+  const onDropFurniture = useCallback(
+    (catalogId: string, at: Vec2) => {
+      const id = actions.addFurniture(catalogId, at);
+      if (id) appStore.getState().select({ kind: 'furniture', id });
+    },
+    [actions],
   );
   return (
     <section className={`pane pane-plan${props.hidden ? ' is-hidden' : ''}`} aria-label={nb.a11y.planView} aria-hidden={props.hidden}>
@@ -91,6 +120,16 @@ function PanePlan(props: { hidden: boolean }) {
           showGrid={ui.showGrid}
           showRoofPlan={ui.showRoofPlan}
           highlightNew={ui.highlightNew}
+          editable={ui.editable}
+          tool={ui.tool}
+          toolOptions={ui.toolOptions}
+          editActions={actions}
+          showClearances={ui.showClearances}
+          overlay={overlay}
+          onSelectionBar={setSelectionAnchor}
+          onToolChange={onToolChange}
+          onHint={onHint}
+          onDropFurniture={onDropFurniture}
         />
       </ErrorBoundary>
     </section>

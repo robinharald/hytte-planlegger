@@ -67,6 +67,7 @@ export const BLOCK: DerivedBlock = {
   pitchDeg: 28,
   lowestFloorZ: 0,
   groundZ: -0.5,
+  junctions: [],
 };
 
 const OPENING: DerivedOpening = {
@@ -85,6 +86,8 @@ const OPENING: DerivedOpening = {
   type: 'window',
   status: 'new',
   isNew: true,
+  isGhost: false,
+  levelId: 'main',
   offset: 3,
   width: 1.2,
   sillZ: 0.9,
@@ -114,6 +117,7 @@ function wall(id: string, source: DerivedWall['source'], a: Vec2, b: Vec2, extra
     isDivider: false,
     status: 'existing',
     isNew: false,
+    isGhost: false,
     levelId: 'main',
     levelIds: ['main'],
     storeyIds: ['ground'],
@@ -129,7 +133,7 @@ function wall(id: string, source: DerivedWall['source'], a: Vec2, b: Vec2, extra
   };
 }
 
-export const EXT_WALL = wall('blk-1/v-sw/blk-1/base', { kind: 'blockEdge', blockId: 'blk-1', edgeId: 'v-sw', partId: 'blk-1', zoneId: null }, [0, 0], [6, 0], {
+export const EXT_WALL = wall('blk-1/v-sw/blk-1/base', { kind: 'blockEdge', blockId: 'blk-1', edgeId: 'v-sw', partId: 'blk-1', zoneId: null, s0: 0, s1: 6 }, [0, 0], [6, 0], {
   thickness: 0.27,
   faceLeft: 0.16,
   faceRight: 0.11,
@@ -151,6 +155,7 @@ export function makeDerived(overrides: Partial<DerivedVariant> = {}): DerivedVar
   ];
   return {
     variantId: 'v-1',
+    locked: false,
     levels: LEVELS,
     storeys: [
       { id: 'ground', name: 'Plan 1', levelIds: ['lower', 'main'] },
@@ -164,12 +169,27 @@ export function makeDerived(overrides: Partial<DerivedVariant> = {}): DerivedVar
     floors: [],
     roofs: [],
     outdoor: {
-      decks: [{ id: 'deck-1', polygon: rect(0, -3, 4, 0), topZ: 0, thickness: 0.15, skirtBottomZ: [], boardDirection: 'x', isNew: true }],
+      decks: [
+        {
+          id: 'deck-1',
+          polygon: rect(0, -3, 4, 0),
+          vertexIds: ['d-0', 'd-1', 'd-2', 'd-3'],
+          pieces: [[rect(0, -3, 4, 0)]],
+          topZ: 0,
+          thickness: 0.15,
+          skirtBottomZ: [[]],
+          boardDirection: 'x',
+          isNew: true,
+          freeRuns: [],
+        },
+      ],
       railings: [],
+      steps: [],
       hotTubs: [],
     },
     structure: [],
     furniture: [],
+    ghosts: [],
     foundations: [],
     dimensions: [],
     site: { trees: [{ tree: { id: 't-1', position: [-4, 4], height: 5.5, kind: 'bjork' }, baseZ: -1 }] },

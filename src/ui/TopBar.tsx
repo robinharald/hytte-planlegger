@@ -1,16 +1,24 @@
 /**
- * Top bar: title, variant selector + duplicate/rename/delete, undo/redo, Lagre versjon / Versjoner / Eksporter /
- * Importer, and Del lenke / Hjelp. Edit actions are hidden while read-only (shared link); the variant selector stays
- * (viewing another variant is not an edit). Names are asked for with window.prompt in phase 1.
+ * Top bar: title, "Forslag: <navn>" (the proposal selector; a variant is a "forslag" in the UI), "+ Nytt forslag",
+ * Gi nytt navn / Slett, Lagre versjon / Versjoner / Eksporter / Importer, and Send forslaget / Hjelp. Angre / Gjør om
+ * live in the toolbar (docs/phase2-plan.md §3.2). Edit actions are hidden while read-only (shared link); the selector
+ * stays (viewing another proposal is not an edit).
  *
- * Narrow screens (< 600 px): Del lenke and Hjelp stay in the title row as icon buttons (the label is kept for
+ *  - The locked base proposal (Forslag D) shows a "Grunnlag" tag; it cannot be renamed or deleted here, and
+ *    "+ Nytt forslag" is the primary button.
+ *  - "+ Nytt forslag" asks for a name (default "Mitt forslag", numbered when taken) and copies the proposal on screen.
+ *  - Slett asks twice (docs/phase2-plan.md §1 rule 5); it can still be undone with Angre.
+ *  - "Send forslaget" opens today's share-link dialog (the shared family store comes in phase 2b).
+ *
+ * Narrow screens (< 600 px): Send forslaget and Hjelp stay in the title row as icon buttons (the label is kept for
  * screen readers), and Lagre versjon / Versjoner / Eksporter / Importer fold into a "Mer" menu.
  */
 import { useEffect, useId, useRef, useState } from 'react';
 import { nb } from '../i18n/nb';
 import { appStore, applyImportedProject, exportProjectFile, readImportFile, saveNamedVersion, useAppStore } from '../state/appStore';
-import { copyName, selectActiveVariant } from '../state/store';
-import { IconChevronDown, IconHelp, IconRedo, IconShare, IconUndo } from './common';
+import { selectActiveVariant } from '../state/store';
+import { IconChevronDown, IconHelp, IconShare } from './common';
+import { createNewProposal, isVariantLocked, nextProposalName } from './editorBridge';
 import { formatDateTime } from './format';
 import { NARROW_QUERY, useMediaQuery } from './hooks';
 import { projectSubtitle } from './labels';
@@ -83,23 +91,24 @@ function MoreMenu(props: { actions: MenuAction[] }) {
 export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
   const project = useAppStore((s) => s.project);
   const readOnly = useAppStore((s) => s.ui.readOnly);
-  const canUndo = useAppStore((s) => s.canUndo);
-  const canRedo = useAppStore((s) => s.canRedo);
   const narrow = useMediaQuery(NARROW_QUERY);
   const active = selectActiveVariant({ project });
+  const locked = isVariantLocked(active);
   const fileInputId = useId();
   const t = nb.topbar;
 
-  const duplicate = () => {
-    const name = window.prompt(nb.prompts.duplicateName, copyName(active.name));
-    if (name !== null) appStore.getState().duplicateVariant(active.id, name);
+  const newProposal = () => {
+    const name = window.prompt(nb.prompts.newProposalName, nextProposalName(project));
+    if (name !== null) createNewProposal(name);
   };
   const rename = () => {
     const name = window.prompt(nb.prompts.renameVariant, active.name);
     if (name !== null) appStore.getState().renameVariant(active.id, name);
   };
   const remove = () => {
-    if (window.confirm(nb.prompts.deleteVariant(active.name))) appStore.getState().deleteVariant(active.id);
+    if (!window.confirm(nb.prompts.deleteVariant(active.name))) return;
+    if (!window.confirm(nb.prompts.deleteVariantSure(active.name))) return;
+    appStore.getState().deleteVariant(active.id);
   };
   const saveVersion = () => {
     const name = window.prompt(nb.prompts.versionName, nb.versions.defaultName(formatDateTime(new Date().toISOString())));
@@ -135,8 +144,8 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
       </div>
 
       <div className="toolgroup variant-actions" role="group" aria-label={t.variantActions}>
-        <label className="sr-only" htmlFor="variant-select">
-          {t.variant}
+        <label className="variant-label" htmlFor="variant-select">
+          {t.variant}:
         </label>
         <select id="variant-select" value={active.id} onChange={(e) => appStore.getState().setActiveVariant(e.target.value)} data-testid="variant-select">
           {project.variants.map((v) => (
@@ -145,33 +154,35 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
             </option>
           ))}
         </select>
+        {locked && (
+          <span className="tag lock-tag" title={t.lockedTitle} data-testid="locked-tag">
+            {t.lockedTag}
+          </span>
+        )}
         {!readOnly && (
           <>
-            <button type="button" className="btn" onClick={duplicate} title={t.duplicateTitle}>
-              {t.duplicate}
+            <button
+              type="button"
+              className={`btn${locked ? ' btn-primary' : ''}`}
+              onClick={newProposal}
+              title={t.newProposalTitle}
+              data-testid="new-proposal"
+            >
+              {t.newProposal}
             </button>
-            <button type="button" className="btn" onClick={rename} title={t.renameTitle}>
-              {t.rename}
-            </button>
-            {project.variants.length > 1 && (
-              <button type="button" className="btn btn-danger" onClick={remove} title={t.deleteTitle}>
+            {!locked && (
+              <button type="button" className="btn" onClick={rename} title={t.renameTitle} data-testid="rename-proposal">
+                {t.rename}
+              </button>
+            )}
+            {!locked && project.variants.length > 1 && (
+              <button type="button" className="btn btn-danger" onClick={remove} title={t.deleteTitle} data-testid="delete-proposal">
                 {t.delete}
               </button>
             )}
           </>
         )}
       </div>
-
-      {!readOnly && (
-        <div className="toolgroup history-actions">
-          <button type="button" className="btn" onClick={() => appStore.getState().undo()} disabled={!canUndo} title={t.undoTitle} aria-label={t.undo}>
-            <IconUndo />
-          </button>
-          <button type="button" className="btn" onClick={() => appStore.getState().redo()} disabled={!canRedo} title={t.redoTitle} aria-label={t.redo}>
-            <IconRedo />
-          </button>
-        </div>
-      )}
 
       <div className="spacer" />
 

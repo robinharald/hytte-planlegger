@@ -58,7 +58,7 @@ describe('App shell (plan only)', () => {
   });
 
   it('share dialog shows a #d= link and its size', () => {
-    const shareButton = [...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Del lenke'));
+    const shareButton = byTestId('open-share');
     act(() => shareButton?.click());
     const dialog = byTestId('share-dialog');
     const link = dialog?.querySelector('textarea')?.value ?? '';
@@ -76,10 +76,32 @@ describe('App shell (plan only)', () => {
     expect(byTestId('view-tab-plan')).not.toBeNull();
     const labels = [...document.querySelectorAll('button')].map((b) => b.textContent?.trim());
     expect(labels).not.toContain('Lagre versjon');
-    expect(labels).not.toContain('Dupliser');
-    expect(labels).toContain('Del lenke');
+    expect(labels).not.toContain('+ Nytt forslag');
+    expect(labels).toContain('Send forslaget');
     expect(labels).toContain('Hjelp');
     expect(document.querySelector('[aria-label="Angre"]')).toBeNull();
     act(() => appStore.getState().replaceProject(appStore.getState().project, { readOnly: false, source: 'local' }));
+  });
+});
+
+describe('App shell, phase 2', () => {
+  it('toolbar and hint line over the stage, Egenskaper on top of the right column, the first-run card once', () => {
+    expect(byTestId('toolbar')).not.toBeNull();
+    expect(byTestId('hint-line')).not.toBeNull();
+    expect(document.querySelector('.side details.panel')?.getAttribute('data-testid')).toBe('properties');
+    const card = byTestId('first-run');
+    expect(card?.textContent).toContain('Forslag D er grunnlaget og kan ikke endres');
+    act(() => byTestId('first-run-ok')?.click());
+    expect(byTestId('first-run')).toBeNull();
+    expect(window.localStorage.getItem('hytte-planlegger:first-run-seen')).not.toBeNull();
+  });
+
+  it('Møbler swaps the left column for the library; "Lukk" goes back to Velg', () => {
+    act(() => appStore.getState().setUi({ tool: 'furniture' }));
+    expect(byTestId('furniture-library')?.textContent).toContain('Møbler');
+    expect(byTestId('view-tab-plan')).toBeNull();
+    act(() => byTestId('library-close')?.click());
+    expect(appStore.getState().ui.tool).toBe('select');
+    expect(byTestId('view-tab-plan')).not.toBeNull();
   });
 });

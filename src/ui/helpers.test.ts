@@ -95,7 +95,7 @@ describe('describeSelection', () => {
     expect(rows[nb.properties.fields.level]).toBe('Hovedplan');
     expect(rows[nb.properties.fields.block]).toBe('Hytta');
     expect(rows[nb.properties.fields.area]).toBe('20,0 m²');
-    expect(rows[nb.properties.fields.status]).toBe('Eksisterende');
+    expect(rows[nb.properties.fields.status]).toBe('Hytta i dag');
     expect(rows[nb.properties.fields.floor]).toBe('Tregulv');
   });
 
@@ -192,6 +192,34 @@ describe('warnings', () => {
     expect(warningText(all[15], names, String)).toMatch(/^En del av geometrien er forenklet.*teknisk: rooms on storey ground/);
     expect(warningText(all[13], names, String)).toBe('En melding');
   });
+
+  it('phase-2 warnings: deck steps and furniture have texts and targets; a lost room says how to recover', () => {
+    const names = makeNameLookup(derived, variant);
+    const phase2: ModelWarning[] = [
+      { kind: 'deck-steps-blocked', stepsId: 's-1', deckId: 'deck-1' },
+      { kind: 'furniture-overlap', furnitureIds: ['f-1', 'f-2'] },
+      { kind: 'furniture-in-wall', furnitureId: 'f-1', wallId: 'w-1' },
+      { kind: 'furniture-outside', furnitureId: 'f-1' },
+      { kind: 'furniture-unknown', furnitureId: 'f-1', catalogId: 'rakett' },
+      { kind: 'furniture-needs-wet-room', furnitureId: 'f-1' },
+    ];
+    for (const w of phase2) {
+      expect(warningText(w, names, String), w.kind).not.toBe('Ukjent advarsel.');
+      expect(warningTarget(w), w.kind).not.toBeNull();
+    }
+    expect(warningTarget(phase2[0])).toEqual({ kind: 'steps', id: 's-1' });
+    expect(warningTarget(phase2[1])).toEqual({ kind: 'furniture', id: 'f-1' });
+    expect(warningText(phase2[4], names, String)).toContain('«rakett»');
+    expect(warningText({ kind: 'room-anchor-lost', roomId: 'room-1' }, names, String)).toBe(
+      'Rommet «Stue» er borte fra planen. Angre siste endring, eller gi rommet et nytt navn.',
+    );
+  });
+
+  it('status words are "Hytta i dag" / "Nytt" / "Fjernet", never "rives"', () => {
+    expect(nb.status).toEqual({ existing: 'Hytta i dag', new: 'Nytt', removed: 'Fjernet' });
+    expect(JSON.stringify(nb)).not.toMatch(/[Rr]ives/);
+    expect(nb.toggles.new).toBe('Vis hva som er nytt');
+  });
 });
 
 describe('review fixes: schedule, area figures, subtitle, strings', () => {
@@ -231,7 +259,7 @@ describe('review fixes: schedule, area figures, subtitle, strings', () => {
     expect(nb.prompts.importProject('X')).toMatch(/^Vil du åpne «X» fra fila\?/);
     expect(nb.properties.fields.kind).toBe('Veggtype');
     expect(nb.view3d.hint).toContain('rull/knip for å zoome');
-    expect(nb.help.items[0]).toContain('i Visning-panelet');
+    expect(nb.help.items.some((t) => t.includes('i Visning-panelet'))).toBe(true);
     expect(nb.warnings.deriveFailed('boom')).toBe('Modellen kunne ikke beregnes: boom');
     expect(nb.mode3d.presetNames.langsiden).toBe('Langsiden (mot vannet)');
     for (const key of Object.keys(nb.mode3d.presetNames)) expect(nb.mode3d.presetTitles[key], key).toBeTruthy();

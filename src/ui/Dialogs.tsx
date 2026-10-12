@@ -1,6 +1,7 @@
 /**
- * Modal dialogs: Hjelp ("Slik bruker du den" + shortcut list), Del lenke (share link with size, > 8 kB warning
- * and the JSON-file fallback) and Versjoner (named versions of this project, other projects' versions, reset).
+ * Modal dialogs: Hjelp ("Slik bruker du den": how-to, the six tools, the shortcuts), Send forslaget (share link with
+ * size, > 8 kB warning and the JSON-file fallback; today's `#d=` link) and Versjoner (named versions of this project,
+ * other projects' versions, reset).
  */
 import { useMemo, useState } from 'react';
 import { nb } from '../i18n/nb';
@@ -33,6 +34,15 @@ export function HelpDialog(props: { onClose: () => void }) {
           <li key={t}>{t}</li>
         ))}
       </ul>
+      <h3 className="panel-title">{h.tools}</h3>
+      <dl className="kv help-tools" data-testid="help-tools">
+        {h.toolList.map((t) => (
+          <div key={t.name}>
+            <dt>{t.name}</dt>
+            <dd>{t.text}</dd>
+          </div>
+        ))}
+      </dl>
       <h3 className="panel-title">{h.shortcuts}</h3>
       <table className="table">
         <tbody>

@@ -1,16 +1,24 @@
 /**
  * App-level hooks: media queries, sun position for the chosen date/time, keyboard shortcuts and the `window.__hytte` test hook.
  *
- * Shortcuts (phase 1): Ctrl/Cmd+Z undo, Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z redo, Esc clears the selection. They are
- * ignored while typing in a text field (the browser's own undo applies there). Open dialogs catch Esc first.
+ * Shortcuts (keys.ts): Ctrl/Cmd+Z undo, Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z redo; Esc leaves a tool (back to Velg), else
+ * clears the selection; R turns the Nytt bygg ghost while that tool is active; Delete / Backspace, R, Ctrl/Cmd+D
+ * and the arrow keys act on the selection through the edit
+ * actions (commands.ts: refused with the toast on the locked base proposal, nothing while read-only). They are ignored
+ * while typing in a text field (the browser's own undo applies there) and inside a dialog; open dialogs catch Esc
+ * first, and a field's own Esc (restore) prevents the app's.
  */
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { localInstant, sunInPlan } from '../geometry/geo';
 import type { DerivedVariant } from '../model/derived';
 import type { Project, Site, Vec3 } from '../model/types';
 import { appStore, useAppStore } from '../state/appStore';
+import type { Selection } from '../state/selection';
 import { useDerived } from '../state/useDerived';
-import { isEditableTarget, shortcutFor } from './keys';
+import { canRotate, deleteCall, deleteResolved, duplicateResolved, nudgeSelection, resolveCurrent, rotateResolved } from './commands';
+import { NOOP_EDIT_ACTIONS, setTool, setToolOptions } from './editorBridge';
+import type { UiEditActions } from './editorBridge';
+import { isEditableTarget, isInDialog, nudgeDelta, shortcutFor } from './keys';
 
 // ---------------------------------------------------------------------------
 // Media queries
@@ -72,20 +80,57 @@ export function useSun(): SunInfo {
 // Keyboard
 // ---------------------------------------------------------------------------
 
-export function useKeyboardShortcuts(): void {
+export function useKeyboardShortcuts(actions: UiEditActions = NOOP_EDIT_ACTIONS): void {
+  // The handler is registered once; it always calls the latest actions.
+  const actionsRef = useRef(actions);
+  useEffect(() => {
+    actionsRef.current = actions;
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const action = shortcutFor(e);
       if (!action || e.defaultPrevented) return;
-      if (action !== 'escape' && isEditableTarget(e.target)) return;
+      if (action !== 'escape' && (isEditableTarget(e.target) || isInDialog(e.target))) return;
       const s = appStore.getState();
       if (action === 'escape') {
-        if (s.ui.selection) s.select(null);
+        if (s.ui.tool !== 'select') setTool('select');
+        else if (s.ui.selection) s.select(null);
         return;
       }
-      e.preventDefault();
-      if (action === 'undo') s.undo();
-      else s.redo();
+      if (action === 'undo' || action === 'redo') {
+        e.preventDefault();
+        if (action === 'undo') s.undo();
+        else s.redo();
+        return;
+      }
+      if (action === 'rotate' && s.ui.tool === 'unit') {
+        e.preventDefault();
+        setToolOptions({ unitRotation90: ((s.ui.toolOptions.unitRotation90 ?? 0) + 1) % 4 });
+        return;
+      }
+      const sel = s.ui.selection;
+      if (!sel || s.ui.readOnly) return;
+      const r = resolveCurrent();
+      if (!r) return;
+      const acts = actionsRef.current;
+      if (action === 'delete') {
+        if (!deleteCall(r, acts)) return;
+        e.preventDefault();
+        deleteResolved(r, acts);
+      } else if (action === 'rotate') {
+        if (!canRotate(r)) return;
+        e.preventDefault();
+        rotateResolved(r, acts);
+      } else if (action === 'duplicate') {
+        if (r.kind !== 'furniture' && !(r.kind === 'block' && r.block.block.isNew)) return;
+        e.preventDefault();
+        duplicateResolved(r, acts);
+      } else {
+        const d = nudgeDelta(e);
+        if (!d || r.kind === 'ghost' || r.kind === 'structure') return;
+        e.preventDefault();
+        nudgeSelection(sel, d[0], d[1], acts);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -100,6 +145,8 @@ export interface HytteHook {
   ready: boolean;
   project: Project;
   derived: DerivedVariant;
+  /** The current selection (for the Playwright editing tests). */
+  selection: Selection | null;
 }
 
 declare global {
@@ -108,11 +155,12 @@ declare global {
   }
 }
 
-/** Keeps `window.__hytte = { ready, project, derived }` current (architecture.md "Component contracts"). */
+/** Keeps `window.__hytte = { ready, project, derived, selection }` current (architecture.md "Component contracts"). */
 export function useTestHook(ready: boolean): void {
   const project = useAppStore((s) => s.project);
+  const selection = useAppStore((s) => s.ui.selection);
   const derived = useDerived();
   useEffect(() => {
-    window.__hytte = { ready, project, derived };
-  }, [ready, project, derived]);
+    window.__hytte = { ready, project, derived, selection };
+  }, [ready, project, derived, selection]);
 }

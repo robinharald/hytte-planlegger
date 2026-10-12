@@ -4,6 +4,10 @@
  * (comma decimals, "m²") before they reach these templates.
  * The renderers' own few strings live here too (`plan2d`, `view3d`); plan2d/strings.ts and view3d/strings.ts
  * re-export them under their old names.
+ *
+ * Phase 2a (docs/phase2-plan.md): a variant is called "Forslag" in the UI; element status words are "Hytta i dag" /
+ * "Nytt" / "Fjernet" (never "rives"). New groups: `proposals`, `tools`, `hints`, `library`, `toasts`, `edit` (the
+ * Egenskaper editors), `numberField`, `firstRun`, `miniBar`, `sheet`, `legend`.
  */
 import type { ModelWarning } from '../model/derived';
 import type { ElementStatus, OpeningType, RoomType, WallKind } from '../model/types';
@@ -19,14 +23,16 @@ export const nb = {
   },
 
   topbar: {
-    variant: 'Variant',
-    variantActions: 'Varianthandlinger',
-    duplicate: 'Dupliser',
-    duplicateTitle: 'Lag en kopi av varianten du ser på',
+    variant: 'Forslag',
+    variantActions: 'Forslag',
+    newProposal: '+ Nytt forslag',
+    newProposalTitle: 'Lag et nytt forslag: en kopi av forslaget du ser på, som du kan endre',
     rename: 'Gi nytt navn',
-    renameTitle: 'Gi varianten du ser på et nytt navn',
+    renameTitle: 'Gi forslaget du ser på et nytt navn',
     delete: 'Slett',
-    deleteTitle: 'Slett varianten du ser på (kan angres)',
+    deleteTitle: 'Slett forslaget du ser på (du blir spurt to ganger, og det kan angres)',
+    lockedTag: 'Grunnlag',
+    lockedTitle: 'Forslag D er grunnlaget og kan ikke endres. Lag et nytt forslag for å endre.',
     undo: 'Angre',
     undoTitle: 'Angre (Ctrl+Z)',
     redo: 'Gjør om',
@@ -39,25 +45,43 @@ export const nb = {
     exportTitle: 'Last ned prosjektet som JSON-fil',
     import: 'Importer',
     importTitle: 'Åpne et prosjekt fra en JSON-fil',
-    share: 'Del lenke',
-    shareTitle: 'Lag en lenke som inneholder designet, til å sende til andre',
+    share: 'Send forslaget',
+    shareTitle: 'Lag en lenke til forslaget som du kan sende til familien',
     help: 'Hjelp',
-    helpTitle: 'Slik bruker du planleggeren, og hurtigtaster',
+    helpTitle: 'Slik bruker du planleggeren: verktøy, bevegelser og hurtigtaster',
     more: 'Mer',
     moreTitle: 'Lagre versjon, versjoner, eksport og import',
     fileActions: 'Lagring og deling',
   },
 
   prompts: {
-    duplicateName: 'Navn på den nye varianten:',
-    renameVariant: 'Nytt navn på varianten:',
+    newProposalName: 'Navn på det nye forslaget:',
+    renameVariant: 'Nytt navn på forslaget:',
     renameRoom: 'Nytt navn på rommet:',
     versionName: 'Navn på versjonen:',
-    deleteVariant: (name: string) => `Vil du slette varianten «${name}»? Dette kan angres med Ctrl+Z.`,
+    deleteVariant: (name: string) => `Vil du slette forslaget «${name}»?`,
+    deleteVariantSure: (name: string) => `Er du sikker? «${name}» forsvinner fra listen. (Du kan angre med Ctrl+Z.)`,
     deleteVersion: (name: string) => `Vil du slette versjonen «${name}»? Dette kan ikke angres.`,
-    resetSeed: 'Vil du tilbakestille hele prosjektet til Forslag D? Alle varianter erstattes. Dette kan angres med Ctrl+Z.',
+    resetSeed: 'Vil du tilbakestille hele prosjektet til Forslag D? Alle forslag erstattes. Dette kan angres med Ctrl+Z.',
     restoreVersion: (name: string) => `Vil du hente versjonen «${name}»? Dagens prosjekt erstattes (kan angres med Ctrl+Z).`,
     importProject: (name: string) => `Vil du åpne «${name}» fra fila? Dagens prosjekt erstattes (kan angres med Ctrl+Z).`,
+    /** Asked before a wall with openings becomes an invisible room divider (its openings are deleted). */
+    dividerOpenings: (n: number) =>
+      n === 1
+        ? 'Veggen har en dør eller et vindu som blir borte når den blir en usynlig romdeler. Vil du fortsette?'
+        : `Veggen har ${n} dører og vinduer som blir borte når den blir en usynlig romdeler. Vil du fortsette?`,
+  },
+
+  /** Proposals ("Forslag" = a variant in the data) and the locked base proposal (docs/phase2-plan.md §1 rule 1). */
+  proposals: {
+    defaultName: 'Mitt forslag',
+    numberedName: (n: number) => `Mitt forslag ${n}`,
+    /** Every edit of the base proposal is refused with this text and a "Nytt forslag" button. */
+    locked: 'Forslag D er grunnlaget og kan ikke endres. Lag et nytt forslag for å endre.',
+    lockedShort: 'Forslag D er grunnlaget og kan ikke endres.',
+    newProposal: 'Nytt forslag',
+    newProposalTitle: 'Lag en kopi som du kan endre, og gå over til den',
+    created: (name: string) => `«${name}» er laget. Nå kan du endre det – og angre alt med Angre.`,
   },
 
   headline: {
@@ -126,7 +150,7 @@ export const nb = {
     dims: 'Målsetting',
     grid: 'Rutenett',
     roofPlan: 'Takplan',
-    new: 'Marker det som er nytt',
+    new: 'Vis hva som er nytt',
     trees: 'Bjørketrær',
     terrain: 'Terreng',
     titles: {
@@ -134,10 +158,273 @@ export const nb = {
       dims: 'Vis målkjeder langs ytterveggene i planen',
       grid: 'Vis rutenett med 1 m mellom linjene i planen',
       roofPlan: 'Vis takflatene over planen',
-      new: 'Farg det som er nytt (tilbygg og nye vegger) oransje',
+      new: 'Farg det som er nytt oransje, og vis det som er fjernet med stiplede linjer i planen',
       trees: 'Vis bjørketrærne på tomta i 3D',
       terrain: 'Vis terrenget rundt hytta i 3D',
     },
+  },
+
+  /** Toolbar (docs/phase2-plan.md §3.2). */
+  tools: {
+    label: 'Verktøy',
+    names: {
+      select: 'Velg',
+      wall: 'Vegg',
+      opening: 'Dør/vindu',
+      unit: 'Nytt bygg',
+      furniture: 'Møbler',
+      measure: 'Mål',
+    },
+    titles: {
+      select: 'Velg og flytt det som er tegnet (Esc)',
+      wall: 'Tegn en ny vegg: klikk der den begynner og der den slutter',
+      opening: 'Sett inn en dør, et vindu eller en åpning i en vegg',
+      unit: 'Sett et nytt bygg på tomta eller terrassen: vedskjul, bod, badstue eller anneks',
+      furniture: 'Sett inn møbler fra møbelbiblioteket',
+      measure: 'Mål avstanden mellom to punkter',
+    },
+    lockedTitle: 'Forslag D kan ikke endres – lag et nytt forslag først',
+    undo: 'Angre',
+    undoTitle: 'Angre siste endring (Ctrl+Z)',
+    redo: 'Gjør om',
+    redoTitle: 'Gjør om det du angret (Ctrl+Y)',
+    openingType: 'Type',
+    unitTemplate: 'Bygg',
+    rotateUnit: 'Drei',
+    rotateUnitTitle: 'Drei bygget en kvart runde før du setter det ut',
+    /** Unit templates of "Nytt bygg" (ids as in Block.template). */
+    units: {
+      vedskjul: { name: 'Vedskjul', size: '2 × 1,5 m, åpen front' },
+      bod: { name: 'Bod', size: '2 × 3 m' },
+      badstue: { name: 'Badstue', size: '2,4 × 2,2 m' },
+      anneks: { name: 'Anneks', size: '4 × 3 m' },
+      eget: { name: 'Eget bygg', size: '3 × 3 m, flatt tak' },
+    } as Record<string, { name: string; size: string }>,
+  },
+
+  /** Hint line under the toolbar (docs/phase2-plan.md §3.2). */
+  hints: {
+    label: 'Hjelpetekst',
+    select: 'Trykk for å velge, dra det valgte for å flytte.',
+    wall: 'Klikk der veggen skal begynne',
+    wallEnd: 'Klikk der den skal slutte (Esc avbryter)',
+    opening: 'Velg type, og klikk på en vegg',
+    unit: 'Klikk der bygget skal stå – det fester seg til terrassekanten og veggene',
+    measure: 'Klikk på to punkter',
+    measureEnd: 'Klikk på det andre punktet (Esc avbryter)',
+    furniture: 'Velg et møbel i listen, og trykk der det skal stå',
+    locked: 'Du ser på Forslag D, som er grunnlaget og ikke kan endres. Lag et nytt forslag for å endre.',
+  },
+
+  /** Furniture library slot (the catalogue arrives in phase 2b). */
+  library: {
+    heading: 'Møbler',
+    close: 'Lukk',
+    closeTitle: 'Lukk møbelbiblioteket og gå tilbake til Velg',
+    placeholder:
+      'Møbelbiblioteket kommer snart: senger, sofaer, bord, kjøkken og bad som du trykker på eller drar inn i planen.',
+  },
+
+  toasts: {
+    region: 'Meldinger',
+    deleted: 'Slettet.',
+    undo: 'Angre',
+    close: 'Lukk meldingen',
+    restored: 'Tatt tilbake.',
+    pickCorner: 'Trykk først på hjørnet som skal bort i planen, og velg så «Fjern hjørne».',
+  },
+
+  /** NumberField (docs/phase2-plan.md §3.7 "Number fields"). */
+  numberField: {
+    decrease: (step: string) => `Mindre (−${step})`,
+    increase: (step: string) => `Større (+${step})`,
+    invalid: (min: string, max: string) => `Skriv et tall fra ${min} til ${max}, for eksempel 2,40.`,
+  },
+
+  /** Egenskaper editors (docs/phase2-plan.md §3.7). */
+  edit: {
+    more: 'Mer',
+    clearTitle: 'Fjern markeringen (Esc)',
+    lockedNotice: 'Forslag D er grunnlaget og kan ikke endres.',
+    noneNotes: 'Merknader til forslaget',
+    noneNotesPlaceholder: 'Hva er tanken med dette forslaget?',
+    readOnlyNote: 'Endringer er slått av for en delt versjon.',
+    room: {
+      name: 'Navn',
+      type: 'Romtype',
+      width: 'Bredde ↔',
+      depth: 'Dybde ↕',
+      floor: 'Gulv',
+      floorDefault: (material: string) => `Som romtypen (${material.toLowerCase()})`,
+      floorTypeDefault: 'Som romtypen',
+      note: 'Merknad',
+      delete: 'Slett rom',
+      deleteTitle: 'Fjern navnet og romtypen; flaten blir et rom uten navn',
+      move: 'Flytt',
+      left: 'venstre vegg',
+      right: 'høyre vegg',
+      lower: 'nedre vegg',
+      upper: 'øvre vegg',
+      blockOnly: 'Endres under bygningsdelen',
+      selectBlock: 'Velg bygningsdelen',
+      approx: 'Rommet er ikke rektangulært: målene er største bredde og dybde.',
+      unnamed: 'Rom uten navn',
+      unnamedText: 'Denne flaten har ikke fått navn ennå. Gi den et navn og en romtype:',
+      nameIt: 'Gi navn',
+      namePlaceholder: 'For eksempel Gang',
+    },
+    wall: {
+      length: 'Lengde',
+      thickness: 'Tykkelse',
+      split: 'Del i to',
+      splitTitle: 'Del veggen i to like lange deler',
+      delete: 'Slett',
+      height: 'Høyde',
+      heightAuto: 'Automatisk',
+      heightRoof: 'Til taket',
+      heightFixed: 'Fast høyde',
+      fixedHeight: 'Høyde over gulvet',
+      divider: 'Usynlig romdeler',
+      dividerTitle: 'Veggen blir en tynn strek som bare deler flaten i to rom (ingen vegg i 3D, ingen dører)',
+      exteriorNote: 'Dra veggen i planen for å flytte den. Veggtykkelsen settes under bygningsdelen.',
+      addOpening: 'Legg til dør/vindu',
+      addOpeningTitle: 'Velg verktøyet Dør/vindu og klikk på veggen',
+      openings: 'Dører og vinduer',
+    },
+    opening: {
+      type: 'Type',
+      width: 'Bredde',
+      height: 'Høyde',
+      sill: 'Høyde over gulv',
+      corner: 'Avstand fra hjørne',
+      cornerTitle: 'Fra innsiden av nærmeste tverrvegg til kanten av åpningen',
+      flipHinge: 'Bytt hengselside',
+      flipSide: 'Slå andre veien',
+      delete: 'Slett',
+      leaves: 'Antall fløyer',
+      frame: 'Karmfarge',
+      leaf: 'Dørblad',
+      muntins: 'Sprosser',
+      muntinsNone: 'Ingen',
+      muntinsGrid: (cols: number, rows: number) => `${cols} × ${rows} ruter`,
+      fullHeight: 'Går helt opp',
+      host: 'Sitter i',
+    },
+    colours: {
+      white: 'Hvit',
+      green: 'Grønn',
+      wood: 'Tre',
+      black: 'Svart',
+      glass: 'Glass',
+    } as Record<string, string>,
+    block: {
+      name: 'Navn',
+      width: 'Bredde ↔',
+      depth: 'Dybde ↕',
+      roofType: 'Taktype',
+      pitch: 'Takvinkel',
+      openFront: 'Åpen front',
+      delete: 'Slett',
+      duplicate: 'Dupliser',
+      ridge: 'Mønehøyde',
+      eave: 'Rafthøyde',
+      overhang: 'Utstikk',
+      wallThickness: 'Veggtykkelse',
+      ceiling: 'Himlingshøyde',
+      ceilingOn: 'Flatt himlingsnivå',
+      roofMaterial: 'Taktekking',
+      parts: 'Deler',
+      partDims: (name: string, dims: string) => `${name}: ${dims}`,
+      partLength: (name: string, length: string) => `${name}: lengde ${length}`,
+      implicitPart: 'Ny del',
+      heightsNote: 'Høydene er målt fra gulvet i bygningsdelen.',
+      notRectangle: 'Bygningsdelen er ikke rektangulær: dra hjørnene i planen for å endre størrelsen.',
+      existingNoDelete: 'Hytta i dag kan ikke slettes som helhet – flytt eller fjern vegger i stedet.',
+      vertexNote: 'Dra hjørnet i planen for å flytte det.',
+      edgeLength: 'Lengde',
+      position: 'Plassering',
+    },
+    deck: {
+      height: 'Høyde',
+      heightTitle: 'Topp terrassebord, målt fra gulvet i hovedplanet',
+      railing: 'Rekkverk',
+      railingNone: 'Uten rekkverk',
+      railingHeight: 'Rekkverkshøyde',
+      edgeHint: 'Trykk på en kant av terrassen i planen for å slå rekkverket av eller på der.',
+      addSteps: 'Legg til trapp',
+      addStepsTitle: 'Sett en trapp midt på den lengste ledige kanten',
+      removeCorner: 'Fjern hjørne',
+      addCorner: 'Legg til hjørne',
+      addCornerTitle: 'Sett inn et nytt hjørne midt på kanten, som du kan dra',
+      area: 'Areal',
+      edgeRailing: 'Rekkverk langs denne kanten',
+      edges: 'Rekkverk per kant',
+      edgeName: (i: number, length: string) => `Kant ${i} (${length})`,
+      noFreeRun: 'Kanten står inntil et bygg og får ikke rekkverk.',
+      noRailing: 'Terrassen har ikke rekkverk.',
+      noFreeEdge: 'Ingen ledig kant å sette trappa på.',
+    },
+    steps: {
+      width: 'Bredde',
+      risers: 'Trinn',
+      delete: 'Slett',
+      blocked: 'Trappa står der det nå er et bygg. Flytt den langs kanten eller slett den.',
+    },
+    hotTub: {
+      diameter: 'Diameter',
+      delete: 'Slett',
+    },
+    tree: {
+      height: 'Høyde',
+      delete: 'Slett',
+    },
+    furniture: {
+      name: 'Navn',
+      width: 'Bredde',
+      depth: 'Dybde',
+      colour: 'Farge',
+      colourDefault: 'Standard',
+      colours: { white: 'Hvit', wood: 'Tre', grey: 'Grå', green: 'Grønn', black: 'Svart' } as Record<string, string>,
+      rotate: 'Roter 90°',
+      duplicate: 'Dupliser',
+      delete: 'Slett',
+      room: (name: string) => `Rom: ${name}`,
+      noRoom: 'Rom: –',
+    },
+    ghost: {
+      text: 'Dette er en del av hytta i dag som er fjernet eller flyttet i dette forslaget. Det vises stiplet.',
+      restore: 'Ta tilbake',
+      restoreTitle: 'Sett det tilbake slik det er i hytta i dag',
+      kinds: { wall: 'Vegg', opening: 'Dør eller vindu', edge: 'Yttervegg' } as Record<string, string>,
+    },
+    structureNote: 'Bæring, pipe og trapper kan ikke endres her ennå.',
+  },
+
+  firstRun: {
+    label: 'Kom i gang',
+    heading: 'Slik kommer du i gang',
+    /** docs/phase2-plan.md §5 first-run card. */
+    items: [
+      'Trykk på et rom, en vegg eller et møbel for å se målene. Dra det du har valgt for å flytte det.',
+      'Forslag D er grunnlaget og kan ikke endres. Lag et nytt forslag, så kan du flytte vegger, dører, vinduer og møbler – og angre alt med Angre.',
+      'Alt lagres automatisk og deles med familien. Trykk «Send forslaget» for å sende lenken.',
+    ],
+    ok: 'Skjønner',
+  },
+
+  /** Phone: floating bar above the selection (docs/phase2-plan.md §3.1). */
+  miniBar: {
+    label: 'Det valgte',
+    properties: 'Egenskaper',
+    rotate: 'Roter',
+    delete: 'Slett',
+  },
+
+  /** Phone bottom sheets (Egenskaper, Møbler). */
+  sheet: {
+    close: 'Lukk',
+    expand: 'Vis mer',
+    collapse: 'Vis mindre',
   },
 
   sun: {
@@ -217,7 +504,7 @@ export const nb = {
 
   properties: {
     heading: 'Egenskaper',
-    none: 'Ingenting er valgt. Klikk på et rom i planen eller i romskjemaet.',
+    none: 'Ingenting er valgt. Trykk på et rom, en vegg, en dør eller et vindu i planen.',
     dangling: 'Det som var valgt finnes ikke lenger.',
     clear: 'Avmarker',
     rename: 'Gi nytt navn',
@@ -287,29 +574,42 @@ export const nb = {
       'Planleggeren viser Forslag D for hytta ved Merkesvatnet som 2D-plan og 3D-modell. Alt lages fra én ' +
       'datamodell, så romstørrelser og arealer er alltid oppdatert.',
     items: [
+      'Forslag D er grunnlaget og kan ikke endres. Trykk «+ Nytt forslag» for å lage din egen kopi – den kan du endre så mye du vil, også hytta slik den er i dag.',
       'Velg Plan, 3D eller Begge i Visning-panelet. I planen bytter du mellom Plan 1 og Hems.',
-      'I 3D viser Ute hele hytta, mens Inne tar av taket og kutter veggene, så du ser inn i rommene. Dra for å snu, rull eller knip for å zoome.',
-      'Klikk på et rom i planen eller i romskjemaet for å se mål og areal under Egenskaper.',
-      'Dupliser Forslag D før du endrer noe, så kan du sammenligne variantene etterpå.',
-      'Alt lagres automatisk i nettleseren. «Lagre versjon» tar et navngitt øyeblikksbilde, «Del lenke» lager en lenke som inneholder hele designet.',
-      'Sol og skygge følger valgt dato og klokkeslett ved hytta. Om sommeren er sola oppe hele døgnet.',
+      'Trykk for å velge et rom, en vegg, en dør eller et vindu; målene vises under Egenskaper. Dra det du har valgt for å flytte det. Drar du et annet sted, flyttes planen. Rull eller knip for å zoome.',
+      'Skriv mål rett inn i Egenskaper, for eksempel 2,40 (komma eller punktum). − og + endrer med 10 cm. Enter eller Tab lagrer, Esc angrer det du skrev.',
+      'Det som er nytt, vises oransje og det som er fjernet, stiplet, når «Vis hva som er nytt» er på. «Ta tilbake» setter en fjernet vegg, dør eller et vindu tilbake.',
+      'Alt lagres automatisk i nettleseren. «Send forslaget» lager en lenke som inneholder hele forslaget. «Lagre versjon» tar et navngitt øyeblikksbilde.',
+      'På telefonen: trykk for å velge, og bruk linjen over det valgte (Egenskaper · Roter · Slett). Egenskaper og Møbler åpnes nederst på skjermen.',
+      'I 3D viser Ute hele hytta, mens Inne tar av taket og kutter veggene, så du ser inn i rommene. Dra for å snu, rull eller knip for å zoome. Sol og skygge følger valgt dato og klokkeslett ved hytta.',
+    ],
+    tools: 'Verktøy',
+    toolList: [
+      { name: 'Velg', text: 'Trykk for å velge, dra det valgte for å flytte. Terrassen får hjørner du kan dra, og «+» midt på kantene.' },
+      { name: 'Vegg', text: 'Klikk der veggen skal begynne og der den skal slutte. Verktøyet er på til du trykker Esc eller Velg.' },
+      { name: 'Dør/vindu', text: 'Velg type, og klikk på en vegg.' },
+      { name: 'Nytt bygg', text: 'Velg vedskjul, bod, badstue, anneks eller eget bygg, og klikk der det skal stå. Terrassen tilpasser seg.' },
+      { name: 'Møbler', text: 'Åpner møbelbiblioteket. Trykk på et møbel for å sette det inn.' },
+      { name: 'Mål', text: 'Klikk på to punkter for å se avstanden.' },
     ],
     shortcuts: 'Hurtigtaster',
     comingSoon: 'kommer',
     shortcutList: [
       { keys: 'Ctrl+Z / Ctrl+Y', text: 'Angre / gjør om', active: true },
-      { keys: 'Esc', text: 'Fjern markering', active: true },
-      { keys: 'Delete', text: 'Slett det som er valgt', active: false },
-      { keys: 'R', text: 'Roter møbel', active: false },
-      { keys: 'Ctrl+D', text: 'Dupliser det som er valgt', active: false },
+      { keys: 'Esc', text: 'Avbryt verktøyet, eller fjern markeringen', active: true },
+      { keys: 'Delete', text: 'Slett det som er valgt', active: true },
+      { keys: 'Piltaster', text: 'Flytt det valgte 1 cm (med Shift 10 cm)', active: true },
+      { keys: 'R', text: 'Roter møbelet 90°, eller drei bygget når du setter ut et nytt', active: true },
+      { keys: 'Ctrl+D', text: 'Dupliser møbel eller nytt bygg', active: true },
+      { keys: 'Alt', text: 'Hold inne mens du drar: fest til 1 cm i stedet for 10 cm', active: true },
     ],
   },
 
   banners: {
     readOnly: 'Du ser på en delt versjon.',
     readOnlyHintMerge: (variants: number) =>
-      `Endringer er slått av. «Lag min egen kopi» legger ${variants === 1 ? 'den delte varianten' : `de ${variants} delte variantene`} ` +
-      'til i ditt eget prosjekt, ved siden av variantene du har fra før.',
+      `Endringer er slått av. «Lag min egen kopi» legger ${variants === 1 ? 'det delte forslaget' : `de ${variants} delte forslagene`} ` +
+      'til i ditt eget prosjekt, ved siden av forslagene du har fra før.',
     readOnlyHintNew: 'Endringer er slått av. «Lag min egen kopi» gjør den til ditt eget prosjekt, så du kan jobbe videre med den.',
     makeCopy: 'Lag min egen kopi',
     leaveShared: 'Tilbake til mitt prosjekt',
@@ -336,17 +636,18 @@ export const nb = {
   },
 
   share: {
-    heading: 'Del lenke',
-    intro: 'Lenken inneholder hele designet. Den som åpner den ser en skrivebeskyttet versjon og kan lage sin egen kopi.',
-    allVariants: 'Del alle varianter',
-    activeOnly: (name: string) => `Bare «${name}» deles.`,
-    allIncluded: (n: number) => `Alle ${n} variantene deles.`,
+    heading: 'Send forslaget',
+    intro:
+      'Lenken inneholder hele forslaget. Send den til familien: den som åpner den, ser en skrivebeskyttet versjon og kan lage sin egen kopi.',
+    allVariants: 'Send alle forslagene',
+    activeOnly: (name: string) => `Bare «${name}» sendes.`,
+    allIncluded: (n: number) => `Alle ${n} forslagene sendes.`,
     link: 'Lenke',
     size: 'Lengde',
     copy: 'Kopier lenke',
     copied: 'Kopiert!',
     copyFailed: 'Kunne ikke kopiere automatisk. Merk lenken og kopier den selv.',
-    tooBig: 'Lenken er lang (over 8 kB). Noen apper kutter lange lenker. Send heller designet som JSON-fil.',
+    tooBig: 'Lenken er lang (over 8 kB). Noen apper kutter lange lenker. Send heller forslaget som JSON-fil.',
     sendJson: 'Send som JSON-fil',
     close: 'Lukk',
     /** Name of a shared variant added to a project that already has a variant called `name`. */
@@ -377,11 +678,20 @@ export const nb = {
     variantName: (rev: number) => `Forslag D (revisjon ${rev})`,
   },
 
+  /** docs/phase2-plan.md §1 rule 2: "Nytt" / "Hytta i dag" / "Fjernet" (never "rives"). */
   status: {
-    existing: 'Eksisterende',
+    existing: 'Hytta i dag',
     new: 'Nytt',
-    removed: 'Rives',
+    removed: 'Fjernet',
   } satisfies Record<ElementStatus, string>,
+
+  /** Legend of "Vis hva som er nytt" (drawn by the plan). */
+  legend: {
+    heading: 'Forklaring',
+    existing: 'Hytta i dag',
+    new: 'Nytt',
+    removed: 'Fjernet',
+  },
 
   roomTypes: {
     stue: 'Stue',
@@ -451,6 +761,10 @@ export const nb = {
     structure: 'Konstruksjon',
     furniture: 'Møbel',
     tree: 'Tre',
+    deckVertex: 'Terrassehjørne',
+    deckEdge: 'Terrassekant',
+    steps: 'Trapp',
+    ghost: 'Fjernet',
   } as Record<string, string>,
 
   structureKinds: {
@@ -488,6 +802,66 @@ export const nb = {
     unnamedRoom: 'Uten navn',
     /** Accessible name of the plan SVG. */
     planTitle: 'Plantegning',
+    /**
+     * The plan's editing side (plan2d/editStrings.ts hands these over with the same keys; it can become
+     * `export const editStrings = nb.plan2d.edit;`).
+     */
+    edit: {
+      /** Legend shown with "Vis hva som er nytt" (§3.4). */
+      legendExisting: 'Hytta i dag',
+      legendNew: 'Nytt',
+      legendRemoved: 'Fjernet',
+      /** Hint line texts the plan reports through `onHint` (§3.2). */
+      hintWallStart: 'Klikk der veggen skal begynne',
+      hintWallEnd: 'Klikk der den skal slutte (Esc avbryter)',
+      hintOpening: 'Velg type, og klikk på en vegg',
+      hintUnit: 'Klikk der bygget skal stå – det fester seg til terrassekanten og veggene',
+      hintMeasure: 'Klikk på to punkter',
+      hintMeasureEnd: 'Klikk på det andre punktet (Esc avbryter)',
+      hintFurniture: 'Klikk i planen der møbelet skal stå',
+      /** Tooltips of the drag handles. */
+      handleVertex: 'Dra for å flytte hjørnet',
+      handleEdge: 'Dra for å flytte kanten',
+      handleInsert: 'Trykk eller dra for å legge til et hjørne',
+      handleWallEnd: 'Dra for å flytte veggenden',
+      handleOpeningEnd: 'Dra for å endre bredden',
+    },
+  },
+
+  /**
+   * The editor core's texts (state/editStrings.ts hands these over with the same keys; it can become
+   * `export const EDIT_STRINGS = nb.editor;`).
+   */
+  editor: {
+    /** §1.1: every edit of the bundled Forslag D is refused with this toast (button "Nytt forslag"). */
+    locked: 'Forslag D er grunnlaget og kan ikke endres. Lag et nytt forslag for å endre.',
+    /** Toast after every delete (with [Angre]). */
+    deleted: 'Slettet.',
+    /** §3.5: two rooms ended up in one face; «a» stays. */
+    merged: (a: string, b: string) => `«${a}» og «${b}» er nå ett rom («${a}»).`,
+    /** §3.6: deleteBlock of a block with existing area. */
+    existingBlockDelete: 'Hytta i dag kan ikke slettes som helhet – flytt eller fjern vegger i stedet',
+    /** moveBlock of a block with existing area. */
+    existingBlockMove: 'Hytta i dag kan ikke flyttes som helhet – flytt veggene i stedet',
+    /** §3.7: a room size field whose side has only block edges. */
+    resizeBlockEdge: 'Endres under bygningsdelen',
+    /** deleteDeckVertex on a deck with three corners. */
+    deckMinVertices: 'Terrassen må ha minst tre hjørner.',
+    /** A drag or a nudge that would make a building, deck or wall too small or turn it inside out. */
+    tooSmall: 'Så langt går det ikke – da blir det for lite.',
+    /** duplicateBlock: name of the copy. */
+    copyName: (name: string) => `${name} (kopi)`,
+    /**
+     * "Nytt bygg" templates (model/unitTemplates.ts): the new block's name and its one room's name (project data
+     * once placed). The toolbar's chooser shows `nb.tools.units`, which uses the same block names.
+     */
+    units: {
+      vedskjul: { block: 'Vedskjul', room: 'Vedskjul' },
+      bod: { block: 'Bod', room: 'Bod' },
+      badstue: { block: 'Badstue', room: 'Badstue' },
+      anneks: { block: 'Anneks', room: 'Anneks' },
+      eget: { block: 'Eget bygg', room: 'Rom' },
+    },
   },
 
   /** 3D renderer (re-exported as `STRINGS` by view3d/strings.ts). */
@@ -495,7 +869,7 @@ export const nb = {
     /** Root element label for assistive technology. */
     canvasLabel: '3D-modell av hytta',
     /** Hint in the lower left corner (old model). */
-    hint: 'Dra for å snu · rull/knip for å zoome',
+    hint: 'Dra for å snu · rull/knip for å zoome · trykk for å velge',
     /** Room without a name (should not normally be labelled). */
     unnamedRoom: 'Uten navn',
   },
@@ -504,8 +878,11 @@ export const nb = {
 /** Start of the message of a geometry-fallback 'generic' warning (geometry/derive.ts `GEOMETRY_FALLBACK` + ':'). */
 const GEOMETRY_FALLBACK_PREFIX = 'geometry fallback:';
 
-/** Lookup used by `warningText` to turn ids into names. Return the id itself when unknown. */
-export type NameLookup = (kind: 'level' | 'room' | 'block' | 'opening' | 'wall', id: string) => string;
+/**
+ * Lookup used by `warningText` to turn ids into names. Return the id itself when unknown. 'furniture' gives the
+ * item's catalogue name.
+ */
+export type NameLookup = (kind: 'level' | 'room' | 'block' | 'opening' | 'wall' | 'furniture', id: string) => string;
 
 /** Metres with two decimals and a comma (heights in warnings). */
 function metres2(v: number): string {
@@ -518,7 +895,7 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
     case 'room-unnamed':
       return `Rom uten navn på ${names('level', w.levelId)} (${fmtArea(w.area)}).`;
     case 'room-anchor-lost':
-      return `Rommet «${names('room', w.roomId)}» finner ikke igjen flaten sin. Flytt ankeret inn i rommet.`;
+      return `Rommet «${names('room', w.roomId)}» er borte fra planen. Angre siste endring, eller gi rommet et nytt navn.`;
     case 'room-small':
       return `Rommet «${names('room', w.roomId)}» er bare ${fmtArea(w.area)} (minst ${fmtArea(w.min)}).`;
     case 'opening-outside-host':
@@ -543,6 +920,18 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
       return `Taket på «${names('block', w.blockId)}» møter ikke nabotaket i ${w.end === 'start' ? 'den ene' : 'den andre'} enden.`;
     case 'area-limit':
       return `Arealet ${fmtArea(w.actual)} er over grensen på ${fmtArea(w.limit)}.`;
+    case 'deck-steps-blocked':
+      return 'En trapp fra terrassen står der det nå er et bygg. Flytt trappa langs terrassekanten eller slett den.';
+    case 'furniture-overlap':
+      return `Møblene «${names('furniture', w.furnitureIds[0])}» og «${names('furniture', w.furnitureIds[1])}» står oppå hverandre.`;
+    case 'furniture-in-wall':
+      return `Møbelet «${names('furniture', w.furnitureId)}» står inni en vegg.`;
+    case 'furniture-outside':
+      return `Møbelet «${names('furniture', w.furnitureId)}» står utenfor rommene og terrassen.`;
+    case 'furniture-unknown':
+      return `Møbeltypen «${w.catalogId}» finnes ikke i katalogen og vises som en boks.`;
+    case 'furniture-needs-wet-room':
+      return `«${names('furniture', w.furnitureId)}» trenger sluk og bør stå på bad, WC eller vaskerom.`;
     case 'generic':
       return w.message.startsWith(GEOMETRY_FALLBACK_PREFIX)
         ? nb.warnings.geometryFallback(w.message.slice(GEOMETRY_FALLBACK_PREFIX.length).trim())

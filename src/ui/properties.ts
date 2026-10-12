@@ -1,7 +1,8 @@
 /**
- * Read-only description of the current selection for the Egenskaper panel (phase 1: no editing).
- * Pure: takes the resolved selection plus the derived model and returns a title and label/value rows,
- * all strings already Norwegian and formatted. Heights are absolute (relative to the main floor).
+ * Read-only description of a selection: a title and label/value rows, all strings already Norwegian and
+ * formatted. Heights are absolute (relative to the main floor). Pure. Phase 2: the Egenskaper editors
+ * (PropertiesEditor.tsx) use it for the header of every kind and for the rows of kinds without an editor
+ * (structure); `levelName` / `wallTitle` are shared with the editors.
  */
 import { area as polygonArea } from '../geometry/polygon';
 import type { DerivedBlock, DerivedStructure, DerivedVariant, DerivedWall } from '../model/derived';
@@ -183,7 +184,7 @@ export function describeSelection(
           [F.style, nb.properties.railingStyles[r.style] ?? r.style],
           [F.height, formatLength(r.height)],
           [F.posts, String(r.posts.length)],
-          [F.steps, String(r.steps.length)],
+          [F.steps, String(derived.outdoor.steps.filter((st) => st.deckId === r.deckId && !st.blocked).length)],
         ],
       };
     }
@@ -201,9 +202,9 @@ export function describeSelection(
         kindLabel,
         title: kindLabel,
         rows: [
-          [F.catalog, f.catalogId],
+          [F.catalog, f.item.catalogId],
           [F.level, levelName(derived, f.levelId)],
-          [F.position, formatPoint(f.position)],
+          [F.position, formatPoint(f.item.position)],
           [F.isNew, yesNo(f.isNew)],
         ],
       };
@@ -217,5 +218,18 @@ export function describeSelection(
           [F.position, formatPoint(resolved.tree.position)],
         ],
       };
+    case 'deckVertex':
+      return { kindLabel, title: kindLabel, rows: [[F.position, formatPoint(resolved.p)]] };
+    case 'deckEdge':
+      return { kindLabel, title: kindLabel, rows: [[F.length, formatM(dist(resolved.a, resolved.b))]] };
+    case 'steps': {
+      const s = resolved.steps;
+      return { kindLabel, title: kindLabel, rows: [[F.width, formatLength(s.width)], [F.risers, String(s.risers)]] };
+    }
+    case 'ghost': {
+      const g = resolved.ghost;
+      const what = g.type === 'opening' ? nb.openingTypes[g.opening.type] : g.type === 'wall' ? nb.selectionKinds.wall : nb.wallKinds.exterior;
+      return { kindLabel, title: what, rows: [[F.status, nb.status.removed]] };
+    }
   }
 }

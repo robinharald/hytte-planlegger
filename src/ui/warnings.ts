@@ -26,6 +26,10 @@ export function makeNameLookup(derived: DerivedVariant, variant: Variant): NameL
         const w = variant.walls.find((x) => x.id === id);
         return w ? `${nb.wallKinds[w.kind]} ${id}` : id;
       }
+      case 'furniture': {
+        const f = derived.furniture.find((x) => x.id === id);
+        return f ? (f.catalog?.name ?? f.item.catalogId) : id;
+      }
       default:
         return id;
     }
@@ -54,6 +58,15 @@ export function warningTarget(w: ModelWarning): Selection | null {
     case 'parts-overlap':
     case 'roof-no-meet':
       return { kind: 'block', id: w.blockId };
+    case 'deck-steps-blocked':
+      return { kind: 'steps', id: w.stepsId };
+    case 'furniture-overlap':
+      return { kind: 'furniture', id: w.furnitureIds[0] };
+    case 'furniture-in-wall':
+    case 'furniture-outside':
+    case 'furniture-unknown':
+    case 'furniture-needs-wet-room':
+      return { kind: 'furniture', id: w.furnitureId };
     default:
       return null;
   }

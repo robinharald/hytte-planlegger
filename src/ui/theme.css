@@ -4,6 +4,8 @@
  * Dark mode follows prefers-color-scheme unless <html data-theme="light|dark"> forces one.
  * Layout: >= 1100 px three columns in one screen (100dvh, columns scroll); 800–1099 px controls + stage with the
  * panels below (page scrolls); < 800 px phone: one column, stage (3D first) on top, panels collapsible.
+ * Phase 2: the stage column holds the toolbar, the hint line and the stage; toasts, bottom sheets and the phone
+ * mini-bar are fixed overlays.
  */
 
 @font-face {
@@ -837,7 +839,6 @@ abbr[title] {
 
 /* Stage: plan and/or 3D. Hidden panes stay mounted (same size) so the 3D view keeps its camera and context. */
 .stage {
-  grid-area: stage;
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -973,6 +974,568 @@ abbr[title] {
   margin: 0;
 }
 
+/* ------------------------------------------------------------------ phase 2: stage column, toolbar, hint line */
+
+/* The stage column: toolbar, hint line and the stage (plan / 3D); the first-run card floats over its bottom. */
+.stage-col {
+  grid-area: stage;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  container-type: inline-size;
+}
+.stage-col > .stage {
+  flex: 1 1 auto;
+}
+
+.toolbar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px;
+  min-width: 0;
+}
+.toolbar-tools {
+  display: flex;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.toolbar-tools::-webkit-scrollbar {
+  display: none;
+}
+.toolbar-history {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  border-left: 1px solid var(--line);
+  padding-left: 6px;
+}
+.tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  background: var(--panel);
+  color: var(--fg);
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 10px;
+  min-height: 38px;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tool svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.tool:hover:not(:disabled):not([aria-pressed='true']) {
+  background: var(--chip);
+}
+.tool[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.tool[aria-disabled='true'] {
+  opacity: 0.45;
+}
+.tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Velg stays in view while the tool row scrolls sideways (phones). */
+.tool[data-tool='select'] {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.tool-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+.tool-options-label {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 5px 12px;
+  min-height: 32px;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.chip svg {
+  width: 15px;
+  height: 15px;
+}
+.chip:hover {
+  border-color: var(--accent);
+}
+.chip[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.chip[aria-pressed='true'] small {
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* A narrow stage column (three columns on a small laptop): Angre / Gjør om as icons, tighter tools. */
+@container (max-width: 640px) {
+  .tool {
+    padding: 6px 8px;
+  }
+  .toolbar-history .tool span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+}
+
+.hint-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-height: 22px;
+  padding: 0 4px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.hint-line[data-locked] {
+  color: var(--fg);
+}
+
+.first-run {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 5;
+  max-width: min(420px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.first-run h2 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 18px;
+}
+.first-run ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+}
+.first-run-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Top bar: "Forslag:" label and the base-proposal tag. */
+.variant-label {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--muted);
+}
+.lock-tag {
+  background: var(--info-bg);
+  color: var(--fg);
+}
+
+/* ------------------------------------------------------------------ phase 2: Egenskaper editors */
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.editor-title {
+  line-height: 1.7;
+  min-width: 0;
+}
+.status-tag.status-new,
+.status-tag.status-mixed {
+  background: var(--new-bg);
+  color: var(--new-fg);
+}
+.status-tag.status-removed {
+  background: transparent;
+  border: 1px dashed var(--muted);
+}
+.icon-btn {
+  padding: 4px;
+  min-width: 28px;
+}
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+.editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+.ef,
+.nf,
+.size-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.size-field {
+  gap: 6px;
+}
+.nf-label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.ef .text-input {
+  width: 100%;
+  min-width: 0;
+}
+.ef textarea.text-input {
+  resize: vertical;
+  min-height: 64px;
+  font: inherit;
+  color: inherit;
+}
+.text-input[readonly],
+.nf[data-locked] .nf-box {
+  background: var(--chip);
+}
+.nf-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+.nf-box {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.nf-box:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+.nf-box:has(.nf-input[aria-invalid='true']) {
+  border-color: var(--danger);
+}
+.nf-input {
+  border: 0;
+  background: transparent;
+  padding: 6px 4px 6px 8px;
+  min-height: 34px;
+  width: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.nf-unit {
+  padding-right: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.nf-step {
+  flex: none;
+  width: 34px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  background: var(--chip);
+  color: var(--fg);
+  border-radius: 6px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.nf-step:hover {
+  border-color: var(--accent);
+}
+.nf-error {
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.choice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.choice-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.seg-small button {
+  font-size: 12.5px;
+  padding: 4px 8px;
+  min-height: 28px;
+}
+.ef-check {
+  font-size: 14px;
+}
+.editor-actions {
+  gap: 6px;
+}
+.btn[aria-disabled='true'] {
+  opacity: 0.5;
+}
+.more {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.more > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+  font-size: 13.5px;
+  width: max-content;
+}
+.more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.part-lines ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+}
+.edge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.locked-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 10px;
+  background: var(--info-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13.5px;
+}
+.warn-note {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.name-face {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.help-tools {
+  font-size: 14px;
+}
+.help-tools dt {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* ------------------------------------------------------------------ phase 2: toasts, bottom sheet, mini-bar */
+
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 60;
+  width: min(560px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 8px 8px 8px 14px;
+  background: var(--fg);
+  color: var(--bg);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  font-size: 14px;
+}
+.toast-text {
+  flex: 1 1 auto;
+}
+.toast .toast-btn {
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+}
+.toast .toast-close {
+  color: inherit;
+  border-color: transparent;
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  max-height: 52dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  color: var(--fg);
+  border-top: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.18);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.sheet[data-expanded] {
+  max-height: 88dvh;
+  height: 88dvh;
+}
+.sheet-handle {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.sheet-handle span {
+  width: 40px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--line);
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 14px 6px;
+}
+.sheet-body {
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mini-bar {
+  position: fixed;
+  z-index: 40;
+  transform: translate(-50%, -100%);
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.mini-bar:not([data-anchored]) {
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+}
+.mini-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 12px;
+  background: transparent;
+  color: inherit;
+  border: 0;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mini-bar button:active {
+  background: var(--chip);
+}
+.mini-bar svg {
+  width: 18px;
+  height: 18px;
+}
+.mini-bar .danger {
+  color: var(--danger);
+}
+
 /* ------------------------------------------------------------------ responsive */
 
 @media (max-width: 1279px) {
@@ -1104,6 +1667,45 @@ abbr[title] {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+}
+
+/* Phase 2 on phones: compact toolbar (the tool row scrolls with Velg pinned, Angre / Gjør om as icons), choosers
+ * scroll, toasts at the top (the bottom belongs to the mini-bar and the sheets). */
+@media (max-width: 799px) {
+  .stage-col {
+    gap: 6px;
+  }
+  .tool {
+    padding: 6px 9px;
+    min-height: 42px;
+    font-size: 13.5px;
+  }
+  .toolbar-history .tool span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .tool-options {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .hint-line {
+    font-size: 13px;
+  }
+  .toasts {
+    top: calc(8px + env(safe-area-inset-top));
+    bottom: auto;
+  }
+  .first-run {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    max-width: none;
   }
 }
 

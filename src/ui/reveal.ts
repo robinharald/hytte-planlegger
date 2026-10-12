@@ -1,4 +1,5 @@
 /** Bringing a side panel into view (used when a schedule row is chosen). */
+import { setPropertiesSheet } from './overlay';
 
 /** DOM id of the Egenskaper panel (the schedule reveals it when a row is chosen). */
 export const PROPERTIES_PANEL_ID = 'panel-properties';
@@ -19,4 +20,13 @@ export function revealPanel(id: string): void {
   };
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
   else run();
+}
+
+/**
+ * Show the Egenskaper of a new selection: the side panel when it is on the page (desktop, tablet), else the phone's
+ * bottom sheet (on phones the side column has no Egenskaper panel).
+ */
+export function revealProperties(): void {
+  if (typeof document !== 'undefined' && document.getElementById(PROPERTIES_PANEL_ID)) revealPanel(PROPERTIES_PANEL_ID);
+  else setPropertiesSheet(true);
 }

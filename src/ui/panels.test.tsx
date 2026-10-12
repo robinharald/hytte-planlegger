@@ -21,6 +21,7 @@ const { Banners } = await import('./Banners');
 const { TopBar } = await import('./TopBar');
 const { useKeyboardShortcuts, useTestHook } = await import('./hooks');
 const { cutHeightFor } = await import('../state/store');
+const { overlayStore, setPropertiesSheet } = await import('./overlay');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -143,9 +144,9 @@ describe('headline, top bar, banners', () => {
 
   it('top bar hides edit actions while read-only but keeps the variant selector', () => {
     render(<TopBar onOpen={() => {}} />);
-    expect(container.textContent).toContain('Dupliser');
+    expect(container.textContent).toContain('+ Nytt forslag');
     act(() => appStore.getState().setUi({ readOnly: true, source: 'link' }));
-    expect(container.textContent).not.toContain('Dupliser');
+    expect(container.textContent).not.toContain('+ Nytt forslag');
     expect(container.textContent).not.toContain('Lagre versjon');
     expect(byTestId('variant-select')).not.toBeNull();
   });
@@ -215,7 +216,7 @@ describe('review fixes', () => {
     expect(texts('[data-testid="room-schedule"] tr.subtotal td')).toContain('Sum etasje');
   });
 
-  it('Egenskaper sits above Arealer and is revealed when a schedule row is chosen', () => {
+  it('Egenskaper sits on top of the right column and is revealed when a schedule row is chosen', () => {
     const scrolled = vi.fn();
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = scrolled;
@@ -224,9 +225,9 @@ describe('review fixes', () => {
       return 0;
     });
     try {
-      render(<SidePanels isPhone />);
+      render(<SidePanels isPhone={false} />);
       const titles = [...container.querySelectorAll('details.panel > summary .panel-title')].map((el) => el.firstChild?.textContent);
-      expect(titles).toEqual(['Romskjema', 'Egenskaper', 'Arealer', 'Advarsler']);
+      expect(titles).toEqual(['Egenskaper', 'Romskjema', 'Arealer', 'Advarsler']);
       const props = byTestId('properties') as HTMLDetailsElement;
       act(() => {
         props.open = false;
@@ -240,6 +241,17 @@ describe('review fixes', () => {
       Element.prototype.scrollIntoView = original;
       vi.unstubAllGlobals();
     }
+  });
+
+  it('phones: no Egenskaper panel in the column; choosing a schedule row opens the Egenskaper sheet', () => {
+    setPropertiesSheet(false);
+    render(<SidePanels isPhone />);
+    const titles = [...container.querySelectorAll('details.panel > summary .panel-title')].map((el) => el.firstChild?.textContent);
+    expect(titles).toEqual(['Romskjema', 'Arealer', 'Advarsler']);
+    const row = [...container.querySelectorAll('tr.row')].find((tr) => tr.textContent?.includes('Stue'));
+    click(row ?? null);
+    expect(overlayStore.getState().propertiesSheet).toBe(true);
+    setPropertiesSheet(false);
   });
 
   it('headline: BYA with buildings split and the deck, BRA per level, abbreviations explained', () => {
@@ -267,7 +279,7 @@ describe('review fixes', () => {
       noticeStore.setState({ sharedHasOwn: true });
       appStore.getState().replaceProject({ ...initialProject, id: 'shared-id' }, { readOnly: true, source: 'link' });
     });
-    expect(byTestId('banner-shared')?.textContent).toContain('legger den delte varianten til i ditt eget prosjekt');
+    expect(byTestId('banner-shared')?.textContent).toContain('legger det delte forslaget til i ditt eget prosjekt');
     expect(byTestId('leave-shared')?.textContent).toBe('Tilbake til mitt prosjekt');
     act(() => noticeStore.setState({ sharedHasOwn: false }));
     expect(byTestId('banner-shared')?.textContent).toContain('gjør den til ditt eget prosjekt');
@@ -286,13 +298,20 @@ describe('review fixes', () => {
   it('top bar: tooltips, subtitle without a repeated place name', () => {
     render(<TopBar onOpen={() => {}} />);
     const button = (label: string) => [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
-    for (const label of ['Lagre versjon', 'Versjoner', 'Eksporter', 'Importer', 'Dupliser', 'Gi nytt navn', 'Del lenke', 'Hjelp']) {
+    for (const label of ['Lagre versjon', 'Versjoner', 'Eksporter', 'Importer', '+ Nytt forslag', 'Send forslaget', 'Hjelp']) {
       expect(button(label)?.getAttribute('title'), label).toBeTruthy();
     }
+    // Forslag D (the locked base) cannot be renamed or deleted; a new proposal can.
+    expect(button('Gi nytt navn')).toBeUndefined();
+    expect(byTestId('locked-tag')?.textContent).toBe('Grunnlag');
+    act(() => void appStore.getState().duplicateVariant(appStore.getState().project.activeVariantId, 'Mitt forslag'));
+    expect(button('Gi nytt navn')?.getAttribute('title')).toBeTruthy();
+    expect(button('Slett')?.getAttribute('title')).toBeTruthy();
+    expect(byTestId('locked-tag')).toBeNull();
     expect(container.querySelector('.brand p')?.textContent).toBe(initialProject.name);
   });
 
-  it('top bar below 600 px: "Mer" menu with the file actions, Del lenke and Hjelp stay', () => {
+  it('top bar below 600 px: "Mer" menu with the file actions, Send forslaget and Hjelp stay', () => {
     const original = window.matchMedia;
     window.matchMedia = ((query: string) =>
       ({
@@ -308,7 +327,7 @@ describe('review fixes', () => {
       expect(menu).not.toBeNull();
       expect(texts('[data-testid="more-menu"] .menu-item')).toEqual(['Lagre versjon', 'Versjoner', 'Eksporter', 'Importer']);
       expect(texts('.file-actions > .btn')).toEqual([]);
-      expect(byTestId('open-share')?.textContent).toBe('Del lenke');
+      expect(byTestId('open-share')?.textContent).toBe('Send forslaget');
       expect(byTestId('open-help')?.getAttribute('title')).toBeTruthy();
       act(() => {
         menu.open = true;
