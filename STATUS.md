@@ -1,7 +1,7 @@
 # Status
 
-Oppdatert 2026-10-12 (fase 2b integrert: møbler, delte forslag i Firestore, offline/PWA og finpuss av redigeringen;
-fikserunde 2b etter den tredje gjennomgangen, runde 2 etter den fjerde).
+Oppdatert 2026-10-13 (fase 2b integrert: møbler, delte forslag i Firestore, offline/PWA og finpuss av redigeringen;
+fikserunde 2b etter den tredje gjennomgangen, runde 2 etter den fjerde, runde 3 etter den femte).
 Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
@@ -10,6 +10,123 @@ Faser:
   badestampen; spøkelser for det som er flyttet/fjernet fra hytta i dag; PC og iPhone (`docs/phase2-plan.md`, rev. 3).
 - **Fase 2b** – møbler, delte forslag for familien (Firestore), offline/PWA (integrert 12. okt 2026).
 - **Fase 4/5** (senere) – eksport, gå-modus, sol-panel, drenering, IFC-overlegg (se «Neste» under fase 2b).
+
+## Fikserunde 2b, runde 3 (13. okt 2026)
+
+Den femte gjennomgangen (delte forslag mot den ekte Firestore, iPhone 13 og en 1366 × 768-PC, redigeringskjernen i
+Node) fant 1 blokkerende, 4 store og 12 mindre feil. Alle er rettet i tre parallelle deler (redigeringskjernen, den
+delte lagringen, planen på telefon og PC) og satt sammen her. Det som gjenstår, står under «Kjente problemer (runde 3)».
+
+### Gjort
+
+- **Et nytt bygg kan ikke stå oppå et annet, og tar aldri noe av huset** (blokkerende; `edit.ts blockOwnership`,
+  `unitOverlaps` / `unitMoveFraction` / `unitClearShift`): et bygg fra Nytt bygg eier bare sine egne vegger (begge ender
+  i det, ingen del inne i eller langs et annet bygg), romposter laget med det (`Room.unitId`) og møbler og bæring med
+  midten i det og i ingen andre bygg; flytting, dreiing og drag av hele bygget lar ingenting følge veggene. Står
+  skyggen oppå huset, sier hjelpelinja «Bygget kan ikke stå oppå et annet bygg» og trykket nektes med samme melding; et
+  trykk like utenfor en vegg legger bygget inntil den (innen halve byggets størrelse når trykket er utenfor alle bygg);
+  et drag stopper ved veggen (med hintet), «Roter 90°» skyver det inntil 0,25 m klar eller nekter, kant- og
+  hjørnedrag stopper ved veggen; «Dupliser» på et bygg setter kopien 0,5 m ved siden av. Før: et anneks satt over
+  huset tok med seg (eller slettet) eksisterende vegger, romnavn og husets møbler når det ble flyttet, dreid eller
+  slettet.
+- **Et bygg som forstørres over terrassemøbler, skyver dem ut** (stor; `applyUnitPolygons`): også ved kant- og
+  hjørnedrag, «Bredde/Dybde» og kant-/hjørneflytting, med toasten «Utebord» er flyttet ut av «Bod».
+- **«Ta tilbake» flytter bare det som ble flyttet med** (stor; `Wall.carriedBy`): en vegg som en annen veggs flytting
+  tok med, husker hvem og hvor (lagret i forslaget); «Ta tilbake» på den rører aldri veggen som tok den med, og «Ta
+  tilbake» på den som tok med, henter den bare hvis den fortsatt står der flyttingen satte den. Vegger brukeren har
+  flyttet selv, holdes utenfor (gjettingen fra angreloggen og regelen «flyttet nøyaktig like mye» er borte). Kjernens
+  sveip: ingen av 174 tilbaketakinger av vegger i flukt endrer den andre veggen lenger.
+- **Romnavn kommer bare tilbake i flater «Ta tilbake» endret**, og en melding sier det («Rommet «WC» er tilbake.»);
+  en lagret sammenslåing glemmes når en annen endring tegner flaten om (`MergedRoom.face`).
+- **Pulttaket på et vedskjul med ryggen mot et bygg** heller nå bort fra veggen (høyt mot veggen), også når det ble
+  satt slik uten at appen snudde det.
+- **En lenke til en annen delt plass bytter aldri av seg selv** (stor; `appStore.ts`, `StatusPill.tsx`): på en enhet
+  som har en plass, spør appen ved oppstart og når lenken limes inn: «Denne lenken går til en annen delt plass. Plassen i
+  lenken har 1 forslag (Mamma); plassen du bruker nå har 1.» med «Bytt dit» / «Bli her» (uthevet «Bytt dit» bare når
+  plassen i lenken har forslag fra andre enheter og den du bruker ikke har det). En lenke til ett forslag (`&p=`) gir
+  «Hent «Mammas idé» som en kopi hit» og bytter aldri. Tilbudet om å hente forslag kommer bare etter «Bytt dit», og
+  bare for forslag denne enheten laget. Andre åpne faner hører byttet (`storage`), sier «Denne enheten har byttet delt
+  plass i en annen fane.», lagrer ikke mer (statusen «Ikke lagret – last siden på nytt») og har «Last på nytt». Før: en
+  «Send forslaget»-lenke fra en privat plass flyttet enheten og tilbød å flytte familiens forslag ut, og en gammel fane
+  lagret videre i den gamle plassen med «Lagret for alle».
+- **Lenker med `_` eller `-` bak** (fra kursiv i en chat) leses som id-en uten tegnet; en lenke til en tom plass på en
+  ny enhet spør «Denne plassen er tom. Er lenken hel?» før noe lagres («Begynn her»).
+- **«Lagre over» sier fra til den andre** («… ble lagret over av X. Din utgave ligger under Tidligere versjoner.»), og
+  Tidligere versjoner merker «din» og «lagt bort ved Lagre over», med sekunder når to er fra samme minutt.
+- **Angre etter «+ Nytt forslag»** eller bytte av forslag: angrelisten tømmes (Angre er grå til neste endring), og
+  toasten sier det. Før: Angre hoppet til forrige forslag og angret en endring der, for hele familien.
+- **En urørt «Forslag D (kopi)»** fra en gammel autolagring flyttes ikke inn i familiens plass.
+- **Biblioteket etter Nytt bygg** (stor; `furniturePlacer.ts unitNearMiddle`): et valgt bygg får møbelet bare når
+  rommet står innen 100 px fra midten av planen; ellers går det til rommet i midten, som uten noe valgt. Ved
+  integrasjonen: et valgt bygg trekkes ikke fram over biblioteksarket (`PlanView.tsx`), for den panoreringen flyttet
+  midten – i førstegangsflyten havnet kommoden i Spiseplass. Havner et møbel i et annet rom enn det valgte eller det i
+  midten, sier en toast hvor («Kommode er satt inn i «Gang».»), og på PC panoreres et nytt møbel (eller en kopi) som
+  havner utenfor bildet, inn.
+- **«Dupliser» i et fullt rom** går bare til et rom en dør eller åpning fører til, høyst 3 m unna, og et møbel som
+  trenger avløp bare til et våtrom; toasten sier hvor («Kopien står i «Vindfang».»). Ellers «Ingen ledig plass til en
+  kopi.» (badstubenken, vaskemaskinen, spisebordet, toalettet, senga i Soverom 3, hylla i Pantry, teppet i Leseskrok,
+  høyskapet i Kjøkken).
+- **Rotasjonshåndtaket** står aldri på en vegg eller et møbel: en side der sirkelen eller stilken treffer en vegg,
+  eller midten står på et møbel, brukes ikke; uten ledig side vises ikke håndtaket («Roter 90°» finnes). Ved startzoom
+  på PC (23,5 px/m) mangler 19 av 57 håndtak, ved 40 px/m 6.
+- **Integrasjonen**: tekstene ligger i `nb.ts` (`nb.editor.unitOnBlock`, `roomsBack`, `copyIn`,
+  `nb.library.placedInToast`; de midlertidige `editCoreStrings.ts`, `duplicateStrings.ts` og
+  `furniturePlacerStrings.ts` er borte); hintet til Nytt bygg-skyggen vises i hjelpelinja (`usePlanEditing.ts
+  ghostHint`); toasten fra biblioteket er koblet til (`useFurniturePlacer`); statusen «elsewhere» har samme farge som
+  «failed»; kodekommentarene fra runden heter «last fix round, fifth review».
+- **Tester**: `npm test` 1786 tester i 102 filer, alle grønne. `npm run typecheck`, `npm run lint`, `npm run build` og
+  `npx tsc --noEmit -p e2e/tsconfig.json` er rene. `npm run e2e` 75 av 75 grønne i tre prosjekter, 8 hoppet
+  over (de mot den ekte Firestore). Nye:
+  - PC (`editing.spec.ts` (y)–(aa)): skyggen over huset gir hintet og trykket nektes; et anneks dratt 4 m inn i fløya
+    stopper ved veggen med hintet, uten overlappsadvarsel; en bods nordkant dratt over utebordet skyver det ut med
+    toasten, og når boden flyttes og slettes, står bordet; w-106-korr +0,3 (tar med lw-106-top), lw-106-top +0,3, «Ta
+    tilbake» på lw-106-top: w-106-korr står; `furniture.spec.ts` (I): benken i Mellombygg kopieres til Vindfang med
+    toasten, badstubenken nektes;
+  - iPhone: vedskjul trykket 0,2 m utenfor badstuveggen på tre steder legger seg inntil, flytter ingen møbler; trykket
+    inne i badstua nektes med meldingen; førstegangsflyten i virkelig rekkefølge uten Esc (vedskjulet fortsatt valgt):
+    kommoden havner i Soverom (ny fløy);
+  - forslagene (den falske familieplassen): en lenke limt inn spør først («Bli her» uthevet når plassen er tom); en
+    plass enheten aldri har brukt, med et forslag fra en annen enhet, gir «Bytt dit» uthevet og hva de to plassene har;
+    etter «Bytt dit» sier den gamle fanen fra, lagrer ikke mer og lastes på nytt i den nye plassen; en `&p=`-lenke gir
+    én kopi og bytter ikke; nytt skjermbilde `family-other-space.png`.
+- **Prøvd mot den ekte Firestore** (`E2E_FIRESTORE=1`, engangsfamilier `e2e-…`, slettet etterpå, 0 dokumenter igjen):
+  alle 8 er grønne (`family-firestore.spec.ts` 6 av 6, `phone-family-firestore.spec.ts` og `family-offline.spec.ts`),
+  også scenario H (en fane som sto åpen under et bytte, lagrer ingenting mer; lastet på nytt bytter den ingenting) og J
+  (en lenke til ett forslag i en annen plass kopieres hit, plassen der beholder det).
+
+### Avgjort i runde 3 (Robin kan endre)
+
+- **En lenke til en hvilken som helst annen delt plass spør** før bytte (det erstatter «bare plasser enheten har byttet
+  bort fra»); en `&p=`-lenke til en annen plass gir en kopi, aldri et bytte.
+- **Å lage eller bytte forslag tømmer angrelisten.**
+- **Et nytt bygg kan ikke stå oppå et annet.** Et trykk utenfor alle bygg kan flytte det inntil halve byggets størrelse
+  for å legge det inntil en vegg i stedet for å nekte; «Dupliser» på et bygg legger kopien 0,5 m ved siden av.
+- **Et valgt bygg** får møbelet fra biblioteket bare når det står nær midten av planen (100 px); et valgt bygg
+  panoreres ikke fram når biblioteket åpnes.
+- **«Dupliser»** går bare gjennom dører og åpninger, høyst 3 m, ellers nektes det.
+- **Rotasjonshåndtaket skjules** når ingen side er ledig.
+- **Et vedskjul med ryggen mot et bygg** får pulttaket høyt mot veggen, også når brukeren satte det slik selv.
+
+### Kjente problemer (runde 3)
+
+- Redigering:
+  - lw-106-top −0,3, så w-106-korr −0,3, så «Ta tilbake» på den ene av dem gir `wall-dangling` (begge er flyttet av
+    brukeren; 4 av 174 tilbaketakinger i kjernens sveip).
+  - w-106-korr flyttet 0,3 m nord (flytt eller drag) slår sammen «Hems 1 (soverom)» og «Trapperepos» på hemsen og gir
+    `opening-outside-host` og to `wall-dangling` (lw-106-top blir en stubb på 0,2 m); det var slik før runden også
+    (c861e45). «Ta tilbake» på lw-106-top lar nå w-106-korr stå, så rommene forblir slått sammen til w-106-korr tas
+    tilbake.
+  - Forslag lagret før denne runden har ingen `carriedBy` og ingen `Room.unitId`: «Ta tilbake» der tar ikke naboer med
+    tilbake, og et bygg eier det som ligger i det og ikke i et annet bygg.
+  - Rotasjonshåndtaket sjekker ikke skillevegger (planen får bare `data.pieces`): fu-spiseplass-8 får håndtaket over
+    dv-kjk-e.
+- Biblioteket: på PC ved startzoom (23,5 px/m) taper et bygg som er valgt med vilje og står mer enn ca. 4 m fra
+  midten, for rommet i midten (toasten sier hvor møbelet havnet); et vedskjul inntil et soverom som er zoomet inn
+  midt i planen, regnes fortsatt som nær (ca. 74 px).
+- Delte forslag: `updatedAt` og `lastRevisionAt` kan gå bakover når en lagring uten nett kommer fram etter en nyere
+  (bare «sist endret» påvirkes).
+- De andre punktene under «Kjente problemer (runde 2)», «(fikserunde 2b)» og «(fase 2b)» gjelder fortsatt (ytelsen
+  ved drag med 4 × tregere CPU, ender som dras ut og inn igjen, vegger som snur retning).
 
 ## Fikserunde 2b, runde 2 (12. okt 2026)
 

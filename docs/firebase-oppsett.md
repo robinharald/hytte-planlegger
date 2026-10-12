@@ -49,30 +49,46 @@ adressen uten lenke, får sin egen, tomme plass.
 - **Lenke til ett forslag:** `…/#f=<familie-id>&p=<forslag-id>` – åpner familiens plass med det forslaget på skjermen.
   «Send forslaget» sender denne (via delingsarket på telefonen, ellers kopieres den), og viser begge lenkene.
 - Id-en må være 24–64 tegn (bokstaver, tall, `-` og `_`), ellers slipper reglene ingen inn. Tegn som en melding eller
-  en setning legger rett etter lenken (`.` `,` `)` og lignende), tas bort. En lenke der id-en ikke er
+  en setning legger rett etter lenken (`.` `,` `)` og lignende), tas bort. Id-ene appen lager, er nøyaktig 32 tegn: en
+  id på 33 tegn som slutter på `_` eller `-` (lenken kopiert med understreken eller bindestreken rundt den, f.eks.
+  kursiv `_…_` i en chat), er den samme id-en uten det siste tegnet. En lenke der id-en ikke er
   hel (kuttet av i en melding), starter aldri en ny plass: appen sier fra («Lenken til familiens plass er ikke hel …»)
   og bruker plassen enheten hadde fra før. Har enheten ingen, lagres forslagene bare på enheten (statusen sier
   «Kun på denne enheten (familielenken er ikke hel)») til hele familielenken åpnes; da flyttes de inn i plassen.
-- Åpner en enhet en familielenke til en plass den **aldri har brukt** (ved oppstart, eller limt inn i en åpen fane),
-  bytter den til den nye. Den gamle id-en huskes på enheten (`hytte-planlegger:family.previous`), og når den nye
-  plassen har svart, tilbyr appen «Hent forslagene fra den forrige plassen» («Hent forslaget …» når det er ett) for
-  forslagene som ble laget **på denne enheten** i den gamle plassen før byttet (enheten husker hvilke,
+- Åpner en enhet **uten** plass en lenke til en plass som er **tom** (ingen forslag), spør appen først: «Denne plassen
+  er tom. Er lenken hel?». Plassen huskes ikke, og ingenting flyttes inn i den (den gamle autolagringen, forslag som lå
+  på enheten), før du trykker **Begynn her** eller lager et forslag der. Har plassen forslag, brukes den med en gang.
+- Åpner en enhet som **har** en plass, en familielenke til en **annen** plass (en ny lenke, en gammel fane, et
+  bokmerke, en fane Safari åpner igjen – ved oppstart eller limt inn i en åpen fane), bytter den aldri av seg selv.
+  Appen blir i plassen den bruker nå og spør: «Denne lenken går til en annen delt plass. Plassen i lenken har 3 forslag
+  (Pappa, Mamma); plassen du bruker nå har 1.» med **Bytt dit** og **Bli her**. Knappen som er uthevet, er plassen med
+  forslag som er laget på andre enheter («Bytt dit» bare når plassen i lenken har slike og plassen du bruker nå ikke
+  har det; ellers «Bli her»). Ingenting lagres eller tilbys før du har valgt. «Bli her» lar alt være og viser plassen du
+  bruker nå i adressefeltet igjen; så lenge du ikke har svart, står lenken i adressefeltet, og spørsmålet kommer igjen
+  hvis fanen lastes på nytt. Har plassen i lenken ingen forslag, står det «… har ingen forslag (er lenken hel?)».
+- **Bytt dit** bytter plass (siden lastes på nytt). Den gamle id-en huskes på enheten (`hytte-planlegger:family.previous`),
+  og når den nye plassen har svart, tilbyr appen «Hent forslagene fra den forrige plassen» («Hent forslaget …» når det er
+  ett) for forslagene som ble laget **på denne enheten** i den gamle plassen før byttet (enheten husker hvilke,
   `hytte-planlegger:family.created`). Svarer du ja, legges de inn i den nye plassen, og i den gamle havner de i
   Papirkurven (30 dager). «Nei takk» lar dem ligge i den gamle plassen; den kan fortsatt åpnes med sin egen lenke
   (`…/#f=<gammel id>`). Forslag andre har laget i den gamle plassen, tilbys ikke, og heller ikke forslag som selv ble
-  hentet inn fra en annen plass (`hytte-planlegger:family.carried-in`): de blir værende i familiens plass.
-- **Gamle faner og lenker til en plass enheten har byttet bort fra** (en fane som sto åpen, et bokmerke, en fane
-  Safari åpner igjen) bytter ikke plass. Appen blir i plassen den bruker nå og spør: «Denne lenken går til en plass du
-  har byttet bort fra.» med **Bytt tilbake** (enheten går tilbake dit, uten noe tilbud om å hente forslag) og **Bli
-  her** (ingenting endres; adressefeltet viser plassen du bruker nå igjen). Så lenge du ikke har svart, står lenken
-  fortsatt i adressefeltet, og spørsmålet kommer igjen hvis fanen lastes på nytt.
+  hentet inn fra en annen plass (`hytte-planlegger:family.carried-in`): de blir værende der de er.
+- En **lenke til ett forslag** i en annen plass (`#f=<annen id>&p=<forslag-id>`, det «Send forslaget» sender) bytter
+  aldri plass. Appen spør i stedet: «Denne lenken går til «Mammas idé» i en annen delt plass.» med **Hent «Mammas idé»
+  som en kopi hit** (en kopi legges til i plassen du bruker nå og vises; den andre plassen røres ikke, og den samme
+  lenken to ganger gir ikke to kopier) og **Bli her**.
+- **Andre faner som står åpne** på samme enhet: bytter én fane plass («Bytt dit», eller en ny enhet som får sin første
+  plass), viser de andre fanene «Denne enheten har byttet delt plass i en annen fane.» med **Last på nytt**, og de
+  lagrer ingenting mer (statusen sier «Ikke lagret – last siden på nytt»). Det som var endret i fanen før byttet, lagres
+  i plassen den viste. «Last på nytt» åpner plassen enheten bruker nå.
 - Gamle lenker med `#d=` (en kopi av et forslag i selve lenken) virker fortsatt: forslaget legges til som et nytt
   forslag i familiens plass. Den samme lenken to ganger legger det ikke til to ganger.
 - Forslag som lå lagret i nettleseren fra før (den gamle autolagringen), flyttes inn i familiens plass første gang,
   med sin egen «sist endret»-tid, og det som var på skjermen vises (også etter at appen er lastet på nytt). En urørt
   Forslag D (et vanlig besøk på den gamle nettsiden, også fra de 11 minuttene 11. oktober da nettsiden hadde
   revisjon 2 av Forslag D, og kopien «Hent ny Forslag D» la til) flyttes ikke; en endret Forslag D heter «Forslag D
-  (eget)» og får en id som er unik for enheten. En kopi med eget navn («Mammas utkast») flyttes også når den er urørt.
+  (eget)» og får en id som er unik for enheten. En kopi med eget navn («Mammas utkast») flyttes også når den er
+  urørt; en urørt «Dupliser» fra fase 1 som fortsatt heter «Forslag D (kopi)», flyttes ikke.
 - På iPhone: legg appen på Hjem-skjermen mens familielenken er åpen. En app på Hjem-skjermen har sin egen lagring og
   åpner adressen den ble lagt til fra (manifestet har med vilje ingen `start_url`), så den kommer rett inn i familiens
   forslag.
@@ -94,6 +110,7 @@ Forslag D ligger ikke i den delte plassen: det følger med appen, er låst og er
 | «Kun på denne enheten (familielenken er ikke hel)» | Enheten har ingen familieplass, og lenken den ble åpnet med var kuttet av. Forslagene lagres på enheten til hele familielenken åpnes; da flyttes de inn i plassen. |
 | «Kun på denne enheten (ingen delt plass satt opp)» | Appen kjører uten Firebase-oppsett (`firebaseConfig` er `null`): forslagene lagres bare i denne nettleseren. |
 | «Kunne ikke lagre på denne enheten (lite plass?)» | Nettleseren har ikke plass. Lagre forslaget som fil (Mer → Lagre som fil). |
+| «Ikke lagret – last siden på nytt» | En annen fane på denne enheten har byttet til en annen delt plass. Denne fanen lagrer ingenting mer; trykk «Last på nytt» i meldingen. |
 
 På smale skjermer viser statusen en kort tekst («Lagret», «Lagret her», «Kun her» …); hele teksten står i verktøytipset.
 
@@ -105,6 +122,11 @@ og ingen av dem kaster noe:
 - **Lagre over**: din utgave lagres for alle; deres utgave legges under Tidligere versjoner (alltid, også om det er
   mindre enn fem minutter siden forrige versjon). Var forslaget slettet, hentes det tilbake med din utgave.
 
+Den som fikk sin utgave lagt bort med «Lagre over», får beskjed: ««X» ble lagret over av Pappa. Din utgave ligger
+under Tidligere versjoner.» med **Vis** (hvis appen er åpen der når lagringen kommer, også om den er lastet på nytt i
+mellomtiden). Under Tidligere versjoner er utgaven merket «lagt bort ved Lagre over», versjoner som ble lagret på
+denne enheten er merket «din», og to versjoner fra samme minutt vises med sekunder.
+
 Lagret noen uten nett over en nyere utgave, legger appen den overskrevne utgaven under Tidligere versjoner og sier
 fra (på enheten som laget den, hvis appen er åpen der når den sene lagringen kommer – også om appen er lastet på nytt
 i mellomtiden). Sletting og «Hent tilbake» endrer bare om forslaget ligger i Papirkurven, aldri innholdet: slettet
@@ -112,8 +134,10 @@ noen uten nett et forslag en annen har endret i mellomtiden, ligger den nyeste u
 endret det, får beskjed med «Hent tilbake» (hvis appen er åpen der når slettingen kommer).
 
 Endringer lagres et sekund etter siste endring, og med en gang når appen legges bort (en annen app, Hjem-skjermen,
-låseknappen på iPhone, eller fanen lukkes). Å lage et forslag («+ Nytt forslag», «Kopier») er ikke et angresteg:
-«Angre» rett etter fjerner det ikke for alle. Et forslag slettes bare fra menyen, med to bekreftelser.
+låseknappen på iPhone, eller fanen lukkes). Å lage et forslag («+ Nytt forslag», «Kopier») eller å bytte til et annet
+forslag tømmer angrelisten: «Angre» er grå til du har endret noe i forslaget du ser på, så den fjerner aldri det nye
+forslaget for alle og hopper aldri tilbake til en endring i et annet forslag. Et forslag slettes bare fra menyen, med
+to bekreftelser (og slettingen kan angres).
 
 ## Hva som lagres
 
@@ -132,12 +156,17 @@ Bare dette, under `families/<familie-id>/…` (passer med reglene i `firestore.r
   - `lineage`: tidspunktene (`updatedAt`) til utgavene denne bygger på – slik ser appen at en lagring eller sletting
     uten nett ble gjort fra en eldre utgave;
   - `lastRevisionAt` og `revisions`: når den nyeste tidligere versjonen ble tatt, og id-ene til de tidligere
-    versjonene.
+    versjonene. `lastRevisionAt` kan gå bakover på samme måte som `updatedAt` (en sen lagring uten nett); da tas
+    neste versjon bare litt før de fem minuttene;
+  - `overwrote`: bare etter «Lagre over» – tidspunktet til utgaven som ble lagt bort (slik ser enheten som lagret
+    den, at den skal få beskjed); neste vanlige lagring setter det til tomt.
 - `proposals/<forslag-id>/revisions/<id>`: inntil 20 tidligere versjoner – én per fem minutter med vanlige endringer,
   og i tillegg alltid utgaven som ble lagt bort ved «Lagre over», «Hent endringene» eller en lagring uten nett over en
-  nyere utgave; de eldste slettes når det blir flere. Hver har `name`, `project`, `schemaVersion`, `savedAt` og
-  `savedBy`. En lagring endrer aldri listen over tidligere versjoner, den legger bare til sin egen (også når den ble
-  gjort uten nett fra en eldre utgave), så ingen versjon blir liggende utenfor listen.
+  nyere utgave. Hver har `name`, `project`, `schemaVersion`, `savedAt` og `savedBy` (og `reason: 'saveOver'` for
+  utgaven «Lagre over» la bort). En lagring legger til sin egen og fjerner bare de eldste; ingen versjon blir liggende
+  utenfor listen (også når lagringen ble gjort uten nett fra en eldre utgave). Lagrer to enheter samtidig, kan listen
+  en kort stund ha litt mer enn 20, og en lagring uten nett over en nyere utgave kan gi to like kopier av den samme
+  eldre utgaven.
 
 Ellers bare tidspunkter og id-er (tilfeldige tegn). Ingen e-post, ingen enhetsnavn, ingen nettleserinfo og ingen
 posisjon for den som bruker appen. Innloggingen er anonym og laster ingen Google-skript eller innloggingsvinduer (bare

@@ -126,8 +126,8 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2); public/*.png 
   draws them dashed ("Fjernet") only while "Vis hva som er nytt" is on. They take no part in room detection, areas,
   thresholds, validation or 3D (removed openings still leave infill `patches` in their wall). Moved existing block
   edges leave `Variant.ghosts` (`{ id, a, b }`, passed through as `DerivedVariant.ghosts`, dashed lines in the plan;
-  `Variant.mergedRooms` — optional, no schema bump — keeps the Room records merges removed with their peers' anchors,
-  see Editing),
+  `Variant.mergedRooms` — optional, no schema bump — keeps the Room records merges removed with their peers' anchors
+  and, since the last fix round, the outline of the face they went into (`MergedRoom.face`), see Editing),
   and so do the ranges a shortened existing edge lost (partner stubs included; first free id `…/ghost`, `…/ghost/2`).
   Existing openings that a block-edge move carries or clamps turn new and leave their ghost at the old centre, hosted
   on a removed `'exterior-old'` wall with the edge ghost's id (`ensureGhostHost`), so the plan draws the old wall band
@@ -136,6 +136,13 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2); public/*.png 
   blk-main's south wall x 9..9.5), that stretch gets an edge ghost too (`edit.ts addJunctionGhosts`; stretches that
   were open already get none); `healGhosts` keeps it while the junction still covers it, and its "Ta tilbake" moves
   the other block's edge back (`uncoverJunction`).
+- **Unit ownership and carried walls** (last fix round after 2b, optional fields, no schema bump): `Room.unitId` is
+  the template unit (a block from "Nytt bygg") a Room record was made with (`applyPlaceUnit`, `applyDuplicateBlock`);
+  `Wall.carriedBy = { by, a, b }` names the wall whose move carried this one along (a continuation in line, a follower
+  at a shared end, a T-junction) and the ends that move gave it (`edit.ts markCarried` in `applyMoveWall` /
+  `applyMoveWallEndpoint`; dropped by the wall's own move and when it is back on its ghost). Proposals saved before
+  this have neither: their units own what lies in them and in no other block, and a later "Ta tilbake" carries no
+  neighbour back.
 - **Trees** (fix round after 2a): `Site.trees` are today's trees. A proposal gets its own copy in the optional
   `Variant.trees` on its first tree edit (copy-on-write in `editActions.ts`: add, move, delete, drag, nudge), so the
   site and Forslag D never change. Every reader goes through `treesOf(project, variant)` (geometry/derive.ts) =
@@ -428,7 +435,10 @@ the last position flushed before `endDrag`, a cancel drops it). On the locked ba
 the selected element calls `onLocked` once (else the refusing `beginDrag`) and neither pans nor drags. With
 `viewportInsets` (the parts of the plan's box that a bottom sheet or the screen edges cover) the plan pans, never
 zooms, just enough to bring the selection's box into the uncovered part with a 12 px margin (`viewport.ts
-revealPan`). Tools (`tool` prop): Velg; Vegg (two taps, the new wall
+revealPan`). Last fix round: a selected furniture item the previous render did not have (a library item, a Dupliser
+copy) is revealed with zero insets where the plan has none (a PC), so a fallback room off screen comes into view; a
+selected unit is not revealed while the Møbler tool is active (the library sheet would pull the shed Nytt bygg left
+selected into view and move the middle the library places by). Tools (`tool` prop): Velg; Vegg (two taps, the new wall
 selected, the tool stays until Esc / Velg); Dør/vindu (a tap on a wall or block edge, centre on the 10 cm grid along
 the host; if the default-size opening would overlap one already in that wall piece it moves to the nearest free
 centre in the piece, `freeOpeningOffset`); Nytt bygg (a snapped ghost of the template follows the pointer, a tap places it); Møbler (a tap calls
@@ -458,7 +468,11 @@ Final fix round: the handle stands on a free side (`handleSide` / `sideHandle`: 
 whose circle meets no other item and no live wall and whose stem crosses no live wall — `walls` prop, so an item
 backed onto a wall never gets its handle in the next room; else a side over a rug only; on touch else a side
 facing up on the screen, where the mini-bar does not cover it; else the front; `data-rotate-side` on the group is the
-side's angle from the front, 0 / 180 / −90 / 90), and a press on the drawn circle always turns the item (no
+side's angle from the front, 0 / 180 / −90 / 90; last fix round: a side is never used when its circle or stem meets a
+wall or the handle's middle stands on a solid item, the rest rank free, then over a rug, then (on touch) facing up,
+then only grazing an item, the least overlap first (`circleDepth`); with no side left the handle is hidden and «Roter
+90°» remains — 19 of 57 seed handles at 23.5 px/m; dividers are not checked, since the plan passes only
+`data.pieces`), and a press on the drawn circle always turns the item (no
 pass-through any more); a drag turns the handle's own side towards the pointer. A press on it is held
 (`holdPointer`): the gesture tracker counts it but never pans, taps or claims with it, so a second finger anywhere
 makes a pinch, and the handle then drops its press (no preview, no turn). `onLostPointerCapture` ignores a child losing its capture. Colliding items (their own `collisions` / `blocksDoors`
@@ -479,7 +493,12 @@ round: while the Møbler tool is active the insets are the ones from before the 
 (`insetsBeforeLibrary`: the view the user was looking at, not the strip above the sheet; on a PC the visible middle),
 and the request names the item (`requestPlanCentre(doc, catalogId)` → `PlanCentreDetail.catalogId`, passed by
 `useFurniturePlacer` / `PlacerEnv.planCentre(catalogId)`): when it has no free spot (`tapPlacement`) in the room at the
-centre, the 6 rooms nearest the centre (by label point) are tried before an overlap is allowed.
+centre, the 6 rooms nearest the centre (by label point) are tried before an overlap is allowed. Last fix round
+(`ui/furniturePlacer.ts`): a selected unit gives its room to a library tap only while that room lies within
+`UNIT_NEAR_MIDDLE_PX` = 100 px of the plan's middle on the same storey (`unitNearMiddle`; `PlacerEnv.planMiddle`,
+by default asked through `requestPlanCentre(document)`), else the item goes to the room in the middle, as with nothing
+selected; when the item lands in another room than the one picked or in the middle, `PlacerEnv.toast` (the app's
+toast, `useFurniturePlacer`) says where: `nb.library.placedInToast` «Kommode er satt inn i «Gang».».
 Editor polish (phase 2b): the drag loop calls `previewDrag` (state/editActions.ts: the snap and the dragged element's
 target outline, no store change, no derive; about 0.1 ms in Node) every animation frame and `updateDrag` at most every
 `updateInterval(last)` = clamp(2 × its last duration, 16, 150) ms, and once more with the last position before
@@ -651,7 +670,10 @@ never drops another device's revision ids; a stamp never goes below the newest v
 `updatedAt` can still go back when a queued offline save lands after a newer one: Firestore has no server-side max for
 strings). Making a proposal is no undo step: the sync takes the history step that added a variant out of
 `store.temporal` (and adds the variant to the other history states), so Angre can never delete a proposal for the
-family without the menu's two confirmations; a delete stays undoable. Mode
+family without the menu's two confirmations; a delete stays undoable. Last fix round: creating a proposal or switching
+to one clears the undo history (Angre is greyed out until the next edit; before, Angre right after «+ Nytt forslag»
+undid the previous proposal's last edit and saved that for the family); the toast says «… Nå kan du endre det, og
+Angre tar tilbake endringene du gjør i det.». Mode
 (`resolveFamilyMode`): shared with a Firebase config, except in tests and under browser automation
 (`navigator.webdriver`), overridable by `VITE_FAMILY_STORE` or localStorage `hytte-planlegger:family-mode`. Shared
 mode whose Firebase cannot be loaded falls back to the local store for the session (`appStore.ts startFallback`,
@@ -662,18 +684,35 @@ dropped; the address bar keeps `#f=…&p=<proposal>`), `#d=` (an old share link:
 derived from the link). A `#f=` whose id is not whole never starts a family: the notice
 'family-link-invalid' («Lenken til familiens plass er ikke hel …»), the stored family is kept, and a device without one
 keeps its proposals in the local store (`noFamily`, pill «Kun på denne enheten (familielenken er ikke hel)», the broken
-hash kept) until a whole link moves them in. Switching to another family (at start-up or by a hash change in the tab)
+hash kept) until a whole link moves them in. A 33-character id ending in `_` or `-` (chat italics) is read as the
+32-character id (`familyStore.ts`; generated ids are exactly 32). On a device WITHOUT a family a `#f=` link's space is
+used but stored only once it shows proposals, a proposal is made there, or the user answers «Denne plassen er tom. Er
+lenken hel?» with «Begynn her» (`startEmptyFamily`; until then the old autosave and leftover proposals are not moved
+in; 'empty-family-banner'). On a device WITH a family, a link to any other space never switches on its own — at
+start-up (an old tab, a bookmark, a session-restored tab, a new link) or pasted into the tab: the device stays, nothing
+is stored, and the banner 'other-family-banner' («Denne lenken går til en annen delt plass.») says what both spaces
+hold once the link's space has answered (`LinkedFamilyInfo`: «Plassen i lenken har 3 forslag (Pappa, Mamma); plassen
+du bruker nå har 1.», read through a second store, `watchLinked`). «Bytt dit» (`switchToLinkedFamily`) is the
+highlighted button only when the link's space has proposals made on other devices and the current one has none
+(`family.created` / `…carried-in` tell this device's own); otherwise «Bli her» (`stayInFamily`, the address bar shows
+the current space again). A `&p=` link to another space never switches: it offers «Hent «navn» som en kopi hit»
+(`copyLinkedProposal`: the copy's id is derived from the link, so the same link twice adds one copy, recorded as
+carried in); the other space is not touched. A `storage` listener on `hytte-planlegger:family` notices another tab
+of the device switching: this tab saves what was pending, then stops saving ('family-elsewhere-banner' «Denne enheten
+har byttet delt plass i en annen fane.», pill state `elsewhere` «Ikke lagret – last siden på nytt»), and «Last på
+nytt» (`reloadInCurrentFamily`) reloads into the stored space. «Bytt dit» (only it switches)
 pushes the old id onto `hytte-planlegger:family.previous` and records it in `…:family.switched-from`; once the new space
 has answered, the proposals this device created in the old one (`…:family.created`, filled by `ProposalSync.onCreated`)
 are offered («Hent forslagene fra den forrige plassen»: `acceptCarryOver` copies them in and puts the old ones in the old
 space's Papirkurv; «Nei takk» forgets the offer). Final fix round: the offer is the snapshot taken at the switch
 (`…:family.switch-offer`: what was created in the old space before it), and copies brought in are recorded under
-`…:family.carried-in` and never offered again. A link (at start-up or by a hash change) to a family listed in
-`…:family.previous` is no switch: the device stays where it is, nothing is offered, and the banner
-'left-family-banner' («Denne lenken går til en plass du har byttet bort fra.») asks: «Bli her» (`stayInFamily`) puts
-the current family back into the address bar, «Bytt tilbake» (`returnToLeftFamily`) switches and reloads without a
-carry-over offer (an old Safari tab that iOS reloads used to switch the device back and offer to move the family's
-proposals out). The old whole-project autosave becomes proposals once and is kept as
+`…:family.carried-in` and never offered again (the last fix round replaced the final round's 'left-family-banner'
+«Bytt tilbake» for spaces in `…:family.previous` with the 'other-family-banner' above, for every other space). «Lagre
+over» records in the saved document which version it wrote over (`overwrote`) and keeps that version as a revision with
+`reason: 'saveOver'`; the device whose version was put aside gets the overwritten banner «… ble lagret over av X …»,
+and Tidligere versjoner tags revisions «din» and «lagt bort ved Lagre over», with seconds when two share a minute
+(`familyUi.ts revisionLabels`). An untouched phase-1 «Forslag D (kopi)» in an old autosave is dropped like Forslag D
+itself; an edited one, or any other name, is kept. The old whole-project autosave becomes proposals once and is kept as
 `hytte-planlegger:project.before-2b`: a variant equal to the base it was made from (a phase-1 autosave is compared with
 the frozen schema-1 Forslag D, `seed/frozen/forslagD.schema1.json`, and since the final fix round also with the
 revision-2 seed the live site served for 11 minutes on 11 Oct, `seed/frozen/forslagD.schema1.rev2.json`) is left out
@@ -803,7 +842,10 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   original's turn and take the nearest free spot on a 5 cm grid in the item's own frame — outside rooms on the
   original's deck; final fix round: a full room hands over to the rooms whose outline is within 0.6 m of it, nearest
   first, free spots only, the copy taking that room's level; with none, `duplicateFurniture` adds nothing, makes no
-  undo step and toasts `nb.editor.duplicateNoSpace` «Ingen ledig plass til en kopi.»), `deleteFurniture`, `setFurnitureProps` (a new size keeps the back
+  undo step and toasts `nb.editor.duplicateNoSpace` «Ingen ledig plass til en kopi.»; last fix round: only a room a
+  door or opening of the original's room leads to (`roomsThroughPassages`; no longer rooms behind a plain wall or a
+  divider), the copy within 3 m of the original (`DUP_NEIGHBOUR_REACH_M`), an item that needs a drain only into a wet
+  room, and the toast `nb.editor.copyIn` «Kopien står i «Vindfang».»), `deleteFurniture`, `setFurnitureProps` (a new size keeps the back
   edge in place, stretch ranges clamp, presets and colours apply; false when nothing changed). They refuse Forslag D
   and never reconcile rooms. Every action that moves walls (`run()`) lets furniture backed onto a moved wall face (≤ 1
   cm, either face, block edges too, thickness changes too) follow it (`followWallFaces`), never onto another level's
@@ -837,6 +879,30 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   the anchors of the rooms on its storey (`Variant.mergedRooms`, `MergedRoom { room, peers }`, at most 40; dropped when
   the room comes back; optional, no schema bump), so the revival survives a reload; it still happens only in
   `restoreGhost`.
+- **Last fix round after 2b** (the fifth review): a unit owns only its own things (`edit.ts blockOwnership`, used by
+  `applyMoveBlock`, `applyRotateBlock` and `applyDeleteBlock`): new walls with both ends inside it and no point strictly
+  inside another block nor along another block's edge; Room records with its `Room.unitId`, or anchored inside it and in
+  no other block; its own furniture and structure whose centre is in no other block. Whole-block moves, turns and block
+  drags run with `RunOpts.follow: false`, so nothing backed onto the unit's walls follows (a unit over the house took
+  existing walls, room names and house furniture along when moved, turned or deleted). A template unit never stands on
+  another block (`unitOverlaps`, `unitMoveFraction`, `unitClearShift`: exact separating-axis tests, 1 mm tolerance, a
+  unit along a wall is fine): `snapPoint('unit')` shifts the ghost clear within its reach — for a tap outside every
+  building within half the unit's size, from the snapped place, else from the tapped one — or sets
+  `ToolSnapResult.hint` (`nb.editor.unitOnBlock` «Bygget kan ikke stå oppå et annet bygg», shown on the hint line while
+  the Nytt bygg ghost is hovered, `usePlanEditing.ts ghostHint`), and `placeUnit` refuses there with the hint as a
+  toast; a body drag shifts clear within reach, else stops at the contact with `DragFeedback.hint`; `moveBlock` stops at
+  the contact or refuses, `rotateBlock` shifts up to 0.25 m clear or refuses (toasts); edge and corner moves are cut
+  back to the contact (`applyMoveBlockEdge` / `Vertex`; the preview and hint through `blockEdgeMoveClamp` /
+  `blockVertexMoveClamp`). `duplicateBlock` puts a unit's copy beside the original (0.5 m gap) or refuses. After an edge
+  or corner move of a template unit `applyUnitPolygons` runs the push-out, so an enlarged unit pushes terrace
+  furniture out too (the toast for `moveBlockEdge`, `moveBlockVertex`, `setBlockSize` and edge / corner drags). "Ta
+  tilbake" and carried walls: `Wall.carriedBy` replaces the undo-history guess (`ghostStep` and the "moved by exactly
+  as much" fallback are gone): `carriedSideways` and `neighbourEnds` bring a wall back only when its `carriedBy` names
+  the restored wall and still holds; walls moved on their own (`notCarriedBy`) are kept out of every cascade back, and a
+  neighbour end such a wall meets stays. A merged-away name revives only into faces this restore changed
+  (`reviveRoomRecords` takes a face filter) with the toast `nb.editor.roomsBack` («Rommet «WC» er tilbake.»), and a
+  `Variant.mergedRooms` record goes when another edit redraws its face (`MergedRoom.face`). A Vedskjul placed with its
+  back against a block gets `slopeTo` high against that wall (also when placed turned so by the user).
 - **Snapping** (`snap.ts`): grid 0.10 m (0.01 with Alt); wall ends / midpoints, block axis vertices and edges (never
   cladding faces), deck edges and vertices, collinear extensions and perpendiculars (within 6 m of the ends), ortho
   from the start point; polygons (units, blocks) snap axis to axis; furniture back to wall; hot tubs to deck edges.
@@ -1236,7 +1302,17 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   sheet, neighbouring rooms), `usePlanEditing.test.tsx` (a drag's hint on the hint line), `roof.test.ts` (no
   roof-no-meet for a unit), `familyStore` / `familyStore.sync` / `appStore.family` (merge saves, conflict revisions,
   hidden flush, persisted own versions, creation not undoable, the left-family banner, carried-in copies, trailing
-  punctuation, the rev-2 frozen seed, named copies kept).
+  punctuation, the rev-2 frozen seed, named copies kept). Last fix round after 2b: `editActions.fix5.test.ts` (a unit
+  over the house takes none of its walls, names or furniture when deleted, dragged, moved or turned; taps outside the
+  sauna wall attach or are refused, never overlap; refusals and the ghost hint; drags, `moveBlock` and edge moves stop
+  at the contact; Dupliser of a unit; an enlarged Bod pushes the Utebord out; `carriedBy` restores with and without a
+  reload; revival only into changed faces; the lean-to roof), `furniturePlacer.test.ts` (the shed near the middle or
+  not, the toast), `PlanView.reveal.test.tsx` (a new item revealed without insets; no unit reveal with the library),
+  `PlanView.edit.test.tsx` (the Nytt bygg ghost's hint), `FurnitureLayer.test.tsx` (handle ranking, a sweep of every
+  seed item: no handle on a wall or an item), `editActions.furniture.test.ts` (Dupliser through doors only),
+  `appStore.family.test.ts` / `familyBanners.test.tsx` (any other space asks, `&p=` copies, the other tab stops, empty
+  spaces, trailing `_` / `-`), `familyStore.sync.test.ts` («Lagre over» tells the other, the undo history cleared),
+  `persistence.test.ts` (an untouched «Forslag D (kopi)» dropped).
 - `npm run e2e` since 2b also runs `furniture.spec.ts` (desktop: a toilet placed in Hovedbad from the library with its
   clearance, dragged into the door swing → door-blocked naming it, turned, duplicated, deleted; the bed in Soverom (ny
   fløy) dragged off the wall and back → snapped back; main south +0.3 then glass east +0.5 then "Ta tilbake" on every
@@ -1264,7 +1340,16 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   saves, «Lagre over» keeps A's version under Tidligere versjoner) and the old-tab banner in "family links",
   `phone-editing.spec.ts` (the whole first-time flow from the first-run card to Send, the link opened on a second
   device; door handles; `phone-first-flow.png`), `phone-furniture.spec.ts` (the dining chair's handle on its back turns
-  it; Kommode in the zoomed-in bedroom).
+  it; Kommode in the zoomed-in bedroom). Last fix round: `editing.spec.ts` (y)–(aa) (the Nytt bygg ghost over the house
+  says so and a click there is refused; an Anneks dragged into the wing stops against its wall with the hint; a Bod's
+  north edge dragged over the Utebord pushes it out, and the Bod moved and deleted leaves it; w-106-korr north carries
+  lw-106-top, which the user moves on, and «Ta tilbake» on lw-106-top leaves w-106-korr), `furniture.spec.ts` (I)
+  (Dupliser into the Vindfang with the toast, the sauna bench refused), `phone-editing.spec.ts` (Vedskjul taps 0.2 m
+  outside the sauna wall attach against it, a tap on the sauna is refused; the first-time flow with the shed still
+  selected, no Escape), `proposals.spec.ts` "family links" (a pasted link asks first; a never-used space with another
+  device's proposal highlights «Bytt dit», and the tab left open stops saving and reloads in the new space; a `&p=`
+  link copies once and never switches; `family-other-space.png`); `family-firestore.spec.ts` H and J on the real
+  Firestore.
   Opt-in against the REAL Firestore (`E2E_FIRESTORE=1`, throwaway `e2e-` families deleted afterwards over the REST API,
   `e2e/firestoreAdmin.ts`): `family-firestore.spec.ts` (an offline delete never wipes another device's newer edit; a
   phase-1 autosave; an old tab at a space the device left; «Lagre over» within 5 minutes keeps the other version as a
