@@ -4,8 +4,7 @@
  * use `createAppStore` (store.ts) with a fixture instead.
  *
  * Bootstrap (module load): share link `#d=` (read-only) → autosave → fresh Forslag D seed with a new project id
- * (see persistence.loadInitialState). The view defaults to "Begge" only on windows ≥ SPLIT_MIN_WIDTH unless the
- * user chose one before. `startPersistence()` (called once from main.tsx) starts the autosave (which writes a fresh
+ * (see persistence.loadInitialState). The view defaults to the plan (DEFAULT_UI) unless the user chose one before. `startPersistence()` (called once from main.tsx) starts the autosave (which writes a fresh
  * project right away, so its id survives a reload), the other-tab detection and the `hashchange` handler for links
  * pasted into an open tab.
  *
@@ -40,7 +39,7 @@ import {
   startAutosave,
 } from './persistence';
 import type { AutosaveController, LoadResult, Notice, SaveVersionResult, ShareLink } from './persistence';
-import { createAppStore, defaultActiveView, EMPTY_HISTORY } from './store';
+import { createAppStore, EMPTY_HISTORY } from './store';
 import type { AppState, HistorySnapshot } from './store';
 import { nb } from '../i18n/nb';
 
@@ -66,10 +65,7 @@ const initial = loadInitialState({
   createSeed: freshSeedProject,
 });
 
-export const appStore = createAppStore(initial.project, {
-  activeView: defaultActiveView(hasWindow ? window.innerWidth : 0),
-  ...initial.ui,
-});
+export const appStore = createAppStore(initial.project, initial.ui);
 
 export function useAppStore<T>(selector: (state: AppState) => T): T {
   return useStore(appStore, selector);

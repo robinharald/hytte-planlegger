@@ -1,0 +1,2320 @@
+/**
+ * Editing geometry (docs/phase2-plan.md §1, §3.4, §3.5, §3.7). Pure: every `apply…` function mutates a DRAFT variant
+ * (an immer draft or a plain copy) and reads the pre-edit state from an `EditContext` ({ base, derived }: the variant
+ * before the edit — for drags the pointer-down base — and its derived model). state/editActions.ts wraps them in
+ * `produce`, reconciles the rooms and stores the result. No React, no store access.
+ *
+ * Lock (§1.1): `isLocked(variant)` = `variant.locked === true` (the bundled Forslag D). The ONLY lock.
+ *
+ * Status bookkeeping (§1.2, §3.4)
+ *  - `touchExisting(draft, id)`: an EXISTING stored wall / opening becomes 'new' and a 'removed' copy with the old
+ *    geometry is appended as `${id}/ghost` (idempotent: an element that is already 'new' is left alone, an existing
+ *    ghost id is never added twice). Openings with status 'removed' (demolition markers) on a touched wall go with the
+ *    wall's ghost. A wall that MOVES takes its openings along (`touchWallForMove`): existing openings on it are touched
+ *    too and their ghosts are hosted on the wall's ghost; a wall that is only stretched keeps its openings in place.
+ *  - Deleting an existing wall / opening marks it 'removed' in place (it is its own ghost); existing openings on a
+ *    deleted existing wall are removed with it, new ones are deleted. New elements are really deleted.
+ *  - Block edges: moving an edge whose derived exterior pieces include existing ones (part of today's cabin) records
+ *    the old line of those pieces in `variant.ghosts` (`${blockId}/${edgeId}/ghost`, `/ghost/2` … for disjoint
+ *    ranges), once. Parts are never changed: an explicit existing part polygon stays, the implicit remainder is new.
+ *  - Healing: whenever an element is back on its ghost (a wall with the same geometry as `${id}/ghost`, an opening with
+ *    the same host, offset and size, a block edge whose segment covers its ghost line) the ghost is dropped and the
+ *    status goes back to 'existing' (`healGhosts`). So 16 → 18 → 16 or a nudge back and forth leaves nothing behind.
+ *  - `restoreGhost` ("Ta tilbake"): a moved wall is moved back with the same cascades and then gets the ghost's exact
+ *    geometry; a moved opening gets the ghost's host / offset / size; a deleted (removed in place) wall or opening
+ *    becomes existing again (with the openings removed by the delete); a block-edge ghost moves its edge back.
+ *
+ * Wall move / endpoint drag (§3.5). Supports of an endpoint P: block edges and vertices containing P (1 cm), floor-zone
+ * edges of the wall's storey, stored walls of the storey whose INTERIOR contains P, and — where the plan is silent —
+ * coincident walls that reach a storey the moved wall does not (a lower partition never drags a wall that runs on
+ * through the loft). P with a non-parallel support (> 5°) is anchored: it slides along the support line (the support
+ * with the least clamping wins, ties: the most perpendicular), clamped to the support's extent; coincident walls are
+ * not stretched. A free node (no support) moves as a node: every coincident wall keeps its direction and ends on the
+ * moved line; the moved wall ends at the outermost of those points, so with several coincident walls of different
+ * directions the others meet it as T-junctions instead of the node falling apart (parallel coincident walls follow
+ * the node; without non-parallel ones the node moves with the wall). A wall attached at both ends therefore cannot
+ * slide along itself. Walls ending on the moved wall's interior (T-junctions, non-parallel) are trimmed / extended
+ * along their own direction. Openings on the moved wall keep their offset; openings on stretched walls keep their
+ * plan position (re-offset, clamped to the wall when they fit). Endpoint drags: an anchored end slides along its
+ * support to the projection of the pointer; a free end goes to the pointer and the coincident walls' ends go with it
+ * (the plan's "keeping its direction" cannot reach the pointer, so the node simply moves); openings on the dragged
+ * wall keep their plan position. Known gap: a wall continued in line by a wall of another storey (w-106-korr /
+ * lw-106-top at the loft landing) leaves that continuation behind.
+ *
+ * Block edits (§3.4, §3.5). Edges move along their outward normal. Gable / mono blocks keep their shape: a corner
+ * drag moves both adjacent edges (each by the pointer's component along its normal); only flat-roof blocks get free
+ * vertex drags. Every junction (DerivedBlock.junctions) carries the partner block's coincident edge along by the same
+ * vector (and so on through the partner's junctions on that edge). New polygons are validated (area ≥ 0.25 m², not
+ * self-intersecting, same orientation); a move that breaks one is scaled back to the largest valid fraction. Then,
+ * generically for every changed edge: openings keep their plan position (projected on the new edge, clamped); stored
+ * walls collinear with a moved edge (both ends within 1 cm of the old segment) are carried along (with their
+ * openings); walls with one end on a moved edge are extended / trimmed along their own direction; floor-zone
+ * vertices on the block's old vertices / moved edges follow (the lower floor and the loft keep reaching the wall).
+ * Decks do not follow block edits: derive trims them by the buildings, so a deck under a grown block loses that part.
+ * `moveBlock` (whole block) translates polygon, parts, zones, stored walls with both ends on / inside the axis
+ * polygon (with their openings), room anchors, furniture and structure inside it; it is refused for a block with
+ * existing area (like `deleteBlock`): today's cabin is changed through its walls and edges instead.
+ *
+ * Openings: a drag is clamped to its piece range [s0, s1] of the derived wall (end-touch allowed, a part / zone /
+ * junction split is not crossed); re-hosting keeps the swing in world terms (hinge jamb and opening side, rotated
+ * with the host when the new host is not parallel); `levelId` is recomputed at the new place (0.2 m inside the host,
+ * the first 'replace' zone, else the block level; walls: their level) unless it was set to something other than the
+ * old default. Existing openings that move or are resized become new with a ghost.
+ *
+ * Deck: vertex / edge / whole-deck moves (min area 0.5 m², no self-intersection), insert (steps beyond the new vertex
+ * move to the new edge), delete (min 3 vertices; steps of both merged edges are re-hosted on the merged edge by their
+ * plan position). Steps on changed edges keep their plan position (clamped).
+ *
+ * Units (§3.5): `applyPlaceUnit` — new block (isNew, `template`, level 'main', no parts / zones / junctions, nanoid
+ * vertex ids, `templateFrontEdgeId` = the front edge), one room (anchor = centroid), the Vedskjul's full-height
+ * frameless opening on the front (0.1 m posts at the corners), else a door on the deck-facing side (the front when it
+ * faces the deck or nothing better does; a side whose outside probe 0.6 m out lies on a deck piece and in no block).
+ *
+ * Rooms (§3.5): `reconcileRooms(baseDerived, next, nextDerived)` — each Room stays with a face of its storey that
+ * overlaps its previous inner polygon (unchanged faces are kept without clipping): one Room per face, as many Rooms
+ * kept as possible, then the largest total overlap (so a wall dragged past the middle of the room beside it moves the
+ * boundary, it never swaps or merges the two rooms); its anchor moves to the face's label point only when it is no
+ * longer inside that face; two Rooms in one face (fewer faces than Rooms, e.g. a deleted wall) → the one with the
+ * larger previous area stays, the other is deleted (reported as a merge); a split face → the larger overlap keeps the
+ * Room, the other piece is unnamed ("Gi navn" → `nameFace`). `reviveRooms` brings back deleted Room records whose anchor
+ * lies in an unnamed face (used by "Ta tilbake" with the records found in the undo history).
+ */
+import { nanoid } from 'nanoid';
+import { nb } from '../i18n/nb';
+import type { DerivedRoom, DerivedVariant, DerivedWall } from '../model/derived';
+import type {
+  Block,
+  Deck,
+  DeckSteps,
+  FloorMaterial,
+  FurnitureItem,
+  Id,
+  Opening,
+  OpeningHost,
+  OpeningType,
+  Room,
+  RoomType,
+  StructureElement,
+  Variant,
+  VariantGhost,
+  Vec2,
+  Wall,
+  WallKind,
+} from '../model/types';
+import { furnitureSizeFallback } from '../model/migrate';
+import { cardinalOf, quarterTurns, unitFootprint, unitTemplate } from '../model/unitTemplates';
+import {
+  area,
+  bbox,
+  centroid,
+  distancePointSegment,
+  intersectPolygons,
+  isSelfIntersecting,
+  labelPoint,
+  lineIntersection,
+  pointInPolygon,
+  projectPointOnSegment,
+  signedArea,
+  withClipFallback,
+} from './polygon';
+
+// ---------------------------------------------------------------------------
+// Constants and small helpers
+// ---------------------------------------------------------------------------
+
+/** Points closer than this (m) coincide (wall ends, supports, edges). */
+export const COINCIDE = 0.01;
+/** Geometry closer than this (m) is "the same" (healing ghosts). */
+const SAME = 0.001;
+/** Shortest wall (m) the editor creates. */
+export const MIN_WALL_LENGTH = 0.05;
+/** Smallest block area (m²) an edge / vertex move may leave. */
+const MIN_BLOCK_AREA = 0.25;
+/** Smallest deck area (m²). */
+const MIN_DECK_AREA = 0.5;
+/** Supports within this angle (sin) of the wall direction are parallel (not anchoring). */
+const SUPPORT_PARALLEL_SIN = Math.sin((5 * Math.PI) / 180);
+const PARALLEL_SIN = Math.sin((0.5 * Math.PI) / 180);
+/** Probe distance (m) inside a host for an opening's default level (walls.ts SILL_PROBE). */
+const SILL_PROBE = 0.2;
+/** Probe distance (m) outside a unit's edge for the deck-facing side. */
+const DECK_PROBE = 0.6;
+const TINY = 1e-9;
+
+export const GHOST_SUFFIX = '/ghost';
+export const ghostIdOf = (id: Id): Id => `${id}${GHOST_SUFFIX}`;
+/** The live element's id of a `${id}/ghost` id, else null. */
+export function originalIdOf(ghostId: Id): Id | null {
+  return ghostId.endsWith(GHOST_SUFFIX) ? ghostId.slice(0, -GHOST_SUFFIX.length) : null;
+}
+
+const sub = (a: Vec2, b: Vec2): Vec2 => [a[0] - b[0], a[1] - b[1]];
+const add = (a: Vec2, b: Vec2): Vec2 => [a[0] + b[0], a[1] + b[1]];
+const scale = (a: Vec2, k: number): Vec2 => [a[0] * k, a[1] * k];
+const dot = (a: Vec2, b: Vec2): number => a[0] * b[0] + a[1] * b[1];
+const cross = (a: Vec2, b: Vec2): number => a[0] * b[1] - a[1] * b[0];
+const len = (a: Vec2): number => Math.hypot(a[0], a[1]);
+const dist = (a: Vec2, b: Vec2): number => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const unit = (a: Vec2): Vec2 => {
+  const l = len(a);
+  return l < TINY ? [1, 0] : [a[0] / l, a[1] / l];
+};
+const leftNormal = (u: Vec2): Vec2 => [-u[1], u[0]];
+/** Coordinates rounded to the nanometre (kills float noise such as 0.29999999999999993 in stored data). */
+const clean = (v: number): number => {
+  const r = Math.round(v * 1e9) / 1e9;
+  return r === 0 ? 0 : r;
+};
+const copy = (p: Vec2): Vec2 => [clean(p[0]), clean(p[1])];
+/** a + b, cleaned (stored coordinates). */
+const addc = (a: Vec2, b: Vec2): Vec2 => copy(add(a, b));
+const sinAngle = (u: Vec2, v: Vec2): number => Math.abs(cross(unit(u), unit(v)));
+const isParallel = (u: Vec2, v: Vec2, sin = PARALLEL_SIN): boolean => sinAngle(u, v) <= sin;
+const samePoint = (a: Vec2, b: Vec2, tol = SAME): boolean => dist(a, b) <= tol;
+/** Plain deep copy of a (possibly draft) JSON value. */
+const plain = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+/** Distance from p to the infinite line through a, b. */
+const lineDistance = (p: Vec2, a: Vec2, b: Vec2): number => {
+  const d = sub(b, a);
+  const l = len(d);
+  return l < TINY ? dist(p, a) : Math.abs(cross(d, sub(p, a))) / l;
+};
+const newId = (prefix: string): Id => `${prefix}-${nanoid(8)}`;
+
+/** Extra fields of the edit context. */
+export interface EditContext {
+  /** The variant before the edit (read-only). Drags: the pointer-down base. */
+  base: Variant;
+  /** deriveVariant(base, …). */
+  derived: DerivedVariant;
+}
+
+// ---------------------------------------------------------------------------
+// Lock
+// ---------------------------------------------------------------------------
+
+/** docs/phase2-plan.md §1.1: the bundled Forslag D is the immutable base proposal; nothing else is locked. */
+export function isLocked(variant: Pick<Variant, 'locked'> | null | undefined): boolean {
+  return variant?.locked === true;
+}
+
+// ---------------------------------------------------------------------------
+// Lookups
+// ---------------------------------------------------------------------------
+
+function storeyOfLevel(v: Variant, levelId: Id): Id | undefined {
+  return v.levels.find((l) => l.id === levelId)?.storeyId;
+}
+
+/** Storeys a stored wall takes part in (derived storeyIds, else the storey of its level). */
+function wallStoreys(ctx: EditContext, wall: Wall): Id[] {
+  const dw = ctx.derived.walls.find((w) => w.source.kind === 'wall' && w.source.wallId === wall.id);
+  if (dw && dw.storeyIds.length > 0) return dw.storeyIds;
+  const s = storeyOfLevel(ctx.base, wall.levelId);
+  return s ? [s] : [];
+}
+
+const shareStorey = (a: readonly Id[], b: readonly Id[]): boolean => a.some((x) => b.includes(x));
+
+/** Stored, non-removed walls of the base that share a storey with `storeys` (except `except`). */
+function liveWalls(ctx: EditContext, storeys: readonly Id[] | null, except: ReadonlySet<Id> = new Set()): Wall[] {
+  return ctx.base.walls.filter((w) => w.status !== 'removed' && !except.has(w.id) && (storeys === null || shareStorey(wallStoreys(ctx, w), storeys)));
+}
+
+function blockEdgeGeom(block: Block, i: number): { a: Vec2; b: Vec2 } {
+  const n = block.polygon.length;
+  return { a: block.polygon[i].p, b: block.polygon[(i + 1) % n].p };
+}
+
+/** Outward unit normal of edge i of a polygon (any orientation). */
+function outwardNormal(points: Vec2[], i: number): Vec2 {
+  const a = points[i];
+  const b = points[(i + 1) % points.length];
+  const u = unit(sub(b, a));
+  const ccw = signedArea(points) >= 0;
+  return ccw ? [u[1], -u[0]] : [-u[1], u[0]];
+}
+
+/** Host line of an opening host in the given variant: start, end, length. Null when the host is unknown. */
+export function hostLine(v: Variant, host: OpeningHost): { a: Vec2; b: Vec2; length: number; block?: Block; wall?: Wall } | null {
+  if (host.kind === 'wall') {
+    const wall = v.walls.find((w) => w.id === host.wallId);
+    return wall ? { a: wall.a, b: wall.b, length: dist(wall.a, wall.b), wall } : null;
+  }
+  const block = v.blocks.find((b) => b.id === host.blockId);
+  if (!block) return null;
+  const i = block.polygon.findIndex((x) => x.id === host.edgeId);
+  if (i < 0) return null;
+  const { a, b } = blockEdgeGeom(block, i);
+  return { a, b, length: dist(a, b), block };
+}
+
+const sameHost = (h1: OpeningHost, h2: OpeningHost): boolean =>
+  h1.kind === 'wall' ? h2.kind === 'wall' && h2.wallId === h1.wallId : h2.kind === 'blockEdge' && h2.blockId === h1.blockId && h2.edgeId === h1.edgeId;
+
+const pointAlong = (a: Vec2, b: Vec2, s: number): Vec2 => add(a, scale(unit(sub(b, a)), s));
+const along = (a: Vec2, b: Vec2, p: Vec2): number => dot(sub(p, a), unit(sub(b, a)));
+
+/** Offset clamped so an opening of width w fits in [lo, hi] (end-touch allowed); the middle when it does not fit. */
+function clampOffset(offset: number, width: number, lo: number, hi: number): number {
+  if (hi - lo < width) return (lo + hi) / 2;
+  return Math.min(hi - width / 2, Math.max(lo + width / 2, offset));
+}
+
+// ---------------------------------------------------------------------------
+// Status bookkeeping and ghosts
+// ---------------------------------------------------------------------------
+
+function pushOpeningGhost(draft: Variant, o: Opening, host: OpeningHost, offset: number): void {
+  const gid = ghostIdOf(o.id);
+  if (draft.openings.some((x) => x.id === gid)) return;
+  const ghost = plain(o);
+  ghost.id = gid;
+  ghost.status = 'removed';
+  ghost.host = plain(host);
+  ghost.offset = offset;
+  draft.openings.push(ghost);
+}
+
+/**
+ * Status bookkeeping (§3.4): an existing stored wall or opening becomes 'new' and leaves a 'removed' copy with its
+ * current geometry (`${id}/ghost`). Returns true when the element was existing. Idempotent.
+ */
+export function touchExisting(draft: Variant, id: Id): boolean {
+  const wall = draft.walls.find((w) => w.id === id);
+  if (wall) {
+    if (wall.status !== 'existing') return false;
+    const gid = ghostIdOf(id);
+    if (!draft.walls.some((w) => w.id === gid)) {
+      const ghost = plain(wall);
+      ghost.id = gid;
+      ghost.status = 'removed';
+      draft.walls.push(ghost);
+      // Demolition markers belong to the old wall.
+      for (const o of draft.openings) {
+        if (o.status === 'removed' && o.host.kind === 'wall' && o.host.wallId === id) o.host = { kind: 'wall', wallId: gid };
+      }
+    }
+    wall.status = 'new';
+    return true;
+  }
+  const o = draft.openings.find((x) => x.id === id);
+  if (o) {
+    if (o.status !== 'existing') return false;
+    pushOpeningGhost(draft, o, o.host, o.offset);
+    o.status = 'new';
+    return true;
+  }
+  return false;
+}
+
+/**
+ * A wall about to MOVE: touch it and its existing openings (they move with it); the openings' ghosts are hosted on
+ * the wall's ghost at their old plan position.
+ */
+function touchWallForMove(draft: Variant, wallId: Id): void {
+  const wall = draft.walls.find((w) => w.id === wallId);
+  if (!wall) return;
+  const a = copy(wall.a);
+  const b = copy(wall.b);
+  const moving = draft.openings.filter((o) => o.status === 'existing' && o.host.kind === 'wall' && o.host.wallId === wallId);
+  touchExisting(draft, wallId);
+  const ghostWall = draft.walls.find((w) => w.id === ghostIdOf(wallId));
+  for (const o of moving) {
+    const centre = pointAlong(a, b, o.offset);
+    touchExisting(draft, o.id);
+    const g = draft.openings.find((x) => x.id === ghostIdOf(o.id));
+    if (g && ghostWall) {
+      g.host = { kind: 'wall', wallId: ghostWall.id };
+      g.offset = along(ghostWall.a, ghostWall.b, centre);
+    }
+  }
+}
+
+function sameWallGeometry(w: Wall, g: Wall): boolean {
+  return (
+    samePoint(w.a, g.a) &&
+    samePoint(w.b, g.b) &&
+    Math.abs(w.thickness - g.thickness) <= SAME &&
+    w.kind === g.kind &&
+    w.levelId === g.levelId &&
+    (w.faceLeft ?? null) === (g.faceLeft ?? null) &&
+    (w.faceRight ?? null) === (g.faceRight ?? null)
+  );
+}
+
+function sameOpeningGeometry(o: Opening, g: Opening): boolean {
+  return (
+    sameHost(o.host, g.host) &&
+    Math.abs(o.offset - g.offset) <= SAME &&
+    o.type === g.type &&
+    Math.abs(o.width - g.width) <= SAME &&
+    Math.abs(o.height - g.height) <= SAME &&
+    Math.abs(o.sill - g.sill) <= SAME &&
+    (o.fullHeight ?? false) === (g.fullHeight ?? false) &&
+    (o.leaves ?? 1) === (g.leaves ?? 1)
+  );
+}
+
+const EDGE_GHOST = /^(.*)\/([^/]+)\/ghost(?:\/\d+)?$/;
+
+/** Block id and edge id of a `Variant.ghosts` id, or null. */
+export function parseEdgeGhostId(id: Id): { blockId: Id; edgeId: Id } | null {
+  const m = EDGE_GHOST.exec(id);
+  return m ? { blockId: m[1], edgeId: m[2] } : null;
+}
+
+/**
+ * Drop every ghost whose element is back on it (see the header): walls and openings get status 'existing' again,
+ * a block edge ghost covered by its edge disappears.
+ */
+export function healGhosts(draft: Variant): void {
+  for (const g of [...draft.walls]) {
+    const orig = g.status === 'removed' ? originalIdOf(g.id) : null;
+    if (orig === null) continue;
+    const live = draft.walls.find((w) => w.id === orig);
+    if (!live || live.status !== 'new' || !sameWallGeometry(live, g)) continue;
+    live.status = 'existing';
+    for (const o of draft.openings) {
+      if (o.host.kind === 'wall' && o.host.wallId === g.id) o.host = { kind: 'wall', wallId: orig };
+    }
+    draft.walls.splice(draft.walls.indexOf(g), 1);
+  }
+  for (const g of [...draft.openings]) {
+    const orig = g.status === 'removed' ? originalIdOf(g.id) : null;
+    if (orig === null) continue;
+    const live = draft.openings.find((o) => o.id === orig);
+    if (!live || live.status !== 'new' || !sameOpeningGeometry(live, g)) continue;
+    live.status = 'existing';
+    draft.openings.splice(draft.openings.indexOf(g), 1);
+  }
+  if (draft.ghosts && draft.ghosts.length > 0) {
+    draft.ghosts = draft.ghosts.filter((g) => {
+      const ref = parseEdgeGhostId(g.id);
+      if (!ref) return true;
+      const block = draft.blocks.find((b) => b.id === ref.blockId);
+      const i = block ? block.polygon.findIndex((v) => v.id === ref.edgeId) : -1;
+      if (!block || i < 0) return true;
+      const { a, b } = blockEdgeGeom(block, i);
+      return !(distancePointSegment(g.a, a, b) <= SAME && distancePointSegment(g.b, a, b) <= SAME);
+    });
+    if (draft.ghosts.length === 0) delete draft.ghosts;
+  }
+}
+
+/** Ranges [s0, s1] (merged) of the existing derived exterior pieces of a block edge, in the base. */
+function existingEdgeRanges(ctx: EditContext, blockId: Id, edgeId: Id): [number, number][] {
+  const ranges: [number, number][] = [];
+  for (const w of ctx.derived.walls) {
+    if (w.source.kind !== 'blockEdge' || w.source.blockId !== blockId || w.source.edgeId !== edgeId) continue;
+    if (w.isNew || w.isGhost) continue;
+    ranges.push([w.source.s0, w.source.s1]);
+  }
+  ranges.sort((p, q) => p[0] - q[0]);
+  const merged: [number, number][] = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r[0] <= last[1] + SAME) last[1] = Math.max(last[1], r[1]);
+    else merged.push([r[0], r[1]]);
+  }
+  return merged;
+}
+
+/** Record the old line of a block edge's existing pieces as `Variant.ghosts` (once per id). */
+function addEdgeGhosts(draft: Variant, ctx: EditContext, blockId: Id, edgeId: Id, a: Vec2, b: Vec2): void {
+  const ranges = existingEdgeRanges(ctx, blockId, edgeId);
+  ranges.forEach(([s0, s1], k) => {
+    const id = k === 0 ? `${blockId}/${edgeId}${GHOST_SUFFIX}` : `${blockId}/${edgeId}${GHOST_SUFFIX}/${k + 1}`;
+    const ghosts = (draft.ghosts ??= []);
+    if (ghosts.some((g) => g.id === id)) return;
+    const ghost: VariantGhost = { id, a: pointAlong(a, b, s0), b: pointAlong(a, b, s1) };
+    ghosts.push(ghost);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Openings: positions, defaults, levels, swing
+// ---------------------------------------------------------------------------
+
+/** Keep the plan position of the openings on a stored wall whose line changed from (oldA, oldB). */
+function keepWallOpenings(draft: Variant, wallId: Id, oldA: Vec2, oldB: Vec2): void {
+  const wall = draft.walls.find((w) => w.id === wallId);
+  if (!wall) return;
+  const L = dist(wall.a, wall.b);
+  for (const o of draft.openings) {
+    if (o.host.kind !== 'wall' || o.host.wallId !== wallId) continue;
+    const centre = pointAlong(oldA, oldB, o.offset);
+    o.offset = clampOffset(along(wall.a, wall.b, centre), o.width, 0, L);
+  }
+}
+
+/** Keep the plan position of the openings on block edge `edgeId` whose segment changed from (oldA, oldB). */
+function keepEdgeOpenings(draft: Variant, blockId: Id, edgeId: Id, oldA: Vec2, oldB: Vec2, newA: Vec2, newB: Vec2): void {
+  const L = dist(newA, newB);
+  for (const o of draft.openings) {
+    if (o.host.kind !== 'blockEdge' || o.host.blockId !== blockId || o.host.edgeId !== edgeId) continue;
+    const centre = pointAlong(oldA, oldB, o.offset);
+    o.offset = clampOffset(along(newA, newB, centre), o.width, 0, L);
+  }
+}
+
+export interface OpeningDefaults {
+  width: number;
+  height: number;
+  sill: number;
+  swing?: NonNullable<Opening['swing']>;
+  style: Opening['style'];
+}
+
+/** Default size / sill / swing / style of a new opening by type. */
+export function openingDefaults(type: OpeningType): OpeningDefaults {
+  switch (type) {
+    case 'window':
+      return { width: 1.1, height: 1.2, sill: 0.8, style: { frameColour: 'white', mullions: [2, 2] } };
+    case 'door':
+      return { width: 0.9, height: 2.0, sill: 0, swing: { hinge: 'start', side: 'left' }, style: { frameColour: 'white' } };
+    case 'glassDoor':
+      return { width: 0.9, height: 2.05, sill: 0, swing: { hinge: 'start', side: 'left' }, style: { frameColour: 'white' } };
+    case 'slidingDoor':
+      return { width: 1.8, height: 2.05, sill: 0, style: { frameColour: 'white' } };
+    case 'saunaDoor':
+      return { width: 0.7, height: 1.9, sill: 0, swing: { hinge: 'start', side: 'right' }, style: { frameColour: 'wood' } };
+    case 'opening':
+      return { width: 0.9, height: 2.1, sill: 0, style: { frameColour: 'white' } };
+  }
+}
+
+const SWINGING: ReadonlySet<OpeningType> = new Set<OpeningType>(['door', 'glassDoor', 'saunaDoor']);
+
+/**
+ * Default level of an opening's sill at a host position (walls.ts rule): block edge → the first 'replace' zone of the
+ * block containing the point 0.2 m inside the edge at the centre, else the block level; stored wall → its level.
+ */
+export function defaultOpeningLevel(v: Variant, host: OpeningHost, offset: number): Id | null {
+  if (host.kind === 'wall') return v.walls.find((w) => w.id === host.wallId)?.levelId ?? null;
+  const block = v.blocks.find((b) => b.id === host.blockId);
+  if (!block) return null;
+  const i = block.polygon.findIndex((x) => x.id === host.edgeId);
+  if (i < 0) return block.levelId;
+  const { a, b } = blockEdgeGeom(block, i);
+  const n = outwardNormal(block.polygon.map((x) => x.p), i);
+  const probe = add(pointAlong(a, b, offset), scale(n, -SILL_PROBE));
+  const zone = block.floorZones.find((z) => z.kind === 'replace' && z.polygon.length >= 3 && pointInPolygon(probe, z.polygon));
+  return zone ? zone.levelId : block.levelId;
+}
+
+const rotate = (v: Vec2, theta: number): Vec2 => [v[0] * Math.cos(theta) - v[1] * Math.sin(theta), v[0] * Math.sin(theta) + v[1] * Math.cos(theta)];
+
+/**
+ * Swing on a new host direction `u2` keeping it in world terms (hinge jamb direction and opening side as plan
+ * vectors). When the hosts are far from parallel, the world vectors are first turned with the host.
+ */
+export function swingOnNewHost(swing: NonNullable<Opening['swing']>, u1: Vec2, u2: Vec2): NonNullable<Opening['swing']> {
+  const a = unit(u1);
+  const b = unit(u2);
+  let hingeDir = swing.hinge === 'start' ? scale(a, -1) : a;
+  let sideN = swing.side === 'left' ? leftNormal(a) : scale(leftNormal(a), -1);
+  if (Math.abs(dot(a, b)) < 0.5) {
+    const theta = Math.atan2(cross(a, b), dot(a, b));
+    hingeDir = rotate(hingeDir, theta);
+    sideN = rotate(sideN, theta);
+  }
+  return { hinge: dot(hingeDir, b) >= 0 ? 'end' : 'start', side: dot(sideN, leftNormal(b)) >= 0 ? 'left' : 'right' };
+}
+
+/** Range [s0, s1] along the stored host of the derived piece containing `offset` (block edges), else the host. */
+export function pieceRange(ctx: EditContext, host: OpeningHost, offset: number): [number, number] | null {
+  const line = hostLine(ctx.base, host);
+  if (!line) return null;
+  if (host.kind === 'wall') return [0, line.length];
+  const pieces = ctx.derived.walls.filter(
+    (w) => !w.isGhost && w.source.kind === 'blockEdge' && w.source.blockId === host.blockId && w.source.edgeId === host.edgeId,
+  );
+  let best: [number, number] | null = null;
+  let bestGap = Infinity;
+  for (const w of pieces) {
+    if (w.source.kind !== 'blockEdge') continue;
+    const gap = Math.max(w.source.s0 - offset, offset - w.source.s1, 0);
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = [w.source.s0, w.source.s1];
+    }
+  }
+  return best ?? [0, line.length];
+}
+
+// ---------------------------------------------------------------------------
+// Walls
+// ---------------------------------------------------------------------------
+
+interface Support {
+  a: Vec2;
+  b: Vec2;
+}
+
+/** Supports of a wall endpoint (see the header). */
+function supportsAt(ctx: EditContext, p: Vec2, storeys: readonly Id[], except: ReadonlySet<Id>): Support[] {
+  const out: Support[] = [];
+  const storeySet = new Set(storeys);
+  for (const block of ctx.base.blocks) {
+    const n = block.polygon.length;
+    for (let i = 0; i < n; i++) {
+      const { a, b } = blockEdgeGeom(block, i);
+      if (distancePointSegment(p, a, b) <= COINCIDE) out.push({ a, b });
+    }
+    const baseStorey = storeyOfLevel(ctx.base, block.levelId);
+    for (const z of block.floorZones) {
+      const zs = storeyOfLevel(ctx.base, z.levelId);
+      const relevant = (zs !== undefined && storeySet.has(zs)) || (z.kind === 'replace' && baseStorey !== undefined && storeySet.has(baseStorey));
+      if (!relevant) continue;
+      for (let i = 0; i < z.polygon.length; i++) {
+        const a = z.polygon[i];
+        const b = z.polygon[(i + 1) % z.polygon.length];
+        if (distancePointSegment(p, a, b) <= COINCIDE) out.push({ a, b });
+      }
+    }
+  }
+  for (const w of liveWalls(ctx, storeys, except)) {
+    if (dist(p, w.a) <= COINCIDE || dist(p, w.b) <= COINCIDE) continue;
+    if (distancePointSegment(p, w.a, w.b) <= COINCIDE) out.push({ a: w.a, b: w.b });
+  }
+  return out;
+}
+
+/**
+ * Supports and followers of a wall end: supports as `supportsAt`, plus the coincident walls that reach a storey the
+ * wall does not (a partition must not drag a wall that runs on through the loft); the other coincident walls follow.
+ */
+function endClass(ctx: EditContext, wall: Wall, p: Vec2, except: ReadonlySet<Id>): { supports: Support[]; followers: { wall: Wall; end: 'a' | 'b' }[] } {
+  const storeys = wallStoreys(ctx, wall);
+  const supports = supportsAt(ctx, p, storeys, except);
+  const followers: { wall: Wall; end: 'a' | 'b' }[] = [];
+  for (const c of coincidentAt(ctx, p, storeys, except)) {
+    if (wallStoreys(ctx, c.wall).some((s) => !storeys.includes(s))) supports.push({ a: c.wall.a, b: c.wall.b });
+    else followers.push(c);
+  }
+  return { supports, followers };
+}
+
+/** Walls of the storeys with an end within 1 cm of p: { wall, end }. */
+function coincidentAt(ctx: EditContext, p: Vec2, storeys: readonly Id[], except: ReadonlySet<Id>): { wall: Wall; end: 'a' | 'b' }[] {
+  const out: { wall: Wall; end: 'a' | 'b' }[] = [];
+  for (const w of liveWalls(ctx, storeys, except)) {
+    if (dist(p, w.a) <= COINCIDE) out.push({ wall: w, end: 'a' });
+    else if (dist(p, w.b) <= COINCIDE) out.push({ wall: w, end: 'b' });
+  }
+  return out;
+}
+
+/** Anchored endpoint on the moved line (origin o, direction d): the best non-parallel support, or null when free. */
+function anchorOnLine(supports: Support[], o: Vec2, d: Vec2): Vec2 | null {
+  let best: { p: Vec2; err: number; sin: number } | null = null;
+  for (const s of supports) {
+    const sd = sub(s.b, s.a);
+    const sin = sinAngle(d, sd);
+    if (sin <= SUPPORT_PARALLEL_SIN) continue;
+    const x = lineIntersection(o, d, s.a, sd);
+    if (!x) continue;
+    const c = projectPointOnSegment(x, s.a, s.b).point;
+    const err = dist(x, c);
+    if (!best || err < best.err - 1e-9 || (Math.abs(err - best.err) <= 1e-9 && sin > best.sin)) best = { p: c, err, sin };
+  }
+  return best ? best.p : null;
+}
+
+/** Anchored endpoint for an endpoint drag: the pointer projected on the best non-parallel support, or null when free. */
+function anchorToward(supports: Support[], wallDir: Vec2, pointer: Vec2): Vec2 | null {
+  let best: { p: Vec2; d: number } | null = null;
+  for (const s of supports) {
+    if (sinAngle(wallDir, sub(s.b, s.a)) <= SUPPORT_PARALLEL_SIN) continue;
+    const c = projectPointOnSegment(pointer, s.a, s.b).point;
+    const d = dist(c, pointer);
+    if (!best || d < best.d) best = { p: c, d };
+  }
+  return best ? best.p : null;
+}
+
+interface WallChange {
+  a?: Vec2;
+  b?: Vec2;
+}
+
+/** Apply endpoint changes of other walls (touch, set, keep their openings' plan positions). */
+function applyWallChanges(draft: Variant, ctx: EditContext, changes: Map<Id, WallChange>): void {
+  for (const [id, ch] of changes) {
+    const w0 = ctx.base.walls.find((w) => w.id === id);
+    const w = draft.walls.find((x) => x.id === id);
+    if (!w0 || !w) continue;
+    const a = ch.a ?? w0.a;
+    const b = ch.b ?? w0.b;
+    if (samePoint(a, w0.a, TINY) && samePoint(b, w0.b, TINY)) continue;
+    if (dist(a, b) < MIN_WALL_LENGTH) continue;
+    touchExisting(draft, id);
+    w.a = copy(a);
+    w.b = copy(b);
+    keepWallOpenings(draft, id, w0.a, w0.b);
+  }
+}
+
+/** T-junction walls ending on the interior of segment (a, b): their end follows the new line (na, nb). */
+function tJunctionChanges(ctx: EditContext, a: Vec2, b: Vec2, na: Vec2, nb: Vec2, storeys: readonly Id[], except: ReadonlySet<Id>, changes: Map<Id, WallChange>): void {
+  const dNew = sub(nb, na);
+  for (const t of liveWalls(ctx, storeys, except)) {
+    for (const end of ['a', 'b'] as const) {
+      const e = t[end];
+      if (dist(e, a) <= COINCIDE || dist(e, b) <= COINCIDE) continue;
+      if (distancePointSegment(e, a, b) > COINCIDE) continue;
+      const other = end === 'a' ? t.b : t.a;
+      const td = sub(e, other);
+      if (isParallel(td, sub(b, a), SUPPORT_PARALLEL_SIN)) continue;
+      const x = lineIntersection(other, td, na, dNew);
+      if (!x) continue;
+      const ch = changes.get(t.id) ?? {};
+      ch[end] = x;
+      changes.set(t.id, ch);
+    }
+  }
+}
+
+/** Both ends of a stored wall are free (no support, no coincident wall): a drag may move it in any direction. */
+export function wallEndsFree(ctx: EditContext, wallId: Id): boolean {
+  const w = ctx.base.walls.find((x) => x.id === wallId);
+  if (!w) return false;
+  const storeys = wallStoreys(ctx, w);
+  const self = new Set([wallId]);
+  return (['a', 'b'] as const).every((end) => supportsAt(ctx, w[end], storeys, self).length === 0 && coincidentAt(ctx, w[end], storeys, self).length === 0);
+}
+
+/** Move a stored wall by `delta` with its cascades (header: "Wall move"). False when nothing changed. */
+export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delta: Vec2): boolean {
+  const w0 = ctx.base.walls.find((w) => w.id === wallId);
+  if (!w0 || w0.status === 'removed' || len(delta) < TINY) return false;
+  const storeys = wallStoreys(ctx, w0);
+  const self = new Set([wallId]);
+  const dir = sub(w0.b, w0.a);
+  const o = addc(w0.a, delta);
+  const changes = new Map<Id, WallChange>();
+  const ends: Record<'a' | 'b', Vec2> = { a: addc(w0.a, delta), b: addc(w0.b, delta) };
+  for (const end of ['a', 'b'] as const) {
+    const p = w0[end];
+    const { supports, followers } = endClass(ctx, w0, p, self);
+    const anchored = anchorOnLine(supports, o, dir);
+    if (anchored) {
+      ends[end] = copy(anchored);
+      continue;
+    }
+    // A free node: every non-parallel follower keeps its direction and ends on the moved line; the moved wall ends
+    // at the outermost of those points, so the others meet it as T-junctions and the node never falls apart.
+    const outward = unit(sub(p, end === 'a' ? w0.b : w0.a));
+    const xs = followers.map((c) => {
+      const other = c.end === 'a' ? c.wall.b : c.wall.a;
+      return isParallel(sub(c.wall.b, c.wall.a), dir) ? null : lineIntersection(other, sub(p, other), o, dir);
+    });
+    let node = addc(p, delta);
+    let best = -Infinity;
+    for (const x of xs) {
+      if (!x) continue;
+      const s = dot(sub(x, o), outward);
+      if (s > best) {
+        best = s;
+        node = copy(x);
+      }
+    }
+    ends[end] = node;
+    followers.forEach((c, i) => {
+      const ch = changes.get(c.wall.id) ?? {};
+      ch[c.end] = copy(xs[i] ?? node);
+      changes.set(c.wall.id, ch);
+    });
+  }
+  if (dist(ends.a, ends.b) < MIN_WALL_LENGTH) return false;
+  if (samePoint(ends.a, w0.a, TINY) && samePoint(ends.b, w0.b, TINY)) return false;
+  tJunctionChanges(ctx, w0.a, w0.b, ends.a, ends.b, storeys, new Set([wallId, ...changes.keys()]), changes);
+  touchWallForMove(draft, wallId);
+  const w = draft.walls.find((x) => x.id === wallId);
+  if (!w) return false;
+  w.a = copy(ends.a);
+  w.b = copy(ends.b);
+  applyWallChanges(draft, ctx, changes);
+  return true;
+}
+
+/** Drag one end of a stored wall to p (header: "Endpoint drags"). */
+export function applyMoveWallEndpoint(draft: Variant, ctx: EditContext, wallId: Id, end: 'a' | 'b', p: Vec2): boolean {
+  const w0 = ctx.base.walls.find((w) => w.id === wallId);
+  if (!w0 || w0.status === 'removed') return false;
+  const storeys = wallStoreys(ctx, w0);
+  const self = new Set([wallId]);
+  const P = w0[end];
+  const F = end === 'a' ? w0.b : w0.a;
+  const changes = new Map<Id, WallChange>();
+  const { supports, followers } = endClass(ctx, w0, P, self);
+  const anchored = anchorToward(supports, sub(P, F), p);
+  const target = copy(anchored ?? p);
+  if (!anchored) {
+    for (const c of followers) {
+      const ch = changes.get(c.wall.id) ?? {};
+      ch[c.end] = target;
+      changes.set(c.wall.id, ch);
+    }
+  }
+  if (dist(target, F) < MIN_WALL_LENGTH || samePoint(target, P, TINY)) return false;
+  const na = end === 'a' ? target : w0.a;
+  const nb = end === 'b' ? target : w0.b;
+  tJunctionChanges(ctx, w0.a, w0.b, na, nb, storeys, new Set([wallId, ...changes.keys()]), changes);
+  touchExisting(draft, wallId);
+  const w = draft.walls.find((x) => x.id === wallId);
+  if (!w) return false;
+  w.a = copy(na);
+  w.b = copy(nb);
+  keepWallOpenings(draft, wallId, w0.a, w0.b);
+  applyWallChanges(draft, ctx, changes);
+  return true;
+}
+
+/** A new stored wall (status new, the variant's interior thickness, 'auto' height). Null when shorter than 5 cm. */
+export function applyAddWall(draft: Variant, a: Vec2, b: Vec2, levelId: Id, opts: { thickness?: number; kind?: WallKind; id?: Id } = {}): Id | null {
+  if (dist(a, b) < MIN_WALL_LENGTH) return null;
+  const kind = opts.kind ?? 'interior';
+  const id = opts.id ?? newId('w');
+  draft.walls.push({
+    id,
+    a: copy(a),
+    b: copy(b),
+    thickness: kind === 'divider' ? 0 : (opts.thickness ?? draft.settings.defaultInteriorThickness),
+    levelId,
+    status: 'new',
+    kind,
+    heightMode: 'auto',
+  });
+  return id;
+}
+
+/**
+ * Split a stored wall at t ∈ (0, 1) along a→b: the first half keeps the id, the second gets a new one (same
+ * properties and status — splitting changes nothing built); openings are re-hosted by their centre.
+ */
+export function applySplitWall(draft: Variant, wallId: Id, t: number, opts: { id?: Id } = {}): Id | null {
+  const w = draft.walls.find((x) => x.id === wallId);
+  if (!w || w.status === 'removed') return null;
+  const L = dist(w.a, w.b);
+  const s = Math.min(L - MIN_WALL_LENGTH, Math.max(MIN_WALL_LENGTH, t * L));
+  if (L < 2 * MIN_WALL_LENGTH) return null;
+  const p = pointAlong(w.a, w.b, s);
+  const second = plain(w);
+  second.id = opts.id ?? newId('w');
+  second.a = copy(p);
+  draft.walls.push(second);
+  w.b = copy(p);
+  for (const o of draft.openings) {
+    if (o.host.kind !== 'wall' || o.host.wallId !== wallId || o.offset <= s) continue;
+    o.host = { kind: 'wall', wallId: second.id };
+    o.offset -= s;
+  }
+  return second.id;
+}
+
+/** Delete a stored wall (header: bookkeeping). False for an unknown or already removed wall. */
+export function applyDeleteWall(draft: Variant, wallId: Id): boolean {
+  const w = draft.walls.find((x) => x.id === wallId);
+  if (!w || w.status === 'removed') return false;
+  const onIt = (o: Opening) => o.host.kind === 'wall' && o.host.wallId === wallId;
+  if (w.status === 'existing') {
+    w.status = 'removed';
+    draft.openings = draft.openings.filter((o) => !(onIt(o) && o.status === 'new'));
+    for (const o of draft.openings) if (onIt(o) && o.status === 'existing') o.status = 'removed';
+    return true;
+  }
+  draft.walls.splice(draft.walls.indexOf(w), 1);
+  draft.openings = draft.openings.filter((o) => !onIt(o));
+  return true;
+}
+
+export interface WallPatch {
+  thickness?: number;
+  heightMode?: Wall['heightMode'];
+  height?: number;
+  kind?: WallKind;
+}
+
+/**
+ * Wall properties. A thickness or kind change of an existing wall is a rebuild (touch → new + ghost); heights are not.
+ * Turning a wall into a divider deletes its new openings (existing ones go with the ghost as removed).
+ */
+export function applySetWallProps(draft: Variant, wallId: Id, patch: WallPatch): boolean {
+  const w = draft.walls.find((x) => x.id === wallId);
+  if (!w || w.status === 'removed') return false;
+  const kindChange = patch.kind !== undefined && patch.kind !== w.kind;
+  const thicknessChange = patch.thickness !== undefined && Math.abs(patch.thickness - w.thickness) > TINY && (patch.kind ?? w.kind) !== 'divider';
+  let changed = false;
+  if (kindChange || thicknessChange) touchExisting(draft, wallId);
+  if (kindChange && patch.kind) {
+    const wasDivider = w.kind === 'divider';
+    w.kind = patch.kind;
+    changed = true;
+    if (patch.kind === 'divider') {
+      w.thickness = 0;
+      delete w.faceLeft;
+      delete w.faceRight;
+      const ghost = draft.walls.find((x) => x.id === ghostIdOf(wallId));
+      draft.openings = draft.openings.filter((o) => !(o.host.kind === 'wall' && o.host.wallId === wallId && o.status === 'new'));
+      for (const o of draft.openings) {
+        if (o.host.kind !== 'wall' || o.host.wallId !== wallId) continue;
+        if (ghost) o.host = { kind: 'wall', wallId: ghost.id };
+        o.status = 'removed';
+      }
+    } else if (wasDivider) {
+      w.thickness = patch.thickness ?? draft.settings.defaultInteriorThickness;
+    }
+  }
+  if (thicknessChange && patch.thickness !== undefined && w.kind !== 'divider') {
+    w.thickness = patch.thickness;
+    delete w.faceLeft;
+    delete w.faceRight;
+    changed = true;
+  }
+  if (patch.heightMode !== undefined && patch.heightMode !== w.heightMode) {
+    w.heightMode = patch.heightMode;
+    if (patch.heightMode === 'fixed' && w.height === undefined) w.height = patch.height ?? 2.4;
+    changed = true;
+  }
+  if (patch.height !== undefined && patch.height !== w.height) {
+    w.height = patch.height;
+    changed = true;
+  }
+  return changed || kindChange || thicknessChange;
+}
+
+// ---------------------------------------------------------------------------
+// Restore ("Ta tilbake")
+// ---------------------------------------------------------------------------
+
+export type GhostRef =
+  | { type: 'wall'; id: Id; original: Id | null }
+  | { type: 'opening'; id: Id; original: Id | null }
+  | { type: 'blockEdge'; id: Id; blockId: Id; edgeId: Id; a: Vec2; b: Vec2 };
+
+/** What a ghost id refers to in a variant (see restoreGhost), or null. */
+export function ghostRef(v: Variant, id: Id): GhostRef | null {
+  const w = v.walls.find((x) => x.id === id && x.status === 'removed');
+  if (w) return { type: 'wall', id, original: originalIdOf(id) };
+  const o = v.openings.find((x) => x.id === id && x.status === 'removed');
+  if (o) return { type: 'opening', id, original: originalIdOf(id) };
+  const g = v.ghosts?.find((x) => x.id === id);
+  const ref = g ? parseEdgeGhostId(g.id) : null;
+  if (g && ref) return { type: 'blockEdge', id, ...ref, a: g.a, b: g.b };
+  return null;
+}
+
+/** Restore a removed opening: a moved one gets the ghost's place and size back, a deleted one becomes existing. */
+function restoreOpeningIn(draft: Variant, id: Id): boolean {
+  const g = draft.openings.find((x) => x.id === id && x.status === 'removed');
+  if (!g) return false;
+  const orig = originalIdOf(id);
+  if (orig === null) {
+    g.status = 'existing';
+    return true;
+  }
+  const live = draft.openings.find((x) => x.id === orig);
+  if (live) {
+    const back = plain(g);
+    back.id = orig;
+    back.status = 'existing';
+    draft.openings[draft.openings.indexOf(live)] = back;
+    draft.openings.splice(draft.openings.indexOf(g), 1);
+  } else {
+    g.id = orig;
+    g.status = 'existing';
+  }
+  return true;
+}
+
+/**
+ * Restore a wall ghost in the draft (the "move back" cascade is applied by the caller first, see editActions): the
+ * live wall gets the ghost's exact geometry and status 'existing', the ghost is dropped and openings on it come back.
+ * A wall deleted in place becomes existing with the openings that the delete removed.
+ */
+export function applyRestoreWall(draft: Variant, id: Id): boolean {
+  const g = draft.walls.find((x) => x.id === id && x.status === 'removed');
+  if (!g) return false;
+  const orig = originalIdOf(id);
+  if (orig === null) {
+    g.status = 'existing';
+    for (const o of draft.openings) if (o.host.kind === 'wall' && o.host.wallId === id && o.status === 'removed' && originalIdOf(o.id) === null) o.status = 'existing';
+    return true;
+  }
+  const live = draft.walls.find((x) => x.id === orig);
+  if (live) {
+    const oldA = copy(live.a);
+    const oldB = copy(live.b);
+    const back = plain(g);
+    back.id = orig;
+    back.status = 'existing';
+    draft.walls[draft.walls.indexOf(live)] = back;
+    draft.walls.splice(draft.walls.indexOf(g), 1);
+    // Openings that stayed on the live wall keep their plan position on the restored line.
+    keepWallOpenings(draft, orig, oldA, oldB);
+  } else {
+    g.id = orig;
+    g.status = 'existing';
+  }
+  for (const o of [...draft.openings]) {
+    if (o.host.kind !== 'wall' || o.host.wallId !== id) continue;
+    o.host = { kind: 'wall', wallId: orig };
+    if (originalIdOf(o.id) !== null) restoreOpeningIn(draft, o.id);
+  }
+  return true;
+}
+
+/** Restore an opening ghost (see restoreOpeningIn). */
+export function applyRestoreOpening(draft: Variant, id: Id): boolean {
+  return restoreOpeningIn(draft, id);
+}
+
+// ---------------------------------------------------------------------------
+// Openings
+// ---------------------------------------------------------------------------
+
+/** Add an opening (status new, defaults by type, offset clamped into the piece). Null on a divider / unknown host. */
+export function applyAddOpening(
+  draft: Variant,
+  ctx: EditContext,
+  host: OpeningHost,
+  offset: number,
+  type: OpeningType,
+  opts: { id?: Id; width?: number; height?: number; sill?: number } = {},
+): Id | null {
+  const line = hostLine(ctx.base, host);
+  if (!line || line.wall?.kind === 'divider') return null;
+  const d = openingDefaults(type);
+  const width = opts.width ?? d.width;
+  const range = pieceRange(ctx, host, offset) ?? [0, line.length];
+  const o: Opening = {
+    id: opts.id ?? newId('op'),
+    type,
+    host: plain(host),
+    offset: clampOffset(offset, width, range[0], range[1]),
+    width,
+    height: opts.height ?? d.height,
+    sill: opts.sill ?? d.sill,
+    style: plain(d.style),
+    status: 'new',
+  };
+  if (d.swing) o.swing = { ...d.swing };
+  draft.openings.push(o);
+  return o.id;
+}
+
+/**
+ * Move an opening along its host (clamped to the piece containing its current centre) or onto another host (clamped
+ * to the piece containing the new offset), see the header for swing and level. False when nothing changed.
+ */
+export function applyMoveOpening(draft: Variant, ctx: EditContext, id: Id, offset: number, host?: OpeningHost): boolean {
+  const o0 = ctx.base.openings.find((o) => o.id === id);
+  if (!o0 || o0.status === 'removed') return false;
+  const target = host ?? o0.host;
+  const rehost = !sameHost(target, o0.host);
+  const line = hostLine(ctx.base, target);
+  if (!line || line.wall?.kind === 'divider' || line.wall?.status === 'removed') return false;
+  const range = pieceRange(ctx, target, rehost ? offset : o0.offset) ?? [0, line.length];
+  const clamped = clampOffset(offset, o0.width, range[0], range[1]);
+  if (!rehost && Math.abs(clamped - o0.offset) < 1e-6) return false;
+  touchExisting(draft, id);
+  const o = draft.openings.find((x) => x.id === id);
+  if (!o) return false;
+  o.offset = clamped;
+  if (rehost) {
+    const oldLine = hostLine(ctx.base, o0.host);
+    o.host = plain(target);
+    if (o0.swing && oldLine) o.swing = swingOnNewHost(o0.swing, sub(oldLine.b, oldLine.a), sub(line.b, line.a));
+    if (o0.levelId !== undefined) {
+      const oldDefault = defaultOpeningLevel(ctx.base, o0.host, o0.offset);
+      if (o0.levelId === oldDefault) {
+        const lvl = defaultOpeningLevel(ctx.base, target, clamped);
+        if (lvl) o.levelId = lvl;
+      }
+    }
+  }
+  return true;
+}
+
+export type OpeningPatch = Partial<Pick<Opening, 'type' | 'width' | 'height' | 'sill' | 'leaves' | 'swing' | 'style' | 'fullHeight' | 'levelId'>>;
+
+/** Opening properties: a type / size change of an existing opening touches it (new + ghost); swing / style do not. */
+export function applySetOpeningProps(draft: Variant, id: Id, patch: OpeningPatch): boolean {
+  const o = draft.openings.find((x) => x.id === id);
+  if (!o || o.status === 'removed') return false;
+  const sized = (['type', 'width', 'height', 'sill', 'leaves', 'fullHeight'] as const).some((k) => patch[k] !== undefined && patch[k] !== o[k]);
+  if (sized) touchExisting(draft, id);
+  if (patch.type !== undefined && patch.type !== o.type) {
+    const d = openingDefaults(patch.type);
+    if (patch.type === 'window') {
+      if (o.sill === 0) o.sill = d.sill;
+      if (!o.style.mullions) o.style.mullions = d.style.mullions ? [...d.style.mullions] : undefined;
+      delete o.swing;
+      delete o.leaves;
+    } else {
+      o.sill = 0;
+      delete o.style.mullions;
+      if (SWINGING.has(patch.type)) o.swing = o.swing ?? (d.swing ? { ...d.swing } : undefined);
+      else delete o.swing;
+      if (o.swing === undefined) delete o.swing;
+    }
+    o.type = patch.type;
+  }
+  if (patch.width !== undefined) o.width = patch.width;
+  if (patch.height !== undefined) o.height = patch.height;
+  if (patch.sill !== undefined) o.sill = patch.sill;
+  if (patch.leaves !== undefined) {
+    if (patch.leaves === 2) o.leaves = 2;
+    else delete o.leaves;
+  }
+  if (patch.fullHeight !== undefined) {
+    if (patch.fullHeight) o.fullHeight = true;
+    else delete o.fullHeight;
+  }
+  if (patch.swing !== undefined) o.swing = { ...patch.swing };
+  if (patch.style !== undefined) o.style = { ...o.style, ...plain(patch.style) };
+  if (patch.levelId !== undefined) o.levelId = patch.levelId;
+  if (o.style.mullions === undefined) delete o.style.mullions;
+  return true;
+}
+
+/** Delete an opening: existing → removed in place (ghost), new → deleted. False for a ghost or unknown id. */
+export function applyDeleteOpening(draft: Variant, id: Id): boolean {
+  const o = draft.openings.find((x) => x.id === id);
+  if (!o || o.status === 'removed') return false;
+  if (o.status === 'existing') o.status = 'removed';
+  else draft.openings.splice(draft.openings.indexOf(o), 1);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Blocks
+// ---------------------------------------------------------------------------
+
+/** A block with area that is part of today's cabin (cannot be deleted or moved as a whole). */
+export function blockHasExistingArea(block: Block): boolean {
+  return block.parts.length === 0 ? !block.isNew : block.parts.some((p) => !p.isNew);
+}
+
+/** Gable and mono blocks keep their shape (corner handles move both edges); flat blocks get free vertex drags. */
+export function keepsRectangle(block: Block): boolean {
+  return block.roof.type !== 'flat';
+}
+
+type ShiftMap = Map<Id, Map<number, number>>;
+
+/** Edge shifts (along the outward normal) carried through the junctions to partner edges. */
+function propagateShifts(ctx: EditContext, starts: { blockId: Id; edgeIndex: number; shift: number }[]): ShiftMap {
+  const out: ShiftMap = new Map();
+  const queue = [...starts];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const s = queue.shift();
+    if (!s) break;
+    const key = `${s.blockId}#${s.edgeIndex}`;
+    if (seen.has(key) || Math.abs(s.shift) < TINY) continue;
+    seen.add(key);
+    const m = out.get(s.blockId) ?? new Map<number, number>();
+    m.set(s.edgeIndex, (m.get(s.edgeIndex) ?? 0) + s.shift);
+    out.set(s.blockId, m);
+    const db = ctx.derived.blocks.find((b) => b.block.id === s.blockId);
+    for (const j of db?.junctions ?? []) {
+      if (j.edgeIndex !== s.edgeIndex) continue;
+      queue.push({ blockId: j.otherBlockId, edgeIndex: j.otherEdgeIndex, shift: -s.shift });
+    }
+  }
+  return out;
+}
+
+/** Polygon with edges shifted along their outward normals (vertices = intersections of the shifted lines). */
+function shiftedPolygon(points: Vec2[], shifts: Map<number, number>, k = 1): Vec2[] {
+  const n = points.length;
+  return points.map((v, i) => {
+    const prev = (i - 1 + n) % n;
+    const sp = (shifts.get(prev) ?? 0) * k;
+    const sn = (shifts.get(i) ?? 0) * k;
+    if (sp === 0 && sn === 0) return copy(v);
+    const np = outwardNormal(points, prev);
+    const nn = outwardNormal(points, i);
+    const dPrev = sub(v, points[prev]);
+    const dNext = sub(points[(i + 1) % n], v);
+    const x = lineIntersection(add(v, scale(np, sp)), dPrev, add(v, scale(nn, sn)), dNext);
+    return x ?? add(v, add(scale(np, sp), scale(nn, sn)));
+  });
+}
+
+function validBlockPolygon(old: Vec2[], next: Vec2[]): boolean {
+  const a0 = signedArea(old);
+  const a1 = signedArea(next);
+  return Math.sign(a0) === Math.sign(a1) && Math.abs(a1) >= MIN_BLOCK_AREA && !isSelfIntersecting(next);
+}
+
+/** New polygons of the blocks in `shifts`, scaled back to the largest valid fraction (binary search). */
+function polygonsForShifts(ctx: EditContext, shifts: ShiftMap): Map<Id, Vec2[]> {
+  const build = (k: number) => {
+    const out = new Map<Id, Vec2[]>();
+    for (const [blockId, m] of shifts) {
+      const block = ctx.base.blocks.find((b) => b.id === blockId);
+      if (!block) continue;
+      out.set(blockId, shiftedPolygon(block.polygon.map((v) => v.p), m, k));
+    }
+    return out;
+  };
+  const ok = (polys: Map<Id, Vec2[]>) =>
+    [...polys].every(([id, p]) => {
+      const block = ctx.base.blocks.find((b) => b.id === id);
+      return block ? validBlockPolygon(block.polygon.map((v) => v.p), p) : false;
+    });
+  const full = build(1);
+  if (ok(full)) return full;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const m = (lo + hi) / 2;
+    if (ok(build(m))) lo = m;
+    else hi = m;
+  }
+  return lo > 0 ? build(lo) : new Map();
+}
+
+/** Point P on the old segment (oa, ob) mapped onto the new one: a translation keeps the along-coordinate, else affine. */
+function mapOnEdge(p: Vec2, oa: Vec2, ob: Vec2, na: Vec2, nb: Vec2): Vec2 {
+  const od = sub(ob, oa);
+  const nd = sub(nb, na);
+  if (isParallel(od, nd)) {
+    const n = leftNormal(unit(od));
+    return add(p, scale(n, dot(sub(na, oa), n)));
+  }
+  const L = len(od);
+  const t = L < TINY ? 0 : dot(sub(p, oa), od) / (L * L);
+  return add(na, scale(nd, t));
+}
+
+interface ChangedEdge {
+  blockId: Id;
+  edgeId: Id;
+  oa: Vec2;
+  ob: Vec2;
+  na: Vec2;
+  nb: Vec2;
+  /** The edge's line moved (translated / rotated); false when it was only stretched along its own line. */
+  moved: boolean;
+}
+
+/**
+ * Apply new block polygons with all cascades (header: "Block edits"): ghosts, openings, collinear and attached
+ * stored walls, floor zones, vertex positions, healing. `polys` holds every block that changes (partners included).
+ */
+function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec2[]>): boolean {
+  const changed: ChangedEdge[] = [];
+  for (const [blockId, nw] of polys) {
+    const b0 = ctx.base.blocks.find((b) => b.id === blockId);
+    if (!b0 || b0.polygon.length !== nw.length) continue;
+    const old = b0.polygon.map((v) => v.p);
+    const n = old.length;
+    for (let i = 0; i < n; i++) {
+      const oa = old[i];
+      const ob = old[(i + 1) % n];
+      const na = nw[i];
+      const nb = nw[(i + 1) % n];
+      if (samePoint(oa, na, TINY) && samePoint(ob, nb, TINY)) continue;
+      const moved = lineDistance(na, oa, ob) > 1e-6 || lineDistance(nb, oa, ob) > 1e-6;
+      changed.push({ blockId, edgeId: b0.polygon[i].id, oa, ob, na, nb, moved });
+    }
+  }
+  if (changed.length === 0) return false;
+
+  for (const e of changed) {
+    if (e.moved) addEdgeGhosts(draft, ctx, e.blockId, e.edgeId, e.oa, e.ob);
+    keepEdgeOpenings(draft, e.blockId, e.edgeId, e.oa, e.ob, e.na, e.nb);
+  }
+
+  // Stored walls: collinear with a moved edge → carried along; one end on a moved edge → extended / trimmed.
+  const movedEdges = changed.filter((e) => e.moved);
+  const carried = new Map<Id, { a: Vec2; b: Vec2; translated: boolean }>();
+  const changes = new Map<Id, WallChange>();
+  for (const w of ctx.base.walls) {
+    if (w.status === 'removed') continue;
+    const host = movedEdges.find((e) => distancePointSegment(w.a, e.oa, e.ob) <= COINCIDE && distancePointSegment(w.b, e.oa, e.ob) <= COINCIDE);
+    if (host) {
+      carried.set(w.id, {
+        a: mapOnEdge(w.a, host.oa, host.ob, host.na, host.nb),
+        b: mapOnEdge(w.b, host.oa, host.ob, host.na, host.nb),
+        translated: isParallel(sub(host.ob, host.oa), sub(host.nb, host.na)),
+      });
+      continue;
+    }
+    for (const end of ['a', 'b'] as const) {
+      const p = w[end];
+      const e = movedEdges.find((x) => distancePointSegment(p, x.oa, x.ob) <= COINCIDE);
+      if (!e) continue;
+      const other = end === 'a' ? w.b : w.a;
+      const wd = sub(p, other);
+      if (isParallel(wd, sub(e.ob, e.oa), SUPPORT_PARALLEL_SIN)) continue;
+      const x = lineIntersection(other, wd, e.na, sub(e.nb, e.na));
+      if (!x) continue;
+      const ch = changes.get(w.id) ?? {};
+      ch[end] = x;
+      changes.set(w.id, ch);
+    }
+  }
+  for (const [id, c] of carried) {
+    const w0 = ctx.base.walls.find((w) => w.id === id);
+    const w = draft.walls.find((x) => x.id === id);
+    if (!w0 || !w) continue;
+    if (c.translated) touchWallForMove(draft, id);
+    else touchExisting(draft, id);
+    w.a = copy(c.a);
+    w.b = copy(c.b);
+    if (!c.translated) keepWallOpenings(draft, id, w0.a, w0.b);
+  }
+  applyWallChanges(draft, ctx, changes);
+
+  // Floor zones follow the block's vertices and moved edges; then the polygons.
+  for (const [blockId, nw] of polys) {
+    const b0 = ctx.base.blocks.find((b) => b.id === blockId);
+    const b = draft.blocks.find((x) => x.id === blockId);
+    if (!b0 || !b || b0.polygon.length !== nw.length) continue;
+    const old = b0.polygon.map((v) => v.p);
+    const own = movedEdges.filter((e) => e.blockId === blockId);
+    b.floorZones.forEach((z, zi) => {
+      const z0 = b0.floorZones[zi];
+      if (!z0) return;
+      z.polygon = z0.polygon.map((p) => {
+        const k = old.findIndex((q) => dist(q, p) <= COINCIDE);
+        if (k >= 0) return copy(nw[k]);
+        const e = own.find((x) => distancePointSegment(p, x.oa, x.ob) <= COINCIDE);
+        return e ? mapOnEdge(p, e.oa, e.ob, e.na, e.nb) : copy(p);
+      });
+    });
+    b.polygon.forEach((v, i) => {
+      v.p = copy(nw[i]);
+    });
+  }
+  healGhosts(draft);
+  return true;
+}
+
+/** Move block edge `edgeId` by `delta` (its component along the outward normal), junction partners following. */
+export function applyMoveBlockEdge(draft: Variant, ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): boolean {
+  const block = ctx.base.blocks.find((b) => b.id === blockId);
+  const i = block ? block.polygon.findIndex((v) => v.id === edgeId) : -1;
+  if (!block || i < 0) return false;
+  const n = outwardNormal(block.polygon.map((v) => v.p), i);
+  const shift = dot(delta, n);
+  if (Math.abs(shift) < TINY) return false;
+  const polys = polygonsForShifts(ctx, propagateShifts(ctx, [{ blockId, edgeIndex: i, shift }]));
+  return applyBlockPolygons(draft, ctx, polys);
+}
+
+/** Move block vertex `vertexId` to p: both adjacent edges for gable / mono blocks, the vertex alone for flat ones. */
+export function applyMoveBlockVertex(draft: Variant, ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): boolean {
+  const block = ctx.base.blocks.find((b) => b.id === blockId);
+  const i = block ? block.polygon.findIndex((v) => v.id === vertexId) : -1;
+  if (!block || i < 0) return false;
+  const pts = block.polygon.map((v) => v.p);
+  const n = pts.length;
+  const v = pts[i];
+  if (samePoint(v, p, TINY)) return false;
+  if (keepsRectangle(block)) {
+    const prev = (i - 1 + n) % n;
+    const d = sub(p, v);
+    const starts = [
+      { blockId, edgeIndex: prev, shift: dot(d, outwardNormal(pts, prev)) },
+      { blockId, edgeIndex: i, shift: dot(d, outwardNormal(pts, i)) },
+    ];
+    return applyBlockPolygons(draft, ctx, polygonsForShifts(ctx, propagateShifts(ctx, starts)));
+  }
+  const polys = new Map<Id, Vec2[]>();
+  const next = pts.map((q, k) => (k === i ? copy(p) : copy(q)));
+  if (!validBlockPolygon(pts, next)) return false;
+  polys.set(blockId, next);
+  for (const other of ctx.base.blocks) {
+    if (other.id === blockId) continue;
+    const opts = other.polygon.map((x) => x.p);
+    if (!opts.some((q) => dist(q, v) <= COINCIDE)) continue;
+    const moved = opts.map((q) => (dist(q, v) <= COINCIDE ? copy(p) : copy(q)));
+    if (validBlockPolygon(opts, moved)) polys.set(other.id, moved);
+  }
+  return applyBlockPolygons(draft, ctx, polys);
+}
+
+/** On or inside a polygon within `tol`. */
+function insideOrOn(p: Vec2, poly: Vec2[], tol = COINCIDE): boolean {
+  if (pointInPolygon(p, poly)) return true;
+  for (let i = 0; i < poly.length; i++) if (distancePointSegment(p, poly[i], poly[(i + 1) % poly.length]) <= tol) return true;
+  return false;
+}
+
+function structureInside(s: StructureElement, poly: Vec2[]): boolean {
+  switch (s.kind) {
+    case 'post':
+      return insideOrOn(s.position, poly);
+    case 'beam':
+      return insideOrOn(s.a, poly) && insideOrOn(s.b, poly);
+    default:
+      return insideOrOn(s.min, poly) && insideOrOn(s.max, poly);
+  }
+}
+
+function translateStructure(s: StructureElement, d: Vec2): void {
+  switch (s.kind) {
+    case 'post':
+      s.position = addc(s.position, d);
+      break;
+    case 'beam':
+      s.a = addc(s.a, d);
+      s.b = addc(s.b, d);
+      break;
+    default:
+      s.min = addc(s.min, d);
+      s.max = addc(s.max, d);
+  }
+}
+
+/** Storey ids whose levels a block's floor reaches (its level and its zones' levels). */
+function blockStoreys(v: Variant, block: Block): Set<Id> {
+  const out = new Set<Id>();
+  for (const id of [block.levelId, ...block.floorZones.map((z) => z.levelId)]) {
+    const s = storeyOfLevel(v, id);
+    if (s) out.add(s);
+  }
+  return out;
+}
+
+/**
+ * Move a whole block (header: "moveBlock"). Returns 'existing' (refused) for a block with existing area, false when
+ * nothing moved.
+ */
+export function applyMoveBlock(draft: Variant, ctx: EditContext, blockId: Id, delta: Vec2): boolean | 'existing' {
+  const b0 = ctx.base.blocks.find((b) => b.id === blockId);
+  const b = draft.blocks.find((x) => x.id === blockId);
+  if (!b0 || !b) return false;
+  if (blockHasExistingArea(b0)) return 'existing';
+  if (len(delta) < TINY) return false;
+  const axis = b0.polygon.map((v) => v.p);
+  const storeys = blockStoreys(ctx.base, b0);
+  b.polygon.forEach((v) => (v.p = addc(v.p, delta)));
+  for (const p of b.parts) p.polygon = p.polygon.map((q) => addc(q, delta));
+  for (const z of b.floorZones) z.polygon = z.polygon.map((q) => addc(q, delta));
+  for (const w0 of ctx.base.walls) {
+    if (w0.status === 'removed' || !insideOrOn(w0.a, axis) || !insideOrOn(w0.b, axis)) continue;
+    const s = storeyOfLevel(ctx.base, w0.levelId);
+    if (s && !storeys.has(s)) continue;
+    touchWallForMove(draft, w0.id);
+    const w = draft.walls.find((x) => x.id === w0.id);
+    if (!w) continue;
+    w.a = addc(w0.a, delta);
+    w.b = addc(w0.b, delta);
+  }
+  for (const r of draft.rooms) {
+    const s = storeyOfLevel(ctx.base, r.levelId);
+    if (s && storeys.has(s) && insideOrOn(r.anchor, axis, 0)) r.anchor = addc(r.anchor, delta);
+  }
+  for (const f of draft.furniture) {
+    const s = storeyOfLevel(ctx.base, f.levelId);
+    if (s && storeys.has(s) && insideOrOn(f.position, axis, 0)) f.position = addc(f.position, delta);
+  }
+  for (const s of draft.structure) if (structureInside(s, axis)) translateStructure(s, delta);
+  healGhosts(draft);
+  return true;
+}
+
+/**
+ * Delete a block: refused ('existing') for a block with existing area; a new block goes with the openings on its
+ * edges, the stored walls on / inside it (and their openings), furniture and room anchors inside it, the junction
+ * entries of other blocks that name it and its edge ghosts.
+ */
+export function applyDeleteBlock(draft: Variant, blockId: Id): boolean | 'existing' {
+  const b = draft.blocks.find((x) => x.id === blockId);
+  if (!b) return false;
+  if (blockHasExistingArea(b)) return 'existing';
+  const axis = b.polygon.map((v) => copy(v.p));
+  const storeys = blockStoreys(draft, b);
+  const onStoreys = (levelId: Id) => {
+    const s = storeyOfLevel(draft, levelId);
+    return s !== undefined && storeys.has(s);
+  };
+  // Walls only inside this block (not shared with another block's interior).
+  const otherAxes = draft.blocks.filter((x) => x.id !== blockId).map((x) => x.polygon.map((v) => v.p));
+  const strictlyOther = (p: Vec2) => otherAxes.some((ax) => pointInPolygon(p, ax) && !insideOrOn(p, axis));
+  const goneWalls = new Set(
+    draft.walls
+      .filter((w) => onStoreys(w.levelId) && insideOrOn(w.a, axis) && insideOrOn(w.b, axis) && !strictlyOther(w.a) && !strictlyOther(w.b))
+      .map((w) => w.id),
+  );
+  draft.walls = draft.walls.filter((w) => !goneWalls.has(w.id));
+  draft.openings = draft.openings.filter(
+    (o) => !(o.host.kind === 'blockEdge' && o.host.blockId === blockId) && !(o.host.kind === 'wall' && goneWalls.has(o.host.wallId)),
+  );
+  draft.rooms = draft.rooms.filter((r) => !(onStoreys(r.levelId) && insideOrOn(r.anchor, axis, 0)));
+  draft.furniture = draft.furniture.filter((f) => !(onStoreys(f.levelId) && insideOrOn(f.position, axis, 0)));
+  for (const other of draft.blocks) other.junctions = other.junctions.filter((j) => j.otherBlockId !== blockId);
+  if (draft.ghosts) {
+    draft.ghosts = draft.ghosts.filter((g) => parseEdgeGhostId(g.id)?.blockId !== blockId);
+    if (draft.ghosts.length === 0) delete draft.ghosts;
+  }
+  draft.blocks.splice(draft.blocks.indexOf(b), 1);
+  return true;
+}
+
+/**
+ * Duplicate a block `delta` away: new ids for the block, its vertices, parts, zones, and copies of the stored walls,
+ * openings and rooms inside / on it. Everything in the copy is new; no junction entries.
+ */
+export function applyDuplicateBlock(draft: Variant, blockId: Id, delta: Vec2): Id | null {
+  const b = draft.blocks.find((x) => x.id === blockId);
+  if (!b) return null;
+  const axis = b.polygon.map((v) => copy(v.p));
+  const storeys = blockStoreys(draft, b);
+  const onStoreys = (levelId: Id) => {
+    const s = storeyOfLevel(draft, levelId);
+    return s !== undefined && storeys.has(s);
+  };
+  const copyB = plain(b);
+  copyB.id = newId('blk');
+  const vid = new Map<Id, Id>();
+  copyB.polygon.forEach((v) => {
+    const id = newId('v');
+    vid.set(v.id, id);
+    v.id = id;
+    v.p = addc(v.p, delta);
+  });
+  if (copyB.templateFrontEdgeId) copyB.templateFrontEdgeId = vid.get(copyB.templateFrontEdgeId) ?? copyB.templateFrontEdgeId;
+  copyB.parts = copyB.parts.map((p) => ({ ...p, id: newId('part'), isNew: true, polygon: p.polygon.map((q) => addc(q, delta)) }));
+  copyB.floorZones = copyB.floorZones.map((z) => ({ ...z, id: newId('zone'), polygon: z.polygon.map((q) => addc(q, delta)) }));
+  copyB.isNew = true;
+  copyB.junctions = [];
+  copyB.name = nb.editor.copyName(b.name);
+  draft.blocks.push(copyB);
+  const wallIds = new Map<Id, Id>();
+  for (const w of [...draft.walls]) {
+    if (w.status === 'removed' || !onStoreys(w.levelId) || !insideOrOn(w.a, axis) || !insideOrOn(w.b, axis)) continue;
+    const c = plain(w);
+    c.id = newId('w');
+    c.a = addc(c.a, delta);
+    c.b = addc(c.b, delta);
+    c.status = 'new';
+    wallIds.set(w.id, c.id);
+    draft.walls.push(c);
+  }
+  for (const o of [...draft.openings]) {
+    if (o.status === 'removed') continue;
+    let host: OpeningHost | null = null;
+    if (o.host.kind === 'blockEdge' && o.host.blockId === blockId) host = { kind: 'blockEdge', blockId: copyB.id, edgeId: vid.get(o.host.edgeId) ?? o.host.edgeId };
+    else if (o.host.kind === 'wall' && wallIds.has(o.host.wallId)) host = { kind: 'wall', wallId: wallIds.get(o.host.wallId) ?? o.host.wallId };
+    if (!host) continue;
+    const c = plain(o);
+    c.id = newId('op');
+    c.host = host;
+    c.status = 'new';
+    draft.openings.push(c);
+  }
+  for (const r of [...draft.rooms]) {
+    if (!onStoreys(r.levelId) || !insideOrOn(r.anchor, axis, 0)) continue;
+    draft.rooms.push({ ...plain(r), id: newId('room'), anchor: addc(r.anchor, delta) });
+  }
+  return copyB.id;
+}
+
+export interface BlockPatch {
+  name?: string;
+  roof?: Partial<Block['roof']>;
+  eaveHeight?: number;
+  wall?: Partial<Block['wall']>;
+  /** null = no flat ceiling. */
+  ceilingHeight?: number | null;
+  /** Template units: add (true) / remove (false) the full-height opening on `templateFrontEdgeId`. */
+  openFront?: boolean;
+  isNew?: boolean;
+  floorMaterial?: FloorMaterial | null;
+}
+
+/** Block properties; Takvinkel sets drive 'pitch', Mønehøyde drive 'height' (unless the patch names a drive). */
+export function applySetBlockProps(draft: Variant, blockId: Id, patch: BlockPatch, newOpeningId?: Id): boolean {
+  const b = draft.blocks.find((x) => x.id === blockId);
+  if (!b) return false;
+  if (patch.name !== undefined && patch.name.trim()) b.name = patch.name.trim();
+  if (patch.roof) {
+    const r = patch.roof;
+    Object.assign(b.roof, plain(r));
+    if (r.drive === undefined) {
+      if (r.pitchDeg !== undefined && r.ridgeHeight === undefined) b.roof.drive = 'pitch';
+      else if (r.ridgeHeight !== undefined && r.pitchDeg === undefined) b.roof.drive = 'height';
+    }
+  }
+  if (patch.eaveHeight !== undefined) b.eaveHeight = patch.eaveHeight;
+  if (patch.wall) Object.assign(b.wall, plain(patch.wall));
+  if (patch.ceilingHeight !== undefined) {
+    if (patch.ceilingHeight === null) delete b.ceilingHeight;
+    else b.ceilingHeight = patch.ceilingHeight;
+  }
+  if (patch.isNew !== undefined) b.isNew = patch.isNew;
+  if (patch.floorMaterial !== undefined) {
+    if (patch.floorMaterial === null) delete b.floorMaterial;
+    else b.floorMaterial = patch.floorMaterial;
+  }
+  if (patch.openFront !== undefined && b.templateFrontEdgeId) {
+    const front = b.templateFrontEdgeId;
+    const isFront = (o: Opening) => o.host.kind === 'blockEdge' && o.host.blockId === blockId && o.host.edgeId === front && o.type === 'opening' && o.fullHeight === true;
+    const has = draft.openings.some(isFront);
+    if (patch.openFront && !has) {
+      const i = b.polygon.findIndex((v) => v.id === front);
+      if (i >= 0) {
+        const { a, b: e } = blockEdgeGeom(b, i);
+        draft.openings.push(openFrontOpening(blockId, front, dist(a, e), b.eaveHeight, newOpeningId));
+      }
+    } else if (!patch.openFront && has) {
+      draft.openings = draft.openings.filter((o) => !isFront(o));
+    }
+  }
+  return true;
+}
+
+function openFrontOpening(blockId: Id, edgeId: Id, length: number, eave: number, id?: Id): Opening {
+  const post = Math.min(0.1, length / 4);
+  return {
+    id: id ?? newId('op'),
+    type: 'opening',
+    host: { kind: 'blockEdge', blockId, edgeId },
+    offset: length / 2,
+    width: Math.max(0.1, length - 2 * post),
+    height: eave,
+    fullHeight: true,
+    sill: 0,
+    style: { frameColour: 'wood' },
+    status: 'new',
+  };
+}
+
+/**
+ * Set a block's width ('w', along x) or depth ('d', along y) by moving the edge on `side` ('max' = east / north,
+ * default; 'min' = west / south): the edge whose outward normal points that way most.
+ */
+export function applySetBlockSize(draft: Variant, ctx: EditContext, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): boolean {
+  const block = ctx.base.blocks.find((b) => b.id === blockId);
+  if (!block || !(value > 0)) return false;
+  const pts = block.polygon.map((v) => v.p);
+  const box = bbox(pts);
+  const current = axis === 'w' ? box.max[0] - box.min[0] : box.max[1] - box.min[1];
+  const dir: Vec2 = axis === 'w' ? [side === 'max' ? 1 : -1, 0] : [0, side === 'max' ? 1 : -1];
+  let best = -1;
+  let bestDot = 0.5;
+  pts.forEach((_, i) => {
+    const d = dot(outwardNormal(pts, i), dir);
+    if (d > bestDot) {
+      bestDot = d;
+      best = i;
+    }
+  });
+  if (best < 0) return false;
+  return applyMoveBlockEdge(draft, ctx, blockId, block.polygon[best].id, scale(dir, value - current));
+}
+
+// ---------------------------------------------------------------------------
+// Units
+// ---------------------------------------------------------------------------
+
+export interface PlacedUnit {
+  blockId: Id;
+  roomId: Id;
+  openingId: Id | null;
+}
+
+function uniqueName(name: string, taken: Iterable<string>): string {
+  const set = new Set(taken);
+  if (!set.has(name)) return name;
+  for (let k = 2; ; k++) if (!set.has(`${name} ${k}`)) return `${name} ${k}`;
+}
+
+/** On a deck piece (outer ring, not in a hole). */
+function onDeck(derived: DerivedVariant, p: Vec2): boolean {
+  return derived.outdoor.decks.some((d) => d.pieces.some((piece) => piece[0] && pointInPolygon(p, piece[0]) && !piece.slice(1).some((h) => pointInPolygon(p, h))));
+}
+
+/**
+ * Place a unit from a template (header: "Units"). `at` is the centre, `rotation90` quarter turns. Null for an
+ * unknown template.
+ */
+export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: string, at: Vec2, rotation90: number, ids: Partial<PlacedUnit> = {}): PlacedUnit | null {
+  const t = unitTemplate(templateId);
+  if (!t) return null;
+  const rot = quarterTurns(rotation90);
+  const poly = unitFootprint(t, at, rot);
+  const blockId = ids.blockId ?? newId('blk');
+  const vertexIds = poly.map(() => newId('v'));
+  const levelId = draft.levels.some((l) => l.id === 'main') ? 'main' : (draft.levels[0]?.id ?? 'main');
+  const wall = t.wall ?? draft.settings.defaultExteriorWall;
+  const roofBase = { drive: 'pitch' as const, pitchDeg: t.pitchDeg, thickness: 0.25, overhangEave: 0.3, overhangGable: 0.3, material: 'turf' as const };
+  let roof: Block['roof'];
+  if (t.roofType === 'gable') {
+    const alongLocalX = t.w >= t.d;
+    const ridgeAxis: 'x' | 'y' = alongLocalX === (rot % 2 === 0) ? 'x' : 'y';
+    const half = Math.min(t.w, t.d) / 2;
+    roof = { type: 'gable', ridgeAxis, ...roofBase, ridgeHeight: round3(t.eaveHeight + Math.tan((t.pitchDeg * Math.PI) / 180) * half) };
+  } else if (t.roofType === 'mono') {
+    roof = { type: 'mono', slopeTo: cardinalOf('N', rot), ...roofBase, ridgeHeight: round3(t.eaveHeight + Math.tan((t.pitchDeg * Math.PI) / 180) * t.d) };
+  } else {
+    roof = { type: 'flat', ...roofBase, drive: 'height', ridgeHeight: t.eaveHeight };
+  }
+  const block: Block = {
+    id: blockId,
+    name: uniqueName(t.name, draft.blocks.map((b) => b.name)),
+    polygon: poly.map((p, i) => ({ id: vertexIds[i], p: copy(p) })),
+    levelId,
+    floorZones: [],
+    parts: [],
+    isNew: true,
+    wall: plain(wall),
+    eaveHeight: t.eaveHeight,
+    roof,
+    junctions: [],
+    template: t.id,
+    templateFrontEdgeId: vertexIds[0],
+  };
+  if (t.floorMaterial) block.floorMaterial = t.floorMaterial;
+  draft.blocks.push(block);
+
+  const room: Room = {
+    id: ids.roomId ?? newId('room'),
+    name: uniqueName(t.roomName, draft.rooms.map((r) => r.name)),
+    type: t.roomType,
+    levelId,
+    anchor: copy(centroid(poly)),
+  };
+  if (t.floorMaterial) room.floorMaterial = t.floorMaterial;
+  draft.rooms.push(room);
+
+  let openingId: Id | null = null;
+  if (t.openFront) {
+    const o = openFrontOpening(blockId, vertexIds[0], t.w, t.eaveHeight, ids.openingId ?? undefined);
+    draft.openings.push(o);
+    openingId = o.id;
+  } else if (t.door) {
+    const edge = deckFacingEdge(ctx, poly);
+    const a = poly[edge];
+    const b = poly[(edge + 1) % poly.length];
+    const o: Opening = {
+      id: ids.openingId ?? newId('op'),
+      type: t.door.type,
+      host: { kind: 'blockEdge', blockId, edgeId: vertexIds[edge] },
+      offset: dist(a, b) / 2,
+      width: t.door.width,
+      height: t.door.height,
+      sill: 0,
+      swing: { hinge: 'start', side: 'right' },
+      style: { frameColour: t.door.type === 'saunaDoor' ? 'wood' : 'white' },
+      status: 'new',
+    };
+    draft.openings.push(o);
+    openingId = o.id;
+  }
+  return { blockId, roomId: room.id, openingId };
+}
+
+const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+/** Index of the unit edge facing the deck: the front (0) when its outside probe is on a deck, else the first that is. */
+function deckFacingEdge(ctx: EditContext, poly: Vec2[]): number {
+  const order = [0, 2, 1, 3].filter((i) => i < poly.length);
+  const axes = ctx.base.blocks.map((b) => b.polygon.map((v) => v.p));
+  for (const i of order) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const probe = add(scale(add(a, b), 0.5), scale(outwardNormal(poly, i), DECK_PROBE));
+    if (onDeck(ctx.derived, probe) && !axes.some((ax) => pointInPolygon(probe, ax))) return i;
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Rooms
+// ---------------------------------------------------------------------------
+
+export interface RoomMerge {
+  kept: Room;
+  removed: Room;
+}
+
+export interface ReconcileResult {
+  /** The reconciled room list (same objects where nothing changed). */
+  rooms: Room[];
+  changed: boolean;
+  merges: RoomMerge[];
+}
+
+const sameFaceShape = (a: DerivedRoom, b: DerivedRoom): boolean =>
+  Math.abs(a.area - b.area) < 1e-6 &&
+  a.storeyId === b.storeyId &&
+  samePoint(a.bbox.min, b.bbox.min, 1e-6) &&
+  samePoint(a.bbox.max, b.bbox.max, 1e-6);
+
+const boxesOverlap = (a: { min: Vec2; max: Vec2 }, b: { min: Vec2; max: Vec2 }): boolean =>
+  a.min[0] < b.max[0] && b.min[0] < a.max[0] && a.min[1] < b.max[1] && b.min[1] < a.max[1];
+
+function overlapArea(a: Vec2[], b: Vec2[]): number {
+  if (a.length < 3 || b.length < 3) return 0;
+  return withClipFallback(
+    'room overlap',
+    () => intersectPolygons([a], [b]).reduce((s, p) => s + area(p[0] ?? []) - p.slice(1).reduce((h, r) => h + area(r), 0), 0),
+    () => (pointInPolygon(labelPoint(a), b) ? Math.min(area(a), area(b)) : 0),
+  );
+}
+
+function anchorInFace(anchor: Vec2, face: DerivedRoom): boolean {
+  if (!pointInPolygon(anchor, face.polygon)) return false;
+  return !face.holes.some((h) => h.length >= 3 && pointInPolygon(anchor, h));
+}
+
+/** Overlaps below this (m²) do not tie a room to a face. */
+const MIN_OVERLAP = 0.01;
+
+/** Components with more rooms than this are matched greedily (largest overlap first) instead of exactly. */
+const EXACT_MATCH_MAX_ROOMS = 10;
+
+/**
+ * One face per room and one room per face, maximising first the number of rooms that keep a face and then the total
+ * overlap. `pairs` must be sorted by overlap, largest first. Exact per connected component of the room ↔ face overlap
+ * graph (branch and bound; components are a handful of rooms around the edit), greedy for very large ones.
+ */
+export function matchRoomsToFaces<R, F, P extends { room: R; face: F; ov: number }>(pairs: readonly P[]): P[] {
+  // Union-find over rooms and faces.
+  const parent = new Map<unknown, unknown>();
+  const find = (x: unknown): unknown => {
+    let r = x;
+    while (parent.has(r) && parent.get(r) !== r) r = parent.get(r);
+    return r;
+  };
+  for (const pr of pairs) {
+    if (!parent.has(pr.room)) parent.set(pr.room, pr.room);
+    if (!parent.has(pr.face)) parent.set(pr.face, pr.face);
+    const a = find(pr.room);
+    const b = find(pr.face);
+    if (a !== b) parent.set(a, b);
+  }
+  const components = new Map<unknown, P[]>();
+  for (const pr of pairs) {
+    const k = find(pr.room);
+    const list = components.get(k);
+    if (list) list.push(pr);
+    else components.set(k, [pr]);
+  }
+  const out: P[] = [];
+  for (const comp of components.values()) {
+    const rooms: R[] = [];
+    for (const pr of comp) if (!rooms.includes(pr.room)) rooms.push(pr.room);
+    if (rooms.length > EXACT_MATCH_MAX_ROOMS) {
+      const roomsDone = new Set<R>();
+      const facesDone = new Set<F>();
+      for (const pr of comp) {
+        if (roomsDone.has(pr.room) || facesDone.has(pr.face)) continue;
+        roomsDone.add(pr.room);
+        facesDone.add(pr.face);
+        out.push(pr);
+      }
+      continue;
+    }
+    // Score = rooms kept × KEEP + total overlap (overlaps are far below KEEP).
+    const KEEP = 1e6;
+    const options = rooms.map((r) => comp.filter((pr) => pr.room === r));
+    const best = options.map((o) => o[0]?.ov ?? 0);
+    const rest: number[] = [];
+    for (let i = rooms.length - 1, acc = 0; i >= 0; i--) rest[i] = acc += KEEP + best[i];
+    let bestScore = -1;
+    let bestPick: (P | null)[] = [];
+    const pick: (P | null)[] = [];
+    const used = new Set<F>();
+    const search = (i: number, score: number): void => {
+      if (i === rooms.length) {
+        if (score > bestScore + 1e-9) {
+          bestScore = score;
+          bestPick = [...pick];
+        }
+        return;
+      }
+      if (score + rest[i] <= bestScore + 1e-9) return;
+      for (const pr of options[i]) {
+        if (used.has(pr.face)) continue;
+        used.add(pr.face);
+        pick.push(pr);
+        search(i + 1, score + KEEP + pr.ov);
+        pick.pop();
+        used.delete(pr.face);
+      }
+      pick.push(null);
+      search(i + 1, score);
+      pick.pop();
+    };
+    search(0, 0);
+    for (const pr of bestPick) if (pr) out.push(pr);
+  }
+  return out;
+}
+
+/**
+ * Rooms under edits (header: "Rooms"). `nextDerived` = deriveVariant(next, …). Assignment: rooms whose face kept its
+ * shape keep it; the others are matched to the free faces by overlap with their previous inner polygon
+ * (`matchRoomsToFaces`: as many rooms as possible keep a face, then the largest total overlap), so a room that shrank
+ * past its anchor keeps its own smaller face even when a neighbour grew into most of its old area. A room left without
+ * a free face but overlapping a taken one is merged there (the room with the larger previous area stays); a room
+ * overlapping nothing keeps whatever face its anchor gives it.
+ */
+export function reconcileRooms(baseDerived: DerivedVariant, next: Variant, nextDerived: DerivedVariant): ReconcileResult {
+  const prevById = new Map<Id, DerivedRoom>();
+  for (const r of baseDerived.rooms) if (r.room) prevById.set(r.room.id, r);
+  const curById = new Map<Id, DerivedRoom>();
+  for (const r of nextDerived.rooms) if (r.room) curById.set(r.room.id, r);
+
+  const owner = new Map<DerivedRoom, { room: Room; prevArea: number }>();
+  const faceOf = new Map<Id, DerivedRoom>();
+  const assign = (room: Room, prevArea: number, face: DerivedRoom) => {
+    owner.set(face, { room, prevArea });
+    faceOf.set(room.id, face);
+  };
+  const pending: { room: Room; prev: DerivedRoom }[] = [];
+  for (const room of next.rooms) {
+    const prev = prevById.get(room.id);
+    if (!prev) continue;
+    const cur = curById.get(room.id);
+    if (cur && sameFaceShape(prev, cur)) assign(room, prev.area, cur);
+    else pending.push({ room, prev });
+  }
+
+  const pairs: { room: Room; prev: DerivedRoom; face: DerivedRoom; ov: number }[] = [];
+  for (const p of pending) {
+    const prevBox = bbox(p.prev.polygon);
+    for (const f of nextDerived.rooms) {
+      if (f.storeyId !== p.prev.storeyId || !boxesOverlap(prevBox, f.bbox)) continue;
+      const ov = overlapArea(p.prev.polygon, f.polygon);
+      if (ov > MIN_OVERLAP) pairs.push({ room: p.room, prev: p.prev, face: f, ov });
+    }
+  }
+  pairs.sort((x, y) => y.ov - x.ov);
+  for (const pr of matchRoomsToFaces(pairs.filter((pr) => !owner.has(pr.face)))) assign(pr.room, pr.prev.area, pr.face);
+
+  const removed = new Set<Id>();
+  const merges: RoomMerge[] = [];
+  for (const p of pending) {
+    if (faceOf.has(p.room.id)) continue;
+    const best = pairs.find((pr) => pr.room.id === p.room.id);
+    if (!best) {
+      const cur = curById.get(p.room.id);
+      if (cur && !owner.has(cur)) assign(p.room, p.prev.area, cur);
+      continue;
+    }
+    const holder = owner.get(best.face);
+    if (!holder) {
+      assign(p.room, p.prev.area, best.face);
+      continue;
+    }
+    if (p.prev.area > holder.prevArea + 1e-9) {
+      removed.add(holder.room.id);
+      faceOf.delete(holder.room.id);
+      merges.push({ kept: p.room, removed: holder.room });
+      assign(p.room, p.prev.area, best.face);
+    } else {
+      removed.add(p.room.id);
+      merges.push({ kept: holder.room, removed: p.room });
+    }
+  }
+
+  const anchors = new Map<Id, Vec2>();
+  for (const [face, { room }] of owner) {
+    if (removed.has(room.id)) continue;
+    if (!anchorInFace(room.anchor, face)) anchors.set(room.id, copy(face.labelPoint));
+  }
+  if (removed.size === 0 && anchors.size === 0) return { rooms: next.rooms, changed: false, merges };
+  const rooms = next.rooms
+    .filter((r) => !removed.has(r.id))
+    .map((r) => {
+      const a = anchors.get(r.id);
+      return a ? { ...r, anchor: a } : r;
+    });
+  return { rooms, changed: true, merges };
+}
+
+/**
+ * Bring back deleted Room records (`candidates`, newest first) whose anchor lies in an unnamed face of `derived` on
+ * their storey. Returns the records to add (anchor moved to the label point when it is not inside the face).
+ */
+export function reviveRooms(v: Variant, derived: DerivedVariant, candidates: Room[]): Room[] {
+  const have = new Set(v.rooms.map((r) => r.id));
+  const out: Room[] = [];
+  const used = new Set<DerivedRoom>();
+  for (const c of candidates) {
+    if (have.has(c.id) || out.some((r) => r.id === c.id)) continue;
+    const storey = storeyOfLevel(v, c.levelId);
+    const face = derived.rooms.find((f) => !f.room && !used.has(f) && f.storeyId === storey && pointInPolygon(c.anchor, f.facePolygon));
+    if (!face) continue;
+    used.add(face);
+    out.push(anchorInFace(c.anchor, face) ? plain(c) : { ...plain(c), anchor: copy(face.labelPoint) });
+  }
+  return out;
+}
+
+/** Give an unnamed face a Room record. Null when the face is unknown or already named. */
+export function applyNameFace(draft: Variant, derived: DerivedVariant, faceId: Id, name: string, opts: { type?: RoomType; levelId?: Id; id?: Id } = {}): Id | null {
+  const face = derived.rooms.find((r) => r.id === faceId && !r.room);
+  const trimmed = name.trim();
+  if (!face || !trimmed) return null;
+  const id = opts.id ?? newId('room');
+  draft.rooms.push({ id, name: trimmed, type: opts.type ?? 'annet', levelId: opts.levelId ?? face.levelId, anchor: copy(face.labelPoint) });
+  return id;
+}
+
+export interface RoomPatch {
+  name?: string;
+  type?: RoomType;
+  /** null = back to the type's default. */
+  floorMaterial?: FloorMaterial | null;
+  /** '' removes the note. */
+  note?: string;
+}
+
+export function applySetRoomProps(draft: Variant, roomId: Id, patch: RoomPatch): boolean {
+  const r = draft.rooms.find((x) => x.id === roomId);
+  if (!r) return false;
+  let changed = false;
+  if (patch.name !== undefined && patch.name.trim() && patch.name.trim() !== r.name) {
+    r.name = patch.name.trim();
+    changed = true;
+  }
+  if (patch.type !== undefined && patch.type !== r.type) {
+    r.type = patch.type;
+    changed = true;
+  }
+  if (patch.floorMaterial !== undefined) {
+    if (patch.floorMaterial === null) {
+      if (r.floorMaterial !== undefined) {
+        delete r.floorMaterial;
+        changed = true;
+      }
+    } else if (patch.floorMaterial !== r.floorMaterial) {
+      r.floorMaterial = patch.floorMaterial;
+      changed = true;
+    }
+  }
+  if (patch.note !== undefined) {
+    const note = patch.note.trim();
+    if (!note && r.note !== undefined) {
+      delete r.note;
+      changed = true;
+    } else if (note && note !== r.note) {
+      r.note = note;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+export interface ResizeTarget {
+  side: 'min' | 'max';
+  kind: 'wall' | 'blockEdge';
+  /** Stored wall id (kind 'wall') or the derived exterior piece id (kind 'blockEdge'). */
+  wallId: Id;
+  blockId?: Id;
+  edgeId?: Id;
+}
+
+/**
+ * The walls that bound a room on each side of an axis (§3.7): 'w' → the walls along y at the west ('min') and east
+ * ('max') of the face, 'd' → the walls along x at the south / north. Stored walls (dividers too) are preferred over
+ * block edges on each side; `preferred` = the side to move: both stored → 'max' (north / east), one → that one,
+ * none → null ("Endres under bygningsdelen").
+ */
+export function roomResizeTargets(
+  derived: DerivedVariant,
+  roomId: Id,
+  axis: 'w' | 'd',
+): { min: ResizeTarget | null; max: ResizeTarget | null; preferred: 'min' | 'max' | null } {
+  const room = derived.rooms.find((r) => r.room?.id === roomId) ?? derived.rooms.find((r) => r.id === roomId);
+  if (!room) return { min: null, max: null, preferred: null };
+  const k = axis === 'w' ? 0 : 1; // coordinate that changes
+  const o = 1 - k; // coordinate along the bounding walls
+  const box = bbox(room.facePolygon.length >= 3 ? room.facePolygon : room.polygon);
+  const pick = (side: 'min' | 'max'): ResizeTarget | null => {
+    const coord = side === 'min' ? box.min[k] : box.max[k];
+    let best: { w: DerivedWall; overlap: number; stored: boolean } | null = null;
+    for (const id of room.wallIds) {
+      const w = derived.walls.find((x) => x.id === id);
+      if (!w || w.isGhost) continue;
+      const d = sub(w.b, w.a);
+      if (Math.abs(d[k]) > PARALLEL_SIN * len(d) + 1e-9) continue; // must run along the other axis
+      if (Math.abs(w.a[k] - coord) > 0.02) continue;
+      const lo = Math.max(Math.min(w.a[o], w.b[o]), box.min[o]);
+      const hi = Math.min(Math.max(w.a[o], w.b[o]), box.max[o]);
+      const overlap = hi - lo;
+      if (overlap <= 0.01) continue;
+      const stored = w.source.kind === 'wall';
+      if (!best || (stored && !best.stored) || (stored === best.stored && overlap > best.overlap)) best = { w, overlap, stored };
+    }
+    if (!best) return null;
+    if (best.w.source.kind === 'wall') return { side, kind: 'wall', wallId: best.w.source.wallId };
+    return { side, kind: 'blockEdge', wallId: best.w.id, blockId: best.w.source.blockId, edgeId: best.w.source.edgeId };
+  };
+  const min = pick('min');
+  const max = pick('max');
+  const preferred = max?.kind === 'wall' ? 'max' : min?.kind === 'wall' ? 'min' : null;
+  return { min, max, preferred };
+}
+
+/** The wall move (delta) that sets a room's inner width / depth to `value` on `side`, or why it cannot. */
+export function roomResizeMove(
+  derived: DerivedVariant,
+  roomId: Id,
+  axis: 'w' | 'd',
+  value: number,
+  side?: 'min' | 'max',
+): { wallId: Id; delta: Vec2; side: 'min' | 'max' } | { refused: 'block-edge' | 'no-room' | 'no-wall' } {
+  const room = derived.rooms.find((r) => r.room?.id === roomId) ?? derived.rooms.find((r) => r.id === roomId);
+  if (!room) return { refused: 'no-room' };
+  const targets = roomResizeTargets(derived, roomId, axis);
+  const s = side ?? targets.preferred;
+  if (!s) return { refused: targets.min || targets.max ? 'block-edge' : 'no-wall' };
+  const t = targets[s];
+  if (!t) return { refused: 'no-wall' };
+  if (t.kind !== 'wall') return { refused: 'block-edge' };
+  const current = axis === 'w' ? room.dims.w : room.dims.h;
+  const change = value - current;
+  const signed = s === 'max' ? change : -change;
+  return { wallId: t.wallId, delta: axis === 'w' ? [signed, 0] : [0, signed], side: s };
+}
+
+// ---------------------------------------------------------------------------
+// Deck
+// ---------------------------------------------------------------------------
+
+export function deckOfEdge(v: Variant, edgeId: Id): Deck | null {
+  return v.outdoor.decks.find((d) => d.polygon.some((x) => x.id === edgeId)) ?? null;
+}
+
+function validDeckPolygon(points: Vec2[]): boolean {
+  return points.length >= 3 && Math.abs(signedArea(points)) >= MIN_DECK_AREA && !isSelfIntersecting(points);
+}
+
+/** Steps on changed deck edges keep their plan position (clamped to the edge). */
+function keepStepsPositions(deck: Deck, oldPts: Vec2[]): void {
+  const n = deck.polygon.length;
+  if (oldPts.length !== n) return;
+  for (const s of deck.steps) {
+    const i = deck.polygon.findIndex((x) => x.id === s.edgeId);
+    if (i < 0) continue;
+    const oa = oldPts[i];
+    const ob = oldPts[(i + 1) % n];
+    const na = deck.polygon[i].p;
+    const nb = deck.polygon[(i + 1) % n].p;
+    if (samePoint(oa, na, TINY) && samePoint(ob, nb, TINY)) continue;
+    const centre = pointAlong(oa, ob, s.offset);
+    s.offset = clampOffset(along(na, nb, centre), s.width, 0, dist(na, nb));
+  }
+}
+
+function setDeckPoints(draft: Variant, deckId: Id, next: Vec2[]): boolean {
+  const deck = draft.outdoor.decks.find((d) => d.id === deckId);
+  if (!deck || next.length !== deck.polygon.length || !validDeckPolygon(next)) return false;
+  const old = deck.polygon.map((x) => copy(x.p));
+  deck.polygon.forEach((x, i) => (x.p = copy(next[i])));
+  keepStepsPositions(deck, old);
+  return true;
+}
+
+export function applyMoveDeckVertex(draft: Variant, deckId: Id, vertexId: Id, p: Vec2): boolean {
+  const deck = draft.outdoor.decks.find((d) => d.id === deckId);
+  const i = deck ? deck.polygon.findIndex((x) => x.id === vertexId) : -1;
+  if (!deck || i < 0 || samePoint(deck.polygon[i].p, p, TINY)) return false;
+  return setDeckPoints(
+    draft,
+    deckId,
+    deck.polygon.map((x, k) => (k === i ? copy(p) : copy(x.p))),
+  );
+}
+
+export function applyMoveDeckEdge(draft: Variant, deckId: Id, edgeId: Id, delta: Vec2): boolean {
+  const deck = draft.outdoor.decks.find((d) => d.id === deckId);
+  const i = deck ? deck.polygon.findIndex((x) => x.id === edgeId) : -1;
+  if (!deck || i < 0) return false;
+  const pts = deck.polygon.map((x) => copy(x.p));
+  const n = outwardNormal(pts, i);
+  const shift = scale(n, dot(delta, n));
+  if (len(shift) < TINY) return false;
+  const j = (i + 1) % pts.length;
+  const next = pts.map((p, k) => (k === i || k === j ? add(p, shift) : p));
+  return setDeckPoints(draft, deckId, next);
+}
+
+/** Move a whole deck (and the hot tubs standing on it). */
+export function applyMoveDeck(draft: Variant, deckId: Id, delta: Vec2): boolean {
+  const deck = draft.outdoor.decks.find((d) => d.id === deckId);
+  if (!deck || len(delta) < TINY) return false;
+  const old = deck.polygon.map((x) => copy(x.p));
+  for (const t of draft.outdoor.hotTubs) if (pointInPolygon(t.centre, old)) t.centre = addc(t.centre, delta);
+  deck.polygon.forEach((x) => (x.p = addc(x.p, delta)));
+  return true;
+}
+
+/** Insert a vertex on edge `edgeId` at p (default: the edge midpoint; projected on the edge). Returns its id. */
+export function applyInsertDeckVertex(draft: Variant, deckId: Id, edgeId: Id, p?: Vec2, id?: Id): Id | null {
+  const deck = draft.outdoor.decks.find((d) => d.id === deckId);
+  const i = deck ? deck.polygon.findIndex((x) => x.id === edgeId) : -1;
+  if (!deck || i < 0) return null;
+  const n = deck.polygon.length;
+  const a = deck.polygon[i].p;
+  const b = deck.polygon[(i + 1) % n].p;
+  const L = dist(a, b);
+  if (L < 2 * MIN_WALL_LENGTH) return null;
+  const s = Math.min(L - MIN_WALL_LENGTH, Math.max(MIN_WALL_LENGTH, p ? along(a, b, p) : L / 2));
+  const at = pointAlong(a, b, s);
+  const vid = id ?? newId('dv');
+  deck.polygon.splice(i + 1, 0, { id: vid, p: at });
+  for (const st of deck.steps) {
+    if (st.edgeId !== edgeId || st.offset <= s) continue;
+    st.edgeId = vid;
+    st.offset -= s;
+  }
+  if (deck.noRailingEdges.includes(edgeId)) deck.noRailingEdges.push(vid);
+  return vid;
+}
+
+/** Delete a deck vertex (min 3 remain): the two edges merge into the previous one; their steps are re-hosted on it. */
+export function applyDeleteDeckVertex(draft: Variant, deckId: Id, vertexId: Id): boolean {
+  const deck = draft.outdoor.decks.find((d) => d.id === deckId);
+  const i = deck ? deck.polygon.findIndex((x) => x.id === vertexId) : -1;
+  if (!deck || i < 0 || deck.polygon.length <= 3) return false;
+  const n = deck.polygon.length;
+  const prev = deck.polygon[(i - 1 + n) % n];
+  const pts = deck.polygon.map((x) => x.p);
+  const next = pts.filter((_, k) => k !== i);
+  if (!validDeckPolygon(next)) return false;
+  const oldEdges = new Map<Id, { a: Vec2; b: Vec2 }>([
+    [prev.id, { a: copy(prev.p), b: copy(deck.polygon[i].p) }],
+    [vertexId, { a: copy(deck.polygon[i].p), b: copy(deck.polygon[(i + 1) % n].p) }],
+  ]);
+  const mergedA = copy(prev.p);
+  const mergedB = copy(deck.polygon[(i + 1) % n].p);
+  deck.polygon.splice(i, 1);
+  for (const st of deck.steps) {
+    const e = oldEdges.get(st.edgeId);
+    if (!e) continue;
+    const centre = pointAlong(e.a, e.b, st.offset);
+    st.edgeId = prev.id;
+    st.offset = clampOffset(along(mergedA, mergedB, centre), st.width, 0, dist(mergedA, mergedB));
+  }
+  deck.noRailingEdges = deck.noRailingEdges.filter((id) => id !== vertexId);
+  return true;
+}
+
+export interface DeckPatch {
+  topHeight?: number;
+  /** null = no railing. */
+  railing?: Deck['railing'] | null;
+  isNew?: boolean;
+}
+
+export function applySetDeckProps(draft: Variant, deckId: Id, patch: DeckPatch): boolean {
+  const deck = draft.outdoor.decks.find((d) => d.id === deckId);
+  if (!deck) return false;
+  if (patch.topHeight !== undefined) deck.topHeight = patch.topHeight;
+  if (patch.railing !== undefined) {
+    if (patch.railing === null) delete deck.railing;
+    else deck.railing = { ...(deck.railing ?? { style: 'glass', height: 1.05 }), ...plain(patch.railing) };
+  }
+  if (patch.isNew !== undefined) deck.isNew = patch.isNew;
+  return true;
+}
+
+/** Railing on / off along one deck edge. */
+export function applyToggleRailingEdge(draft: Variant, edgeId: Id): boolean {
+  const deck = deckOfEdge(draft, edgeId);
+  if (!deck) return false;
+  if (deck.noRailingEdges.includes(edgeId)) deck.noRailingEdges = deck.noRailingEdges.filter((x) => x !== edgeId);
+  else deck.noRailingEdges.push(edgeId);
+  return true;
+}
+
+export const DEFAULT_STEPS_WIDTH = 1.4;
+
+/**
+ * New steps on deck edge `edgeId`: at `offset` (centre), else the middle of the longest free run of that edge, else the
+ * edge middle; clamped to the edge.
+ */
+export function applyAddSteps(draft: Variant, derived: DerivedVariant | null, edgeId: Id, offset?: number, width = DEFAULT_STEPS_WIDTH, id?: Id): Id | null {
+  const deck = deckOfEdge(draft, edgeId);
+  const i = deck ? deck.polygon.findIndex((x) => x.id === edgeId) : -1;
+  if (!deck || i < 0) return null;
+  const a = deck.polygon[i].p;
+  const b = deck.polygon[(i + 1) % deck.polygon.length].p;
+  const L = dist(a, b);
+  let at = offset;
+  if (at === undefined) {
+    const runs = derived?.outdoor.decks.find((d) => d.id === deck.id)?.freeRuns.filter((r) => r.edgeId === edgeId) ?? [];
+    const longest = runs.reduce<{ s0: number; s1: number } | null>((m, r) => (!m || r.s1 - r.s0 > m.s1 - m.s0 ? r : m), null);
+    at = longest ? (longest.s0 + longest.s1) / 2 : L / 2;
+  }
+  const steps: DeckSteps = { id: id ?? newId('steps'), edgeId, offset: clampOffset(at, width, 0, L), width };
+  deck.steps.push(steps);
+  return steps.id;
+}
+
+function stepsById(v: Variant, id: Id): { deck: Deck; steps: DeckSteps } | null {
+  for (const deck of v.outdoor.decks) {
+    const steps = deck.steps.find((s) => s.id === id);
+    if (steps) return { deck, steps };
+  }
+  return null;
+}
+
+/** Move steps along their edge (or onto another edge of the same deck), clamped to the edge. */
+export function applyMoveSteps(draft: Variant, stepsId: Id, offset: number, edgeId?: Id): boolean {
+  const hit = stepsById(draft, stepsId);
+  if (!hit) return false;
+  const { deck, steps } = hit;
+  const target = edgeId ?? steps.edgeId;
+  const i = deck.polygon.findIndex((x) => x.id === target);
+  if (i < 0) return false;
+  const L = dist(deck.polygon[i].p, deck.polygon[(i + 1) % deck.polygon.length].p);
+  const next = clampOffset(offset, steps.width, 0, L);
+  if (target === steps.edgeId && Math.abs(next - steps.offset) < 1e-9) return false;
+  steps.edgeId = target;
+  steps.offset = next;
+  return true;
+}
+
+export function applySetStepsProps(draft: Variant, stepsId: Id, patch: { width?: number }): boolean {
+  const hit = stepsById(draft, stepsId);
+  if (!hit || patch.width === undefined || !(patch.width > 0)) return false;
+  hit.steps.width = patch.width;
+  return true;
+}
+
+export function applyDeleteSteps(draft: Variant, stepsId: Id): boolean {
+  const hit = stepsById(draft, stepsId);
+  if (!hit) return false;
+  hit.deck.steps = hit.deck.steps.filter((s) => s.id !== stepsId);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Furniture (phase 2b refines; simple bodies now)
+// ---------------------------------------------------------------------------
+
+/** A new furniture item (size from the caller, else the catalogue preset fallback of model/migrate.ts). */
+export function applyAddFurniture(
+  draft: Variant,
+  item: { catalogId: string; position: Vec2; levelId: Id; size?: FurnitureItem['size']; rotationDeg?: number; sizeVariant?: string; colour?: string; id?: Id },
+): Id {
+  const f: FurnitureItem = {
+    id: item.id ?? newId('f'),
+    catalogId: item.catalogId,
+    position: copy(item.position),
+    rotationDeg: item.rotationDeg ?? 0,
+    levelId: item.levelId,
+    size: { ...(item.size ?? furnitureSizeFallback(item.catalogId, item.sizeVariant)) },
+    isNew: true,
+  };
+  if (item.sizeVariant) f.sizeVariant = item.sizeVariant;
+  if (item.colour) f.colour = item.colour;
+  draft.furniture.push(f);
+  return f.id;
+}

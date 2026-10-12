@@ -1,0 +1,165 @@
+/**
+ * geometry/snap.ts on the small test fixture (one 6 × 4 m block, interior wall w-1 at x 3) plus a deck south of it.
+ */
+import { produce } from 'immer';
+import { describe, expect, it } from 'vitest';
+import type { Variant } from '../model/types';
+import { makeTestProject, makeVariant } from '../state/testProject';
+import { deriveVariant } from './derive';
+import {
+  buildSnapContext,
+  chipsAcross,
+  chipsAt,
+  gridPoint,
+  rayToWall,
+  roundTo,
+  snap,
+  snapCircle,
+  snapFootprint,
+  snapLineOffset,
+  snapPolygon,
+} from './snap';
+
+const site = makeTestProject().site;
+
+function fixture(): Variant {
+  return produce(makeVariant('v-1', 'Test'), (d) => {
+    d.outdoor.decks.push({
+      id: 'deck-1',
+      polygon: [
+        { id: 'd0', p: [0, -4] },
+        { id: 'd1', p: [6, -4] },
+        { id: 'd2', p: [6, 0] },
+        { id: 'd3', p: [0, 0] },
+      ],
+      topHeight: 0,
+      isNew: true,
+      noRailingEdges: [],
+      steps: [],
+    });
+    d.walls.push({ id: 'w-gone', a: [1, 1], b: [2, 1], thickness: 0.1, levelId: 'main', status: 'removed', kind: 'interior', heightMode: 'auto' });
+    d.furniture.push({ id: 'f-1', catalogId: 'x', position: [4.5, 2], rotationDeg: 0, levelId: 'main', size: { w: 1, d: 1, h: 1 }, isNew: true });
+  });
+}
+
+const derived = deriveVariant(fixture(), site, null);
+const ctx = buildSnapContext(derived, { storeyId: 'ground' });
+
+describe('context', () => {
+  it('has wall ends and midpoints, block vertices and axis edges, deck edges; no ghosts', () => {
+    expect(ctx.points.filter((p) => p.kind === 'endpoint').map((p) => p.p)).toEqual([
+      [3, 0],
+      [3, 4],
+    ]);
+    expect(ctx.points.some((p) => p.id === 'w-gone')).toBe(false);
+    expect(ctx.points.filter((p) => p.kind === 'vertex')).toHaveLength(4);
+    expect(ctx.axisLines.filter((l) => l.kind === 'blockEdge')).toHaveLength(4);
+    expect(ctx.axisLines.filter((l) => l.kind === 'deckEdge')).toHaveLength(4);
+    expect(ctx.furniture.map((f) => f.id)).toEqual(['f-1']);
+    const without = buildSnapContext(derived, { storeyId: 'ground', exclude: ['w-1', 'blk-1', 'deck-1', 'f-1'] });
+    expect(without.points).toEqual([]);
+    expect(without.lines).toEqual([]);
+    expect(without.furniture).toEqual([]);
+  });
+});
+
+describe('snap (points)', () => {
+  it('a point target within the radius wins', () => {
+    const r = snap(ctx, [3.05, 3.93], { radius: 0.12 });
+    expect(r).toMatchObject({ point: [3, 4], kind: 'point' });
+    expect(r.indicators[0]).toMatchObject({ kind: 'endpoint', p: [3, 4] });
+  });
+
+  it('near a line: slides along it, the free coordinate on the grid', () => {
+    const r = snap(ctx, [3.06, 1.23], { radius: 0.12 });
+    expect(r.kind).toBe('line');
+    expect(r.point[0]).toBe(3);
+    expect(r.point[1]).toBeCloseTo(1.2, 9);
+  });
+
+  it('nothing near: the grid (0.10 m, 0.01 m with Alt)', () => {
+    expect(snap(ctx, [1.234, 2.267], { radius: 0.05 })).toMatchObject({ point: [1.2, 2.3], kind: 'grid' });
+    expect(snap(ctx, [1.234, 2.267], { radius: 0.05, fine: true }).point).toEqual([1.23, 2.27]);
+    expect(snap(ctx, [1.234, 2.267], { radius: 0.05, grid: false })).toMatchObject({ point: [1.234, 2.267], kind: 'none' });
+  });
+
+  it('two candidate lines near the pointer: their intersection (extension × ortho through `from`)', () => {
+    // The extension of w-1 (x = 3) beyond y 4, and the horizontal through from (1, 5).
+    const r = snap(ctx, [3.05, 5.04], { radius: 0.12, from: [1, 5] });
+    expect(r.kind).toBe('intersection');
+    expect(r.point[0]).toBeCloseTo(3, 9);
+    expect(r.point[1]).toBeCloseTo(5, 9);
+    expect(r.chips[0].length).toBeCloseTo(2, 9);
+    expect(r.indicators.some((i) => i.kind === 'extension')).toBe(true);
+  });
+
+  it('chips: the distances to the walls on both sides along the narrower axis', () => {
+    const r = snap(ctx, [1.5, 2], { radius: 0.05 });
+    expect(r.chips).toHaveLength(2);
+    const lengths = r.chips.map((c) => c.length).sort((a, b) => a - b);
+    // Inner faces: x 0.16 (exterior wall, 0.27 − 0.11 inside the axis) and x 2.94 (w-1, 0.12 thick).
+    expect(lengths[0]).toBeCloseTo(1.34, 6);
+    expect(lengths[1]).toBeCloseTo(1.44, 6);
+  });
+});
+
+describe('line, polygon, footprint and circle snaps', () => {
+  it('snapLineOffset: to a parallel line in reach, else the absolute grid', () => {
+    // w-1 dragged west by 2.95: lands on the block's west edge line (x 0).
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 2.95, { radius: 0.1, excludeIds: new Set(['w-1']) }).offset).toBeCloseTo(3, 9);
+    // Left normal of a→b (+y) is −x: offset 1.04 → x 1.96 → grid x 2.0 → offset 1.0.
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 1.04, { radius: 0.01, excludeIds: new Set(['w-1']) }).offset).toBeCloseTo(1, 9);
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 1.04, { radius: 0.01, grid: false, excludeIds: new Set(['w-1']) }).offset).toBe(1.04);
+  });
+
+  it('snapPolygon: a unit next to the block snaps axis to axis in both directions', () => {
+    const unit = [
+      [6.07, 0.05],
+      [8.07, 0.05],
+      [8.07, 1.55],
+      [6.07, 1.55],
+    ] as [number, number][];
+    const r = snapPolygon(ctx, unit, { radius: 0.12 });
+    expect(r.delta[0]).toBeCloseTo(-0.07, 9);
+    expect(r.delta[1]).toBeCloseTo(-0.05, 9);
+    expect(r.indicators).toHaveLength(2);
+    // Far from everything: vertex 0 to the grid.
+    const far = snapPolygon(ctx, unit.map(([x, y]) => [x + 10.03, y + 10.02] as [number, number]), { radius: 0.12 });
+    expect(far.delta[0]).toBeCloseTo(0, 9);
+    expect(far.delta[1]).toBeCloseTo(0.03, 9);
+  });
+
+  it('snapFootprint: furniture backs onto a wall face (0 gap)', () => {
+    // A 1 × 0.5 item 0.06 m from w-1's east face (x 3.06).
+    const item = [
+      [3.12, 1],
+      [4.12, 1],
+      [4.12, 1.5],
+      [3.12, 1.5],
+    ] as [number, number][];
+    const r = snapFootprint(ctx, item, { radius: 0.1, excludeIds: new Set(['f-1']) });
+    expect(r.delta[0]).toBeCloseTo(-0.06, 9);
+    expect(r.delta[1]).toBeCloseTo(0, 12);
+  });
+
+  it('snapCircle: a hot tub touches a deck edge from the inside', () => {
+    const r = snapCircle(ctx, [3, -3.05], 1, { radius: 0.1 });
+    expect(r.point[1]).toBeCloseTo(-3, 9);
+    expect(r.point[0]).toBeCloseTo(3, 9);
+  });
+});
+
+describe('rays and chips', () => {
+  it('rayToWall / chipsAt / chipsAcross', () => {
+    const hit = rayToWall(ctx, [1.5, 2], [1, 0]);
+    expect(hit?.t).toBeCloseTo(1.44, 6);
+    expect(chipsAt(ctx, [1.5, 2]).length).toBe(2);
+    const across = chipsAcross(ctx, [3, 0], [3, 4], 0.06, 0.06, { exclude: new Set(['w-1']) });
+    expect(across.map((c) => c.length).sort((a, b) => a - b).map((x) => roundTo(x, 0.001))).toEqual([2.78, 2.78]);
+  });
+
+  it('grid helpers', () => {
+    expect(gridPoint([0.05, -0.05])).toEqual([0.1, 0]);
+    expect(roundTo(0.30000000000000004, 0.1)).toBe(0.3);
+  });
+});

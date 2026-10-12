@@ -23,13 +23,27 @@
  *    of a link shared with "del alle varianter" can look at every variant (autosave is off while read-only, so
  *    nothing is persisted).
  *  - `duplicateVariant` deep-copies the variant and gives ONLY the variant a new id (blocks, walls, rooms keep
- *    their ids — ids are unique per variant). The copy is inserted after the source and becomes active.
+ *    their ids — ids are unique per variant). The copy is inserted after the source and becomes active. The copy is
+ *    never `locked` (duplicating the locked base proposal Forslag D is how a family member starts editing).
+ *
+ * Phase-2 editor additions (docs/phase2-plan.md §3.2, §3.5, §3.6):
+ *  - `replaceVariant(id, variant, { transaction })` swaps in a whole variant object computed outside the store
+ *    (state/editActions.ts computes `produce(base, …)`, reconciles the rooms and hands the result over). The object
+ *    is stored as-is, so the derive memo filled while reconciling is hit again by `useDerived`. Same history rules
+ *    as `updateVariant` (merge key, transactions, readOnly); an identical object is a no-op.
+ *  - `updateSite(recipe, { transaction })`: site edits (trees), same rules.
+ *  - `transactionBase()`: the project at `beginTransaction` (drags are applied from it), null outside a transaction.
+ *  - UI state: `tool` ('select' | 'wall' | 'opening' | 'unit' | 'furniture' | 'measure'), `toolOptions`,
+ *    `showClearances`, `hint` (the hint line's tool-specific text, null = the tool's default). None of it is persisted.
+ *  - `toasts` (top level, never in the history): `showToast` appends one (at most TOAST_LIMIT, the oldest go first;
+ *    the same text already on screen is refreshed instead, `seq` bumped so its timer restarts) and returns its id;
+ *    `dismissToast(id)`. `undo: true` = an [Angre] button, `action: 'newProposal'` = a "Nytt forslag" button.
  */
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { temporal } from 'zundo';
 import { nanoid } from 'nanoid';
-import type { Id, Project, Variant } from '../model/types';
+import type { Id, OpeningType, Project, Site, Variant } from '../model/types';
 import type { CameraPreset } from '../view3d/View3D';
 import type { Selection } from './selection';
 
@@ -38,18 +52,38 @@ export const HISTORY_LIMIT = 200;
 export type ActiveView = 'plan' | '3d' | 'split';
 export type PlanStorey = 'ground' | 'loft';
 export type Mode3d = 'ute' | 'inne';
-export type Tool = 'select' | 'measure';
-export type ProjectSource = 'local' | 'link' | 'version';
+/** Toolbar tools (docs/phase2-plan.md §3.2): Velg · Vegg · Dør/vindu · Nytt bygg · Møbler · Mål. */
+export type Tool = 'select' | 'wall' | 'opening' | 'unit' | 'furniture' | 'measure';
 
-/** "Begge" (plan and 3D side by side) is the default only on windows at least this wide; narrower ones open the plan. */
-export const SPLIT_MIN_WIDTH = 1600;
-
-/** Default view for a window width when the user has not chosen one (`UiState.activeViewChosen`). */
-export function defaultActiveView(windowWidth: number): ActiveView {
-  return windowWidth >= SPLIT_MIN_WIDTH ? 'split' : 'plan';
+/** Options of the active placement tool. */
+export interface ToolOptions {
+  /** Dør/vindu: the opening type the next click places. */
+  openingType?: OpeningType;
+  /** Nytt bygg: unit template id (model/unitTemplates.ts). */
+  unitTemplate?: string;
+  /** Nytt bygg: quarter turns of the ghost (0–3). */
+  unitRotation90?: number;
+  /** Møbler: catalogue id of the item to place. */
+  furnitureItem?: string;
 }
 
+/** A toast (docs/phase2-plan.md §3.5): [Angre] when `undo`, "Nytt forslag" when `action` is 'newProposal'. */
+export interface Toast {
+  id: string;
+  text: string;
+  undo?: boolean;
+  action?: 'newProposal';
+  /** Bumped when the same text is shown again (the UI restarts its timer). */
+  seq?: number;
+}
+
+/** Most toasts kept at once (the oldest go first). */
+export const TOAST_LIMIT = 3;
+export type ProjectSource = 'local' | 'link' | 'version';
+
+
 export interface UiState {
+  /** The plan by default on every screen (docs/phase2-plan.md §6: editing happens in the plan) until the user picks one. */
   activeView: ActiveView;
   /** The user picked `activeView` with the view tabs (only then is it remembered in the UI prefs). */
   activeViewChosen: boolean;
@@ -62,12 +96,18 @@ export interface UiState {
   showDims: boolean;
   showGrid: boolean;
   showRoofPlan: boolean;
+  /** "Vis hva som er nytt": new parts orange, removed ones dashed ("Fjernet" ghosts) and the legend. On by default. */
   highlightNew: boolean;
   showTrees: boolean;
   showTerrain: boolean;
   preset: CameraPreset;
   selection: Selection | null;
   tool: Tool;
+  toolOptions: ToolOptions;
+  /** Draw furniture clearance zones in the plan. */
+  showClearances: boolean;
+  /** Tool-specific hint line text (e.g. "Klikk der den skal slutte"); null = the tool's default text. */
+  hint: string | null;
   /** Sun study: local date (YYYY-MM-DD) and minutes after local midnight at the site (Site.timezone). */
   sun: { date: string; minutes: number };
   readOnly: boolean;
@@ -84,12 +124,15 @@ export const DEFAULT_UI: UiState = {
   showDims: true,
   showGrid: true,
   showRoofPlan: false,
-  highlightNew: false,
+  highlightNew: true,
   showTrees: true,
   showTerrain: true,
   preset: 'oversikt',
   selection: null,
   tool: 'select',
+  toolOptions: {},
+  showClearances: false,
+  hint: null,
   sun: { date: '2026-06-21', minutes: 900 },
   readOnly: false,
   source: 'local',
@@ -142,10 +185,16 @@ export interface AppState {
   ui: UiState;
   canUndo: boolean;
   canRedo: boolean;
+  /** Toasts on screen (never part of the history). */
+  toasts: Toast[];
 
   // project actions (no-ops while ui.readOnly)
   setProject(project: Project): void;
   updateVariant(id: Id, recipe: VariantRecipe, opts?: { transaction?: string }): void;
+  /** Replace a whole variant by an object computed outside the store (see the header); same rules as updateVariant. */
+  replaceVariant(id: Id, variant: Variant, opts?: { transaction?: string }): void;
+  /** Edit the site (trees); same rules as updateVariant. */
+  updateSite(recipe: (draft: Site) => void, opts?: { transaction?: string }): void;
   updateActiveVariant(recipe: VariantRecipe, opts?: { transaction?: string }): void;
   /** Returns the new variant id, or null when nothing was done. */
   duplicateVariant(id: Id, name: string): Id | null;
@@ -161,6 +210,8 @@ export interface AppState {
   commitTransaction(): void;
   cancelTransaction(): void;
   inTransaction(): boolean;
+  /** The project at `beginTransaction` (drags are computed from it), or null outside a transaction. */
+  transactionBase(): Project | null;
 
   undo(): void;
   redo(): void;
@@ -177,6 +228,9 @@ export interface AppState {
   /** Patch the UI state. */
   setUi(patch: Partial<UiState>): void;
   select(selection: Selection | null): void;
+  /** Show a toast (see the header); returns its id. */
+  showToast(toast: Omit<Toast, 'id' | 'seq'>): string;
+  dismissToast(id: string): void;
 }
 
 function nowISO(): string {
@@ -265,6 +319,7 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
           ui: { ...DEFAULT_UI, ...initialUi },
           canUndo: false,
           canRedo: false,
+          toasts: [],
 
           setProject: (project) => {
             if (readOnly()) return;
@@ -284,6 +339,38 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             mergeKey = key;
           },
 
+          replaceVariant: (id, variant, o) => {
+            if (readOnly()) return;
+            const current = get().project.variants.find((x) => x.id === id);
+            if (!current || current === variant) return;
+            const key = o?.transaction ?? null;
+            const merge = key !== null && key === mergeKey && tx === null;
+            const apply = () =>
+              set((s) => {
+                const i = s.project.variants.findIndex((x) => x.id === id);
+                if (i < 0) return;
+                s.project.variants[i] = variant;
+                s.project.updatedAt = nextStamp(s.project.updatedAt);
+              });
+            if (merge) untracked(apply);
+            else apply();
+            mergeKey = key;
+          },
+
+          updateSite: (recipe, o) => {
+            if (readOnly()) return;
+            const key = o?.transaction ?? null;
+            const merge = key !== null && key === mergeKey && tx === null;
+            const apply = () =>
+              set((s) => {
+                recipe(s.project.site);
+                s.project.updatedAt = nextStamp(s.project.updatedAt);
+              });
+            if (merge) untracked(apply);
+            else apply();
+            mergeKey = key;
+          },
+
           updateActiveVariant: (recipe, o) => {
             get().updateVariant(get().project.activeVariantId, recipe, o);
           },
@@ -298,6 +385,8 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
             copy.name = name.trim() || copyName(source.name);
             copy.createdAt = nowISO();
             copy.basedOnId = id;
+            // A copy of the locked base proposal (Forslag D) is an ordinary, editable proposal.
+            delete copy.locked;
             set((s) => {
               const i = s.project.variants.findIndex((v) => v.id === id);
               s.project.variants.splice(i + 1, 0, copy);
@@ -432,6 +521,8 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
 
           inTransaction: () => tx !== null,
 
+          transactionBase: () => tx?.start ?? null,
+
           undo: () => {
             if (readOnly() || tx) return;
             mergeKey = null;
@@ -490,6 +581,30 @@ export function createAppStore(initialProject: Project, initialUi: Partial<UiSta
           select: (selection) => {
             set((s) => {
               s.ui.selection = selection;
+            });
+          },
+
+          showToast: (toast) => {
+            const same = get().toasts.find((t) => t.text === toast.text);
+            if (same) {
+              set((s) => {
+                const t = s.toasts.find((x) => x.id === same.id);
+                if (t) Object.assign(t, toast, { seq: (t.seq ?? 0) + 1 });
+              });
+              return same.id;
+            }
+            const id = nanoid(8);
+            set((s) => {
+              s.toasts.push({ id, ...toast });
+              if (s.toasts.length > TOAST_LIMIT) s.toasts.splice(0, s.toasts.length - TOAST_LIMIT);
+            });
+            return id;
+          },
+
+          dismissToast: (id) => {
+            if (!get().toasts.some((t) => t.id === id)) return;
+            set((s) => {
+              s.toasts = s.toasts.filter((t) => t.id !== id);
             });
           },
         };

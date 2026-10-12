@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CAMERA_PRESET_KEYS, createAppStore, cutHeightFor, DEFAULT_UI, defaultActiveView, EYE_LEVEL_CUT, INTERIOR_CUT, nextStamp, selectActiveVariant, SPLIT_MIN_WIDTH } from './store';
+import { CAMERA_PRESET_KEYS, createAppStore, cutHeightFor, DEFAULT_UI, EYE_LEVEL_CUT, INTERIOR_CUT, nextStamp, selectActiveVariant } from './store';
 import { makeTestProject, makeVariant } from './testProject';
 import type { CameraPreset } from '../view3d/View3D';
 
@@ -233,6 +233,15 @@ describe('variants', () => {
     expect(s.getState().duplicateVariant('nope', 'x')).toBeNull();
   });
 
+  it('duplicateVariant of the locked base proposal makes an unlocked copy (the original stays locked)', () => {
+    const s = createAppStore(makeTestProject({ variants: [{ ...makeVariant('v-1', 'Forslag D'), locked: true }] }));
+    const id = s.getState().duplicateVariant('v-1', 'Mitt forslag');
+    const [orig, copy] = s.getState().project.variants;
+    expect(copy.id).toBe(id);
+    expect(copy.locked).toBeUndefined();
+    expect(orig.locked).toBe(true);
+  });
+
   it('setActiveVariant switches, clears selection and ignores unknown ids', () => {
     const s = createAppStore(makeTestProject({ variants: [makeVariant('v-1', 'A'), makeVariant('v-2', 'B')] }));
     s.getState().select({ kind: 'room', id: 'room-1' });
@@ -401,11 +410,9 @@ describe('review fixes', () => {
     expect(roomName(s)).toBe('Stue');
   });
 
-  it('defaults: plan view below 1600 px, "Begge" from 1600 px; interior cut 1.3; langsiden preset', () => {
-    expect(defaultActiveView(1400)).toBe('plan');
-    expect(defaultActiveView(375)).toBe('plan');
-    expect(defaultActiveView(SPLIT_MIN_WIDTH)).toBe('split');
+  it('defaults: the plan view on every screen, "Vis hva som er nytt" on; interior cut 1.3; langsiden preset', () => {
     expect(DEFAULT_UI.activeView).toBe('plan');
+    expect(DEFAULT_UI.highlightNew).toBe(true);
     expect(DEFAULT_UI.activeViewChosen).toBe(false);
     expect(cutHeightFor(DEFAULT_UI.preset)).toBe(1.3);
     expect(CAMERA_PRESET_KEYS).toContain('langsiden');
