@@ -34,6 +34,8 @@ import { nanoid } from 'nanoid';
 import { migrateProject, SchemaTooNewError } from '../model/migrate';
 import { createForslagD, createForslagDVariant, SEED_REVISION, SEED_VARIANT_ID } from '../model/seed/forslagD';
 import { FROZEN_SEED_REVISION, frozenSchema1Project, frozenSchema1Variant } from '../model/seed/frozenSeed';
+/** The phase-1 Forslag D of SEED_REVISION 2 (schema 1), frozen from commit 0d37025: never edit it. */
+import frozenSeedRevision2 from '../model/seed/frozen/forslagD.schema1.rev2.json';
 import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Id, Project, Site, Variant } from '../model/types';
 import { nb } from '../i18n/nb';
@@ -178,39 +180,58 @@ export interface LegacyImport {
   updatedAt: string | null;
 }
 
-let frozenBase: Variant | null = null;
+let frozenBases: Variant[] | null = null;
 
 /**
  * The Forslag D an autosave's copies were made from: the bundled one for an autosave of the current seed revision,
- * else the phase-1 Forslag D (the frozen schema-1 seed, migrated). Phase 1 wrote its working copy of Forslag D on a
- * plain visit, so an untouched phase-1 copy equals the frozen seed — never the current, furnished one.
+ * else the phase-1 Forslag D — the frozen schema-1 seed of revision 3 and the one of revision 2 (the live site served
+ * revision 2 for 11 minutes on 11 Oct 2026, and an autosave from then keeps that copy also after «Hent ny Forslag D»;
+ * model/seed/frozen/forslagD.schema1.rev2.json), migrated. Phase 1 wrote its working copy of Forslag D on a plain
+ * visit, so an untouched phase-1 copy equals one of these — never the current, furnished one.
  */
-function legacyBaseFor(saved: Project, base: Variant): Variant {
-  if (saved.seedRevision >= SEED_REVISION) return base;
-  try {
-    frozenBase ??= migrateProject(frozenSchema1Project()).variants[0] ?? null;
-  } catch {
-    frozenBase = null;
+function legacyBasesFor(saved: Project, base: Variant): Variant[] {
+  if (saved.seedRevision >= SEED_REVISION) return [base];
+  if (!frozenBases) {
+    frozenBases = [];
+    for (const raw of [frozenSchema1Project(), structuredClone(frozenSeedRevision2) as unknown]) {
+      try {
+        const v = migrateProject(raw).variants[0];
+        if (v) frozenBases.push(v);
+      } catch {
+        // not readable: compared with the others only
+      }
+    }
   }
-  return frozenBase ?? base;
+  return frozenBases.length > 0 ? frozenBases : [base];
 }
 
 /**
- * The legacy autosave moved into the family store: its unlocked variants, except an untouched copy of the Forslag D
- * it was made from (`legacyBaseFor`). The ids are kept (so importing twice adds nothing twice) unless they are not
- * valid proposal ids or clash with the base: a working copy of Forslag D gets `forslag-d-eget-<hash of the autosave's
- * own project id and time>`, unique per device (phase 1 gave every device its own project id) and the same on every
- * import. A name equal to the base's gets " (eget)" ("Forslag D (eget)").
+ * Forslag D itself as an autosave holds it: `forslag-d` with its seed name, or the copy phase 1's «Hent ny Forslag D»
+ * added (`forslag-d-r<n>-…`, «Forslag D (revisjon <n>)»). Any other copy has a name the user gave it or chose.
+ */
+function isSeedItself(v: Variant, base: Variant): boolean {
+  if (v.id === base.id) return v.name === base.name;
+  const m = /-r(\d+)-[A-Za-z0-9_-]+$/.exec(v.id);
+  return m !== null && v.id.startsWith(`${base.id}-r`) && (v.name === base.name || v.name === nb.seed.variantName(Number(m[1])));
+}
+
+/**
+ * The legacy autosave moved into the family store: its unlocked variants, except Forslag D itself when it is untouched
+ * (`isSeedItself`, equal to the Forslag D it was made from, `legacyBasesFor`). A copy with a name of its own is kept
+ * even when nothing in it was changed («Urørt kopi», «Mammas utkast»). The ids are kept (so importing twice adds
+ * nothing twice) unless they are not valid proposal ids or clash with the base: a working copy of Forslag D gets
+ * `forslag-d-eget-<hash of the autosave's own project id and time>`, unique per device (phase 1 gave every device its
+ * own project id) and the same on every import. A name equal to the base's gets " (eget)" ("Forslag D (eget)").
  */
 export function legacyImport(saved: Project, base: Variant): LegacyImport {
-  const ref = legacyBaseFor(saved, base);
+  const refs = legacyBasesFor(saved, base);
   const ids = new Set<Id>([base.id]);
   const names = new Set<string>([base.name]);
   const variants: Variant[] = [];
   let activeId: Id | null = null;
   for (const v of saved.variants) {
     if (v.locked) continue;
-    if (sameContent({ ...v, id: ref.id, name: ref.name, createdAt: ref.createdAt, basedOnId: ref.basedOnId }, ref)) continue;
+    if (isSeedItself(v, base) && refs.some((ref) => sameContent({ ...v, id: ref.id, name: ref.name, createdAt: ref.createdAt, basedOnId: ref.basedOnId }, ref))) continue;
     let id = isValidProposalId(v.id) ? v.id : v.id.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 60) || 'forslag';
     if (ids.has(id)) id = `${id}-eget-${fnv36(`${saved.id}|${saved.createdAt}|${v.createdAt}|${v.id}`)}`;
     for (let n = 2; ids.has(id); n++) id = `${v.id}-eget-${n}`;
@@ -921,14 +942,20 @@ export interface PrefsAutosave {
 }
 
 /**
- * Save the UI prefs (debounced, AUTOSAVE_DELAY_MS) whenever they change, and on `pagehide`. Without storage it does
+ * Save the UI prefs (debounced, AUTOSAVE_DELAY_MS) whenever they change, on `pagehide`, and when `doc` (the document)
+ * becomes hidden (iOS: leaving the app fires only that, and the timers stop right after). Without storage it does
  * nothing (the start-up notice 'storage-unavailable' says so).
  */
 export function startPrefsAutosave(
   store: AppStore,
-  opts: { storage: KeyValueStorage | null; delayMs?: number; target?: Pick<Window, 'addEventListener' | 'removeEventListener'> | null },
+  opts: {
+    storage: KeyValueStorage | null;
+    delayMs?: number;
+    target?: Pick<Window, 'addEventListener' | 'removeEventListener'> | null;
+    doc?: Pick<Document, 'addEventListener' | 'removeEventListener' | 'visibilityState'> | null;
+  },
 ): PrefsAutosave {
-  const { storage, target } = opts;
+  const { storage, target, doc } = opts;
   if (!storage) return { flush: () => {}, stop: () => {} };
   const delay = opts.delayMs ?? AUTOSAVE_DELAY_MS;
   let last = JSON.stringify(pickUiPrefs(store.getState().ui));
@@ -945,7 +972,11 @@ export function startPrefsAutosave(
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(flush, delay);
   });
+  const onVisibility = () => {
+    if (doc?.visibilityState === 'hidden') flush();
+  };
   target?.addEventListener('pagehide', flush);
+  doc?.addEventListener('visibilitychange', onVisibility);
   return {
     flush,
     stop: () => {
@@ -953,6 +984,7 @@ export function startPrefsAutosave(
       timer = null;
       unsubscribe();
       target?.removeEventListener('pagehide', flush);
+      doc?.removeEventListener('visibilitychange', onVisibility);
     },
   };
 }

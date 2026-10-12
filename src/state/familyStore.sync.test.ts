@@ -654,3 +654,223 @@ describe('fix round after 2b: deletes from an old view, drags, leaving with a co
     expect(leave()).toBe(false);
   });
 });
+
+describe('final fix round: nothing lost when resolving a conflict or leaving the app; own versions after a reload; making a proposal is no undo step', () => {
+  const revisionNotes = (fake: FakeFirestore, id: string) =>
+    [...fake.docs.entries()]
+      .filter(([k]) => k.startsWith(`families/${FID}/proposals/${id}/revisions/`))
+      .map(([, d]) => ({ by: d.savedBy, notes: (JSON.parse(String(d.project)) as Project).variants[0].notes ?? null }));
+  const storedDoc = (fake: FakeFirestore, id: string) => fake.docs.get(`families/${FID}/proposals/${id}`) ?? {};
+
+  /** Mamma has made a proposal and saved an edit (a revision taken just now); Pappa's sync waits a minute to save. */
+  async function conflictWithinFiveMinutes() {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    editNotes(mum, id, 'første');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(storedDoc(fake, id).lastRevisionAt, 'a revision was just taken').not.toBeNull();
+    dad.sync.stop();
+    const dadSync = createProposalSync({ store: dad.store, family: dad.family, delayMs: 60_000 });
+    cleanups.push(() => dadSync.stop());
+    await settle();
+    editNotes(dad, id, 'pappa');
+    editNotes(mum, id, 'mamma');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    // Within 5 minutes of the last revision: Mamma's save kept no revision of its own.
+    expect(revisionNotes(fake, id).map((r) => r.notes)).toEqual([null]);
+    expect(dadSync.getState().conflicts).toHaveLength(1);
+    return { fake, mum, dad, dadSync, id };
+  }
+
+  it('2: «Lagre over» within 5 minutes of a revision keeps the version written over under Tidligere versjoner', async () => {
+    const { fake, mum, dadSync, id } = await conflictWithinFiveMinutes();
+    await dadSync.resolveConflict(id, 'overwrite');
+    await settle();
+    expect(variant(mum, id)?.notes).toBe('pappa');
+    expect(revisionNotes(fake, id)).toContainEqual({ by: 'Mamma', notes: 'mamma' });
+    expect((storedDoc(fake, id).revisions as string[]).length).toBe(revisionNotes(fake, id).length);
+  });
+
+  it('2: «Hent endringene» within 5 minutes of a revision keeps the version here under Tidligere versjoner', async () => {
+    const { fake, dad, dadSync, id } = await conflictWithinFiveMinutes();
+    await dadSync.resolveConflict(id, 'fetch');
+    await settle();
+    expect(variant(dad, id)?.notes).toBe('mamma');
+    expect(storedNotesOf(fake, id)).toBe('mamma');
+    expect(revisionNotes(fake, id)).toContainEqual({ by: 'Pappa', notes: 'pappa' });
+    expect((await dad.family.listRevisions(id)).some((r) => r.savedBy === 'Pappa')).toBe(true);
+  });
+
+  it('2: «Hent endringene» with the same content here keeps no extra revision', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    dad.sync.stop();
+    const dadSync = createProposalSync({ store: dad.store, family: dad.family, delayMs: 60_000 });
+    cleanups.push(() => dadSync.stop());
+    await settle();
+    editNotes(dad, id, 'mamma');
+    editNotes(dad, id, 'pappa');
+    editNotes(mum, id, 'mamma');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(dadSync.getState().conflicts).toHaveLength(1);
+    dad.store.getState().undo(); // back to the same content as the stored version
+    await dadSync.resolveConflict(id, 'fetch');
+    await settle();
+    expect(revisionNotes(fake, id).some((r) => r.by === 'Pappa')).toBe(false);
+  });
+
+  it('3: edits are saved at once when the page is hidden (iOS: leaving the app fires only visibilitychange)', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    await settle();
+    const id = await newProposal(mum);
+    mum.sync.stop();
+    const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });
+    const sync = createProposalSync({ store: mum.store, family: mum.family, delayMs: 60_000, doc });
+    cleanups.push(() => sync.stop());
+    await settle();
+    editNotes(mum, id, 'rett før appen ble lagt bort');
+    await settle();
+    doc.dispatchEvent(new Event('visibilitychange'));
+    await settle();
+    expect(storedNotesOf(fake, id), 'visible: the debounce still waits').toBeUndefined();
+    doc.visibilityState = 'hidden';
+    doc.dispatchEvent(new Event('visibilitychange'));
+    await settle();
+    expect(storedNotesOf(fake, id)).toBe('rett før appen ble lagt bort');
+    // After stop() the listener is gone.
+    sync.stop();
+    editNotes(mum, id, 'etter stopp');
+    doc.dispatchEvent(new Event('visibilitychange'));
+    await settle();
+    expect(storedNotesOf(fake, id)).toBe('rett før appen ble lagt bort');
+  });
+
+  it('4: a version of this device deleted unseen by an offline device is noticed also after a reload', async () => {
+    const fake = createFakeFirestore();
+    const kept = memoryStorage();
+    /** Mamma's device: the page (store, family store, sync) is made anew on a reload; the storage stays. */
+    const page = () => {
+      const dev = fake.device();
+      const family = createFirestoreFamilyStore({ adapter: dev.adapter, familyId: FID, storage: kept, context, connectivity: dev.connectivity, retryMs: 20 });
+      family.setMyName('Mamma');
+      const store = createAppStore(baseProject());
+      const sync = createProposalSync({ store, family, delayMs: 5, retryMs: 10, storage: kept });
+      const stop = () => {
+        sync.stop();
+        family.dispose();
+      };
+      cleanups.push(stop);
+      return { store, family, sync, setOnline: dev.setOnline, stop };
+    };
+    let mum = page();
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    expect(variant(dad, id)).toBeDefined();
+    // Pappa, offline, deletes from his view (the first version): queued on his device.
+    dad.setOnline(false);
+    dad.store.getState().deleteVariant(id);
+    await settle();
+    await dad.sync.flush();
+    // Mamma saves an edit online, then her page reloads.
+    editNotes(mum, id, 'mamma');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    mum.stop();
+    mum = page();
+    await settle();
+    expect(variant(mum, id)?.notes).toBe('mamma');
+    // Pappa comes back online: the delete lands on Mamma's version (in the Papirkurv now), and she is told.
+    dad.setOnline(true);
+    await settle(16);
+    expect(storedDoc(fake, id).deletedAt).not.toBeNull();
+    expect(storedNotesOf(fake, id)).toBe('mamma');
+    expect(mum.sync.getState().overwritten).toEqual([expect.objectContaining({ id, kind: 'deleted', by: 'Pappa' })]);
+  });
+
+  it('5: a device whose clock is behind never stamps a version older than the one it has seen (delete, restore)', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    dad.sync.stop();
+    const late = Date.now() - 60 * 60_000;
+    const dadSync = createProposalSync({ store: dad.store, family: dad.family, delayMs: 5, now: () => late });
+    cleanups.push(() => dadSync.stop());
+    await settle();
+    const before = String(storedDoc(fake, id).updatedAt);
+    dad.store.getState().deleteVariant(id);
+    await settle();
+    await dadSync.flush();
+    await settle();
+    const deleted = String(storedDoc(fake, id).updatedAt);
+    expect(storedDoc(fake, id).deletedAt).not.toBeNull();
+    expect(deleted > before).toBe(true);
+    dad.store.getState().undo();
+    await settle();
+    await dadSync.flush();
+    await settle();
+    expect(storedDoc(fake, id).deletedAt).toBeNull();
+    expect(String(storedDoc(fake, id).updatedAt) > deleted).toBe(true);
+  });
+
+  it('8: «+ Nytt forslag» is no undo step: Angre right after it does not delete the proposal for everyone', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = mum.store.getState().duplicateVariant('base', 'Prøve');
+    if (!id) throw new Error('duplicate');
+    expect(mum.store.getState().canUndo).toBe(false);
+    mum.store.getState().undo();
+    expect(names(mum)).toEqual(['Forslag D', 'Prøve']);
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(names(dad)).toEqual(['Forslag D', 'Prøve']);
+    expect(storedDoc(fake, id).deletedAt).toBeNull();
+    // Edits stay undoable; a copy made after them is no undo step either, and Angre undoes the edit, not the copy.
+    editNotes(mum, id, 'endret');
+    const copy = mum.store.getState().duplicateVariant(id, 'Kopi av Prøve');
+    if (!copy) throw new Error('duplicate');
+    expect(mum.store.getState().canUndo).toBe(true);
+    mum.store.getState().undo();
+    expect(names(mum)).toEqual(['Forslag D', 'Prøve', 'Kopi av Prøve']);
+    expect(variant(mum, id)?.notes).toBeUndefined();
+    expect(variant(mum, copy)?.notes).toBe('endret');
+    mum.store.getState().redo();
+    expect(variant(mum, id)?.notes).toBe('endret');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(names(dad)).toEqual(['Forslag D', 'Prøve', 'Kopi av Prøve']);
+    // Deleting is still an undo step (after its confirmations in the menu): Angre brings it back.
+    mum.store.getState().deleteVariant(copy);
+    expect(names(mum)).toEqual(['Forslag D', 'Prøve']);
+    mum.store.getState().undo();
+    expect(names(mum)).toContain('Kopi av Prøve');
+  });
+});
+
+function storedNotesOf(fake: FakeFirestore, id: string): string | undefined {
+  const d = fake.docs.get(`families/${FID}/proposals/${id}`);
+  return d ? (JSON.parse(String(d.project)) as Project).variants[0].notes : undefined;
+}

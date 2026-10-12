@@ -3,10 +3,10 @@
  * devices (`FirestoreAdapter`s). Like the real SDK, a device sees its own writes at once (its queued writes applied
  * over the server's documents, in order — a field update to the newest version it knows), other devices see them
  * when they reach the server; while a device is offline its writes queue and `acked` waits. A batch is applied to the
- * server's CURRENT documents when it arrives (an `update` of a document that does not exist fails the batch,
- * `not-found`). Documents with queued writes are flagged `pending` in snapshots, also writes made on the device before
- * a store was created on it (an offline reload). `refuse` makes the server reject writes (rules), `signInFails` the
- * anonymous sign-in.
+ * server's CURRENT documents when it arrives (a `set` with `merge` keeps the fields it leaves out; an `update` of a
+ * document that does not exist fails the batch, `not-found`). Documents with queued writes are flagged `pending` in
+ * snapshots, also writes made on the device before a store was created on it (an offline reload). `refuse` makes
+ * the server reject writes (rules), `signInFails` the anonymous sign-in.
  */
 import { applyUpdate } from './familyStore.firestore';
 import type { AdapterDoc, Connectivity, FirestoreAdapter, SnapshotMeta, WriteOp } from './familyStore.firestore';
@@ -44,7 +44,7 @@ function applyOps(ops: readonly WriteOp[], get: (path: string) => Data | undefin
   const out = new Map<string, Data | undefined>();
   const cur = (path: string) => (out.has(path) ? out.get(path) : get(path));
   for (const op of ops) {
-    if (op.kind === 'set') out.set(op.path, clone(op.data));
+    if (op.kind === 'set') out.set(op.path, op.merge ? { ...(cur(op.path) ?? {}), ...clone(op.data) } : clone(op.data));
     else if (op.kind === 'delete') out.set(op.path, undefined);
     else {
       const d = cur(op.path);
@@ -75,7 +75,7 @@ export function createFakeFirestore(): FakeFirestore {
         for (const item of queue) {
           for (const op of item.ops) {
             if (op.path !== path) continue;
-            if (op.kind === 'set') d = op.data;
+            if (op.kind === 'set') d = op.merge ? { ...(d ?? {}), ...op.data } : op.data;
             else if (op.kind === 'delete') d = undefined;
             else if (d) d = applyUpdate(d, op);
           }

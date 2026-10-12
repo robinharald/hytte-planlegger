@@ -52,6 +52,8 @@ import { createAppStore, DEFAULT_UI } from './store';
 import { makeTestProject, makeVariant } from './testProject';
 /** A REAL phase-1 autosave: localStorage 'hytte-planlegger:project' after a plain visit to the live phase-1 site. */
 import phase1Text from './fixtures/phase1-autosave.plain-visit.json?raw';
+/** The phase-1 Forslag D of SEED_REVISION 2 (commit 0d37025). */
+import frozenRevision2 from '../model/seed/frozen/forslagD.schema1.rev2.json';
 
 function twoVariantProject(): Project {
   return makeTestProject({ variants: [makeVariant('v-1', 'Forslag D'), makeVariant('v-2', 'Forslag E')], activeVariantId: 'v-2' });
@@ -528,7 +530,8 @@ describe('the legacy whole-project autosave → proposals', () => {
     delete untouched.locked;
     const saved: Project = { ...seed, variants: [seed.variants[0], working, mine, untouched, { ...seed.variants[0], id: 'old-locked', name: 'Forslag D (revisjon 4)' }] };
     const out = legacyProposals(saved, base());
-    expect(out.map((v) => v.name)).toEqual(['Forslag D (eget)', 'Mitt forslag']);
+    // «Kopi» is untouched but has a name of its own: kept (final fix round, finding 7a).
+    expect(out.map((v) => v.name)).toEqual(['Forslag D (eget)', 'Mitt forslag', 'Kopi']);
     expect(out[0].id).toMatch(/^forslag-d-eget-[a-z0-9]+$/);
     expect(out[1].id).toBe('v-mine');
     expect(out.every((v) => v.locked === undefined)).toBe(true);
@@ -583,6 +586,36 @@ describe('the legacy whole-project autosave → proposals', () => {
     // The same autosave again: the same id. Another device's autosave: another id (both copies survive).
     expect(edit('buMrpErtH0V-', '2026-09-01T10:00:00.000Z').variants[0].id).toBe(v.id);
     expect(edit('Xy7_otherDev', '2026-09-02T11:00:00.000Z').variants[0].id).not.toBe(v.id);
+  });
+
+  it('final fix round 7a: an untouched copy with a name of its own is kept; only Forslag D itself is dropped', () => {
+    const raw = JSON.parse(phase1Text) as Record<string, unknown> & { variants: Record<string, unknown>[]; activeVariantId: string };
+    const seedCopy = raw.variants[0];
+    raw.variants.push({ ...structuredClone(seedCopy), id: 'urort-1', name: 'Urørt kopi', basedOnId: 'forslag-d' });
+    raw.variants.push({ ...structuredClone(seedCopy), id: 'mamma-1', name: 'Mammas utkast', basedOnId: 'forslag-d' });
+    raw.activeVariantId = 'mamma-1';
+    const out = legacyImport(migrateProject(raw), base());
+    expect(out.variants.map((v) => [v.id, v.name])).toEqual([
+      ['urort-1', 'Urørt kopi'],
+      ['mamma-1', 'Mammas utkast'],
+    ]);
+    expect(out.activeId).toBe('mamma-1');
+  });
+
+  it('final fix round 7b: an untouched Forslag D of the 11-minute revision-2 deploy brings no proposal, also after «Hent ny Forslag D»', () => {
+    const rev2 = structuredClone(frozenRevision2) as unknown as Record<string, unknown> & { variants: Record<string, unknown>[] };
+    expect(rev2.seedRevision).toBe(2);
+    const plainVisit = { ...rev2, id: 'rev2-device', updatedAt: '2026-10-11T21:05:00.000Z' };
+    expect(legacyImport(migrateProject(plainVisit), base()).variants).toEqual([]);
+    // «Hent ny Forslag D» in phase 1 kept the old copy and added the revision-3 seed as «Forslag D (revisjon 3)».
+    const r3 = { ...frozenSchema1Variant(), id: 'forslag-d-r3-Ab1x', name: 'Forslag D (revisjon 3)' };
+    const fetched = { ...plainVisit, seedRevision: 3, variants: [...rev2.variants, r3], activeVariantId: 'forslag-d-r3-Ab1x' };
+    expect(legacyImport(migrateProject(fetched), base())).toMatchObject({ variants: [], activeId: null });
+    // An edited revision-2 copy is still its own proposal.
+    (rev2.variants[0].rooms as { name: string }[])[0].name = 'Omdøpt rom';
+    const edited = legacyImport(migrateProject({ ...rev2, id: 'rev2-device' }), base());
+    expect(edited.variants.map((v) => v.name)).toEqual(['Forslag D (eget)']);
+    expect(edited.variants[0].rooms[0].name).toBe('Omdøpt rom');
   });
 
   it('retire: kept under project.before-2b, then removed; never overwrites an earlier copy', () => {
@@ -641,6 +674,20 @@ describe('startPrefsAutosave', () => {
     store.getState().setUi({ showLabels: false });
     vi.advanceTimersByTime(150);
     expect(loadUiPrefs(localStorage).showLabels).toBe(true);
+  });
+
+  it('final fix round 3: saves at once when the page is hidden (iOS: leaving the app fires only visibilitychange)', () => {
+    vi.useFakeTimers();
+    const store = createAppStore(makeTestProject());
+    const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' as DocumentVisibilityState });
+    const ctl = startPrefsAutosave(store, { storage: localStorage, doc, delayMs: 60_000 });
+    store.getState().setUi({ showGrid: false });
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(loadUiPrefs(localStorage).showGrid, 'still visible: waits for the debounce').toBeUndefined();
+    doc.visibilityState = 'hidden';
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(loadUiPrefs(localStorage).showGrid).toBe(false);
+    ctl.stop();
   });
 
   it('does nothing without storage', () => {

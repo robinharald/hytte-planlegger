@@ -97,6 +97,17 @@ describe('ids, links and mode', () => {
     expect(familyLink('https://robinharald.github.io/hytte-planlegger/#old', f)).toBe(`https://robinharald.github.io/hytte-planlegger/#f=${f}`);
   });
 
+  it('final fix round 6: a family link with what a sentence or a message adds after it still opens the family', () => {
+    const f = 'e2e-abcdefghijklmnopqrstuvwxyz';
+    for (const tail of ['.', ')', ',', ';', ':', '!', '?', ']', "'", '"', '»', '…', ').', '%29', '%C2%BB', '.%20']) {
+      expect(parseHash(`#f=${f}${tail}`).family, tail).toBe(f);
+    }
+    expect(parseHash(`#f=${f}.&p=abc123`)).toEqual({ family: f, proposal: 'abc123', delta: null });
+    // Only trailing characters go: a cut-off id stays broken, and so does one with other characters inside.
+    expect(parseHash('#f=e2e-tooshort.').family).toBeNull();
+    expect(parseHash(`#f=${f.slice(0, 10)}.${f.slice(10)}`).family).toBeNull();
+  });
+
   it('shared only with a config, never in tests or under automation unless overridden', () => {
     expect(resolveFamilyMode({ hasConfig: false, storedOverride: 'shared' })).toBe('local');
     expect(resolveFamilyMode({ hasConfig: true })).toBe('shared');
@@ -598,6 +609,36 @@ describe('data safety (fix round after 2b)', () => {
     const revisions = await b.listRevisions('p-1');
     expect(revisions.some((x) => x.savedBy === 'Mamma')).toBe(true);
     expect(((fake.docs.get(path('p-1'))?.revisions ?? []) as string[]).length).toBe(revisions.length);
+  });
+
+  it('final fix round 5: a content save queued offline from an old view keeps the revisions another device added', async () => {
+    const fake = createFakeFirestore();
+    const mum = fake.device();
+    const dad = fake.device();
+    const a = createFirestoreFamilyStore({ adapter: mum.adapter, familyId: fid, storage: memoryStorage(), context, connectivity: mum.connectivity });
+    const b = createFirestoreFamilyStore({ adapter: dad.adapter, familyId: fid, storage: memoryStorage(), context, connectivity: dad.connectivity });
+    disposers.push(() => a.dispose(), () => b.dispose());
+    const r = await a.saveProposal(proposalVariant('p-1'), { base: null, by: 'Mamma' });
+    if (r.status !== 'saved') throw new Error('save');
+    await ticks();
+    mum.setOnline(false);
+    // Mamma, offline, saves: her save keeps the first version as a revision (queued on her device).
+    const m = await a.saveProposal({ ...proposalVariant('p-1'), notes: 'mamma' }, { base: r.proposal.updatedAt, by: 'Mamma' });
+    expect(m.status).toBe('saved');
+    // Pappa, online, saves too: the first version is kept as a revision there as well (its id goes into the list).
+    const d = await b.saveProposal({ ...proposalVariant('p-1'), notes: 'pappa' }, { base: r.proposal.updatedAt, by: 'Pappa' });
+    expect(d.status).toBe('saved');
+    await ticks();
+    expect(fake.docs.get(path('p-1'))?.revisions as string[]).toHaveLength(1);
+    // Mamma comes online: her queued save (made from a view without Pappa's revision) lands last.
+    mum.setOnline(true);
+    await ticks();
+    // Last write wins for the content, but the list holds both revisions: none of them is an orphan.
+    expect(storedNotes(fake, 'p-1')).toBe('mamma');
+    const listed = fake.docs.get(path('p-1'))?.revisions as string[];
+    const kept = [...fake.docs.keys()].filter((k) => k.startsWith(`${path('p-1')}/revisions/`)).map((k) => k.split('/').pop());
+    expect(listed).toHaveLength(2);
+    expect([...listed].sort()).toEqual([...kept].sort());
   });
 
   it('writes queued before the store was created (an offline reload) are pending until the server has them', async () => {

@@ -26,7 +26,9 @@
  *    of a delete).
  *  - Revisions: a save that replaces content whose last revision is older than REVISION_INTERVAL_MS (or that has none)
  *    first keeps the replaced content as a revision ("one per save burst, at most one per 5 minutes"); at most
- *    REVISION_LIMIT per proposal, the oldest go first. `restoreRevision` always keeps the current content first.
+ *    REVISION_LIMIT per proposal, the oldest go first. `restoreRevision` always keeps the current content first. A
+ *    content save adds its own revision id to the stored list and never writes the list itself (Firestore: merge +
+ *    arrayUnion), so a save from an old view keeps the revisions others added.
  *  - Delete is soft (`deletedAt`): the proposal sits in the Papirkurv for TRASH_DAYS days and can be restored; older
  *    ones are purged (with their revisions) by `purgeTrash`. Delete, restore and `keepRevision` are FIELD UPDATES
  *    (`ProposalPatch`): they never write the content, so a delete made from an out-of-date view (an offline device)
@@ -70,6 +72,12 @@ export const FAMILY_KEYS = {
   switchedFrom: 'hytte-planlegger:family.switched-from',
   /** `{ [familyId]: proposalId[] }`: proposals this device created in each family (what a switch can bring along). */
   createdHere: 'hytte-planlegger:family.created',
+  /** `{ [familyId]: proposalId[] }`: copies brought into each family from a previous one («Hent forslagene …»): never offered again. */
+  carriedIn: 'hytte-planlegger:family.carried-in',
+  /** `{ from, ids }`: what a switch offers — the proposals created in `from` before the switch (not carried-in copies). */
+  switchOffer: 'hytte-planlegger:family.switch-offer',
+  /** `…:<familyId | 'local'>` → `{ [proposalId]: updatedAt[] }`: the last versions this device saved (the sync's notices). */
+  ownVersions: 'hytte-planlegger:own-versions',
   /** The display name ("Hva heter du?"); '' = the user declined. */
   myName: 'hytte-planlegger:my-name',
   /** 'local' | 'shared': overrides the automatic choice (tests, debugging). */
@@ -326,6 +334,20 @@ export interface HashParams {
   delta: string | null;
 }
 
+/**
+ * The family id of a `f=` value: percent-decoded, and without what a message or a sentence adds after a link
+ * («#f=<id>.», «(#f=<id>)», «#f=<id>,»): ids never contain anything but [A-Za-z0-9_-], so trailing other characters go.
+ */
+function familyIdOf(value: string): string {
+  let v = value;
+  try {
+    v = decodeURIComponent(value);
+  } catch {
+    // keep the raw value
+  }
+  return v.replace(/[^A-Za-z0-9_-]+$/, '');
+}
+
 /** Parse `#f=…&p=…&d=…` (any order; unknown parts ignored; an invalid family id counts as absent). */
 export function parseHash(hash: string): HashParams {
   const body = hash.startsWith('#') ? hash.slice(1) : hash;
@@ -336,7 +358,10 @@ export function parseHash(hash: string): HashParams {
     const key = part.slice(0, eq);
     const value = part.slice(eq + 1);
     if (!value) continue;
-    if (key === 'f') out.family = isValidFamilyId(value) ? value : null;
+    if (key === 'f') {
+      const id = familyIdOf(value);
+      out.family = isValidFamilyId(id) ? id : null;
+    }
     else if (key === 'p') {
       let id = value;
       try {

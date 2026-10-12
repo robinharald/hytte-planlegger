@@ -896,6 +896,10 @@ export const nb = {
     conflict: (name: string, by: string, at: string) => `«${name}» ble endret av ${by} ${at}.`,
     conflictDeleted: (name: string, by: string, at: string) => `«${name}» ble slettet av ${by} ${at}.`,
     conflictHint: 'Endringene dine her er ikke lagret ennå.',
+    /** What each conflict button keeps (nothing is thrown away). */
+    conflictKeeps: '«Hent endringene» legger utgaven din under Tidligere versjoner. «Lagre over» legger den andre utgaven der.',
+    conflictKeepsDeleted:
+      '«Hent endringene» lar forslaget ligge i Papirkurv, med utgaven din under Tidligere versjoner. «Lagre over» henter det tilbake med utgaven din.',
     fetchChanges: 'Hent endringene',
     saveOver: 'Lagre over',
     overwritten: (name: string, by: string) =>
@@ -926,6 +930,13 @@ export const nb = {
       accept: (n: number) => (n === 1 ? 'Hent forslaget fra den forrige plassen' : 'Hent forslagene fra den forrige plassen'),
       decline: 'Nei takk',
       done: (n: number) => (n === 1 ? 'Forslaget er hentet fra den forrige plassen.' : `${n} forslag er hentet fra den forrige plassen.`),
+    },
+    /** A family link (an old tab, a bookmark) to a space this device switched away from: no switch until asked. */
+    leftFamily: {
+      text: 'Denne lenken går til en plass du har byttet bort fra.',
+      hint: 'Du ser plassen du bruker nå.',
+      back: 'Bytt tilbake',
+      stay: 'Bli her',
     },
     linkImported: (name: string) => `«${name}» fra lenken er lagt til som et nytt forslag.`,
     linkKnown: (name: string) => `«${name}» fra lenken finnes alt i listen.`,
@@ -965,7 +976,8 @@ export const nb = {
     },
     revisions: {
       heading: 'Tidligere versjoner',
-      intro: (name: string) => `Appen tar vare på inntil 20 tidligere versjoner av «${name}», høyst én for hvert femte minutt med endringer.`,
+      intro: (name: string) =>
+        `Appen tar vare på inntil 20 tidligere versjoner av «${name}»: én for hvert femte minutt med endringer, og alltid den utgaven som ble lagt bort da to endret forslaget samtidig.`,
       base: 'Forslag D endres aldri, så det har ingen tidligere versjoner. Velg et av forslagene først.',
       empty: 'Ingen tidligere versjoner ennå. De kommer når forslaget blir endret.',
       loading: 'Henter versjonene …',

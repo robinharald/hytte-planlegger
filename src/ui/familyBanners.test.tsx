@@ -31,7 +31,7 @@ function render(node: ReactNode) {
 beforeEach(() => {
   localStorage.clear();
   appStore.getState().replaceProject(start, { readOnly: false, source: 'local' });
-  familyUiStore.setState({ askName: false, notices: [], conflicts: [], overwritten: [], tooNew: [], carryOver: null, failed: false, saving: false });
+  familyUiStore.setState({ askName: false, notices: [], conflicts: [], overwritten: [], tooNew: [], carryOver: null, leftFamily: null, failed: false, saving: false });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -99,5 +99,28 @@ describe('banners', () => {
     expect(byTestId('carry-over-banner')?.textContent).toContain('Det legges til her, og i den forrige plassen havner det i Papirkurv.');
     expect(byTestId('carry-over-accept')?.textContent).toBe('Hent forslaget fra den forrige plassen');
     act(() => byTestId('carry-over-decline')?.click());
+  });
+});
+
+describe('final fix round banners', () => {
+  it('a link to a space this device left: «Bytt tilbake» / «Bli her»; «Bli her» closes it', () => {
+    familyUiStore.setState({ leftFamily: 'e2e-old-family-abcdefghijklmn' });
+    render(<FamilyBanners />);
+    expect(byTestId('left-family-banner')?.textContent).toContain('Denne lenken går til en plass du har byttet bort fra.');
+    expect(byTestId('left-family-back')?.textContent).toBe('Bytt tilbake');
+    expect(byTestId('left-family-stay')?.textContent).toBe('Bli her');
+    act(() => byTestId('left-family-stay')?.click());
+    expect(familyUiStore.getState().leftFamily).toBeNull();
+    expect(byTestId('left-family-banner')).toBeNull();
+  });
+
+  it('the conflict banner says which version goes under Tidligere versjoner', () => {
+    familyUiStore.setState({ conflicts: [conflict] });
+    render(<FamilyBanners />);
+    const text = byTestId('conflict-banner')?.textContent ?? '';
+    expect(text).toContain('«Hent endringene» legger utgaven din under Tidligere versjoner.');
+    expect(text).toContain('«Lagre over» legger den andre utgaven der.');
+    act(() => familyUiStore.setState({ conflicts: [{ ...conflict, kind: 'deleted' }] }));
+    expect(byTestId('conflict-banner')?.textContent).toContain('«Lagre over» henter det tilbake med utgaven din.');
   });
 });

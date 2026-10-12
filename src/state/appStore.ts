@@ -9,9 +9,12 @@
  *    the family space `#f=<id>` (from the link, else the id stored on this device, else a new one made once). The
  *    Firebase code is loaded with `import()` by `startPersistence`, so a bundle without a config never loads it. The
  *    address bar keeps `#f=<id>&p=<proposal>` so a bookmark or a home-screen icon (iOS keeps its own storage) opens
- *    the same family. A link to another family (at start-up or pasted into the tab) switches to it: the old id is
- *    remembered (`family.previous`), and once the new family answers, the proposals this device created in the old
- *    one are offered («Hent forslagene fra den forrige plassen»: copied here, put in the old space's Papirkurv). A
+ *    the same family. A link to another family this device never used (at start-up or pasted into the tab) switches
+ *    to it: the old id is remembered (`family.previous`), and once the new family answers, the proposals this device
+ *    created in the old one before the switch are offered («Hent forslagene fra den forrige plassen»: copied here, put
+ *    in the old space's Papirkurv; copies brought in that way are never offered again). A link to a space this device
+ *    left (an old tab, a bookmark) is no switch: the device stays and asks («Bytt tilbake» returns, with no offer;
+ *    «Bli her» puts this space back in the address bar). A
  *    `#f=` whose id is not whole (cut off) never starts a new family: the stored one is used, or — on a device without
  *    one — the proposals are kept on this device (`noFamily`) until a whole link is opened; a banner says so.
  *  - 'local': the proposals are stored in this browser (familyStore.local.ts) — "Kun på denne enheten".
@@ -111,20 +114,39 @@ function readJson(key: string): unknown {
   }
 }
 
-/**
- * Switching family: remember the old id (nothing is lost; it can be opened again with its link) and that its
- * proposals are still to be offered in the new one (`offerCarryOver`).
- */
-function rememberPreviousFamily(old: string): void {
+/** Family ids this device used before (`FAMILY_KEYS.previousFamilies`, oldest first). */
+function previousFamilies(): string[] {
   const parsed = readJson(FAMILY_KEYS.previousFamilies);
-  const previous = Array.isArray(parsed) ? parsed.filter(isValidFamilyId) : [];
-  writeRaw(storage, FAMILY_KEYS.previousFamilies, JSON.stringify([...previous.filter((x) => x !== old), old].slice(-10)));
-  writeRaw(storage, FAMILY_KEYS.switchedFrom, old);
+  return Array.isArray(parsed) ? parsed.filter(isValidFamilyId) : [];
 }
 
-/** Proposals this device created in each family (`FAMILY_KEYS.createdHere`). */
-function createdHere(): Record<string, string[]> {
-  const parsed = readJson(FAMILY_KEYS.createdHere);
+function removeKey(key: string): void {
+  try {
+    storage?.removeItem(key);
+  } catch {
+    // storage blocked
+  }
+}
+
+/**
+ * Leaving family `old` for `to`: remember the old id (nothing is lost; it can be opened again with its link). For a
+ * switch to a space this device has never used (`offer`), also that the proposals created in `old` before the switch
+ * are still to be offered there (`offerCarryOver`); a return to an earlier space (`to` was used before) offers nothing.
+ */
+function rememberPreviousFamily(old: string, opts: { to: string; offer: boolean }): void {
+  writeRaw(storage, FAMILY_KEYS.previousFamilies, JSON.stringify([...previousFamilies().filter((x) => x !== old && x !== opts.to), old].slice(-10)));
+  if (opts.offer) {
+    writeRaw(storage, FAMILY_KEYS.switchedFrom, old);
+    writeRaw(storage, FAMILY_KEYS.switchOffer, JSON.stringify({ from: old, ids: offerableIn(old) }));
+  } else {
+    removeKey(FAMILY_KEYS.switchedFrom);
+    removeKey(FAMILY_KEYS.switchOffer);
+  }
+}
+
+/** `{ [familyId]: proposalId[] }` under `key` (`FAMILY_KEYS.createdHere` / `carriedIn`). */
+function idsByFamily(key: string): Record<string, string[]> {
+  const parsed = readJson(key);
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
   const out: Record<string, string[]> = {};
   for (const [f, ids] of Object.entries(parsed as Record<string, unknown>)) {
@@ -133,26 +155,47 @@ function createdHere(): Record<string, string[]> {
   return out;
 }
 
-function recordCreated(family: string, id: Id): void {
-  const all = createdHere();
+function recordIds(key: string, family: string, add: Id[]): void {
+  const all = idsByFamily(key);
   const ids = all[family] ?? [];
-  if (ids.includes(id)) return;
-  all[family] = [...ids, id].slice(-200);
-  writeRaw(storage, FAMILY_KEYS.createdHere, JSON.stringify(all));
+  const fresh = add.filter((id) => !ids.includes(id));
+  if (fresh.length === 0) return;
+  all[family] = [...ids, ...fresh].slice(-200);
+  writeRaw(storage, key, JSON.stringify(all));
+}
+
+/** Proposals this device created in `family` that are not copies brought in from another space. */
+function offerableIn(family: string): Id[] {
+  const carried = new Set(idsByFamily(FAMILY_KEYS.carriedIn)[family] ?? []);
+  return (idsByFamily(FAMILY_KEYS.createdHere)[family] ?? []).filter((id) => !carried.has(id));
 }
 
 const storedFamily = readRaw(storage, FAMILY_KEYS.familyId);
 /** The start link has `#f=` but its id is not whole (cut off when copied or sent): never a new family for it. */
 const badFamilyLink = familyMode === 'shared' && hashHasFamily(startHash) && !startParams.family;
+/**
+ * The start link goes to a family space this device switched away from (an old tab, a bookmark, a session-restored
+ * tab): not a switch. The device stays in its family and asks («Denne lenken går til en plass du har byttet bort fra.
+ * [Bytt tilbake] [Bli her]»).
+ */
+const leftFamilyLink: string | null =
+  familyMode === 'shared' &&
+  startParams.family !== null &&
+  isValidFamilyId(storedFamily) &&
+  startParams.family !== storedFamily &&
+  previousFamilies().includes(startParams.family)
+    ? startParams.family
+    : null;
 
 /**
  * Shared mode: the family of a `#f=` link (remembered), else the one stored here, else a new one (made once) — but
- * not for a broken `#f=` on a device without a family: null (the proposals stay on this device until a whole link).
+ * not for a broken `#f=` on a device without a family: null (the proposals stay on this device until a whole link),
+ * and not for a link to a space this device left (`leftFamilyLink`).
  */
 function chooseFamilyId(): string | null {
   const known = isValidFamilyId(storedFamily) ? storedFamily : null;
-  if (startParams.family) {
-    if (known && known !== startParams.family) rememberPreviousFamily(known);
+  if (startParams.family && !leftFamilyLink) {
+    if (known && known !== startParams.family) rememberPreviousFamily(known, { to: startParams.family, offer: true });
     writeRaw(storage, FAMILY_KEYS.familyId, startParams.family);
     return startParams.family;
   }
@@ -284,6 +327,11 @@ const initialProject: Project = {
   variants: [baseVariant, ...startProposals],
   activeVariantId: wantedActive && startProposals.some((v) => v.id === wantedActive) ? wantedActive : baseVariant.id,
 };
+// Local mode: the proposal shown first (the old autosave's, a link's) is remembered now, so a reload shows it again
+// (`startPersistence` remembers only changes of the shown proposal, and here it is shown from the start).
+if (localFamily && initialProject.activeVariantId !== baseVariant.id && initialProject.activeVariantId !== remembered) {
+  writeRaw(storage, activeKey, initialProject.activeVariantId);
+}
 /** Shared mode: the proposal to show once the first list has it (unless the user picked another meanwhile). */
 let pendingActivate: Id | null = !localFamily && wantedActive && wantedActive !== baseVariant.id ? wantedActive : null;
 
@@ -310,6 +358,11 @@ export interface FamilyUiState extends SyncState {
   noFamily: boolean;
   /** After a family switch: the proposals this device created in the previous space, offered to bring along. */
   carryOver: { from: string; names: string[] } | null;
+  /**
+   * A `#f=` link (at start-up or pasted into the tab) to a space this device switched away from: the device stays in
+   * its family until the user picks «Bytt tilbake» (`returnToLeftFamily`) or «Bli her» (`stayInFamily`).
+   */
+  leftFamily: string | null;
   notices: FamilyNotice[];
 }
 
@@ -338,6 +391,7 @@ export const familyUiStore = create<FamilyUiState>()(() => ({
   fallback: false,
   noFamily,
   carryOver: null,
+  leftFamily: leftFamilyLink,
   notices: [...startFamilyNotices],
 }));
 
@@ -495,24 +549,31 @@ function endCarryOver(forget: boolean): void {
   carry?.store.dispose();
   carry = null;
   if (forget) {
-    try {
-      storage?.removeItem(FAMILY_KEYS.switchedFrom);
-    } catch {
-      // storage blocked
-    }
+    removeKey(FAMILY_KEYS.switchedFrom);
+    removeKey(FAMILY_KEYS.switchOffer);
   }
   familyUiStore.setState({ carryOver: null });
 }
 
+/** What the switch from `from` offers: the proposals created there before the switch, minus copies carried in. */
+function switchOffer(from: string): Id[] {
+  const snap = readJson(FAMILY_KEYS.switchOffer) as { from?: unknown; ids?: unknown } | null;
+  const ids =
+    snap && snap.from === from && Array.isArray(snap.ids) ? snap.ids.filter((x): x is string => typeof x === 'string') : (idsByFamily(FAMILY_KEYS.createdHere)[from] ?? []);
+  const carried = new Set(idsByFamily(FAMILY_KEYS.carriedIn)[from] ?? []);
+  return ids.filter((id) => !carried.has(id));
+}
+
 /**
- * The device switched families (`FAMILY_KEYS.switchedFrom`): read the previous space and offer the proposals this
- * device created there that are still there (not deleted) and not here yet. Nothing to offer once the previous space
+ * The device switched to a space it had never used (`FAMILY_KEYS.switchedFrom`): read the previous space and offer
+ * the proposals this device created there before the switch (`switchOffer`; never copies it brought in from yet
+ * another space) that are still there (not deleted) and not here yet. Nothing to offer once the previous space
  * answered online: the switch is forgotten; offline it is tried again at the next start.
  */
 function offerCarryOver(here: ProposalList): void {
   const from = readRaw(storage, FAMILY_KEYS.switchedFrom);
   if (carry || !openFamily || !familyId || !isValidFamilyId(from) || from === familyId) return;
-  const mine = new Set(createdHere()[from] ?? []);
+  const mine = new Set(switchOffer(from));
   if (mine.size === 0) {
     endCarryOver(true);
     return;
@@ -552,6 +613,8 @@ export async function acceptCarryOver(): Promise<number> {
     c.offered.map((v) => (ids.has(v.id) ? { ...v, id: newProposalId() } : v)),
     project.variants.map((v) => v.name),
   );
+  // Copies brought in are not "made here": a later switch never offers to move them out of this space again.
+  if (familyId) recordIds(FAMILY_KEYS.carriedIn, familyId, copies.map((v) => v.id));
   sync.addVariants(copies);
   await sync.flush();
   for (const v of c.offered) await c.store.deleteProposal(v.id);
@@ -565,6 +628,25 @@ export function declineCarryOver(): void {
   endCarryOver(true);
 }
 
+/** «Bli her» on a link to a space this device left: nothing changes, the address bar shows this space again. */
+export function stayInFamily(): void {
+  familyUiStore.setState({ leftFamily: null });
+  syncHash();
+}
+
+/**
+ * «Bytt tilbake»: the device goes back to the space of that link (after saving what is pending, a reload). It is a
+ * return, not a new space: nothing is offered to bring along, and the space left now is remembered as a previous one.
+ */
+export function returnToLeftFamily(): void {
+  const target = familyUiStore.getState().leftFamily;
+  if (!target || !familyId) return;
+  rememberPreviousFamily(familyId, { to: target, offer: false });
+  writeRaw(storage, FAMILY_KEYS.familyId, target);
+  setHash(familyHash(target));
+  void flushProposals().finally(reloadPage);
+}
+
 function attachSync(store: FamilyStore): void {
   family = store;
   sync = createProposalSync({
@@ -572,13 +654,16 @@ function attachSync(store: FamilyStore): void {
     family: store,
     delayMs: familyMode === 'shared' ? 1000 : AUTOSAVE_DELAY_MS,
     target: hasWindow ? window : null,
+    doc: hasWindow && typeof document !== 'undefined' ? document : null,
+    storage,
     onNeedsName: () => familyUiStore.setState({ askName: true }),
     onSaved: (id) => {
       if (legacyIds.delete(id)) retireLegacyWhenStored();
       if (store.mode === 'shared' && leftoverIds.delete(id)) clearLeftoversWhenStored();
     },
     onCreated: (id) => {
-      if (store.mode === 'shared' && store.familyId) recordCreated(store.familyId, id);
+      const fid = store.mode === 'shared' ? store.familyId : null;
+      if (fid && !(idsByFamily(FAMILY_KEYS.carriedIn)[fid] ?? []).includes(id)) recordIds(FAMILY_KEYS.createdHere, fid, [id]);
     },
     onFirstList,
   });
@@ -688,6 +773,8 @@ function setHash(hash: string): void {
  * the broken `#f=…` while `noFamily` (so a reload does not start a new family either).
  */
 function syncHash(): void {
+  // The link to a space this device left stays in the address bar until the user answers the banner.
+  if (familyUiStore.getState().leftFamily) return;
   const { project } = appStore.getState();
   if (familyId) setHash(familyHash(familyId, project.activeVariantId === baseVariant.id ? null : project.activeVariantId));
   else setHash(brokenFamilyHash);
@@ -697,7 +784,7 @@ function syncHash(): void {
 export function startPersistence(): () => void {
   if (started || !hasWindow) return () => {};
   started = true;
-  prefs = startPrefsAutosave(appStore, { storage, target: window });
+  prefs = startPrefsAutosave(appStore, { storage, target: window, doc: typeof document !== 'undefined' ? document : null });
   requestPersistentStorage();
   if (localFamily) attachSync(localFamily);
   else void connectShared();
@@ -717,13 +804,21 @@ export function startPersistence(): () => void {
       return;
     }
     if (hashHasFamily(window.location.hash)) {
+      if (familyMode === 'shared' && params.family && params.family !== familyId && familyId && previousFamilies().includes(params.family)) {
+        // A link to a space this device left: not a switch; the banner asks («Bytt tilbake» / «Bli her»).
+        familyUiStore.setState({ leftFamily: params.family });
+        return;
+      }
       if (familyMode === 'shared' && params.family && params.family !== familyId) {
-        // Another family: start over in it. The current one is remembered first (the reload would not know it any
-        // more), so its proposals are offered there and its id is kept.
-        if (familyId) rememberPreviousFamily(familyId);
+        // Another family, never used here: start over in it. The current one is remembered first (the reload would
+        // not know it any more), so its proposals are offered there and its id is kept.
+        if (familyId) rememberPreviousFamily(familyId, { to: params.family, offer: true });
         writeRaw(storage, FAMILY_KEYS.familyId, params.family);
         void flushProposals().finally(reloadPage);
         return;
+      }
+      if (familyMode === 'shared' && params.family && params.family === familyId && familyUiStore.getState().leftFamily) {
+        familyUiStore.setState({ leftFamily: null });
       }
       if (familyMode === 'shared' && !params.family) {
         // A broken link: stay where we are and say so.
@@ -898,7 +993,10 @@ export function sharedVariantsFor(own: Project, shared: Project, now: string = n
   return { variants, activeId: activeId || variants[0]?.id || '' };
 }
 
-/** A file's (or a version's) proposals added as new, unlocked proposals (one undo step); the first is shown. */
+/**
+ * A file's (or a version's) proposals added as new, unlocked proposals; the first is shown. (One undo step without the
+ * family sync; with it, making a proposal is no undo step: familyStore.sync.ts.)
+ */
 export function importProjectAsProposals(project: Project): number {
   const own = appStore.getState().project;
   const unlocked = project.variants.filter((v) => !v.locked);

@@ -177,3 +177,104 @@ describe('the old autosave moved into the family space (shared mode)', () => {
     expect(m.familyUiStore.getState().meta[id]?.updatedAt).toBe('2026-10-01T08:30:00.000Z');
   });
 });
+
+describe('final fix round: links to a space this device left, carried-in copies, trailing punctuation, local upgrade', () => {
+  const F3 = 'e2e-family-three-abcdefghijklm';
+  const settleMs = (ms = 60) => new Promise((r) => setTimeout(r, ms));
+
+  /** F1: «Mammas idé» made here; then the F2 link: it is brought along; then «Ny idé i familien» made in F2. */
+  async function switchedToF2(): Promise<{ m: AppStoreModule; mammas: string; ny: string }> {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    let m = await load(`#f=${F1}`);
+    const mammas = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Mammas idé');
+    if (!mammas) throw new Error('duplicate');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F1)).toEqual([docPath(F1, mammas)]));
+    m = await load(`#f=${F2}`);
+    await vi.waitFor(() => expect(m.familyUiStore.getState().carryOver?.names).toEqual(['Mammas idé']), { timeout: 4000 });
+    expect(await m.acceptCarryOver()).toBe(1);
+    const ny = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Ny idé i familien');
+    if (!ny) throw new Error('duplicate');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F2).sort()).toEqual([docPath(F2, mammas), docPath(F2, ny)].sort()));
+    return { m, mammas, ny };
+  }
+
+  it('1: an old tab reloaded at the space this device left: no switch, no offer; «Bli her» shows this space', async () => {
+    const { mammas, ny } = await switchedToF2();
+    // The old tab (address #f=F1) is reloaded.
+    const m = await load(`#f=${F1}`);
+    expect(m.familyId).toBe(F2);
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F2);
+    expect(m.familyUiStore.getState().leftFamily).toBe(F1);
+    await vi.waitFor(() => expect(names(m).sort()).toEqual(['Forslag D', 'Mammas idé', 'Ny idé i familien'].sort()));
+    await settleMs();
+    expect(m.familyUiStore.getState().carryOver).toBeNull();
+    expect(localStorage.getItem(FAMILY_KEYS.switchedFrom)).toBeNull();
+    // The family space keeps both proposals; nothing went to the old space.
+    expect(firebase.fake.docs.get(docPath(F2, mammas))?.deletedAt).toBeNull();
+    expect(firebase.fake.docs.get(docPath(F2, ny))?.deletedAt).toBeNull();
+    expect(firebase.fake.docs.has(docPath(F1, ny))).toBe(false);
+    // The link stays in the address bar until the user answers; «Bli her» puts this space back.
+    expect(window.location.hash).toBe(`#f=${F1}`);
+    m.stayInFamily();
+    expect(m.familyUiStore.getState().leftFamily).toBeNull();
+    expect(window.location.hash.startsWith(`#f=${F2}`)).toBe(true);
+    // The same link pasted into the open tab: the banner again, no switch.
+    window.location.hash = `#f=${F1}`;
+    await vi.waitFor(() => expect(m.familyUiStore.getState().leftFamily).toBe(F1));
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F2);
+  });
+
+  it('1: «Bytt tilbake» returns to that space with no offer; the space left is remembered', async () => {
+    await switchedToF2();
+    let m = await load(`#f=${F1}`);
+    expect(m.familyUiStore.getState().leftFamily).toBe(F1);
+    m.returnToLeftFamily();
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F1);
+    expect(localStorage.getItem(FAMILY_KEYS.switchedFrom)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(FAMILY_KEYS.previousFamilies) ?? '[]')).toEqual([F2]);
+    // The reload (jsdom cannot navigate): F1 again, nothing offered, nothing moved.
+    m = await load(`#f=${F1}`);
+    expect(m.familyId).toBe(F1);
+    expect(m.familyUiStore.getState().leftFamily).toBeNull();
+    await settleMs();
+    expect(m.familyUiStore.getState().carryOver).toBeNull();
+    expect(proposalDocs(F2)).toHaveLength(2);
+    // And the family link F2 is now a link to a space this device left: asked again, never switched silently.
+    m = await load(`#f=${F2}`);
+    expect(m.familyId).toBe(F1);
+    expect(m.familyUiStore.getState().leftFamily).toBe(F2);
+  });
+
+  it('1: a switch to a space never used here offers only what was made in the space left, never copies brought into it', async () => {
+    const { ny } = await switchedToF2();
+    expect(JSON.parse(localStorage.getItem(FAMILY_KEYS.createdHere) ?? '{}')[F2]).toEqual([ny]);
+    const m = await load(`#f=${F3}`);
+    expect(m.familyId).toBe(F3);
+    await vi.waitFor(() => expect(m.familyUiStore.getState().carryOver?.names).toEqual(['Ny idé i familien']), { timeout: 4000 });
+    m.declineCarryOver();
+  });
+
+  it('6: a family link with a full stop after it opens the family (no broken-link banner)', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const m = await load(`#f=${F2}.`);
+    expect(m.familyId).toBe(F2);
+    expect(m.familyUiStore.getState().notices).not.toContain('family-link-invalid');
+    expect(window.location.hash).toBe(`#f=${F2}`);
+  });
+
+  it('7c: local mode — the proposal of the old autosave stays on screen after a reload', async () => {
+    vi.stubEnv('VITE_FAMILY_STORE', 'local');
+    const raw = JSON.parse(phase1Text) as Record<string, unknown> & { variants: Record<string, unknown>[] };
+    (raw.variants[0].rooms as { name: string }[])[0].name = 'Omdøpt rom';
+    localStorage.setItem(KEYS.project, JSON.stringify(raw));
+    let m = await load('', { shared: false });
+    const id = m.appStore.getState().project.activeVariantId;
+    expect(names(m)).toEqual(['Forslag D', 'Forslag D (eget)']);
+    expect(id).toMatch(/^forslag-d-eget-/);
+    expect(localStorage.getItem(KEYS.project)).toBeNull();
+    m = await load('', { shared: false });
+    expect(m.appStore.getState().project.activeVariantId).toBe(id);
+  });
+});

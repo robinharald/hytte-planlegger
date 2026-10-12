@@ -10,7 +10,9 @@
  *    a version of this device overwritten by an offline save (kept under Tidligere versjoner) or deleted by a device
  *    that had not seen it ([Hent tilbake] from the Papirkurv), proposals from a newer app version ([Oppdater] looks
  *    for the new version), a family link opened where there is no shared space, a family link that is not whole, and
- *    after a family switch the offer to bring along this device's proposals from the previous space.
+ *    after a family switch the offer to bring along this device's proposals from the previous space; a family link to a
+ *    space this device left («Denne lenken går til en plass du har byttet bort fra. [Bytt tilbake] [Bli her]»).
+ *    The conflict banner says what each button keeps (the other version goes under Tidligere versjoner).
  *  - `NameDialog`: "Hva heter du?" the first time this device saves something in the shared space.
  */
 import { useState } from 'react';
@@ -24,7 +26,9 @@ import {
   familyUiStore,
   resolveConflict,
   restoreFromTrash,
+  returnToLeftFamily,
   setMyName,
+  stayInFamily,
   useAppStore,
   useFamily,
 } from '../state/appStore';
@@ -62,11 +66,12 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
   const tooNew = useFamily((s) => s.tooNew.length);
   const notices = useFamily((s) => s.notices);
   const carryOver = useFamily((s) => s.carryOver);
+  const leftFamily = useFamily((s) => s.leftFamily);
   const readOnly = useAppStore((s) => s.ui.readOnly);
   const [carrying, setCarrying] = useState(false);
   const now = useMinuteClock();
   const f = nb.family;
-  if (conflicts.length === 0 && overwritten.length === 0 && tooNew === 0 && notices.length === 0 && !carryOver) return null;
+  if (conflicts.length === 0 && overwritten.length === 0 && tooNew === 0 && notices.length === 0 && !carryOver && !leftFamily) return null;
   return (
     <div className="family-banners" data-testid="family-banners">
       {!readOnly &&
@@ -76,7 +81,9 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           return (
             <div key={c.id} className="banner warn" role="alert" data-testid="conflict-banner">
               <div className="msg">
-                <strong>{c.kind === 'deleted' ? f.conflictDeleted(c.name, by, at) : f.conflict(c.name, by, at)}</strong> <span>{f.conflictHint}</span>
+                <strong>{c.kind === 'deleted' ? f.conflictDeleted(c.name, by, at) : f.conflict(c.name, by, at)}</strong> <span>
+                  {f.conflictHint} {c.kind === 'deleted' ? f.conflictKeepsDeleted : f.conflictKeeps}
+                </span>
               </div>
               <div className="actions">
                 <button type="button" className="btn btn-small btn-primary" data-testid="conflict-fetch" onClick={() => void resolveConflict(c.id, 'fetch')}>
@@ -133,6 +140,21 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           <div className="actions">
             <button type="button" className="btn btn-small btn-ghost" onClick={() => dismissFamilyNotice('family-link-invalid')}>
               {f.dismiss}
+            </button>
+          </div>
+        </div>
+      )}
+      {leftFamily && (
+        <div className="banner warn" role="status" data-testid="left-family-banner">
+          <div className="msg">
+            <strong>{f.leftFamily.text}</strong> <span>{f.leftFamily.hint}</span>
+          </div>
+          <div className="actions">
+            <button type="button" className="btn btn-small" data-testid="left-family-back" onClick={returnToLeftFamily}>
+              {f.leftFamily.back}
+            </button>
+            <button type="button" className="btn btn-small btn-primary" data-testid="left-family-stay" onClick={stayInFamily}>
+              {f.leftFamily.stay}
             </button>
           </div>
         </div>

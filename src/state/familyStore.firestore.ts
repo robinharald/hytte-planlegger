@@ -16,6 +16,8 @@
  *  - Soft delete, restore and `keepRevision` are field updates (`ProposalPatch`, Firestore `update` with
  *    `arrayUnion` / `arrayRemove`): applied to the server's version, so a delete made offline from an old view never
  *    writes old content over a newer save.
+ *  - A content save over a stored proposal is a `set` with merge that leaves `revisions` / `lastRevisionAt` out (its
+ *    own revision id is added with `arrayUnion`): a save queued offline from an old view never drops revision ids.
  *  - The conflict guard checks against the newest version this device knows (the live listener's cache view), so it
  *    works offline too; last write wins otherwise.
  *  - A write the server refuses (e.g. rules) is reported as `error` in the status (and through `onWriteError`).
@@ -69,7 +71,8 @@ export interface SnapshotMeta {
 }
 
 export type WriteOp =
-  | { kind: 'set'; path: string; data: Record<string, unknown> }
+  /** `merge`: only the fields in `data` are written, the others stay what the server has (Firestore `set` with merge). */
+  | { kind: 'set'; path: string; data: Record<string, unknown>; merge?: boolean }
   /**
    * Field update of an existing document (the batch fails when it does not exist): `data` replaces those fields,
    * `arrayUnion` / `arrayRemove` add / remove array values. Applied to the server's version when it arrives there.
@@ -370,8 +373,19 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
     const at = o.at ?? stamp(cur?.updatedAt);
     const plan = planSave(cur, variant, { ...o, at, by: byOf(o.by) }, context());
     if (plan.kind === 'conflict') return { status: 'conflict', remote: plan.remote === 'current' && cur ? proposalOf(id, cur) : null };
-    const ops: WriteOp[] = [{ kind: 'set', path: proposalPath(id), data: docData(plan.doc) }];
-    if (plan.revision) ops.push({ kind: 'set', path: `${revisionsPath(id)}/${plan.revision.id}`, data: { ...plan.revision.doc } });
+    // Over a stored proposal the content is written with merge, without the revision list and its time: a save queued
+    // offline from an old view never drops revision ids another device added (their documents would be orphans). The
+    // new revision's id is added (arrayUnion), the pruned ones removed (arrayRemove), so the list stays the union of
+    // what everyone kept. A new proposal is written whole.
+    const { revisions: _revisions, lastRevisionAt, ...content } = docData(plan.doc);
+    const path = proposalPath(id);
+    const data = !cur ? docData(plan.doc) : plan.revision ? { ...content, lastRevisionAt } : content;
+    const ops: WriteOp[] = [{ kind: 'set', path, data, merge: true }];
+    if (plan.revision) {
+      ops.push({ kind: 'update', path, data: {}, arrayUnion: { revisions: [plan.revision.id] } });
+      ops.push({ kind: 'set', path: `${revisionsPath(id)}/${plan.revision.id}`, data: { ...plan.revision.doc } });
+    }
+    if (plan.pruned.length > 0) ops.push({ kind: 'update', path, data: {}, arrayRemove: { revisions: plan.pruned } });
     for (const old of plan.pruned) ops.push({ kind: 'delete', path: `${revisionsPath(id)}/${old}` });
     try {
       write(ops, new Map([[id, { doc: plan.doc }]]));
@@ -599,8 +613,10 @@ export async function loadFirebaseAdapter(config: FirebaseOptions, o: { persiste
     write(ops) {
       const batch = fs.writeBatch(db);
       for (const op of ops) {
-        if (op.kind === 'set') batch.set(fs.doc(db, op.path), op.data);
-        else if (op.kind === 'update') {
+        if (op.kind === 'set') {
+          if (op.merge) batch.set(fs.doc(db, op.path), op.data, { merge: true });
+          else batch.set(fs.doc(db, op.path), op.data);
+        } else if (op.kind === 'update') {
           const data: Record<string, unknown> = { ...op.data };
           for (const [k, v] of Object.entries(op.arrayUnion ?? {})) data[k] = fs.arrayUnion(...v);
           for (const [k, v] of Object.entries(op.arrayRemove ?? {})) data[k] = fs.arrayRemove(...v);

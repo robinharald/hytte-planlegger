@@ -11,11 +11,17 @@
  *    when it comes back unchanged (Angre) → `restoreProposal`, a field update like the delete, so a version saved
  *    elsewhere meanwhile stays (and is shown here).
  *  The locked base (Forslag D) is never written, and nothing is written while a drag (transaction) is in progress.
+ *  The debounce is skipped on `pagehide` / `beforeunload` and when the page is hidden (`visibilitychange`: iOS fires
+ *  only that when the user leaves the app). A stamp never goes below the newest version this device has seen.
+ *  Making a proposal is no undo step (the history step that added it is taken out): Angre right after «+ Nytt
+ *  forslag» would otherwise delete it for everyone, without the two confirmations of the menu.
  *
  * In (the live list):
  *  - a new proposal → added as a variant; a removed one (deleted elsewhere) → removed; a changed one → replaced —
  *    unless the variant here has edits that are not saved yet: then it is a CONFLICT ("«X» ble endret av Pappa …
- *    [Hent endringene] [Lagre over]") and that proposal is neither saved nor replaced until `resolveConflict`.
+ *    [Hent endringene] [Lagre over]") and that proposal is neither saved nor replaced until `resolveConflict`. Neither
+ *    choice loses a version: "Hent endringene" keeps the one here as a revision (when it differs), "Lagre over" always
+ *    keeps the one written over (`forceRevision`, whatever the 5-minute rule).
  *  - Remote changes never become undo steps: the undo history is rebased (every past / future snapshot gets the same
  *    replacement), so Angre only ever undoes this device's own edits and can never write an old version of someone
  *    else's change back. They wait while a drag (transaction) is in progress, and the selection is kept.
@@ -24,14 +30,15 @@
  *    can bring other content under a stamp this device knows: that counts as a change too.
  *  - A version saved here that another device overwrote or DELETED without having seen it (an offline device) is
  *    reported in `overwritten` (the overwritten one is kept as a revision; the deleted one is in the Papirkurv with
- *    this version's content). Leaving the page while a conflict is open asks first (`beforeunload`).
+ *    this version's content). The last own version stamps per proposal are kept in storage (`FAMILY_KEYS.ownVersions`),
+ *    so this works after a reload too. Leaving the page while a conflict is open asks first (`beforeunload`).
  *
  * State for the UI (`getState` / `subscribe`): phase, saving / pending / online for the status pill, proposal
  * metadata for the menu ("sist endret av …"), the Papirkurv, conflicts, proposals of a newer app version.
  */
 import type { AppStore } from './store';
 import type { Id, Project, Variant } from '../model/types';
-import { createStamper, sameContent } from './familyStore';
+import { cleanName, createStamper, FAMILY_KEYS, sameContent } from './familyStore';
 import type { FamilyMode, FamilyStore, FamilyStoreStatus, Proposal, ProposalList, ProposalMeta } from './familyStore';
 
 export interface Conflict {
@@ -115,6 +122,13 @@ export interface ProposalSyncOptions {
   now?: () => number;
   /** Window-like target: flush on `pagehide` / `beforeunload`. */
   target?: Pick<Window, 'addEventListener' | 'removeEventListener'> | null;
+  /**
+   * Document-like: flush when the page is hidden (`visibilitychange` → 'hidden'). On iOS, switching apps, going to the
+   * Home screen or locking the phone fires only this (no `pagehide`), and the page's timers stop right after.
+   */
+  doc?: Pick<Document, 'addEventListener' | 'removeEventListener' | 'visibilityState'> | null;
+  /** Where the last own version stamps per proposal are kept (`FAMILY_KEYS.ownVersions`), so the notices survive a reload. */
+  storage?: Pick<Storage, 'getItem' | 'setItem'> | null;
   /** The first time something is saved while the device has no name yet (shared mode asks "Hva heter du?"). */
   onNeedsName?: () => void;
   /** After a proposal was saved (the legacy import uses it to retire the old autosave). */
@@ -128,6 +142,43 @@ export interface ProposalSyncOptions {
 }
 
 const MAX_RETRY_MS = 60_000;
+/** Own version stamps kept per proposal across reloads (the newest ones), and how many proposals at most. */
+const OWN_VERSIONS_PER_PROPOSAL = 5;
+const OWN_VERSIONS_PROPOSALS = 100;
+
+/**
+ * The versions this device saved (`${id}@${updatedAt}`), the last few per proposal also in storage: after a reload
+ * (iOS home-screen apps reload often) the device still knows which versions it wrote, so a version of its own that
+ * another device overwrote or deleted unseen is still noticed.
+ */
+function createOwnVersions(storage: Pick<Storage, 'getItem' | 'setItem'> | null, key: string): { has(id: Id, at: string): boolean; add(id: Id, at: string): void } {
+  const byId = new Map<Id, string[]>();
+  try {
+    const raw = JSON.parse(storage?.getItem(key) ?? 'null') as unknown;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [id, stamps] of Object.entries(raw as Record<string, unknown>)) {
+        if (Array.isArray(stamps)) byId.set(id, stamps.filter((x): x is string => typeof x === 'string').slice(-OWN_VERSIONS_PER_PROPOSAL));
+      }
+    }
+  } catch {
+    // unreadable or blocked: start empty
+  }
+  return {
+    has: (id, stamp) => byId.get(id)?.includes(stamp) ?? false,
+    add(id, stamp) {
+      const stamps = byId.get(id) ?? [];
+      if (stamps.includes(stamp)) return;
+      byId.delete(id);
+      byId.set(id, [...stamps, stamp].slice(-OWN_VERSIONS_PER_PROPOSAL));
+      while (byId.size > OWN_VERSIONS_PROPOSALS) byId.delete(byId.keys().next().value as Id);
+      try {
+        storage?.setItem(key, JSON.stringify(Object.fromEntries(byId)));
+      } catch {
+        // storage full or blocked: kept for this page
+      }
+    },
+  };
+}
 
 export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
   const { store, family } = opts;
@@ -142,7 +193,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
   /** `${id}@${at}` of own writes not yet seen in a list → the variant written. */
   const own = new Map<string, Variant>();
   /** Versions this device wrote (`${id}@${updatedAt}`): to notice one overwritten unseen. */
-  const ownVersions = new Set<string>();
+  const ownVersions = createOwnVersions(opts.storage ?? null, `${FAMILY_KEYS.ownVersions}:${family.familyId ?? 'local'}`);
   const overwritten = new Map<Id, Overwritten>();
   const deleting = new Set<Id>();
   /** The last state of variants that left the project (a delete): saved before the soft delete when it was newer. */
@@ -270,7 +321,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
    * wrote over it without having seen it (its save was queued offline). Keep `mine` as a revision and tell the user.
    */
   const rescueIfOverwritten = (mine: Proposal, next: Proposal) => {
-    if (!ownVersions.has(`${mine.id}@${mine.updatedAt}`) || next.lineage.includes(mine.updatedAt)) return;
+    if (!ownVersions.has(mine.id, mine.updatedAt) || next.lineage.includes(mine.updatedAt)) return;
     if (sameContent(mine.variant, next.variant)) return;
     void family.keepRevision(mine.id, mine.variant, { savedAt: mine.updatedAt, savedBy: mine.updatedBy });
     overwritten.set(mine.id, { id: mine.id, name: mine.name, by: next.updatedBy, at: next.updatedAt, kind: 'changed' });
@@ -281,7 +332,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
    * from an older version (its lineage lacks `mine`: an offline device), say so — the Papirkurv has this version.
    */
   const tellIfDeletedUnseen = (mine: Proposal, list: ProposalList, name: string) => {
-    if (!ownVersions.has(`${mine.id}@${mine.updatedAt}`)) return;
+    if (!ownVersions.has(mine.id, mine.updatedAt)) return;
     const t = list.trash.find((x) => x.id === mine.id);
     if (!t || t.lineage.includes(mine.updatedAt)) return;
     overwritten.set(mine.id, { id: mine.id, name, by: t.updatedBy, at: t.deletedAt ?? t.updatedAt, kind: 'deleted' });
@@ -314,7 +365,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       if (mine) {
         // The echo of an own write: in step with what was written (later edits are saved by the next flush).
         own.delete(key);
-        ownVersions.add(key);
+        ownVersions.add(p.id, p.updatedAt);
         known.set(p.id, { remote: p, local: mine });
         continue;
       }
@@ -395,18 +446,24 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     retryDelay = Math.min(MAX_RETRY_MS, retryDelay * 2);
   };
 
+  /** `updatedAt` of the newest version of `id` this device has seen: its own stamps never go below it (never backwards). */
+  const storedAt = (id: Id): string | undefined => {
+    const find = (xs: readonly ProposalMeta[]) => xs.find((x) => x.id === id)?.updatedAt;
+    return find(lastList.proposals) ?? find(lastList.trash) ?? find(lastList.tooNew);
+  };
+
   const save = async (v: Variant, k: { remote: Proposal; local: Variant } | undefined): Promise<void> => {
     maybeAskName();
     const given = k ? undefined : firstAt.get(v.id);
     firstAt.delete(v.id);
-    const at = given ?? stamp(k?.remote.updatedAt);
+    const at = given ?? stamp(k?.remote.updatedAt, storedAt(v.id));
     const key = `${v.id}@${at}`;
     own.set(key, v);
     const force = failed.has(v.id);
     const r = await family.saveProposal(v, { base: k ? k.remote.updatedAt : null, at, force });
     if (r.status === 'saved') {
       own.delete(key);
-      ownVersions.add(`${v.id}@${r.proposal.updatedAt}`);
+      ownVersions.add(v.id, r.proposal.updatedAt);
       known.set(v.id, { remote: r.proposal, local: v });
       failed.delete(v.id);
       removedHere.delete(v.id);
@@ -430,7 +487,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     conflicts.delete(id);
     removedHere.set(id, content);
     try {
-      await family.deleteProposal(id, { at: stamp() });
+      await family.deleteProposal(id, { at: stamp(storedAt(id)) });
     } finally {
       deleting.delete(id);
     }
@@ -439,7 +496,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
   /** Angre of a delete with nothing changed: back from the Papirkurv as it is there (a version saved meanwhile stays). */
   const restore = async (v: Variant): Promise<void> => {
     removedHere.delete(v.id);
-    const p = await family.restoreProposal(v.id, { at: stamp() });
+    const p = await family.restoreProposal(v.id, { at: stamp(storedAt(v.id)) });
     if (!p) return save(v, undefined);
     known.set(v.id, { remote: p, local: v });
   };
@@ -538,6 +595,39 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
   };
   opts.target?.addEventListener('pagehide', onLeave);
   opts.target?.addEventListener('beforeunload', onLeave);
+  // iOS: leaving the app (another app, the Home screen, the lock button) fires only this; the timers stop right after.
+  const onVisibility = () => {
+    if (opts.doc?.visibilityState === 'hidden') void flush();
+  };
+  opts.doc?.addEventListener('visibilitychange', onVisibility);
+
+  /**
+   * Making a proposal («+ Nytt forslag», «Kopier», a file) is not an undo step: Angre right after it would delete it
+   * for everyone, without the two confirmations. When the history gets the step that added a proposal no other state
+   * in the history has, that step is taken out and the proposal is put into every other state (as for a change from
+   * another device). Deleting stays in the menu, with its confirmations.
+   */
+  let detaching = false;
+  const unsubscribeHistory = store.temporal.subscribe((t, prevT) => {
+    if (detaching || stopped || t.futureStates.length > 0) return;
+    const top = t.pastStates.at(-1)?.project;
+    if (!top || top === prevT.pastStates.at(-1)?.project) return;
+    const inTop = new Set(top.variants.map((v) => v.id));
+    const added = store.getState().project.variants.filter((v) => !inTop.has(v.id) && !isBase(v));
+    const fresh = added.filter((v) => !t.pastStates.some((p) => p.project?.variants.some((x) => x.id === v.id)));
+    if (fresh.length === 0) return;
+    const withFresh = (p: Project): Project => {
+      const ids = new Set(p.variants.map((v) => v.id));
+      const extra = fresh.filter((v) => !ids.has(v.id));
+      return extra.length > 0 ? { ...p, variants: [...p.variants, ...extra] } : p;
+    };
+    detaching = true;
+    try {
+      store.temporal.setState({ pastStates: t.pastStates.slice(0, -1).map((p) => (p.project ? { ...p, project: withFresh(p.project) } : p)) });
+    } finally {
+      detaching = false;
+    }
+  });
 
   return {
     getState: () => state,
@@ -559,6 +649,13 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       if (!c) return;
       conflicts.delete(id);
       if (choice === 'fetch') {
+        // «Hent endringene»: the version here is not thrown away — it is kept under Tidligere versjoner (also when the
+        // proposal was deleted: then with the one in the Papirkurv), unless it equals the stored one.
+        const here = store.getState().project.variants.find((x) => x.id === id);
+        const stored = c.remote?.variant ?? known.get(id)?.remote.variant;
+        if (here && (!stored || !sameContent(here, stored))) {
+          void family.keepRevision(id, here, { savedAt: stamp(storedAt(id)), savedBy: cleanName(family.whoAmI()) }).catch(() => false);
+        }
         const changes = new Map<Id, Variant | null>();
         if (c.remote) {
           changes.set(id, c.remote.variant);
@@ -575,11 +672,12 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       emitState();
       if (!v) return;
       await (chain = chain.then(async () => {
-        const at = stamp(c.remote?.updatedAt);
+        const at = stamp(c.remote?.updatedAt, storedAt(id));
         own.set(`${id}@${at}`, v);
-        const r = await family.saveProposal(v, { base: null, force: true, at });
+        // «Lagre over»: the version written over is always kept under Tidligere versjoner (whatever the 5-minute rule).
+        const r = await family.saveProposal(v, { base: null, force: true, forceRevision: true, at });
         if (r.status === 'saved') {
-          ownVersions.add(`${id}@${r.proposal.updatedAt}`);
+          ownVersions.add(id, r.proposal.updatedAt);
           known.set(id, { remote: r.proposal, local: v });
         }
         else {
@@ -591,7 +689,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     },
 
     async restoreFromTrash(id) {
-      const p = await family.restoreProposal(id, { at: stamp() });
+      const p = await family.restoreProposal(id, { at: stamp(storedAt(id)) });
       if (!p) return false;
       if (!store.getState().project.variants.some((v) => v.id === id)) {
         known.set(id, { remote: p, local: p.variant });
@@ -641,8 +739,10 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       unsubscribeList();
       unsubscribeStatus();
       unsubscribeWriteErrors();
+      unsubscribeHistory();
       opts.target?.removeEventListener('pagehide', onLeave);
       opts.target?.removeEventListener('beforeunload', onLeave);
+      opts.doc?.removeEventListener('visibilitychange', onVisibility);
       listeners.clear();
     },
   };
