@@ -207,8 +207,10 @@ export function isNewer(a: string, b: string): boolean {
  * are ignored and dropped on the next save (the cut height follows the camera preset, see `cutHeightFor`).
  * Version 3 (phase 2): "Vis hva som er nytt" became on by default; older prefs saved the old default `false` whether
  * or not the user chose it, so their `highlightNew` is not read (`HIGHLIGHT_NEW_PREFS_VERSION`).
+ * Version 4 (fix round after 2a): the 3D view has its own switch, `highlightNew3d` (off by default); `highlightNew` now
+ * colours the plan only. Older prefs have no `highlightNew3d`, so 3D starts in natural colours.
  */
-export const PREFS_VERSION = 3;
+export const PREFS_VERSION = 4;
 
 /** Prefs from this version on hold a `highlightNew` the user meant (before it, it was the old default `false`). */
 export const HIGHLIGHT_NEW_PREFS_VERSION = 3;
@@ -226,6 +228,7 @@ export const UI_PREF_KEYS = [
   'showGrid',
   'showRoofPlan',
   'highlightNew',
+  'highlightNew3d',
   'showTrees',
   'showTerrain',
   'preset',
@@ -241,7 +244,7 @@ export function pickUiPrefs(ui: UiState): UiPrefs {
   return out as UiPrefs;
 }
 
-const BOOL_PREFS = ['showLabels', 'showDims', 'showGrid', 'showRoofPlan', 'highlightNew', 'showTrees', 'showTerrain'] as const;
+const BOOL_PREFS = ['showLabels', 'showDims', 'showGrid', 'showRoofPlan', 'highlightNew', 'highlightNew3d', 'showTrees', 'showTerrain'] as const;
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[]): v is T {
   return typeof v === 'string' && (allowed as readonly string[]).includes(v);

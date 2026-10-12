@@ -1,18 +1,17 @@
 /**
  * First-run card (docs/phase2-plan.md §5): three short bullets the first time the app is opened in this browser,
- * over the bottom of the stage; "Skjønner" hides it for good (`hytte-planlegger:first-run-seen` in localStorage;
- * without storage it simply shows again next time). Not shown for a shared (read-only) link.
+ * over the bottom of the stage; "Skjønner" hides it for good, and so does making a proposal (firstRun.ts). Not shown
+ * for a shared (read-only) link. The toasts keep clear of it while it is open (Toasts.tsx).
  */
-import { useState } from 'react';
 import { nb } from '../i18n/nb';
-import { storage, useAppStore } from '../state/appStore';
-import { readRaw, writeRaw } from '../state/persistence';
+import { useAppStore } from '../state/appStore';
+import { dismissFirstRun, FIRST_RUN_KEY, useFirstRunOpen } from './firstRun';
 
-export const FIRST_RUN_KEY = 'hytte-planlegger:first-run-seen';
+export { FIRST_RUN_KEY };
 
 export function FirstRunCard() {
   const readOnly = useAppStore((s) => s.ui.readOnly);
-  const [open, setOpen] = useState(() => readRaw(storage, FIRST_RUN_KEY) === null);
+  const open = useFirstRunOpen();
   if (!open || readOnly) return null;
   const f = nb.firstRun;
   return (
@@ -24,15 +23,7 @@ export function FirstRunCard() {
         ))}
       </ul>
       <div className="first-run-actions">
-        <button
-          type="button"
-          className="btn btn-primary btn-small"
-          data-testid="first-run-ok"
-          onClick={() => {
-            writeRaw(storage, FIRST_RUN_KEY, new Date().toISOString());
-            setOpen(false);
-          }}
-        >
+        <button type="button" className="btn btn-primary btn-small" data-testid="first-run-ok" onClick={dismissFirstRun}>
           {f.ok}
         </button>
       </div>

@@ -10,7 +10,8 @@
  *    A block without a single east / north edge (not a rectangle) shows the sizes read-only (drag its corners).
  *  - Heights are relative to the block's floor; Mønehøyde is the effective ridge (derived), Rafthøyde the stored eave.
  *  - Utstikk sets both the eave and the gable overhang. Himlingshøyde: a tick for "flat ceiling" plus its height.
- *  - [Slett] and [Dupliser] only for new blocks (today's cabin cannot be deleted as a whole).
+ *  - [Slett] and [Dupliser] only for new blocks (today's cabin cannot be deleted as a whole); [Roter 90°] for placed
+ *    template units ("Nytt bygg": `rotateBlock`, a quarter turn around the centre).
  */
 import { nb } from '../../i18n/nb';
 import type { DerivedBlock } from '../../model/derived';
@@ -107,6 +108,8 @@ export function BlockEditor(props: { block: DerivedBlock }) {
       />
       <Actions
         actions={[
+          b.isNew &&
+            !!b.template && { key: 'rotate', label: E.rotate, title: E.rotateTitle, testId: 'block-rotate', onClick: () => env.actions.rotateBlock(id, 90) },
           b.isNew && { key: 'dup', label: E.duplicate, testId: 'block-duplicate', onClick: () => env.actions.duplicateBlock(id) },
           b.isNew && { key: 'delete', label: E.delete, danger: true, testId: 'block-delete', onClick: () => env.onDelete({ kind: 'block', block }) },
         ]}

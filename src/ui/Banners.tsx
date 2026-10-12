@@ -25,6 +25,7 @@ import {
 } from '../state/appStore';
 import type { AppNotice } from '../state/appStore';
 import { SEED_REVISION } from '../model/seed/forslagD';
+import { undoHow } from './device';
 
 function Banner(props: { tone?: 'info' | 'warn'; children: ReactNode; actions?: ReactNode; testId?: string }) {
   return (
@@ -137,7 +138,7 @@ export function Banners() {
               type="button"
               className="btn btn-small"
               onClick={() => {
-                if (window.confirm(nb.prompts.resetSeed)) resetToSeed();
+                if (window.confirm(nb.prompts.resetSeed(undoHow()))) resetToSeed();
               }}
             >
               {b.resetSeed}

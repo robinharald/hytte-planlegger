@@ -1,6 +1,7 @@
 /**
  * Rom (docs/phase2-plan.md §3.7): Navn, Romtype, Bredde ↔, Dybde ↕ | Gulv, Merknad; [Slett rom].
- * A detected face without a Room record shows "Gi navn" (name + room type → `nameFace`).
+ * A detected face without a Room record shows "Gi navn" (name + room type → `nameFace`); the new room is then selected
+ * (the face id it had is gone), so Egenskaper shows it right away.
  *
  * Size fields (`RoomSizeField`): the value is `DerivedRoom.dims` (inner bounding box). A change calls
  * `resizeRoom(roomId, axis, value, side)` for the side chosen by `roomResizePlan` (stored walls before block edges;
@@ -116,7 +117,10 @@ function UnnamedRoomEditor(props: { room: DerivedRoom }) {
   const submit = () => {
     const n = name.trim();
     if (!n) return;
-    run(() => env.actions.nameFace(room.id, n, { type, levelId: room.levelId }));
+    run(() => {
+      const id = env.actions.nameFace(room.id, n, { type, levelId: room.levelId });
+      if (typeof id === 'string' && id) env.onSelect({ kind: 'room', id, levelId: room.levelId });
+    });
   };
   return (
     <>

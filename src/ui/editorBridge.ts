@@ -17,7 +17,8 @@
  *  - A toast whose text equals `nb.proposals.locked` always gets the "Nytt forslag" button, so the editor core's own
  *    refusal toast (same text from the plan) gets it too, whatever its other fields.
  *  - "Nytt forslag" from the toast or the hint line needs no name: "Mitt forslag" ("Mitt forslag 2", … when taken).
- *    The top bar's "+ Nytt forslag" asks for a name first.
+ *    The top bar's "+ Nytt forslag" asks for a name first. Its toast has no Angre button (the text points at the
+ *    toolbar's Angre; a button there would throw the new proposal away), and it closes the first-run card.
  */
 import { createContext, createElement, useContext } from 'react';
 import type { ReactNode } from 'react';
@@ -43,6 +44,7 @@ import type { Selection } from '../state/selection';
 import { selectActiveVariant } from '../state/store';
 import type { AppState, Toast, Tool, ToolOptions } from '../state/store';
 import type { UnitTemplateId } from '../model/unitTemplates';
+import { dismissFirstRun } from './firstRun';
 
 // ---------------------------------------------------------------------------
 // Tools and editor UI state (store.ts: ui.tool / toolOptions / hint, toasts)
@@ -182,7 +184,8 @@ export function createNewProposal(name?: string): Id | null {
   if (id) {
     for (const t of selectToasts(appStore.getState())) if (toastOffersNewProposal(t)) dismissToast(t.id);
     setTool('select');
-    showToast({ text: nb.proposals.created(finalName), undo: true });
+    showToast({ text: nb.proposals.created(finalName) });
+    dismissFirstRun();
   }
   return id;
 }
@@ -237,8 +240,8 @@ export interface FurniturePatch {
 
 export interface UiEditActions {
   // Rooms
-  /** Give a detected face without a Room record a name (anchor = the face's label point). */
-  nameFace(faceId: Id, name: string, opts: { type: RoomType; levelId: Id }): void;
+  /** Give a detected face without a Room record a name (anchor = the face's label point). Returns the new Room's id. */
+  nameFace(faceId: Id, name: string, opts: { type: RoomType; levelId: Id }): Id | null | void;
   setRoomProps(roomId: Id, patch: RoomPatch): void;
   /** Set the room's inner width ('w', along x) or depth ('d', along y) by moving the stored wall on `side`. */
   resizeRoom(roomId: Id, axis: 'w' | 'd', value: number, side: RoomSide): void;
@@ -264,6 +267,8 @@ export interface UiEditActions {
   setBlockSize(blockId: Id, axis: 'w' | 'd', value: number, side: RoomSide): void;
   deleteBlock(blockId: Id): void;
   duplicateBlock(blockId: Id): void;
+  /** "Roter 90°" for a placed template unit: a quarter turn around its centre (90 = counter-clockwise), the core's `rotateBlock`. */
+  rotateBlock(blockId: Id, degrees: 90 | -90): void;
   // Deck
   setDeckProps(deckId: Id, patch: DeckPatch): void;
   toggleRailingEdge(edgeId: Id): void;
@@ -310,6 +315,7 @@ export const NOOP_EDIT_ACTIONS: UiEditActions = {
   setBlockSize: noop,
   deleteBlock: noop,
   duplicateBlock: noop,
+  rotateBlock: noop,
   setDeckProps: noop,
   toggleRailingEdge: noop,
   addSteps: noop,
@@ -327,6 +333,16 @@ export const NOOP_EDIT_ACTIONS: UiEditActions = {
   duplicateFurniture: noop,
   deleteFurniture: noop,
 };
+
+/**
+ * The editor core's bound actions (`useEditActions()`) as `UiEditActions`: `rotateBlock` is the core's bound
+ * `rotateBlock` (fix round after 2a); a core without it gets a typed no-op, so the UI compiles and runs either way.
+ */
+export function uiEditActionsFrom(core: Omit<UiEditActions, 'rotateBlock'> & Partial<Pick<UiEditActions, 'rotateBlock'>>): UiEditActions {
+  const bound = core.rotateBlock;
+  const rotateBlock = bound ? (blockId: Id, degrees: 90 | -90) => void bound(blockId, degrees) : noop;
+  return { ...core, rotateBlock };
+}
 
 export const EditActionsContext = createContext<UiEditActions>(NOOP_EDIT_ACTIONS);
 

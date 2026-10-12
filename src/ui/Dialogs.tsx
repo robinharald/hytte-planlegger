@@ -18,6 +18,7 @@ import { deleteVersion, listVersions, VERSION_LIMIT, versionsBytes } from '../st
 import type { VersionInfo } from '../state/persistence';
 import { selectActiveVariant } from '../state/store';
 import { Modal } from './common';
+import { undoHow } from './device';
 import { formatBytes, formatDateTime } from './format';
 
 // ---------------------------------------------------------------------------
@@ -191,7 +192,7 @@ export function VersionsDialog(props: { onClose: () => void }) {
     setRev((x) => x + 1);
   };
   const restore = (ver: VersionInfo) => {
-    if (!window.confirm(nb.prompts.restoreVersion(ver.name))) return;
+    if (!window.confirm(nb.prompts.restoreVersion(ver.name, undoHow()))) return;
     if (restoreVersion(ver.id)) props.onClose();
   };
   const remove = (ver: VersionInfo) => {
@@ -200,7 +201,7 @@ export function VersionsDialog(props: { onClose: () => void }) {
     setRev((x) => x + 1);
   };
   const reset = () => {
-    if (!window.confirm(nb.prompts.resetSeed)) return;
+    if (!window.confirm(nb.prompts.resetSeed(undoHow()))) return;
     resetToSeed();
     props.onClose();
   };

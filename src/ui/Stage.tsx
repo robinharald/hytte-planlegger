@@ -10,21 +10,31 @@
  * store; the editor core's bound actions; the Egenskaper focus highlight (overlay.ts); the phone mini-bar anchor
  * (`setSelectionAnchor`); the plan's own hint texts (`ui.hint`) and its "back to Velg" after a placement. A
  * furniture item clicked or dropped onto the plan is added with `addFurniture` and selected.
+ *
+ * Fix round after 2a:
+ *  - 3D colours: the 3D view has its own switch, `highlightNew3d` ("Vis hva som er nytt i 3D", off by default:
+ *    natural colours); the plan keeps `highlightNew` (on by default).
+ *  - Phones: while a bottom sheet is open the plan gets `viewportInsets` (the parts of its box the sheet, the screen
+ *    edges or the toolbar cover; planInsets.ts), so it keeps the selection in the part that is still visible.
  */
-import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { nb } from '../i18n/nb';
 import { PlanView } from '../plan2d/PlanView';
+import type { ViewportInsets } from '../plan2d/PlanView';
 import { appStore, useAppStore } from '../state/appStore';
 import { useEditActions } from '../state/editActions';
 import type { Selection } from '../state/selection';
 import { cutHeightFor, selectActiveVariant } from '../state/store';
 import { terrainFor, useDerived } from '../state/useDerived';
 import { ErrorBoundary, PaneError } from './common';
-import { isVariantLocked, setTool } from './editorBridge';
+import { isVariantLocked, setTool, showLockedToast } from './editorBridge';
 import type { ToolKind } from './editorBridge';
-import { useMediaQuery, useSun, WIDE_QUERY } from './hooks';
-import { setSelectionAnchor, usePanelHighlight } from './overlay';
+import { PHONE_QUERY, useMediaQuery, useSun, WIDE_QUERY } from './hooks';
+import { setSelectionAnchor, usePanelHighlight, useSheetInset } from './overlay';
+import { planInsets } from './planInsets';
+import { toolbarBottom } from './reveal';
 import type { Vec2 } from '../model/types';
 
 const View3D = lazy(() => import('../view3d/View3D').then((m) => ({ default: m.View3D })));
@@ -35,6 +45,35 @@ const onHint = (hint: string | null) => {
   if (appStore.getState().ui.hint !== hint) appStore.getState().setUi({ hint });
 };
 
+/**
+ * Phones, while a bottom sheet is open: the parts of the plan's own box that are covered (PlanView `viewportInsets`,
+ * screen px): at the bottom by the sheet (and the screen's bottom edge), at the top by the screen's top edge or the
+ * toolbar + hint line where they overlap the plan. Kept current while the page scrolls or resizes; undefined when no
+ * sheet is open (the plan then never pans by itself).
+ */
+function usePlanInsets(isPhone: boolean, paneRef: RefObject<HTMLElement | null>): ViewportInsets | undefined {
+  const sheet = useSheetInset();
+  const active = isPhone && sheet > 0;
+  const [insets, setInsets] = useState<ViewportInsets | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!active) return;
+    const update = () => {
+      const el = paneRef.current;
+      if (!el) return;
+      const next = planInsets(el.getBoundingClientRect(), window.innerHeight, sheet, toolbarBottom());
+      setInsets((cur) => (cur && cur.top === next.top && cur.bottom === next.bottom ? cur : next));
+    };
+    update();
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+    };
+  }, [active, sheet, paneRef]);
+  return active ? insets : undefined;
+}
+
 function Pane3D(props: { hidden: boolean; onReady: () => void }) {
   const derived = useDerived();
   const site = useAppStore((s) => s.project.site);
@@ -44,7 +83,7 @@ function Pane3D(props: { hidden: boolean; onReady: () => void }) {
       mode3d: s.ui.mode3d,
       activeStoreyId: s.ui.activeStoreyId,
       showLabels: s.ui.showLabels,
-      highlightNew: s.ui.highlightNew,
+      highlightNew3d: s.ui.highlightNew3d,
       showTrees: s.ui.showTrees,
       showTerrain: s.ui.showTerrain,
       preset: s.ui.preset,
@@ -63,7 +102,7 @@ function Pane3D(props: { hidden: boolean; onReady: () => void }) {
             activeStoreyId={ui.activeStoreyId}
             cutHeight={cutHeightFor(ui.preset)}
             showLabels={ui.showLabels}
-            highlightNew={ui.highlightNew}
+            highlightNew={ui.highlightNew3d}
             showTrees={ui.showTrees}
             showTerrain={ui.showTerrain}
             sun={sun}
@@ -99,6 +138,9 @@ function PanePlan(props: { hidden: boolean }) {
   const actions = useEditActions();
   const highlight = usePanelHighlight();
   const overlay = useMemo(() => ({ highlight }), [highlight]);
+  const isPhone = useMediaQuery(PHONE_QUERY);
+  const paneRef = useRef<HTMLElement>(null);
+  const insets = usePlanInsets(isPhone, paneRef);
   const onDropFurniture = useCallback(
     (catalogId: string, at: Vec2) => {
       const id = actions.addFurniture(catalogId, at);
@@ -107,7 +149,7 @@ function PanePlan(props: { hidden: boolean }) {
     [actions],
   );
   return (
-    <section className={`pane pane-plan${props.hidden ? ' is-hidden' : ''}`} aria-label={nb.a11y.planView} aria-hidden={props.hidden}>
+    <section ref={paneRef} className={`pane pane-plan${props.hidden ? ' is-hidden' : ''}`} aria-label={nb.a11y.planView} aria-hidden={props.hidden}>
       <ErrorBoundary resetKey={derived.variantId} fallback={(error, reset) => <PaneError error={error} reset={reset} />}>
         <PlanView
           derived={derived}
@@ -129,7 +171,9 @@ function PanePlan(props: { hidden: boolean }) {
           onSelectionBar={setSelectionAnchor}
           onToolChange={onToolChange}
           onHint={onHint}
+          onLocked={showLockedToast}
           onDropFurniture={onDropFurniture}
+          viewportInsets={insets}
         />
       </ErrorBoundary>
     </section>

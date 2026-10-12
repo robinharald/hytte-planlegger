@@ -210,7 +210,8 @@ describe('review fixes', () => {
     const gang = [...(schedule?.querySelectorAll('tr.row') ?? [])].find((tr) => tr.textContent?.includes('Gang nedre'));
     const cells = [...(gang?.querySelectorAll('td') ?? [])].map((td) => td.textContent ?? '');
     expect(cells[1]).toBe('Hytta');
-    expect(cells[2]).toBe('eks.nytt');
+    // The same status words as Egenskaper: "i dag" / "nytt".
+    expect(cells[2]).toBe('i dagnytt');
     expect(cells[3]).toBe('2,0 × 2,5');
     expect(cells[4]).toBe('5,0 m²3,0 + 2,0');
     expect(texts('[data-testid="room-schedule"] tr.subtotal td')).toContain('Sum etasje');
@@ -258,16 +259,16 @@ describe('review fixes', () => {
     render(<Headline />);
     const headline = byTestId('headline');
     const text = headline?.textContent ?? '';
-    expect(text).toContain('BYA170,2 m² · bygg 160,2 (eks. 120,1 · nytt 40,1) · terrasse 10,0');
+    expect(text).toContain('BYA170,2 m² · bygg 160,2 (i dag 120,1 · nytt 40,1) · terrasse 10,0');
     expect(text).toContain('BRA140,0 m² (Underetasje 32,0 m² · Hovedplan 100,0 m² · Hems 8,0 m²)');
     const titles = [...(headline?.querySelectorAll('abbr') ?? [])].map((a) => a.getAttribute('title'));
-    expect(titles).toEqual(expect.arrayContaining(['Bebygd areal', 'Bruksareal', 'eksisterende']));
+    expect(titles).toEqual(expect.arrayContaining(['Bebygd areal', 'Bruksareal', 'hytta i dag']));
   });
 
   it('Arealer: buildings with their own split, decks separately, rooms explanation mentions the loft', () => {
     render(<SidePanels isPhone={false} />);
     const areas = byTestId('area-totals');
-    expect(areas?.textContent).toContain('Bygninger160,2 m² (eks. 120,1 · nytt 40,1)');
+    expect(areas?.textContent).toContain('Bygninger160,2 m² (i dag 120,1 · nytt 40,1)');
     expect(areas?.textContent).toContain('Terrasser over 0,5 m10,0 m²');
     expect(areas?.textContent).toContain('1,9 m');
     expect(areas?.textContent).not.toContain('Nytt 50,1');

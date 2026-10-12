@@ -151,16 +151,16 @@ describe('tools', () => {
     click(byTestId('tool-wall'));
     expect(ui().tool).toBe('wall');
     expect(byTestId('tool-wall')?.getAttribute('aria-pressed')).toBe('true');
-    expect(byTestId('hint-line')?.textContent).toBe('Klikk der veggen skal begynne');
+    expect(byTestId('hint-line')?.textContent).toBe('Trykk der veggen skal begynne');
     act(() => appStore.getState().setUi({ hint: nb.hints.wallEnd }));
-    expect(byTestId('hint-line')?.textContent).toBe('Klikk der den skal slutte (Esc avbryter)');
+    expect(byTestId('hint-line')?.textContent).toBe('Trykk der den skal slutte (Esc avbryter)');
     click(byTestId('tool-wall'));
     expect(ui().tool).toBe('select');
     expect(ui().hint).toBeNull();
 
     click(byTestId('tool-opening'));
     expect(ui().toolOptions.openingType).toBe('window');
-    expect(byTestId('hint-line')?.textContent).toBe('Velg type, og klikk på en vegg');
+    expect(byTestId('hint-line')?.textContent).toBe('Velg type, og trykk på en vegg');
     click(byTestId('opening-type-door'));
     expect(ui().toolOptions.openingType).toBe('door');
     expect(byTestId('opening-type-door')?.getAttribute('aria-pressed')).toBe('true');
@@ -181,12 +181,12 @@ describe('tools', () => {
     );
     keydown('r');
     expect(ui().toolOptions.unitRotation90).toBe(2);
-    expect(byTestId('hint-line')?.textContent).toBe('Klikk der bygget skal stå – det fester seg til terrassekanten og veggene');
+    expect(byTestId('hint-line')?.textContent).toBe('Trykk der bygget skal stå – det fester seg til terrassekanten og veggene');
 
     act(() => appStore.getState().setUi({ activeView: '3d' }));
     click(byTestId('tool-measure'));
     expect(ui()).toMatchObject({ tool: 'measure', activeView: 'plan' });
-    expect(byTestId('hint-line')?.textContent).toBe('Klikk på to punkter');
+    expect(byTestId('hint-line')?.textContent).toBe('Trykk på to punkter');
     act(() => appStore.getState().setUi({ activeView: '3d' }));
     click(byTestId('tool-furniture'));
     expect(ui()).toMatchObject({ tool: 'furniture', activeView: '3d' });
@@ -204,6 +204,25 @@ describe('tools', () => {
     expect(appStore.getState().project.variants.find((v) => v.id === id)?.name).toBe('Mitt forslag');
     click(byTestId('redo'));
     expect(appStore.getState().project.variants.find((v) => v.id === id)?.name).toBe('Nytt navn');
+  });
+
+  it('a warning count badge before Angre opens Advarsler', async () => {
+    unlock();
+    const panel = document.createElement('details');
+    panel.id = 'panel-warnings';
+    document.body.appendChild(panel);
+    render(<Toolbar />);
+    // The UI fixture has three warnings.
+    const badge = byTestId('toolbar-warnings');
+    expect(badge?.textContent).toBe('3');
+    expect(badge?.getAttribute('aria-label')).toBe(nb.tools.warnings(3));
+    expect(badge?.parentElement?.classList.contains('toolbar-history')).toBe(true);
+    click(badge);
+    await act(async () => {
+      await new Promise((r) => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => r(null)) : r(null)));
+    });
+    expect(panel.open).toBe(true);
+    panel.remove();
   });
 
   it('is hidden while read-only (shared link)', () => {
@@ -307,7 +326,7 @@ describe('keyboard', () => {
 });
 
 describe('phone mini-bar', () => {
-  it('Egenskaper opens the sheet; Slett only for what can be deleted; floats above the anchor', () => {
+  it('Egenskaper opens the sheet; Slett only for what can be deleted; placed by the selection, hidden without an anchor', () => {
     unlock();
     const actions = recordingActions();
     render(
@@ -316,15 +335,24 @@ describe('phone mini-bar', () => {
       </EditActionsProvider>,
     );
     expect(byTestId('mini-bar')).toBeNull();
+    act(() => setSelectionAnchor({ x: 400, y: 300 }));
     act(() => appStore.getState().select({ kind: 'room', id: 'face-abc', levelId: 'main' }));
     expect(byTestId('mini-properties')).not.toBeNull();
     expect(byTestId('mini-delete')).toBeNull(); // an unnamed face cannot be deleted
     expect(byTestId('mini-rotate')).toBeNull();
-    expect(byTestId('mini-bar')?.hasAttribute('data-anchored')).toBe(false);
-
-    act(() => setSelectionAnchor({ x: 400, y: 300 }));
-    expect(byTestId('mini-bar')?.style.top).toBe('288px');
+    expect(byTestId('mini-bar')?.hasAttribute('data-anchored')).toBe(true);
+    // The bar (50 px before it is measured) sits 12 px above the selection, centred on it.
+    expect(byTestId('mini-bar')?.style.top).toBe('238px');
     expect(byTestId('mini-bar')?.style.left).toBe('400px');
+
+    // While a drag is in progress the plan reports no anchor: the bar hides instead of jumping to the bottom.
+    act(() => setSelectionAnchor(null));
+    expect(byTestId('mini-bar')).toBeNull();
+    // Only the 3D view (no plan on screen) uses the bottom-centre fallback.
+    act(() => appStore.getState().setUi({ activeView: '3d' }));
+    expect(byTestId('mini-bar')?.hasAttribute('data-anchored')).toBe(false);
+    act(() => appStore.getState().setUi({ activeView: 'plan' }));
+    act(() => setSelectionAnchor({ x: 400, y: 300 }));
 
     act(() => appStore.getState().select({ kind: 'opening', id: 'o-1' }));
     click(byTestId('mini-delete'));

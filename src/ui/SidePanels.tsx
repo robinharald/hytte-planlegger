@@ -6,13 +6,14 @@
 import { useMemo } from 'react';
 import { nb } from '../i18n/nb';
 import type { Id } from '../model/types';
-import { appStore } from '../state/appStore';
+import { appStore, useAppStore } from '../state/appStore';
 import type { Selection } from '../state/selection';
 import { useActiveVariant, useDerived } from '../state/useDerived';
 import { AreaTotals } from './AreaTotals';
 import { Panel } from './common';
 import { PropertiesPanel } from './PropertiesPanel';
 import { RoomSchedule } from './RoomSchedule';
+import { WARNINGS_PANEL_ID } from './reveal';
 import { planStoreyOf } from './schedule';
 import { warningItems } from './warnings';
 
@@ -24,11 +25,18 @@ function selectTarget(target: Selection, storeyOfLevel: (levelId?: Id) => Id | u
 function WarningsPanel(props: { defaultOpen: boolean }) {
   const derived = useDerived();
   const variant = useActiveVariant();
-  const items = useMemo(() => warningItems(derived, variant), [derived, variant]);
+  const site = useAppStore((s) => s.project.site);
+  const items = useMemo(() => warningItems(derived, variant, site), [derived, variant, site]);
   const storeyOfLevel = (levelId?: Id) => (levelId ? derived.levels.find((l) => l.id === levelId)?.storeyId : undefined);
 
   return (
-    <Panel title={nb.warnings.heading} badge={items.length ? nb.warnings.count(items.length) : undefined} defaultOpen={props.defaultOpen}>
+    <Panel
+      title={nb.warnings.heading}
+      badge={items.length ? nb.warnings.count(items.length) : undefined}
+      defaultOpen={props.defaultOpen}
+      id={WARNINGS_PANEL_ID}
+      testId="warnings"
+    >
       {items.length === 0 ? (
         <p className="muted">{nb.warnings.none}</p>
       ) : (

@@ -90,7 +90,7 @@ describe('App shell, phase 2', () => {
     expect(byTestId('hint-line')).not.toBeNull();
     expect(document.querySelector('.side details.panel')?.getAttribute('data-testid')).toBe('properties');
     const card = byTestId('first-run');
-    expect(card?.textContent).toContain('Forslag D er grunnlaget og kan ikke endres');
+    expect(card?.textContent).toContain('Forslag D er det faste grunnlaget og kan ikke endres. «+ Nytt forslag» lager en kopi');
     act(() => byTestId('first-run-ok')?.click());
     expect(byTestId('first-run')).toBeNull();
     expect(window.localStorage.getItem('hytte-planlegger:first-run-seen')).not.toBeNull();

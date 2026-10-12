@@ -12,9 +12,9 @@ import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { nb } from '../i18n/nb';
 import { appStore } from '../state/appStore';
-import { useEditActions } from '../state/editActions';
+import { addWall, useEditActions } from '../state/editActions';
 import { deriveForState } from '../state/useDerived';
-import { createNewProposal, EditActionsProvider } from './editorBridge';
+import { createNewProposal, EditActionsProvider, uiEditActionsFrom } from './editorBridge';
 import { PropertiesPanel } from './PropertiesPanel';
 import { Toasts } from './Toasts';
 
@@ -26,7 +26,7 @@ let root: Root;
 
 function Wired() {
   return (
-    <EditActionsProvider actions={useEditActions()}>
+    <EditActionsProvider actions={uiEditActionsFrom(useEditActions())}>
       <PropertiesPanel />
       <Toasts />
     </EditActionsProvider>
@@ -42,6 +42,13 @@ function typeAndEnter(el: HTMLInputElement, text: string) {
     el.dispatchEvent(new Event('input', { bubbles: true }));
   });
   act(() => void el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+}
+/** Type into a plain input (the "Gi navn" name field). */
+function setText(el: HTMLInputElement, text: string) {
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(el, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 const wall = (id: string) => {
   const s = appStore.getState();
@@ -94,5 +101,21 @@ describe('Egenskaper with the editor core on Forslag D', () => {
     expect(wall('w-104-103')?.status).toBe('existing');
     expect(appStore.getState().ui.selection).toEqual({ kind: 'wall', id: 'w-104-103' });
     expect(byTestId('properties-status')?.textContent).toBe('Hytta i dag');
+  });
+
+  it('"Gi navn" on a new piece selects the new room, so Egenskaper shows it (not "finnes ikke lenger")', () => {
+    act(() => void createNewProposal());
+    act(() => void addWall(appStore, [18.95, 3.4], [18.95, 6.2]));
+    const face = deriveForState(appStore.getState()).rooms.find((r) => !r.room && r.levelId === 'main');
+    if (!face) throw new Error('no unnamed piece');
+    act(() => appStore.getState().select({ kind: 'room', id: face.id, levelId: 'main' }));
+    setText(container.querySelector<HTMLInputElement>('[data-testid="name-face-input"]') as HTMLInputElement, 'Kontor');
+    act(() => byTestId('name-face')?.click());
+    const sel = appStore.getState().ui.selection;
+    expect(sel?.kind).toBe('room');
+    expect(sel?.id).not.toBe(face.id);
+    expect(room(sel!.id)?.room?.name).toBe('Kontor');
+    expect(container.textContent).not.toContain(nb.properties.dangling);
+    expect(byTestId('properties-title')?.textContent).toBe('Kontor');
   });
 });

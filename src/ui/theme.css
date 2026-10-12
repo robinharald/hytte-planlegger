@@ -1060,11 +1060,26 @@ abbr[title] {
   opacity: 0.4;
   cursor: default;
 }
-/* Velg stays in view while the tool row scrolls sideways (phones). */
+/* Velg stays in view should the tool row ever scroll sideways (on phones all six tools fit, see below). */
 .tool[data-tool='select'] {
   position: sticky;
   left: 0;
   z-index: 1;
+}
+/* Warning count badge before Angre (opens Advarsler); the count stays visible where the history labels are hidden. */
+.tool.tool-warnings {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  gap: 4px;
+}
+.toolbar-history .tool.tool-warnings .tool-count {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .tool-options {
@@ -1463,6 +1478,17 @@ abbr[title] {
   max-height: 88dvh;
   height: 88dvh;
 }
+/* First stop: low, with only the basic fields (the editors' "Mer" and read-only rows wait for "Vis mer"). */
+.sheet[data-stop='basic'] {
+  max-height: 40dvh;
+}
+.sheet[data-stop='basic'] .sheet-body details.more,
+.sheet[data-stop='basic'] .sheet-body dl.kv {
+  display: none;
+}
+.sheet-head .sheet-stop {
+  margin-left: auto;
+}
 .sheet-handle {
   display: flex;
   justify-content: center;
@@ -1496,7 +1522,8 @@ abbr[title] {
 .mini-bar {
   position: fixed;
   z-index: 40;
-  transform: translate(-50%, -100%);
+  /* `left` is the bar's centre, `top` its top edge (SelectionMiniBar placeMiniBar). */
+  transform: translateX(-50%);
   display: flex;
   gap: 2px;
   padding: 4px;
@@ -1680,6 +1707,32 @@ abbr[title] {
     padding: 6px 9px;
     min-height: 42px;
     font-size: 13.5px;
+  }
+  /* All six tools fit a 390 px phone: six equal columns, the icon above a short label (two lines allowed), so no
+   * tool is hidden off screen and nothing depends on scrolling. */
+  .toolbar-tools {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    overflow: visible;
+  }
+  .toolbar-tools .tool {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-width: 0;
+    padding: 4px 1px;
+    font-size: 11.5px;
+    line-height: 1.1;
+    white-space: normal;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .toolbar-tools .tool svg {
+    width: 20px;
+    height: 20px;
+  }
+  .toolbar-tools .tool[data-tool='select'] {
+    position: static;
   }
   .toolbar-history .tool span {
     position: absolute;

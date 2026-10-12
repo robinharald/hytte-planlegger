@@ -6,12 +6,14 @@
  *  - The left column is the furniture library while the Møbler tool is active (desktop / tablet); on phones the
  *    library is a bottom sheet instead, and so are the properties (opened from the floating mini-bar).
  *  - The edit actions reach every component through `EditActionsProvider` (ui/editorBridge.ts): `EditorActionsRoot`
- *    provides the editor core's bound actions (state/editActions.ts), which satisfy `UiEditActions` as they are.
+ *    provides the editor core's bound actions (state/editActions.ts) through `uiEditActionsFrom` (a typed no-op
+ *    `rotateBlock` for a core without it).
+ *  - An edit that gives a new warning shows it once as a toast with "Vis" (ui/warningToasts.ts).
  *
  * `window.__hytte.ready` turns true after View3D's first frame (onReady), or right after mount when the 3D view
  * is not shown (plan only), and then stays true.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { nb } from './i18n/nb';
 import { leaveSharedView, reloadPage, resetToSeed, useAppStore } from './state/appStore';
@@ -21,7 +23,7 @@ import { ErrorBoundary } from './ui/common';
 import { Controls } from './ui/Controls';
 import { HelpDialog, ShareDialog, VersionsDialog } from './ui/Dialogs';
 import { useEditActions } from './state/editActions';
-import { EditActionsProvider, useTool, useUiEditActions } from './ui/editorBridge';
+import { EditActionsProvider, uiEditActionsFrom, useTool, useUiEditActions } from './ui/editorBridge';
 import type { UiEditActions } from './ui/editorBridge';
 import { FirstRunCard } from './ui/FirstRunCard';
 import { HintLine } from './ui/HintLine';
@@ -34,6 +36,7 @@ import { Stage } from './ui/Stage';
 import { Toasts } from './ui/Toasts';
 import { Toolbar } from './ui/Toolbar';
 import { TopBar } from './ui/TopBar';
+import { useNewWarningToasts } from './ui/warningToasts';
 import type { DialogKind } from './ui/TopBar';
 
 function AppError(props: { error: Error; reset: () => void }) {
@@ -68,7 +71,8 @@ function AppError(props: { error: Error; reset: () => void }) {
 
 /** Provides the editor core's bound actions (state/editActions.ts `useEditActions`) to the whole UI. */
 function EditorActionsRoot(props: { children: ReactNode }) {
-  const actions: UiEditActions = useEditActions();
+  const core = useEditActions();
+  const actions: UiEditActions = useMemo(() => uiEditActionsFrom(core), [core]);
   return <EditActionsProvider actions={actions}>{props.children}</EditActionsProvider>;
 }
 
@@ -90,6 +94,7 @@ function Shell() {
 
   useKeyboardShortcuts(actions);
   useTestHook(ready);
+  useNewWarningToasts();
 
   return (
     <div className="app" data-readonly={readOnly || undefined}>

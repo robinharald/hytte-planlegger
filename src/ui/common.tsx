@@ -234,6 +234,12 @@ export const IconTrash = () => (
     <path d="M6.5 7l1 13h9l1-13" />
   </Svg>
 );
+export const IconWarning = () => (
+  <Svg>
+    <path d="M12 3.5 2.5 20h19z" />
+    <path d="M12 10v4.5M12 17.4h.01" />
+  </Svg>
+);
 export const IconSliders = () => (
   <Svg>
     <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" />

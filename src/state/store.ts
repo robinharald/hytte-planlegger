@@ -31,7 +31,8 @@
  *    (state/editActions.ts computes `produce(base, …)`, reconciles the rooms and hands the result over). The object
  *    is stored as-is, so the derive memo filled while reconciling is hit again by `useDerived`. Same history rules
  *    as `updateVariant` (merge key, transactions, readOnly); an identical object is a no-op.
- *  - `updateSite(recipe, { transaction })`: site edits (trees), same rules.
+ *  - `updateSite(recipe, { transaction })`: site edits, same rules. (The editor no longer edits trees here: they
+ *    belong to the proposal, `Variant.trees`, copy-on-write in state/editActions.ts.)
  *  - `transactionBase()`: the project at `beginTransaction` (drags are applied from it), null outside a transaction.
  *  - UI state: `tool` ('select' | 'wall' | 'opening' | 'unit' | 'furniture' | 'measure'), `toolOptions`,
  *    `showClearances`, `hint` (the hint line's tool-specific text, null = the tool's default). None of it is persisted.
@@ -98,6 +99,8 @@ export interface UiState {
   showRoofPlan: boolean;
   /** "Vis hva som er nytt": new parts orange, removed ones dashed ("Fjernet" ghosts) and the legend. On by default. */
   highlightNew: boolean;
+  /** "Vis hva som er nytt i 3D": the 3D view's own switch; off by default (natural colours). */
+  highlightNew3d: boolean;
   showTrees: boolean;
   showTerrain: boolean;
   preset: CameraPreset;
@@ -125,6 +128,7 @@ export const DEFAULT_UI: UiState = {
   showGrid: true,
   showRoofPlan: false,
   highlightNew: true,
+  highlightNew3d: false,
   showTrees: true,
   showTerrain: true,
   preset: 'oversikt',
@@ -193,7 +197,7 @@ export interface AppState {
   updateVariant(id: Id, recipe: VariantRecipe, opts?: { transaction?: string }): void;
   /** Replace a whole variant by an object computed outside the store (see the header); same rules as updateVariant. */
   replaceVariant(id: Id, variant: Variant, opts?: { transaction?: string }): void;
-  /** Edit the site (trees); same rules as updateVariant. */
+  /** Edit the site; same rules as updateVariant. (Trees are per proposal, `Variant.trees`.) */
   updateSite(recipe: (draft: Site) => void, opts?: { transaction?: string }): void;
   updateActiveVariant(recipe: VariantRecipe, opts?: { transaction?: string }): void;
   /** Returns the new variant id, or null when nothing was done. */

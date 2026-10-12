@@ -186,6 +186,23 @@ describe('Rom', () => {
     click(byTestId('name-face'));
     expect(actions.nameFace).toHaveBeenCalledWith(face.id, 'Pantry', { type: 'pantry', levelId: 'main' });
   });
+
+  it('"Gi navn" selects the new room (the face id it had is gone), so Egenskaper shows it', () => {
+    const variant: Variant = { ...seed.variant, id: 'uten-pantry', rooms: seed.variant.rooms.filter((r) => r.id !== 'room-pantry') };
+    const derived = seed.derive(variant);
+    const face = derived.rooms.find((r) => !r.room && r.levelId === 'main');
+    if (!face) throw new Error('no unnamed face');
+    actions.nameFace.mockReturnValue('room-ny');
+    render({ kind: 'room', id: face.id, levelId: 'main' }, { derived, variant });
+    typeInto(byTestId('name-face-input') as HTMLInputElement, 'Pantry');
+    click(byTestId('name-face'));
+    expect(cb.onSelect).toHaveBeenCalledWith({ kind: 'room', id: 'room-ny', levelId: 'main' });
+    // Refused (null): the selection stays.
+    cb.onSelect.mockClear();
+    actions.nameFace.mockReturnValue(null);
+    click(byTestId('name-face'));
+    expect(cb.onSelect).not.toHaveBeenCalled();
+  });
 });
 
 describe('Vegg', () => {
@@ -275,6 +292,9 @@ describe('Åpning', () => {
     render({ kind: 'opening', id: 'win-stue-s-old' });
     expect(byTestId('properties-status')?.textContent).toBe('Fjernet');
     expect(byTestId('properties-title')?.textContent).toBe('Vindu');
+    // The header reads "Fra hytta i dag · Vindu · Fjernet", not "Fjernet Vindu Fjernet".
+    expect(q('.editor-title .tag')?.textContent).toBe('Fra hytta i dag');
+    expect(q('.editor-title')?.textContent?.match(/Fjernet/g)).toHaveLength(1);
     click(byTestId('ghost-restore'));
     expect(actions.restoreGhost).toHaveBeenCalledWith('win-stue-s-old');
     expect(cb.onSelect).toHaveBeenCalledWith({ kind: 'opening', id: 'win-stue-s-old' });
@@ -303,6 +323,16 @@ describe('Bygningsdel', () => {
     expect(actions.duplicateBlock).toHaveBeenCalledWith('blk-wing');
     click(byTestId('block-delete'));
     expect(cb.onDelete).toHaveBeenCalledWith(expect.objectContaining({ kind: 'block' }));
+  });
+
+  it('a placed "Nytt bygg" unit: [Roter 90°] turns it (rotateBlock); blocks without a template have no such button', () => {
+    const variant: Variant = { ...seed.variant, id: 'med-vedskjul', blocks: seed.variant.blocks.map((b) => (b.id === 'blk-wing' ? { ...b, template: 'vedskjul' } : b)) };
+    render({ kind: 'block', id: 'blk-wing' }, { derived: seed.derive(variant), variant });
+    expect(byTestId('block-rotate')?.textContent).toBe('Roter 90°');
+    click(byTestId('block-rotate'));
+    expect(actions.rotateBlock).toHaveBeenCalledWith('blk-wing', 90);
+    render({ kind: 'block', id: 'blk-wing' });
+    expect(byTestId('block-rotate')).toBeNull();
   });
 
   it('today\'s cabin: the parts are listed and it cannot be deleted', () => {

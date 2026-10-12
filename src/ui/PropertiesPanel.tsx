@@ -2,7 +2,8 @@
  * Egenskaper connected to the app: the store (selection, read-only, the active proposal and its lock), the derived
  * model, the edit actions (editorBridge context), the overlay highlight and the selection commands. Rendered as the
  * first panel of the right column (desktop, tablet) and as a bottom sheet on phones (`PropertiesSheet`, opened by
- * the mini-bar's "Egenskaper" or a schedule row; it closes when the selection is cleared).
+ * the mini-bar's "Egenskaper" or a schedule row; it closes when the selection is cleared). When the sheet opens the
+ * page scrolls so the plan sits right under the toolbar (reveal.ts `scrollPlanUnderToolbar`).
  */
 import { useCallback, useEffect } from 'react';
 import { nb } from '../i18n/nb';
@@ -16,7 +17,7 @@ import { createNewProposal, isVariantLocked, setTool, showLockedToast, useUiEdit
 import type { ToolKind } from './editorBridge';
 import { setPanelHighlight, setPropertiesSheet, usePropertiesSheet } from './overlay';
 import { PropertiesEditor } from './PropertiesEditor';
-import { PROPERTIES_PANEL_ID } from './reveal';
+import { PROPERTIES_PANEL_ID, scrollPlanUnderToolbar } from './reveal';
 import type { UiResolved } from './uiSelection';
 
 const onSelect = (sel: Selection | null) => appStore.getState().select(sel);
@@ -65,7 +66,11 @@ export function PropertiesSheet() {
   useEffect(() => {
     if (!hasSelection) setPropertiesSheet(false);
   }, [hasSelection]);
-  if (!open || !hasSelection) return null;
+  const shown = open && hasSelection;
+  useEffect(() => {
+    if (shown) scrollPlanUnderToolbar();
+  }, [shown]);
+  if (!shown) return null;
   return (
     <BottomSheet title={nb.properties.heading} onClose={() => setPropertiesSheet(false)} testId="properties-sheet">
       <PropertiesBody hideClear />

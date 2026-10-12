@@ -10,13 +10,18 @@
  *  - Picking Vegg, Dør/vindu, Nytt bygg or Mål while only the 3D view is shown switches to the plan (they work in
  *    the plan); Møbler keeps the view (items can be dropped in 3D).
  *  - Hidden while read-only (shared link), like every edit control.
- *  - Phones: the tool row scrolls sideways with Velg pinned at its left (CSS), Angre / Gjør om stay visible.
+ *  - Phones: all six tools fit the row (CSS grid of six equal columns, the icon above a short label that may take two
+ *    lines; "Dør/vindu" may break after the slash), so none is hidden off screen and Velg is always in view; Angre /
+ *    Gjør om stay visible as icons.
+ *  - A warning count badge (the active proposal's warnings) before Angre; it opens Advarsler.
  */
+import { Fragment } from 'react';
 import type { ReactNode } from 'react';
 import { nb } from '../i18n/nb';
 import type { OpeningType } from '../model/types';
 import { appStore, useAppStore } from '../state/appStore';
-import { IconDoor, IconHouse, IconRedo, IconRotate, IconRuler, IconSelect, IconSofa, IconUndo, IconWall } from './common';
+import { useDerived } from '../state/useDerived';
+import { IconDoor, IconHouse, IconRedo, IconRotate, IconRuler, IconSelect, IconSofa, IconUndo, IconWall, IconWarning } from './common';
 import {
   EDITING_TOOLS,
   pickTool,
@@ -29,8 +34,37 @@ import {
   useToolOptions,
 } from './editorBridge';
 import type { ToolKind } from './editorBridge';
+import { revealWarnings } from './reveal';
 
 const T = nb.tools;
+
+/** A tool name that may wrap after a slash ("Dør/vindu" → "Dør/" "vindu" on a narrow phone row). */
+function breakable(name: string): ReactNode {
+  const parts = name.split('/');
+  return parts.map((p, i) => (
+    <Fragment key={i}>
+      {p}
+      {i < parts.length - 1 && (
+        <>
+          /<wbr />
+        </>
+      )}
+    </Fragment>
+  ));
+}
+
+/** The active proposal's warning count; opens Advarsler. Not shown without warnings. */
+function WarningsBadge() {
+  const count = useDerived().warnings.length;
+  if (count === 0) return null;
+  const label = T.warnings(count);
+  return (
+    <button type="button" className="tool tool-warnings" onClick={revealWarnings} title={T.warningsTitle} aria-label={label} data-testid="toolbar-warnings">
+      <IconWarning />
+      <span className="tool-count">{count}</span>
+    </button>
+  );
+}
 
 const ICONS: Record<ToolKind, () => ReactNode> = {
   select: IconSelect,
@@ -120,12 +154,13 @@ export function Toolbar() {
                 onClick={() => pickTool(t)}
               >
                 <Icon />
-                <span>{T.names[t]}</span>
+                <span className="tool-name">{breakable(T.names[t])}</span>
               </button>
             );
           })}
         </div>
         <div className="toolbar-history">
+          <WarningsBadge />
           <button
             type="button"
             className="tool"

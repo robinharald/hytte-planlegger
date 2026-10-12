@@ -10,7 +10,8 @@
  *  - What can be deleted: named rooms (the Room record), stored walls, openings, new blocks (an existing block shows
  *    "Hytta i dag kan ikke slettes som helhet …"), deck corners (a deck keeps at least 3), steps, hot tubs, trees,
  *    furniture. Exterior walls, decks, railings, structure and ghosts cannot.
- *  - Rotate: furniture only (90°). Duplicate: furniture and new blocks.
+ *  - Rotate (90°): furniture, and new template units ("Nytt bygg": a placed Vedskjul turned around its centre,
+ *    `rotateBlock`). Duplicate: furniture and new blocks.
  */
 import { nb } from '../i18n/nb';
 import { appStore } from '../state/appStore';
@@ -90,13 +91,18 @@ export function deleteResolved(r: UiResolved, actions: UiEditActions): boolean {
   return changed;
 }
 
+/** A placed "Nytt bygg" unit (a new block made from a template) can be turned. */
+export function isRotatableBlock(r: UiResolved | null): boolean {
+  return r?.kind === 'block' && r.block.block.isNew && !!r.block.block.template;
+}
+
 export function canRotate(r: UiResolved | null): boolean {
-  return r?.kind === 'furniture';
+  return r?.kind === 'furniture' || isRotatableBlock(r);
 }
 
 export function rotateResolved(r: UiResolved, actions: UiEditActions): void {
-  if (r.kind !== 'furniture') return;
-  guarded(() => actions.rotateFurniture(r.furniture.id, 90));
+  if (r.kind === 'furniture') guarded(() => actions.rotateFurniture(r.furniture.id, 90));
+  else if (r.kind === 'block' && isRotatableBlock(r)) guarded(() => actions.rotateBlock(r.block.block.id, 90));
 }
 
 export function duplicateResolved(r: UiResolved, actions: UiEditActions): void {

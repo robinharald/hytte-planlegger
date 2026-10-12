@@ -151,7 +151,9 @@ describe('warnings', () => {
   it('texts use names and Norwegian number formatting', () => {
     const items = warningItems(derived, variant);
     expect(items[0].text).toBe('Rom uten navn på Hovedplan (1,2 m²).');
-    expect(items[1].text).toContain('Innervegg w-1');
+    // Walls and openings are named by type and place, never by id (the fixture's w-1 stands in no room).
+    expect(items[1].text).toBe('En vegg henger løs og danner ikke noe rom.');
+    expect(items[1].text).not.toContain('w-1');
     expect(items[2].text).toBe('Arealet 170,2 m² er over grensen på 150,0 m².');
     expect(items[0].target).toEqual({ kind: 'room', id: 'face-abc', levelId: 'main' });
     expect(items[2].target).toBeNull();
@@ -255,8 +257,8 @@ describe('review fixes: schedule, area figures, subtitle, strings', () => {
   it('copy: one form of "fila", "Vil du …" questions, Veggtype, rull/knip, the derive-failed text', () => {
     const all = JSON.stringify(nb);
     expect(all).not.toMatch(/Filen|filen/);
-    expect(nb.prompts.restoreVersion('X')).toMatch(/^Vil du hente versjonen «X»\?/);
-    expect(nb.prompts.importProject('X')).toMatch(/^Vil du åpne «X» fra fila\?/);
+    expect(nb.prompts.restoreVersion('X', nb.prompts.undoTouch)).toMatch(/^Vil du hente versjonen «X»\?/);
+    expect(nb.prompts.importProject('X', nb.prompts.undoTouch)).toMatch(/^Vil du åpne «X» fra fila\?/);
     expect(nb.properties.fields.kind).toBe('Veggtype');
     expect(nb.view3d.hint).toContain('rull/knip for å zoome');
     expect(nb.help.items.some((t) => t.includes('i Visning-panelet'))).toBe(true);

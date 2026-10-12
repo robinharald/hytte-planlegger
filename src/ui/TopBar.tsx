@@ -18,6 +18,7 @@ import { nb } from '../i18n/nb';
 import { appStore, applyImportedProject, exportProjectFile, readImportFile, saveNamedVersion, useAppStore } from '../state/appStore';
 import { selectActiveVariant } from '../state/store';
 import { IconChevronDown, IconHelp, IconShare } from './common';
+import { undoHow } from './device';
 import { createNewProposal, isVariantLocked, nextProposalName } from './editorBridge';
 import { formatDateTime } from './format';
 import { NARROW_QUERY, useMediaQuery } from './hooks';
@@ -107,7 +108,7 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
   };
   const remove = () => {
     if (!window.confirm(nb.prompts.deleteVariant(active.name))) return;
-    if (!window.confirm(nb.prompts.deleteVariantSure(active.name))) return;
+    if (!window.confirm(nb.prompts.deleteVariantSure(active.name, undoHow()))) return;
     appStore.getState().deleteVariant(active.id);
   };
   const saveVersion = () => {
@@ -119,7 +120,7 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
   const onFile = async (file: File | undefined) => {
     if (!file) return;
     const r = await readImportFile(file);
-    if (r.status === 'ok' && window.confirm(nb.prompts.importProject(r.project.name))) applyImportedProject(r.project);
+    if (r.status === 'ok' && window.confirm(nb.prompts.importProject(r.project.name, undoHow()))) applyImportedProject(r.project);
   };
 
   const fileActions: MenuAction[] = [

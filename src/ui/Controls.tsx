@@ -4,6 +4,8 @@
  * cut height is not a control: it follows the preset (`cutHeightFor`).
  * The storey tabs set both `planStorey` and `activeStoreyId` (the seed's storey ids are 'ground' and 'loft').
  * Picking a view tab marks the view as the user's choice (remembered in the UI prefs). Every control has a tooltip.
+ * "Vis hva som er nytt" colours the plan (on by default); the 3D view has its own "Vis hva som er nytt i 3D" (off by
+ * default, natural colours), each shown with its view.
  */
 import type { ReactNode } from 'react';
 import { nb } from '../i18n/nb';
@@ -197,17 +199,32 @@ export function Controls(props: { isPhone: boolean }) {
               testId="toggle-roof-plan"
             />
           )}
-          <Toggle
-            label={
-              <>
-                <span className="swatch-new" /> {nb.toggles.new}
-              </>
-            }
-            title={T.new}
-            checked={ui.highlightNew}
-            onChange={(v) => setUi({ highlightNew: v })}
-            testId="toggle-new"
-          />
+          {showPlan && (
+            <Toggle
+              label={
+                <>
+                  <span className="swatch-new" /> {nb.toggles.new}
+                </>
+              }
+              title={T.new}
+              checked={ui.highlightNew}
+              onChange={(v) => setUi({ highlightNew: v })}
+              testId="toggle-new"
+            />
+          )}
+          {show3d && (
+            <Toggle
+              label={
+                <>
+                  <span className="swatch-new" /> {nb.toggles.new3d}
+                </>
+              }
+              title={T.new3d}
+              checked={ui.highlightNew3d}
+              onChange={(v) => setUi({ highlightNew3d: v })}
+              testId="toggle-new-3d"
+            />
+          )}
           {show3d && (
             <Toggle label={nb.toggles.trees} title={T.trees} checked={ui.showTrees} onChange={(v) => setUi({ showTrees: v })} testId="toggle-trees" />
           )}
