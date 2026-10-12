@@ -1,0 +1,201 @@
+/*
+ * Phase 2b, shared proposals (docs/phase2-plan.md §5): proposals menu, status pill, family banners, share dialog,
+ * Papirkurv, Tidligere versjoner, the app-update toast and the home-screen card. Uses the theme tokens of theme.css.
+ */
+
+/* ------------------------------------------------------------------ proposals menu */
+
+.proposals-menu {
+  position: relative;
+}
+.proposals-trigger {
+  max-width: min(360px, 72vw);
+}
+.proposals-trigger .variant-label {
+  font-family: var(--display);
+  font-weight: 600;
+}
+.proposals-trigger .proposals-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.proposals-list {
+  left: 0;
+  right: auto;
+  min-width: 270px;
+  max-width: min(440px, calc(100vw - 24px));
+  max-height: min(70dvh, 540px);
+  overflow: auto;
+}
+.proposal-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  color: inherit;
+}
+.proposal-item[aria-checked='true'] {
+  background: var(--sel-bg);
+}
+.proposal-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.proposal-meta {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.menu-sep {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 2px;
+}
+
+/* ------------------------------------------------------------------ status pill */
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: help;
+}
+.status-pill::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-pill[data-state='synced'] {
+  background: var(--info-bg);
+  color: var(--accent);
+}
+.status-pill[data-state='saving'],
+.status-pill[data-state='connecting'],
+.status-pill[data-state='pending'] {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.status-pill[data-state='error'],
+.status-pill[data-state='failed'],
+.status-pill[data-state='localFailed'] {
+  background: var(--warn-bg);
+  color: var(--danger);
+}
+.status-pill .pill-short {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ banners in the top bar (full-width row) */
+
+.family-banners {
+  order: 99;
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ------------------------------------------------------------------ dialogs */
+
+.share-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.share-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.share-row .text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.family-id {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12.5px;
+  word-break: break-all;
+}
+.modal .trash-list,
+.modal .revision-list {
+  list-style: none;
+  padding-left: 0;
+  gap: 6px;
+}
+.trash-item,
+.revision-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.btn-danger-fill {
+  background: var(--danger);
+  color: var(--accent-fg);
+}
+
+/* ------------------------------------------------------------------ app update toast */
+
+.update-toast {
+  position: fixed;
+  left: 50%;
+  top: calc(10px + env(safe-area-inset-top));
+  transform: translateX(-50%);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 24px);
+  padding: 8px 8px 8px 14px;
+  background: var(--fg);
+  color: var(--bg);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  font-size: 14px;
+}
+.update-toast .btn {
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+}
+
+/* ------------------------------------------------------------------ home-screen card (shares .first-run) */
+
+.install-card p {
+  font-size: 14px;
+}
+
+/* ------------------------------------------------------------------ narrow phones */
+
+@media (max-width: 599px) {
+  .topbar .status-actions {
+    order: 3;
+  }
+  .status-pill .pill-long {
+    display: none;
+  }
+  .status-pill .pill-short {
+    display: inline;
+  }
+  .proposals-trigger {
+    max-width: calc(100vw - 24px);
+  }
+}

@@ -1,36 +1,58 @@
 /**
- * Top bar: title, "Forslag: <navn>" (the proposal selector; a variant is a "forslag" in the UI), "+ Nytt forslag",
- * Gi nytt navn / Slett, Lagre versjon / Versjoner / Eksporter / Importer, and Send forslaget / Hjelp. Angre / Gjør om
- * live in the toolbar (docs/phase2-plan.md §3.2). Edit actions are hidden while read-only (shared link); the selector
- * stays (viewing another proposal is not an edit).
+ * Top bar (docs/phase2-plan.md §5–§6): title, "Forslag: <navn> ▾" (ProposalsMenu: Forslag D first, then the family's
+ * proposals with "sist endret av …", "+ Nytt forslag", Papirkurv), "+ Nytt forslag", Gi nytt navn / Slett, the saving
+ * status (StatusPill), Mer (Tidligere versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and in shared
+ * mode "Endre navnet ditt"), "Send forslaget" and Hjelp. Angre / Gjør om live in the toolbar (§3.2).
  *
- *  - The locked base proposal (Forslag D) shows a "Grunnlag" tag; it cannot be renamed or deleted here, and
- *    "+ Nytt forslag" is the primary button.
+ *  - The locked base proposal (Forslag D) shows a "Grunnlag" tag; it cannot be renamed or deleted, and
+ *    "+ Nytt forslag" is the primary button there.
  *  - "+ Nytt forslag" asks for a name (default "Mitt forslag", numbered when taken) and copies the proposal on screen.
- *  - Slett asks twice (docs/phase2-plan.md §1 rule 5); it can still be undone with Angre.
- *  - "Send forslaget" opens today's share-link dialog (the shared family store comes in phase 2b).
+ *  - Slett asks twice in a dialog ("Vil du slette «X»?" → "Er du sikker? Forslaget forsvinner for alle. [Slett for
+ *    alle]"); the proposal goes to the Papirkurv (30 days), and the toast's Angre brings it back.
+ *  - The top bar owns its dialogs (Send forslaget, Papirkurv, Tidligere versjoner, Slett, "Hva heter du?"), the family
+ *    banners (conflict guard, …) as a full-width row, and the app-update toast; Hjelp is App's (`onOpen('help')`).
+ *  - Edit actions are hidden while read-only; the proposal list stays (viewing another proposal is not an edit).
  *
  * Narrow screens (< 600 px): Send forslaget and Hjelp stay in the title row as icon buttons (the label is kept for
- * screen readers), and Lagre versjon / Versjoner / Eksporter / Importer fold into a "Mer" menu.
+ * screen readers); the status pill shows a short text.
  */
 import { useEffect, useId, useRef, useState } from 'react';
 import { nb } from '../i18n/nb';
-import { appStore, applyImportedProject, exportProjectFile, readImportFile, saveNamedVersion, useAppStore } from '../state/appStore';
+import {
+  appStore,
+  applyImportedProject,
+  askForName,
+  downloadActiveProposal,
+  exportProjectFile,
+  familyMode,
+  readImportFile,
+  useAppStore,
+  useFamily,
+} from '../state/appStore';
 import { selectActiveVariant } from '../state/store';
 import { IconChevronDown, IconHelp, IconShare } from './common';
-import { undoHow } from './device';
 import { createNewProposal, isVariantLocked, nextProposalName } from './editorBridge';
-import { formatDateTime } from './format';
-import { NARROW_QUERY, useMediaQuery } from './hooks';
 import { projectSubtitle } from './labels';
+import { DeleteProposalDialog, ProposalsMenu } from './ProposalsMenu';
+import { RevisionsPanel } from './RevisionsPanel';
+import { ShareDialog } from './ShareDialog';
+import { FamilyBanners, NameDialog, StatusPill } from './StatusPill';
+import { TrashPanel } from './TrashPanel';
+import { UpdateToast } from './UpdateToast';
+import './family.css';
 
-export type DialogKind = 'help' | 'share' | 'versions';
+/** Dialogs the app shell renders for the top bar (Hjelp). */
+export type DialogKind = 'help';
+
+/** Dialogs the top bar renders itself. */
+type OwnDialog = 'share' | 'trash' | 'revisions' | 'delete';
 
 interface MenuAction {
   key: string;
   label: string;
   title: string;
   onClick: () => void;
+  testId?: string;
 }
 
 /** "Mer" menu (disclosure): closes on a choice, Esc or a click outside. */
@@ -76,6 +98,7 @@ function MoreMenu(props: { actions: MenuAction[] }) {
             role="menuitem"
             className="menu-item"
             title={a.title}
+            data-testid={a.testId}
             onClick={() => {
               close();
               a.onClick();
@@ -92,11 +115,15 @@ function MoreMenu(props: { actions: MenuAction[] }) {
 export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
   const project = useAppStore((s) => s.project);
   const readOnly = useAppStore((s) => s.ui.readOnly);
-  const narrow = useMediaQuery(NARROW_QUERY);
+  const trashCount = useFamily((s) => s.trash.length);
+  const askName = useFamily((s) => s.askName);
+  const [dialog, setDialog] = useState<OwnDialog | null>(null);
   const active = selectActiveVariant({ project });
   const locked = isVariantLocked(active);
   const fileInputId = useId();
   const t = nb.topbar;
+  const m = nb.family.more;
+  const close = () => setDialog(null);
 
   const newProposal = () => {
     const name = window.prompt(nb.prompts.newProposalName, nextProposalName(project));
@@ -106,32 +133,27 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
     const name = window.prompt(nb.prompts.renameVariant, active.name);
     if (name !== null) appStore.getState().renameVariant(active.id, name);
   };
-  const remove = () => {
-    if (!window.confirm(nb.prompts.deleteVariant(active.name))) return;
-    if (!window.confirm(nb.prompts.deleteVariantSure(active.name, undoHow()))) return;
-    appStore.getState().deleteVariant(active.id);
-  };
-  const saveVersion = () => {
-    const name = window.prompt(nb.prompts.versionName, nb.versions.defaultName(formatDateTime(new Date().toISOString())));
-    if (name === null) return;
-    const r = saveNamedVersion(name);
-    window.alert(r.ok ? nb.versions.saved(r.version.name) : nb.versions.saveFailed);
-  };
   const onFile = async (file: File | undefined) => {
     if (!file) return;
     const r = await readImportFile(file);
-    if (r.status === 'ok' && window.confirm(nb.prompts.importProject(r.project.name, undoHow()))) applyImportedProject(r.project);
+    if (r.status !== 'ok') return;
+    const proposals = r.project.variants.filter((v) => !v.locked);
+    if (proposals.length > 0 && window.confirm(nb.family.importConfirm(proposals[0].name, proposals.length))) applyImportedProject(r.project);
   };
 
-  const fileActions: MenuAction[] = [
+  const moreActions: MenuAction[] = [
     ...(readOnly
       ? []
       : [
-          { key: 'save', label: t.saveVersion, title: t.saveVersionTitle, onClick: saveVersion },
-          { key: 'versions', label: t.versions, title: t.versionsTitle, onClick: () => props.onOpen('versions') },
+          { key: 'revisions', label: m.revisions, title: m.revisionsTitle, onClick: () => setDialog('revisions'), testId: 'more-revisions' },
+          { key: 'trash', label: nb.family.trashItem(trashCount), title: m.trashTitle, onClick: () => setDialog('trash'), testId: 'more-trash' },
         ]),
-    { key: 'export', label: t.export, title: t.exportTitle, onClick: exportProjectFile },
-    ...(readOnly ? [] : [{ key: 'import', label: t.import, title: t.importTitle, onClick: () => document.getElementById(fileInputId)?.click() }]),
+    { key: 'save-file', label: m.saveFile, title: m.saveFileTitle, onClick: downloadActiveProposal, testId: 'more-save-file' },
+    ...(readOnly
+      ? []
+      : [{ key: 'open-file', label: m.openFile, title: m.openFileTitle, onClick: () => document.getElementById(fileInputId)?.click(), testId: 'more-open-file' }]),
+    { key: 'export', label: m.exportJson, title: m.exportJsonTitle, onClick: exportProjectFile, testId: 'more-export' },
+    ...(familyMode === 'shared' && !readOnly ? [{ key: 'name', label: m.changeName, title: m.changeNameTitle, onClick: askForName, testId: 'more-name' }] : []),
   ];
 
   return (
@@ -145,16 +167,7 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
       </div>
 
       <div className="toolgroup variant-actions" role="group" aria-label={t.variantActions}>
-        <label className="variant-label" htmlFor="variant-select">
-          {t.variant}:
-        </label>
-        <select id="variant-select" value={active.id} onChange={(e) => appStore.getState().setActiveVariant(e.target.value)} data-testid="variant-select">
-          {project.variants.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.name}
-            </option>
-          ))}
-        </select>
+        <ProposalsMenu onOpenTrash={() => setDialog('trash')} />
         {locked && (
           <span className="tag lock-tag" title={t.lockedTitle} data-testid="locked-tag">
             {t.lockedTag}
@@ -177,7 +190,7 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
               </button>
             )}
             {!locked && project.variants.length > 1 && (
-              <button type="button" className="btn btn-danger" onClick={remove} title={t.deleteTitle} data-testid="delete-proposal">
+              <button type="button" className="btn btn-danger" onClick={() => setDialog('delete')} title={t.deleteTitle} data-testid="delete-proposal">
                 {t.delete}
               </button>
             )}
@@ -185,21 +198,15 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
         )}
       </div>
 
+      <div className="toolgroup status-actions">
+        <StatusPill />
+      </div>
+
       <div className="spacer" />
 
-      {narrow ? (
-        <div className="toolgroup file-actions">
-          <MoreMenu actions={fileActions} />
-        </div>
-      ) : (
-        <div className="toolgroup file-actions" role="group" aria-label={t.fileActions}>
-          {fileActions.map((a) => (
-            <button key={a.key} type="button" className="btn" onClick={a.onClick} title={a.title}>
-              {a.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <div className="toolgroup file-actions">
+        <MoreMenu actions={moreActions} />
+      </div>
       {!readOnly && (
         <input
           id={fileInputId}
@@ -214,7 +221,7 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
       )}
 
       <div className="toolgroup primary-actions">
-        <button type="button" className="btn" onClick={() => props.onOpen('share')} title={t.shareTitle} data-testid="open-share">
+        <button type="button" className="btn" onClick={() => setDialog('share')} title={t.shareTitle} data-testid="open-share">
           <IconShare />
           <span className="btn-label">{t.share}</span>
         </button>
@@ -223,6 +230,15 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
           <span className="btn-label">{t.help}</span>
         </button>
       </div>
+
+      <FamilyBanners onShowRevisions={() => setDialog('revisions')} />
+
+      {dialog === 'share' && <ShareDialog onClose={close} />}
+      {dialog === 'trash' && <TrashPanel onClose={close} />}
+      {dialog === 'revisions' && <RevisionsPanel onClose={close} />}
+      {dialog === 'delete' && !locked && <DeleteProposalDialog proposal={active} onClose={close} />}
+      {askName && dialog === null && !readOnly && <NameDialog />}
+      <UpdateToast />
     </header>
   );
 }

@@ -1,18 +1,20 @@
 /**
- * Persistence (architecture.md "State"): autosave, UI preferences, named versions, JSON export/import and share
- * links. Everything here is defensive: every storage access is wrapped in try/catch and every document read from
- * outside (storage, file, link) goes through `migrateProject`.
+ * Persistence (architecture.md "State"): UI preferences, the legacy whole-project autosave (read once and turned into
+ * proposals), named versions (read for "Eldre versjoner"), JSON export/import and share links. Everything here is
+ * defensive: every storage access is wrapped in try/catch and every document read from outside (storage, file, link)
+ * goes through `migrateProject`. The proposals themselves are saved by the family store (state/familyStore*.ts,
+ * docs/phase2-plan.md §5): Forslag D is the bundled, locked base and is never stored.
  *
  * Storage keys
- *  - `hytte-planlegger:project`   the autosaved Project (debounced 500 ms; never while `ui.readOnly`). Written once
- *                                 at start-up when there is none, so a fresh project keeps its id across reloads.
+ *  - `hytte-planlegger:project`   the whole-project autosave of phase 1 / 2a (no longer written). At start-up its
+ *                                 unlocked variants become proposals (`legacyProposals`); once they are stored the
+ *                                 key is retired: copied to `hytte-planlegger:project.before-2b` and removed.
  *  - `hytte-planlegger:ui`        UI preferences (toggles, sun, preset …, the view only when the user chose it,
- *                                 `v` = PREFS_VERSION) plus `dismissedSeedRevision`.
+ *                                 `v` = PREFS_VERSION) plus `dismissedSeedRevision`; saved by `startPrefsAutosave`.
  *  - `hytte-planlegger:versions`  `StoredVersion[]` (any project); listed per projectId newest first, at most
  *                                 `VERSION_LIMIT` per project (the oldest of that project is dropped first).
  *  - `hytte-planlegger:project.bak` copy of an autosave that could not be read, so it is never silently lost.
- *  - `hytte-planlegger:project.backup-v1` copy of an autosave of an OLDER schema version, written right before the
- *                                 first write that would replace it with the current schema (docs/phase2-plan.md §2).
+ *  - `hytte-planlegger:project.backup-v1` copy of a phase-1 autosave kept by phase 2a (left alone).
  *
  * Share link: `#d=` + lz-string `compressToEncodedURIComponent(JSON.stringify(payload))`. The payload is a DELTA
  * against the bundled Forslag D seed (`DeltaSharePayload`: per variant the changed top-level fields and, per
@@ -24,20 +26,18 @@
  * FROZEN schema-1 seed (model/seed/frozenSeed.ts) and then migrated; a current one to the current seed. A delta made
  * against an older seed revision than its base is applied to that base (`rebased`); one from a newer revision than
  * the bundled seed is 'too-new'. Outdoor collections are keyed `outdoor.<name>` (schema 2: decks, hotTubs; the frozen
- * base also knows `outdoor.railings`).
- *
- * Multi-tab: a saved document is identified by `projectKey` = `id@updatedAt` (the store gives the project a fresh
- * `updatedAt` on every change, undo and restore included). Autosave remembers the key it last wrote (or found and
- * adopted); a stored document with any other key was written by another tab, so it is reported
- * (`onExternalChange`) and not overwritten until the app either loads it or calls `adopt()` ("Behold mine").
+ * base also knows `outdoor.railings`). Since phase 2b an opened `#d=` link is imported as new proposals
+ * (`linkProposals`: ids derived from the link, so opening the same link twice adds nothing twice).
  */
 import LZString from 'lz-string';
 import { nanoid } from 'nanoid';
-import { migrateProject, rawSchemaVersion, SchemaTooNewError } from '../model/migrate';
+import { migrateProject, SchemaTooNewError } from '../model/migrate';
 import { createForslagD, createForslagDVariant, SEED_REVISION, SEED_VARIANT_ID } from '../model/seed/forslagD';
 import { FROZEN_SEED_REVISION, frozenSchema1Project, frozenSchema1Variant } from '../model/seed/frozenSeed';
 import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Id, Project, Site, Variant } from '../model/types';
+import { nb } from '../i18n/nb';
+import { cleanVariant, isValidProposalId, sameContent } from './familyStore';
 import { CAMERA_PRESET_KEYS } from './store';
 import type { ActiveView, AppStore, UiState } from './store';
 
@@ -47,6 +47,8 @@ export const KEYS = {
   versions: 'hytte-planlegger:versions',
   projectBackup: 'hytte-planlegger:project.bak',
   projectBackupV1: 'hytte-planlegger:project.backup-v1',
+  /** The legacy autosave after its proposals were moved into the family store. */
+  projectBeforeFamily: 'hytte-planlegger:project.before-2b',
 } as const;
 
 export const AUTOSAVE_DELAY_MS = 500;
@@ -128,7 +130,7 @@ function errorMessage(e: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Autosave
+// The legacy whole-project autosave
 // ---------------------------------------------------------------------------
 
 export type LoadResult =
@@ -167,25 +169,35 @@ export function backupInvalidAutosave(storage: KeyValueStorage | null): void {
 }
 
 /**
- * Copy the stored autosave to KEYS.projectBackupV1 when it is of an older schema version (a phase-1 project), so
- * the first write of the migrated project never loses the original. Returns true when a backup was written.
+ * The proposals in a legacy autosave: its unlocked variants, except an untouched copy of the current Forslag D.
+ * The ids are kept (so importing twice adds nothing twice) unless they clash with the base or are not valid proposal
+ * ids; a name equal to the base's gets " (eget)" ("Forslag D (eget)": a phase-1 user's working copy).
  */
-export function backupOlderAutosave(storage: KeyValueStorage | null): boolean {
+export function legacyProposals(saved: Project, base: Variant): Variant[] {
+  const ids = new Set<Id>([base.id]);
+  const names = new Set<string>([base.name]);
+  const out: Variant[] = [];
+  for (const v of saved.variants) {
+    if (v.locked) continue;
+    if (sameContent({ ...v, id: base.id, name: base.name, createdAt: base.createdAt, basedOnId: base.basedOnId }, base)) continue;
+    let id = isValidProposalId(v.id) ? v.id : v.id.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 60) || 'forslag';
+    if (ids.has(id)) id = `${id}-eget`;
+    for (let n = 2; ids.has(id); n++) id = `${v.id}-eget-${n}`;
+    ids.add(id);
+    let name = v.name;
+    for (let n = 1; names.has(name); n++) name = nb.family.ownCopyName(v.name, n);
+    names.add(name);
+    out.push(cleanVariant(v, id, name));
+  }
+  return out;
+}
+
+/** The legacy autosave has done its job: keep it under KEYS.projectBeforeFamily, then remove it. */
+export function retireLegacyAutosave(storage: KeyValueStorage | null): void {
   const text = readRaw(storage, KEYS.project);
-  const raw = parseJson(text);
-  if (text === null || !isRecord(raw) || rawSchemaVersion(raw) >= CURRENT_SCHEMA_VERSION) return false;
-  return writeRaw(storage, KEYS.projectBackupV1, text);
-}
-
-/** Identity of a saved document: `id@updatedAt`. */
-export function projectKey(p: { id?: unknown; updatedAt?: unknown }): string {
-  return `${String(p.id)}@${String(p.updatedAt)}`;
-}
-
-/** Key of the stored autosave without migrating it (null when missing or not a JSON object). */
-export function storedProjectKey(storage: KeyValueStorage | null): string | null {
-  const raw = parseJson(readRaw(storage, KEYS.project));
-  return isRecord(raw) ? projectKey(raw) : null;
+  if (text === null) return;
+  if (readRaw(storage, KEYS.projectBeforeFamily) === null && !writeRaw(storage, KEYS.projectBeforeFamily, text)) return;
+  removeRaw(storage, KEYS.project);
 }
 
 /** ISO 8601 comparison (both from toISOString, so lexical order = time order; falls back to Date parsing). */
@@ -231,6 +243,7 @@ export const UI_PREF_KEYS = [
   'highlightNew3d',
   'showTrees',
   'showTerrain',
+  'showClearances',
   'preset',
   'sun',
 ] as const satisfies readonly (keyof UiState)[];
@@ -244,7 +257,7 @@ export function pickUiPrefs(ui: UiState): UiPrefs {
   return out as UiPrefs;
 }
 
-const BOOL_PREFS = ['showLabels', 'showDims', 'showGrid', 'showRoofPlan', 'highlightNew', 'highlightNew3d', 'showTrees', 'showTerrain'] as const;
+const BOOL_PREFS = ['showLabels', 'showDims', 'showGrid', 'showRoofPlan', 'highlightNew', 'highlightNew3d', 'showTrees', 'showTerrain', 'showClearances'] as const;
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[]): v is T {
   return typeof v === 'string' && (allowed as readonly string[]).includes(v);
@@ -827,209 +840,88 @@ export function makeOwnCopy(project: Project, now: Date = new Date()): Project {
 }
 
 // ---------------------------------------------------------------------------
-// Start-up
+// Opening a #d= link: its proposals are imported
 // ---------------------------------------------------------------------------
 
-export type Notice = 'link-invalid' | 'link-too-new' | 'link-rebased' | 'autosave-invalid' | 'schema-too-new' | 'storage-unavailable';
-
-export interface InitialState {
-  project: Project;
-  ui: Partial<UiState>;
-  notices: Notice[];
+/** FNV-1a (32 bit) in base 36: short, stable ids derived from a link. */
+function fnv36(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
 }
 
 /**
- * Decide what the app starts with: a share link (read-only) → the autosave → a fresh seed.
- * A too-new autosave is left untouched: the seed is shown read-only with "Last siden på nytt".
+ * The variants of a decoded `#d=` link as new proposals: ids derived from the link (`d<hash>`, one per variant), so
+ * the same link opened twice is recognised; unlocked; `basedOnId` = the shared id; a name already in use gets
+ * " (delt)" / " (delt 2)". `activeId` = the copy of the link's active variant.
  */
-export function loadInitialState(env: { storage: KeyValueStorage | null; hash: string; createSeed: () => Project }): InitialState {
-  const { storage, hash, createSeed } = env;
-  const notices: Notice[] = [];
-  const prefs = loadUiPrefs(storage);
-  if (!storage) notices.push('storage-unavailable');
-
-  const encoded = shareParamFromHash(hash);
-  if (encoded) {
-    const shared = decodeShare(encoded);
-    if (shared.status === 'ok') {
-      if (shared.rebased) notices.push('link-rebased');
-      return { project: shared.project, ui: { ...prefs, readOnly: true, source: 'link' }, notices };
-    }
-    notices.push(shared.status === 'too-new' ? 'link-too-new' : 'link-invalid');
-  }
-
-  const saved = loadAutosave(storage);
-  switch (saved.status) {
-    case 'ok':
-      return { project: saved.project, ui: { ...prefs, readOnly: false, source: 'local' }, notices };
-    case 'too-new':
-      notices.push('schema-too-new');
-      return { project: createSeed(), ui: { ...prefs, readOnly: true, source: 'local' }, notices };
-    case 'invalid':
-      backupInvalidAutosave(storage);
-      notices.push('autosave-invalid');
-      return { project: createSeed(), ui: { ...prefs, readOnly: false, source: 'local' }, notices };
-    default:
-      return { project: createSeed(), ui: { ...prefs, readOnly: false, source: 'local' }, notices };
-  }
+export function linkProposals(shared: Project, encoded: string, existingNames: Iterable<string>, now: string): { variants: Variant[]; activeId: Id } {
+  const names = new Set(existingNames);
+  const base = fnv36(encoded);
+  let activeId = '';
+  const variants = shared.variants.map((v, i) => {
+    const id = `d${base}${shared.variants.length > 1 ? `-${i + 1}` : ''}`;
+    let name = v.name;
+    for (let n = 1; names.has(name); n++) name = nb.share.sharedName(v.name, n);
+    names.add(name);
+    if (v.id === shared.activeVariantId) activeId = id;
+    return { ...cleanVariant(structuredClone(v), id, name), createdAt: now, basedOnId: v.id };
+  });
+  return { variants, activeId: activeId || variants[0]?.id || '' };
 }
 
 // ---------------------------------------------------------------------------
-// Autosave controller
+// UI preferences autosave
 // ---------------------------------------------------------------------------
 
-export interface AutosaveOptions {
-  storage: KeyValueStorage | null;
-  delayMs?: number;
-  /** Window-like target for `storage`, `pagehide` and `beforeunload` (omit in tests without a DOM). */
-  target?: Pick<Window, 'addEventListener' | 'removeEventListener'> | null;
-  /** Another tab saved a newer project (from a storage event, or found when saving). */
-  onExternalChange?: (project: Project) => void;
-  /** A write failed (quota / storage disabled). */
-  onSaveError?: () => void;
-}
-
-export interface AutosaveController {
-  /** Write pending changes now. */
+export interface PrefsAutosave {
   flush(): void;
-  /** Write the project now even when nothing changed since the last write (unless another tab owns the save). */
-  saveNow(): boolean;
-  /**
-   * Take whatever is stored now as this tab's own: the next save overwrites it. Used after the app has merged the
-   * stored project into its own ("Lag min egen kopi") and for "Behold mine endringer" over another tab's save.
-   */
-  adopt(): void;
   stop(): void;
 }
 
 /**
- * Subscribe to the store and autosave `project` (debounced) and the UI prefs. Skips while `ui.readOnly`.
- * At start the stored document counts as this tab's own; when there is none the project is written right away
- * (so its id survives a reload). A stored document with another key than the one this tab last wrote or adopted
- * belongs to another tab: it is reported once (`onExternalChange`) and never overwritten (see `adopt`).
- * Before the first write, a stored document of an older schema version (a phase-1 project, migrated in memory) is
- * copied to KEYS.projectBackupV1 (`backupOlderAutosave`).
- * Without storage (localStorage blocked) it does nothing and never calls `onSaveError`: the start-up notice
- * 'storage-unavailable' already says that nothing is saved, so edits must not add a "lite plass?" banner on top.
+ * Save the UI prefs (debounced, AUTOSAVE_DELAY_MS) whenever they change, and on `pagehide`. Without storage it does
+ * nothing (the start-up notice 'storage-unavailable' says so).
  */
-export function startAutosave(store: AppStore, opts: AutosaveOptions): AutosaveController {
+export function startPrefsAutosave(
+  store: AppStore,
+  opts: { storage: KeyValueStorage | null; delayMs?: number; target?: Pick<Window, 'addEventListener' | 'removeEventListener'> | null },
+): PrefsAutosave {
   const { storage, target } = opts;
-  if (!storage) return { flush: () => {}, saveNow: () => false, adopt: () => {}, stop: () => {} };
+  if (!storage) return { flush: () => {}, stop: () => {} };
   const delay = opts.delayMs ?? AUTOSAVE_DELAY_MS;
-  let lastWritten: string | null = storedProjectKey(storage);
-  let lastSaved: Project | null = null;
-  let lastPrefs = JSON.stringify(pickUiPrefs(store.getState().ui));
+  let last = JSON.stringify(pickUiPrefs(store.getState().ui));
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let reportedExternal: string | null = null;
-  /** Whether the stored document was checked for an older schema (and backed up) before this tab's first write. */
-  let checkedOlder = false;
-
-  const reportExternal = (p: Project) => {
-    const key = projectKey(p);
-    if (key === reportedExternal) return;
-    reportedExternal = key;
-    opts.onExternalChange?.(p);
-  };
-
-  /** Returns true when the project is in storage afterwards. */
-  const saveProject = (force = false): boolean => {
-    const { project, ui } = store.getState();
-    if (ui.readOnly) return false;
-    if (project === lastSaved && !force) return true;
-    const key = projectKey(project);
-    const stored = storedProjectKey(storage);
-    if (stored !== null && stored === key) {
-      // Already there (loaded from storage, taken over from another tab, or written before).
-      lastSaved = project;
-      lastWritten = key;
-      return true;
-    }
-    if (stored !== null && stored !== lastWritten) {
-      const other = loadAutosave(storage);
-      if (other.status === 'ok') reportExternal(other.project);
-      return false;
-    }
-    if (!checkedOlder) {
-      // The first write replaces what was stored at start-up: keep a phase-1 (older schema) document first.
-      backupOlderAutosave(storage);
-      checkedOlder = true;
-    }
-    if (saveAutosave(storage, project)) {
-      lastSaved = project;
-      lastWritten = key;
-      return true;
-    }
-    opts.onSaveError?.();
-    return false;
-  };
-
-  if (lastWritten === null && !store.getState().ui.readOnly) saveProject();
-
-  const savePrefs = () => {
-    const ui = store.getState().ui;
-    const json = JSON.stringify(pickUiPrefs(ui));
-    if (json === lastPrefs) return;
-    if (saveUiPrefs(storage, ui)) lastPrefs = json;
-  };
-
   const flush = () => {
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    saveProject();
-    savePrefs();
+    const ui = store.getState().ui;
+    const json = JSON.stringify(pickUiPrefs(ui));
+    if (json !== last && saveUiPrefs(storage, ui)) last = json;
   };
-
-  const schedule = () => {
+  const unsubscribe = store.subscribe((state, prev) => {
+    if (state.ui === prev.ui) return;
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(flush, delay);
-  };
-
-  const unsubscribe = store.subscribe((state, prev) => {
-    if (state.project !== prev.project || state.ui !== prev.ui) schedule();
   });
-
-  const onStorage = (e: StorageEvent) => {
-    if (e.key !== KEYS.project || e.newValue === null) return;
-    const { project, ui } = store.getState();
-    if (ui.readOnly) return;
-    const raw = parseJson(e.newValue);
-    if (!isRecord(raw)) return;
-    const key = projectKey(raw);
-    if (key === lastWritten || key === projectKey(project)) return;
-    const result = migrateRaw(raw);
-    if (result.status === 'ok') reportExternal(result.project);
-  };
-  const onLeave = () => flush();
-
-  target?.addEventListener('storage', onStorage);
-  target?.addEventListener('pagehide', onLeave);
-  target?.addEventListener('beforeunload', onLeave);
-
+  target?.addEventListener('pagehide', flush);
   return {
     flush,
-    saveNow: () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-      savePrefs();
-      return saveProject(true);
-    },
-    adopt: () => {
-      lastWritten = storedProjectKey(storage);
-      lastSaved = null;
-      reportedExternal = null;
-    },
     stop: () => {
       if (timer !== null) clearTimeout(timer);
       timer = null;
       unsubscribe();
-      target?.removeEventListener('storage', onStorage);
-      target?.removeEventListener('pagehide', onLeave);
-      target?.removeEventListener('beforeunload', onLeave);
+      target?.removeEventListener('pagehide', flush);
     },
   };
 }
 
-/** Forget the stored autosave (used by tests and "start fresh"). */
+/** Forget the stored legacy autosave (tests). */
 export function clearAutosave(storage: KeyValueStorage | null): void {
   removeRaw(storage, KEYS.project);
 }
+
+export type Notice = 'link-invalid' | 'link-too-new' | 'link-rebased' | 'autosave-invalid' | 'schema-too-new' | 'storage-unavailable';

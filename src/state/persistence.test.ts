@@ -8,8 +8,6 @@ import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Project, Variant } from '../model/types';
 import {
   applyCollection,
-  AUTOSAVE_DELAY_MS,
-  backupOlderAutosave,
   decodeShare,
   deltaPayload,
   diffCollection,
@@ -22,7 +20,8 @@ import {
   listVersions,
   loadAutosave,
   loadDismissedSeedRevision,
-  loadInitialState,
+  legacyProposals,
+  linkProposals,
   loadUiPrefs,
   loadVersion,
   makeOwnCopy,
@@ -31,7 +30,6 @@ import {
   parseProjectText,
   PREFS_VERSION,
   projectFileName,
-  projectKey,
   readProjectFile,
   sanitizeUiPrefs,
   saveAutosave,
@@ -43,7 +41,8 @@ import {
   shareParamFromHash,
   sharePayloadJson,
   sharedProject,
-  startAutosave,
+  retireLegacyAutosave,
+  startPrefsAutosave,
   VERSION_LIMIT,
   versionsBytes,
 } from './persistence';
@@ -514,286 +513,104 @@ describe('share links as a delta against the bundled seed', () => {
   });
 });
 
-describe('loadInitialState', () => {
-  const seed = () => makeTestProject({ id: 'seed', name: 'Seed' });
+describe('the legacy whole-project autosave → proposals', () => {
+  const base = () => createForslagD().variants[0];
 
-  it('uses a valid share link read-only', () => {
-    saveAutosave(localStorage, makeTestProject({ id: 'mine' }));
-    const hash = `#d=${encodeShare(makeTestProject({ id: 'shared' }), { allVariants: false })}`;
-    const s = loadInitialState({ storage: localStorage, hash, createSeed: seed });
-    expect(s.project.id).toBe('shared');
-    expect(s.ui.readOnly).toBe(true);
-    expect(s.ui.source).toBe('link');
-    expect(s.notices).toEqual([]);
+  it('keeps the unlocked variants that differ from Forslag D, ids kept, a clash with the base renamed', () => {
+    const seed = createForslagD();
+    const working = { ...seed.variants[0], notes: 'mitt arbeid' };
+    delete working.locked;
+    const mine = { ...makeVariant('v-mine', 'Mitt forslag') };
+    const untouched = { ...seed.variants[0], id: 'kopi', name: 'Kopi' };
+    delete untouched.locked;
+    const saved: Project = { ...seed, variants: [seed.variants[0], working, mine, untouched, { ...seed.variants[0], id: 'old-locked', name: 'Forslag D (revisjon 4)' }] };
+    const out = legacyProposals(saved, base());
+    expect(out.map((v) => [v.id, v.name])).toEqual([
+      ['forslag-d-eget', 'Forslag D (eget)'],
+      ['v-mine', 'Mitt forslag'],
+    ]);
+    expect(out.every((v) => v.locked === undefined)).toBe(true);
+    expect(out[0].notes).toBe('mitt arbeid');
+    // Importing again gives the same ids (nothing is added twice).
+    expect(legacyProposals(saved, base()).map((v) => v.id)).toEqual(out.map((v) => v.id));
   });
 
-  it('falls back to the autosave when the link is broken', () => {
-    saveAutosave(localStorage, makeTestProject({ id: 'mine' }));
-    const s = loadInitialState({ storage: localStorage, hash: '#d=garbage', createSeed: seed });
-    expect(s.project.id).toBe('mine');
-    expect(s.ui.readOnly).toBe(false);
-    expect(s.notices).toEqual(['link-invalid']);
+  it('a phase-1 autosave (schema 1) migrates and its working copy becomes a proposal with railing and steps', () => {
+    localStorage.setItem(KEYS.project, JSON.stringify({ ...frozenSchema1Project(), id: 'fase1' }));
+    const r = loadAutosave(localStorage);
+    expect(r.status).toBe('ok');
+    if (r.status !== 'ok') return;
+    const out = legacyProposals(r.project, base());
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe('Forslag D (eget)');
+    expect(out[0].outdoor.decks[0].steps).toHaveLength(3);
+    expect(out[0].outdoor.decks[0].railing).toEqual({ style: 'glass', height: 1.05 });
   });
 
-  it('uses the seed when nothing is stored, with saved prefs applied', () => {
-    saveUiPrefs(localStorage, { ...DEFAULT_UI, activeView: '3d', activeViewChosen: true });
-    const s = loadInitialState({ storage: localStorage, hash: '', createSeed: seed });
-    expect(s.project.id).toBe('seed');
-    expect(s.ui.activeView).toBe('3d');
-    expect(s.notices).toEqual([]);
-  });
-
-  it('shows the seed read-only and keeps a too-new autosave untouched', () => {
-    const raw = JSON.stringify({ ...makeTestProject(), schemaVersion: 99 });
-    localStorage.setItem(KEYS.project, raw);
-    const s = loadInitialState({ storage: localStorage, hash: '', createSeed: seed });
-    expect(s.project.id).toBe('seed');
-    expect(s.ui.readOnly).toBe(true);
-    expect(s.notices).toEqual(['schema-too-new']);
-    expect(localStorage.getItem(KEYS.project)).toBe(raw);
-  });
-
-  it('backs up an unreadable autosave before starting from the seed', () => {
-    localStorage.setItem(KEYS.project, '{broken');
-    const s = loadInitialState({ storage: localStorage, hash: '', createSeed: seed });
-    expect(s.project.id).toBe('seed');
-    expect(s.notices).toEqual(['autosave-invalid']);
-    expect(localStorage.getItem(KEYS.projectBackup)).toBe('{broken');
-  });
-
-  it('reports missing storage', () => {
-    const s = loadInitialState({ storage: null, hash: '', createSeed: seed });
-    expect(s.notices).toEqual(['storage-unavailable']);
+  it('retire: kept under project.before-2b, then removed; never overwrites an earlier copy', () => {
+    localStorage.setItem(KEYS.project, 'first');
+    retireLegacyAutosave(localStorage);
+    expect(localStorage.getItem(KEYS.project)).toBeNull();
+    expect(localStorage.getItem(KEYS.projectBeforeFamily)).toBe('first');
+    localStorage.setItem(KEYS.project, 'second');
+    retireLegacyAutosave(localStorage);
+    expect(localStorage.getItem(KEYS.projectBeforeFamily)).toBe('first');
+    expect(localStorage.getItem(KEYS.project)).toBeNull();
+    retireLegacyAutosave(localStorage); // nothing stored: nothing happens
+    // A failing storage keeps the original where it is.
+    expect(() => retireLegacyAutosave(fullStorage)).not.toThrow();
   });
 });
 
-describe('startAutosave', () => {
-  beforeEach(() => vi.useFakeTimers());
+describe('opening a #d= link imports its proposals', () => {
+  it('ids derived from the link, names " (delt)" on a clash, unlocked, basedOnId', () => {
+    const shared = twoVariantProject();
+    const encoded = encodeShare(shared, { allVariants: true });
+    const now = '2026-10-12T12:00:00.000Z';
+    const a = linkProposals(shared, encoded, ['Forslag D', 'Mitt forslag'], now);
+    expect(a.variants.map((v) => v.name)).toEqual(['Forslag D (delt)', 'Forslag E']);
+    expect(a.variants.map((v) => v.basedOnId)).toEqual(['v-1', 'v-2']);
+    expect(a.activeId).toBe(a.variants[1].id);
+    expect(a.variants.every((v) => v.createdAt === now && v.locked === undefined)).toBe(true);
+    const again = linkProposals(shared, encoded, [], now);
+    expect(again.variants.map((v) => v.id)).toEqual(a.variants.map((v) => v.id));
+    const other = linkProposals(shared, encodeShare({ ...shared, name: 'Annet' }, { allVariants: true }), [], now);
+    expect(other.variants[0].id).not.toBe(a.variants[0].id);
+    const single = linkProposals(makeTestProject(), 'abc', [], now);
+    expect(single.variants).toHaveLength(1);
+    expect(single.variants[0].id).toMatch(/^d[0-9a-z]+$/);
+  });
+});
+
+describe('startPrefsAutosave', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('writes the initial project once when nothing is stored, then debounces writes', () => {
+  it('saves the prefs debounced, on pagehide, and never the project', () => {
+    vi.useFakeTimers();
     const store = createAppStore(makeTestProject());
-    const ctl = startAutosave(store, { storage: localStorage, target: window });
-    const first = localStorage.getItem(KEYS.project);
-    expect(first).not.toBeNull();
-    expect(loadAutosave(localStorage).status === 'ok' && projectKey(store.getState().project)).toBe(projectKey(makeTestProject()));
-
-    store.getState().renameRoom('room-1', 'A');
-    vi.advanceTimersByTime(AUTOSAVE_DELAY_MS - 100);
-    store.getState().renameRoom('room-1', 'B');
-    vi.advanceTimersByTime(AUTOSAVE_DELAY_MS - 100);
-    expect(localStorage.getItem(KEYS.project)).toBe(first);
-    vi.advanceTimersByTime(200);
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('B');
-    ctl.stop();
-  });
-
-  it('backs up a phase-1 (older schema) autosave to project.backup-v1 before its first write', () => {
-    const v1Text = JSON.stringify({ ...frozenSchema1Project(), id: 'fase1' });
-    localStorage.setItem(KEYS.project, v1Text);
-    const loaded = loadAutosave(localStorage);
-    expect(loaded.status).toBe('ok');
-    if (loaded.status !== 'ok') return;
-    const store = createAppStore(loaded.project);
-    const ctl = startAutosave(store, { storage: localStorage, target: window });
-    // Nothing changed yet: the stored phase-1 document stays and needs no backup.
-    ctl.flush();
-    expect(localStorage.getItem(KEYS.project)).toBe(v1Text);
-    expect(localStorage.getItem(KEYS.projectBackupV1)).toBeNull();
-    store.getState().renameVariant('forslag-d', 'Mitt forslag');
-    ctl.flush();
-    expect(localStorage.getItem(KEYS.projectBackupV1)).toBe(v1Text);
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.variants[0].name).toBe('Mitt forslag');
-    expect((JSON.parse(localStorage.getItem(KEYS.project) ?? '{}') as Record<string, unknown>).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
-    // A current document is never copied there.
-    expect(backupOlderAutosave(localStorage)).toBe(false);
-    expect(localStorage.getItem(KEYS.projectBackupV1)).toBe(v1Text);
-    ctl.stop();
-  });
-
-  it('does not rewrite an autosave it started from', () => {
-    const p = makeTestProject();
-    saveAutosave(localStorage, p);
-    const raw = localStorage.getItem(KEYS.project);
-    const store = createAppStore(p);
-    const ctl = startAutosave(store, { storage: localStorage, target: window });
+    const ctl = startPrefsAutosave(store, { storage: localStorage, target: window, delayMs: 100 });
     store.getState().setUi({ showGrid: false });
-    ctl.flush();
-    expect(localStorage.getItem(KEYS.project)).toBe(raw);
-    ctl.stop();
-  });
-
-  it('edit → flush → undo → flush saves the undone state, without reporting another tab', () => {
-    const store = createAppStore(makeTestProject());
-    const onExternalChange = vi.fn();
-    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
-    store.getState().renameRoom('room-1', 'Edited');
-    ctl.flush();
-    store.getState().undo();
-    ctl.flush();
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('Stue');
-    store.getState().redo();
-    vi.advanceTimersByTime(AUTOSAVE_DELAY_MS + 10);
-    const r2 = loadAutosave(localStorage);
-    expect(r2.status === 'ok' && r2.project.variants[0].rooms[0].name).toBe('Edited');
-    expect(onExternalChange).not.toHaveBeenCalled();
-    ctl.stop();
-  });
-
-  it('a project with an old updatedAt (restored version, imported file) is saved', () => {
-    const store = createAppStore(makeTestProject());
-    const onExternalChange = vi.fn();
-    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
-    store.getState().renameRoom('room-1', 'Ny');
-    ctl.flush();
-    store.getState().setProject(makeTestProject({ name: 'Gammel versjon', updatedAt: '2001-01-01T00:00:00.000Z' }));
-    ctl.flush();
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.name).toBe('Gammel versjon');
-    expect(onExternalChange).not.toHaveBeenCalled();
-    ctl.stop();
-  });
-
-  it('a variant switch followed by undo (fake timers) saves the undone state', () => {
-    const store = createAppStore(twoVariantProject());
-    const onExternalChange = vi.fn();
-    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
-    store.getState().setActiveVariant('v-1');
-    vi.advanceTimersByTime(600);
-    store.getState().undo();
-    vi.advanceTimersByTime(600);
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.activeVariantId).toBe('v-2');
-    expect(onExternalChange).not.toHaveBeenCalled();
-    ctl.stop();
-  });
-
-  it('saveNow writes even when nothing changed (the stored copy was removed)', () => {
-    const store = createAppStore(makeTestProject());
-    const ctl = startAutosave(store, { storage: localStorage, target: window });
-    localStorage.removeItem(KEYS.project);
-    ctl.flush();
-    expect(localStorage.getItem(KEYS.project)).toBeNull();
-    expect(ctl.saveNow()).toBe(true);
-    expect(loadAutosave(localStorage).status).toBe('ok');
-    ctl.stop();
-  });
-
-  it('saves ui prefs too, and flushes on pagehide', () => {
-    const store = createAppStore(makeTestProject());
-    const ctl = startAutosave(store, { storage: localStorage, target: window });
-    store.getState().setUi({ showGrid: false });
-    store.getState().renameRoom('room-1', 'C');
-    window.dispatchEvent(new Event('pagehide'));
+    expect(loadUiPrefs(localStorage).showGrid).toBeUndefined();
+    vi.advanceTimersByTime(150);
     expect(loadUiPrefs(localStorage).showGrid).toBe(false);
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('C');
-    ctl.stop();
-  });
-
-  it('never writes while read-only', () => {
-    const store = createAppStore(makeTestProject({ id: 'shared' }), { readOnly: true, source: 'link' });
-    const ctl = startAutosave(store, { storage: localStorage, target: window });
-    store.getState().setActiveVariant('v-1');
-    ctl.flush();
-    expect(ctl.saveNow()).toBe(false);
+    store.getState().setUi({ showDims: false });
+    window.dispatchEvent(new Event('pagehide'));
+    expect(loadUiPrefs(localStorage).showDims).toBe(false);
+    store.getState().renameRoom('room-1', 'C');
+    vi.advanceTimersByTime(150);
     expect(localStorage.getItem(KEYS.project)).toBeNull();
-    // "Lag min egen kopi" → writable again → saved.
-    store.getState().replaceProject(makeOwnCopy(store.getState().project), { readOnly: false, source: 'local' });
-    ctl.flush();
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.basedOnProjectId).toBe('shared');
     ctl.stop();
+    store.getState().setUi({ showLabels: false });
+    vi.advanceTimersByTime(150);
+    expect(loadUiPrefs(localStorage).showLabels).toBe(true);
   });
 
-  it('does not overwrite a project saved by another tab, reports it once, and overwrites after adopt()', () => {
+  it('does nothing without storage', () => {
     const store = createAppStore(makeTestProject());
-    const onExternalChange = vi.fn();
-    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
-    store.getState().renameRoom('room-1', 'Mine');
-    // Another tab saves, even with an OLDER timestamp: it is still not ours.
-    const other = makeTestProject({ updatedAt: '2000-01-01T00:00:00.000Z', name: 'Fra annen fane' });
-    saveAutosave(localStorage, other);
-    ctl.flush();
-    store.getState().renameRoom('room-1', 'Mine 2');
-    ctl.flush();
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.name).toBe('Fra annen fane');
-    expect(onExternalChange).toHaveBeenCalledTimes(1);
-    expect(onExternalChange.mock.calls[0][0].name).toBe('Fra annen fane');
-    // "Behold mine endringer".
-    ctl.adopt();
-    expect(ctl.saveNow()).toBe(true);
-    const r2 = loadAutosave(localStorage);
-    expect(r2.status === 'ok' && r2.project.variants[0].rooms[0].name).toBe('Mine 2');
-    ctl.stop();
-  });
-
-  it('taking over the other tab’s project stops the conflict', () => {
-    const store = createAppStore(makeTestProject());
-    const onExternalChange = vi.fn();
-    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
-    const other = makeTestProject({ updatedAt: '2030-01-01T00:00:00.000Z', name: 'Fra annen fane' });
-    saveAutosave(localStorage, other);
-    store.getState().replaceProject(other);
-    ctl.flush();
-    store.getState().renameRoom('room-1', 'Videre');
-    ctl.flush();
-    const r = loadAutosave(localStorage);
-    expect(r.status === 'ok' && r.project.variants[0].rooms[0].name).toBe('Videre');
-    expect(onExternalChange).not.toHaveBeenCalled();
-    ctl.stop();
-  });
-
-  it('reports projects saved by other tabs from storage events, not its own', () => {
-    const store = createAppStore(makeTestProject());
-    const onExternalChange = vi.fn();
-    const ctl = startAutosave(store, { storage: localStorage, target: window, onExternalChange });
-    const own = localStorage.getItem(KEYS.project) ?? '';
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: own }));
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.ui, newValue: '{}' }));
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: 'garbage' }));
-    expect(onExternalChange).not.toHaveBeenCalled();
-    const other = makeTestProject({ updatedAt: '2000-01-01T00:00:00.000Z' });
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify(other) }));
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify(other) }));
-    expect(onExternalChange).toHaveBeenCalledTimes(1);
-    ctl.stop();
-    window.dispatchEvent(new StorageEvent('storage', { key: KEYS.project, newValue: JSON.stringify({ ...other, updatedAt: '3000-01-01T00:00:00.000Z' }) }));
-    expect(onExternalChange).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports failed writes', () => {
-    const store = createAppStore(makeTestProject());
-    const onSaveError = vi.fn();
-    const ctl = startAutosave(store, { storage: fullStorage, onSaveError });
-    store.getState().renameRoom('room-1', 'X');
-    ctl.flush();
-    expect(onSaveError).toHaveBeenCalled();
-    ctl.stop();
-  });
-
-  it('does not try the start-up write without storage', () => {
-    const store = createAppStore(makeTestProject());
-    const onSaveError = vi.fn();
-    const ctl = startAutosave(store, { storage: null, onSaveError });
-    expect(onSaveError).not.toHaveBeenCalled();
-    ctl.stop();
-  });
-
-  it('never reports a failed write without storage (the start-up notice covers it)', () => {
-    const store = createAppStore(makeTestProject());
-    const onSaveError = vi.fn();
-    const ctl = startAutosave(store, { storage: null, onSaveError, delayMs: 10 });
-    store.getState().renameRoom('room-1', 'X');
+    const ctl = startPrefsAutosave(store, { storage: null });
     store.getState().setUi({ showGrid: false });
-    vi.advanceTimersByTime(100);
     ctl.flush();
-    expect(ctl.saveNow()).toBe(false);
-    expect(onSaveError).not.toHaveBeenCalled();
     ctl.stop();
+    expect(localStorage.getItem(KEYS.ui)).toBeNull();
   });
 });

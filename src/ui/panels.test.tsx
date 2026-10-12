@@ -147,8 +147,8 @@ describe('headline, top bar, banners', () => {
     expect(container.textContent).toContain('+ Nytt forslag');
     act(() => appStore.getState().setUi({ readOnly: true, source: 'link' }));
     expect(container.textContent).not.toContain('+ Nytt forslag');
-    expect(container.textContent).not.toContain('Lagre versjon');
-    expect(byTestId('variant-select')).not.toBeNull();
+    expect(container.textContent).not.toContain('Tidligere versjoner');
+    expect(byTestId('proposals-menu')).not.toBeNull();
   });
 
   it('shared link banner offers "Lag min egen kopi"', () => {
@@ -299,7 +299,7 @@ describe('review fixes', () => {
   it('top bar: tooltips, subtitle without a repeated place name', () => {
     render(<TopBar onOpen={() => {}} />);
     const button = (label: string) => [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
-    for (const label of ['Lagre versjon', 'Versjoner', 'Eksporter', 'Importer', '+ Nytt forslag', 'Send forslaget', 'Hjelp']) {
+    for (const label of ['+ Nytt forslag', 'Send forslaget', 'Hjelp']) {
       expect(button(label)?.getAttribute('title'), label).toBeTruthy();
     }
     // Forslag D (the locked base) cannot be renamed or deleted; a new proposal can.
@@ -326,16 +326,19 @@ describe('review fixes', () => {
       render(<TopBar onOpen={onOpen} />);
       const menu = byTestId('more-menu') as HTMLDetailsElement;
       expect(menu).not.toBeNull();
-      expect(texts('[data-testid="more-menu"] .menu-item')).toEqual(['Lagre versjon', 'Versjoner', 'Eksporter', 'Importer']);
+      expect(texts('[data-testid="more-menu"] .menu-item')).toEqual(['Tidligere versjoner', 'Papirkurv', 'Lagre som fil', 'Åpne fil', 'Eksporter JSON']);
       expect(texts('.file-actions > .btn')).toEqual([]);
       expect(byTestId('open-share')?.textContent).toBe('Send forslaget');
       expect(byTestId('open-help')?.getAttribute('title')).toBeTruthy();
       act(() => {
         menu.open = true;
       });
-      const versions = [...container.querySelectorAll('.menu-item')].find((b) => b.textContent === 'Versjoner');
+      const versions = [...container.querySelectorAll('.menu-item')].find((b) => b.textContent === 'Tidligere versjoner');
       click(versions ?? null);
-      expect(onOpen).toHaveBeenCalledWith('versions');
+      // The top bar opens Tidligere versjoner itself (phase 2b), not through the app shell.
+      expect(onOpen).not.toHaveBeenCalled();
+      // A modal (portal on document.body).
+      expect(document.querySelector('[data-testid="revisions-panel"]')).not.toBeNull();
       expect(menu.open).toBe(false);
     } finally {
       window.matchMedia = original;

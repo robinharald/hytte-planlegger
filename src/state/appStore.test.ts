@@ -1,127 +1,215 @@
 // @vitest-environment jsdom
 /**
- * Session actions of the app singleton (appStore.ts): share links, own copy, other tabs, seed updates, versions,
- * import. The singleton bootstraps from the bundled seed (empty localStorage, no hash).
+ * The app singleton (appStore.ts) in local mode (tests never use Firestore): bootstrap (Forslag D + the stored
+ * proposals, the old autosave turned into proposals, a #d= link imported, #f= without a shared space), the family
+ * sync through `startPersistence` (autosave of proposals, delete → Papirkurv → restore, revisions), links, files and
+ * versions imported as proposals, the read-only view kept for the banners.
  */
-import LZString from 'lz-string';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SEED_REVISION } from '../model/seed/forslagD';
-import { CURRENT_SCHEMA_VERSION } from '../model/types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createForslagD, SEED_REVISION, SEED_VARIANT_ID } from '../model/seed/forslagD';
 import type { Project } from '../model/types';
+import { FAMILY_KEYS } from './familyStore';
+import { createLocalFamilyStore, LOCAL_KEYS } from './familyStore.local';
 import {
   acceptExternalChange,
+  activateProposal,
   appStore,
   applyImportedProject,
+  deleteProposal,
+  familyId,
+  familyMode,
+  familyShareLinks,
+  familyUiStore,
   fetchNewSeed,
+  flushProposals,
   freshSeedProject,
+  importProjectAsProposals,
   keepOwnChanges,
   leaveSharedView,
+  listRevisions,
   makeMyOwnCopy,
+  myName,
   noticeStore,
   openSharedLink,
   resetToSeed,
+  restoreFromTrash,
   restoreVersion,
   saveNamedVersion,
   seedUpdateAvailable,
-  seedVariantFor,
+  setMyName,
   sharedVariantsFor,
   shareLinkFor,
+  showReadOnly,
   startPersistence,
   storage,
 } from './appStore';
-import { encodeShare, KEYS, listVersions, loadAutosave, loadInitialState, saveAutosave, saveVersion, shareParamFromHash } from './persistence';
+import { encodeShare, KEYS, listVersions, saveVersion, shareParamFromHash } from './persistence';
 import { makeTestProject, makeVariant } from './testProject';
 
-/** Start autosave for one test; stopped in afterEach. */
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+async function settle(n = 6): Promise<void> {
+  for (let i = 0; i < n; i++) await tick();
+}
+
 let stopPersistence: (() => void) | null = null;
-function persist(): void {
+async function persist(): Promise<void> {
   stopPersistence = startPersistence();
+  await settle();
 }
 afterEach(() => {
   stopPersistence?.();
   stopPersistence = null;
 });
 
-const variantNames = (p: Project = appStore.getState().project) => p.variants.map((v) => v.name);
-
+const names = (p: Project = appStore.getState().project) => p.variants.map((v) => v.name);
 const start = appStore.getState().project;
 
 beforeEach(() => {
   localStorage.clear();
-  leaveSharedView(); // forgets an own project kept aside by an earlier test's link
+  leaveSharedView();
   appStore.getState().replaceProject(start, { readOnly: false, source: 'local' });
   noticeStore.setState({ notices: [], external: null });
+  familyUiStore.setState({ askName: false, notices: [] });
 });
+
+/** What a fresh local store reads from localStorage (= after a reload). */
+function storedProposals() {
+  const s = createLocalFamilyStore({ storage: localStorage });
+  const list = s.currentList();
+  s.dispose();
+  return list;
+}
 
 describe('bootstrap', () => {
-  it('starts from a fresh Forslag D with its own id and the current seed revision', () => {
+  it('tests run in local mode: Forslag D (locked) with its own project id and the current seed revision', () => {
+    expect(familyMode).toBe('local');
+    expect(familyId).toBeNull();
     expect(storage).toBe(localStorage);
-    expect(start.variants.length).toBeGreaterThan(0);
+    expect(start.variants.map((v) => [v.id, v.locked])).toEqual([[SEED_VARIANT_ID, true]]);
     expect(start.seedRevision).toBe(SEED_REVISION);
-    const other = freshSeedProject();
-    expect(other.id).not.toBe(start.id);
+    expect(freshSeedProject().id).not.toBe(start.id);
+    expect(familyUiStore.getState()).toMatchObject({ mode: 'local', phase: 'ready', familyId: null });
+    expect(seedUpdateAvailable(start, 0)).toBe(false);
+  });
+
+  it('an old autosave becomes proposals (stored, then retired); a #d= link is imported and shown; #f= says no shared space', async () => {
+    const old = createForslagD();
+    old.variants.push({ ...makeVariant('v-old', 'Mitt gamle forslag') });
+    const working = { ...old.variants[0], notes: 'arbeid' };
+    delete working.locked;
+    old.variants.push({ ...working, id: 'kopi-d', name: 'Forslag D' });
+    localStorage.setItem(KEYS.project, JSON.stringify(old));
+    const shared = makeTestProject({ variants: [makeVariant('s-1', 'Fra Pappa')], activeVariantId: 's-1' });
+    window.location.hash = `#d=${encodeShare(shared, { allVariants: false })}&f=short`;
+    vi.resetModules();
+    const fresh = await import('./appStore');
+    window.location.hash = '';
+    const p = fresh.appStore.getState().project;
+    expect(names(p)).toEqual(['Forslag D', 'Mitt gamle forslag', 'Forslag D (eget)', 'Fra Pappa']);
+    expect(p.activeVariantId).toBe(p.variants[3].id);
+    expect(p.variants.slice(1).every((v) => v.locked === undefined)).toBe(true);
+    expect(localStorage.getItem(KEYS.project)).toBeNull();
+    expect(localStorage.getItem(KEYS.projectBeforeFamily)).not.toBeNull();
+    expect(storedProposals().proposals.map((x) => x.name)).toEqual(['Mitt gamle forslag', 'Forslag D (eget)', 'Fra Pappa']);
+    expect(fresh.appStore.getState().toasts.map((t) => t.text)).toEqual(['«Fra Pappa» fra lenken er lagt til som et nytt forslag.']);
+    expect(fresh.familyUiStore.getState().notices).toEqual(['family-unavailable']);
+    expect(fresh.familyUiStore.getState().meta[p.variants[1].id]?.name).toBe('Mitt gamle forslag');
+  });
+
+  it('a reload shows the proposal that was on screen', async () => {
+    await persist();
+    const id = appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Mitt forslag');
+    await flushProposals();
+    expect(localStorage.getItem(`${FAMILY_KEYS.activeProposal}:local`)).toBe(id);
+    vi.resetModules();
+    const fresh = await import('./appStore');
+    expect(fresh.appStore.getState().project.activeVariantId).toBe(id);
   });
 });
 
-describe('share links', () => {
-  it('opens a link read-only and flags broken ones', () => {
-    openSharedLink(encodeShare(makeTestProject({ id: 'shared' }), { allVariants: false }));
-    expect(appStore.getState().project.id).toBe('shared');
-    expect(appStore.getState().ui).toMatchObject({ readOnly: true, source: 'link' });
+describe('proposals through the family store (local)', () => {
+  it('"Nytt forslag" and edits are saved; the menu metadata follows', async () => {
+    await persist();
+    const id = appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Mitt forslag');
+    if (!id) throw new Error('duplicate');
+    await flushProposals();
+    await settle();
+    expect(storedProposals().proposals.map((p) => p.name)).toEqual(['Mitt forslag']);
+    expect(familyUiStore.getState().meta[id]).toMatchObject({ name: 'Mitt forslag', deletedAt: null });
+    appStore.getState().renameVariant(id, 'Hyttedrøm');
+    appStore.getState().updateVariant(id, (v) => {
+      v.notes = 'notat';
+    });
+    await flushProposals();
+    const stored = storedProposals().proposals[0];
+    expect(stored).toMatchObject({ name: 'Hyttedrøm' });
+    expect(stored.variant.notes).toBe('notat');
+    // The first change after the proposal was made keeps the made version as a revision.
+    expect((await listRevisions(id)).map((r) => r.name)).toEqual(['Mitt forslag']);
+    // Forslag D is never stored.
+    expect(localStorage.getItem(LOCAL_KEYS.proposals) ?? '').not.toContain('"forslag-d":');
+  });
+
+  it('delete → Papirkurv (toast with Angre) → restore from the Papirkurv shows it again', async () => {
+    await persist();
+    const id = appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Mitt forslag');
+    if (!id) throw new Error('duplicate');
+    await flushProposals();
+    deleteProposal(id);
+    expect(names()).toEqual(['Forslag D']);
+    expect(appStore.getState().toasts.at(-1)).toMatchObject({ text: '«Mitt forslag» er lagt i Papirkurv.', undo: true });
+    await flushProposals();
+    await settle();
+    expect(familyUiStore.getState().trash.map((t) => t.id)).toEqual([id]);
+    expect(storedProposals().proposals).toEqual([]);
+    expect(await restoreFromTrash(id)).toBe(true);
+    expect(appStore.getState().project.activeVariantId).toBe(id);
+    await settle();
+    expect(familyUiStore.getState().trash).toEqual([]);
+    expect(storedProposals().proposals.map((p) => p.id)).toEqual([id]);
+    // Angre after a delete brings it back too.
+    deleteProposal(id);
+    await flushProposals();
+    appStore.getState().undo();
+    await flushProposals();
+    expect(storedProposals().proposals.map((p) => p.id)).toEqual([id]);
+    // Forslag D cannot be deleted.
+    deleteProposal(SEED_VARIANT_ID);
+    expect(names()).toContain('Forslag D');
+  });
+
+  it('the display name is stored on the device', () => {
+    expect(myName()).toBeNull();
+    setMyName(' Mamma ');
+    expect(myName()).toBe('Mamma');
+    expect(localStorage.getItem(FAMILY_KEYS.myName)).toBe('Mamma');
+  });
+});
+
+describe('links', () => {
+  it('a #d= link pasted into an open tab is added once and shown; a broken one is flagged', async () => {
+    await persist();
+    const shared = makeTestProject({ variants: [makeVariant('s-1', 'Forslag D')], activeVariantId: 's-1' });
+    const encoded = encodeShare(shared, { allVariants: false });
+    openSharedLink(encoded);
+    expect(names()).toEqual(['Forslag D', 'Forslag D (delt)']);
+    expect(appStore.getState().canUndo).toBe(false);
+    const id = appStore.getState().project.activeVariantId;
+    activateProposal(SEED_VARIANT_ID);
+    openSharedLink(encoded);
+    expect(names()).toEqual(['Forslag D', 'Forslag D (delt)']);
+    expect(appStore.getState().project.activeVariantId).toBe(id);
+    expect(appStore.getState().toasts.at(-1)?.text).toBe('«Forslag D (delt)» fra lenken finnes alt i listen.');
     openSharedLink('garbage');
     expect(noticeStore.getState().notices).toContain('link-invalid');
-    expect(appStore.getState().project.id).toBe('shared');
+    await flushProposals();
+    expect(storedProposals().proposals.map((p) => p.name)).toEqual(['Forslag D (delt)']);
   });
 
-  it('"Lag min egen kopi" adds the shared variant to the own project (renamed on a clash, undoable)', () => {
-    const mine = makeTestProject({ id: 'mine', name: 'Mitt', variants: [makeVariant('v-1', 'Forslag D'), makeVariant('v-2', 'Min variant')] });
-    saveAutosave(localStorage, mine);
-    appStore.getState().replaceProject(mine);
-    persist();
-    openSharedLink(encodeShare(makeTestProject({ id: 'shared' }), { allVariants: false }));
-    expect(noticeStore.getState().sharedHasOwn).toBe(true);
-    makeMyOwnCopy();
-    const { project, ui, canUndo } = appStore.getState();
-    expect(ui.readOnly).toBe(false);
-    expect(project.id).toBe('mine');
-    expect(variantNames(project)).toEqual(['Forslag D', 'Min variant', 'Forslag D (delt)']);
-    const added = project.variants[2];
-    expect(project.activeVariantId).toBe(added.id);
-    expect(['v-1', 'v-2']).not.toContain(added.id);
-    expect(added.basedOnId).toBe('v-1');
-    expect(canUndo).toBe(true);
-    const saved = loadAutosave(localStorage);
-    expect(saved.status === 'ok' && variantNames(saved.project)).toEqual(['Forslag D', 'Min variant', 'Forslag D (delt)']);
-    expect(listVersions(localStorage, 'mine')).toHaveLength(0);
-    expect(noticeStore.getState().notices).not.toContain('other-tab');
-    appStore.getState().undo();
-    expect(variantNames()).toEqual(['Forslag D', 'Min variant']);
-  });
-
-  it('keeps the undo history of the own project when a link is opened in the same tab', () => {
-    persist();
-    appStore.getState().replaceProject(makeTestProject({ id: 'mine' }));
-    appStore.getState().renameRoom('room-1', 'Peisestue');
-    openSharedLink(encodeShare(makeTestProject({ id: 'shared', name: 'Delt' }), { allVariants: true }));
-    expect(appStore.getState().canUndo).toBe(false);
-    makeMyOwnCopy();
-    expect(appStore.getState().project.id).toBe('mine');
-    appStore.getState().undo(); // the added variant
-    appStore.getState().undo(); // the rename before the link
-    expect(appStore.getState().project.variants[0].rooms[0].name).toBe('Stue');
-  });
-
-  it('"Lag min egen kopi" without an own project makes the link the own project', () => {
-    // A fresh visitor: the page opened on the link, nothing is stored.
-    appStore.getState().replaceProject(makeTestProject({ id: 'shared' }), { readOnly: true, source: 'link' });
-    persist();
-    expect(localStorage.getItem(KEYS.project)).toBeNull();
-    makeMyOwnCopy();
-    const { project } = appStore.getState();
-    expect(project.basedOnProjectId).toBe('shared');
-    expect(project.id).not.toBe('shared');
-    const saved = loadAutosave(localStorage);
-    expect(saved.status === 'ok' && saved.project.id).toBe(project.id);
+  it('local mode: no family links; shareLinkFor builds a #d= copy', () => {
+    expect(familyShareLinks(SEED_VARIANT_ID)).toBeNull();
+    const link = shareLinkFor(makeTestProject(), false);
+    expect(shareParamFromHash(new URL(link.url).hash)).not.toBeNull();
   });
 
   it('sharedVariantsFor gives new ids and numbered " (delt)" names', () => {
@@ -132,173 +220,73 @@ describe('share links', () => {
     expect(variants.every((v) => v.id !== 'v-1' && v.id !== 'v-2' && v.createdAt === '2026-10-12T08:00:00.000Z')).toBe(true);
     expect(activeId).toBe(variants[1].id);
   });
-
-  it('refuses to copy over an autosave from a newer app version', () => {
-    localStorage.setItem(KEYS.project, JSON.stringify({ ...makeTestProject(), schemaVersion: 99 }));
-    openSharedLink(encodeShare(makeTestProject({ id: 'shared' }), { allVariants: false }));
-    makeMyOwnCopy();
-    expect(appStore.getState().ui.readOnly).toBe(true);
-    expect(noticeStore.getState().notices).toContain('schema-too-new');
-  });
-
-  it('"Tilbake til mitt prosjekt" restores the autosave', () => {
-    saveAutosave(localStorage, makeTestProject({ id: 'mine' }));
-    appStore.getState().replaceProject(start, { readOnly: true, source: 'link' });
-    openSharedLink(encodeShare(makeTestProject({ id: 'shared' }), { allVariants: false }));
-    leaveSharedView();
-    expect(appStore.getState().project.id).toBe('mine');
-    expect(appStore.getState().ui.readOnly).toBe(false);
-  });
-
-  it('without an own project the banner offers "Vis Forslag D", which shows a fresh seed', () => {
-    appStore.getState().replaceProject(start, { readOnly: true, source: 'link' });
-    openSharedLink(encodeShare(makeTestProject({ id: 'shared' }), { allVariants: false }));
-    expect(noticeStore.getState().sharedHasOwn).toBe(false);
-    leaveSharedView();
-    expect(appStore.getState().project.variants[0].id).toBe('forslag-d');
-    expect(appStore.getState().ui.readOnly).toBe(false);
-  });
-
-  it('opening a link made against an older seed shows the rebased notice', () => {
-    const delta = JSON.parse(
-      JSON.stringify({ v: CURRENT_SCHEMA_VERSION, seedRevision: SEED_REVISION - 1, base: 'forslag-d', project: { id: 'x', activeVariantId: 'forslag-d' }, variants: [{ id: 'forslag-d', set: { name: 'Gammel' } }] }),
-    ) as unknown;
-    openSharedLink(LZString.compressToEncodedURIComponent(JSON.stringify(delta)));
-    expect(appStore.getState().project.variants[0].name).toBe('Gammel');
-    expect(noticeStore.getState().notices).toContain('link-rebased');
-  });
-
-  it('shareLinkFor builds a #d= link for the given project', () => {
-    const link = shareLinkFor(makeTestProject(), false);
-    expect(shareParamFromHash(new URL(link.url).hash)).not.toBeNull();
-  });
 });
 
-describe('other tabs', () => {
-  it('acceptExternalChange loads the newer project', () => {
-    noticeStore.setState({ external: makeTestProject({ id: 'from-tab' }), notices: ['other-tab'] });
-    acceptExternalChange();
-    expect(appStore.getState().project.id).toBe('from-tab');
-    expect(noticeStore.getState().notices).not.toContain('other-tab');
-  });
-
-  it('keepOwnChanges overwrites what the other tab saved', () => {
-    appStore.getState().replaceProject(makeTestProject({ id: 'mine' }));
-    persist();
-    saveAutosave(localStorage, makeTestProject({ id: 'mine', name: 'Annen fane', updatedAt: '2030-01-01T00:00:00.000Z' }));
-    appStore.getState().renameRoom('room-1', 'Min endring');
-    saveNamedVersion('x');
-    expect(noticeStore.getState().notices).toContain('other-tab');
-    keepOwnChanges();
-    expect(noticeStore.getState().notices).not.toContain('other-tab');
-    const saved = loadAutosave(localStorage);
-    expect(saved.status === 'ok' && saved.project.variants[0].rooms[0].name).toBe('Min endring');
-  });
-});
-
-describe('seed updates', () => {
-  it('seedUpdateAvailable compares revisions and respects a dismissal', () => {
-    expect(seedUpdateAvailable(makeTestProject({ seedRevision: SEED_REVISION - 1 }), 0)).toBe(true);
-    expect(seedUpdateAvailable(makeTestProject({ seedRevision: SEED_REVISION - 1 }), SEED_REVISION)).toBe(false);
-    expect(seedUpdateAvailable(makeTestProject({ seedRevision: SEED_REVISION }), 0)).toBe(false);
-  });
-
-  it('"Hent ny Forslag D" adds the seed as a new variant with a unique id and name', () => {
-    const before = appStore.getState().project;
-    fetchNewSeed();
-    const after = appStore.getState().project;
-    expect(after.variants).toHaveLength(before.variants.length + 1);
-    const added = after.variants.at(-1);
-    expect(after.activeVariantId).toBe(added?.id);
-    expect(before.variants.some((v) => v.id === added?.id)).toBe(false);
-    expect(before.variants.some((v) => v.name === added?.name)).toBe(false);
-    expect(after.seedRevision).toBe(SEED_REVISION);
+describe('files and versions become proposals', () => {
+  it('applyImportedProject adds the unlocked proposals (one undo step), skipping a locked base', () => {
+    const file = createForslagD();
+    file.variants.push(makeVariant('f-1', 'Fra fila'));
+    applyImportedProject(file);
+    expect(names()).toEqual(['Forslag D', 'Fra fila']);
+    const added = appStore.getState().project.variants[1];
+    expect(added.id).not.toBe('f-1');
+    expect(appStore.getState().project.activeVariantId).toBe(added.id);
     appStore.getState().undo();
-    expect(appStore.getState().project.variants).toHaveLength(before.variants.length);
-    const fresh = seedVariantFor(makeTestProject());
-    expect(fresh.id).toBe(start.variants[0].id);
+    expect(names()).toEqual(['Forslag D']);
+    expect(importProjectAsProposals(createForslagD())).toBe(0);
   });
 
-  it('"Tilbakestill til Forslag D" keeps the project id and is undoable', () => {
-    appStore.getState().replaceProject(makeTestProject({ id: 'keep-me' }));
-    resetToSeed();
-    expect(appStore.getState().project.id).toBe('keep-me');
-    expect(appStore.getState().project.variants[0].id).toBe(start.variants[0].id);
-    appStore.getState().undo();
-    expect(appStore.getState().project.name).toBe('Testhytte');
-  });
-});
-
-describe('autosave of the app singleton', () => {
-  it('writes the project at start-up, so a version saved before any edit is found after a reload', () => {
-    persist();
-    const id = appStore.getState().project.id;
-    expect(loadAutosave(localStorage).status).toBe('ok');
-    const r = saveNamedVersion('Min første');
-    expect(r.ok).toBe(true);
-    const reloaded = loadInitialState({ storage, hash: '', createSeed: freshSeedProject });
-    expect(reloaded.project.id).toBe(id);
-    expect(listVersions(storage, reloaded.project.id).map((v) => v.name)).toEqual(['Min første']);
-  });
-
-  it('saveNamedVersion writes the autosave even when it was removed', () => {
-    persist();
-    localStorage.removeItem(KEYS.project);
-    saveNamedVersion('Etter sletting');
-    expect(loadAutosave(localStorage).status).toBe('ok');
-  });
-
-  it('restoreVersion and applyImportedProject are autosaved, never reported as another tab', () => {
-    appStore.getState().replaceProject(makeTestProject({ id: 'p' }));
-    persist();
-    const v = saveNamedVersion('Før');
-    appStore.getState().renameRoom('room-1', 'Endret');
-    saveNamedVersion('Etter');
-    expect(restoreVersion(v.ok ? v.version.id : '')).toBe(true);
-    saveNamedVersion('Etter henting');
-    const a = loadAutosave(localStorage);
-    expect(a.status === 'ok' && a.project.variants[0].rooms[0].name).toBe('Stue');
-    applyImportedProject(makeTestProject({ id: 'p', name: 'Importert', updatedAt: '2001-01-01T00:00:00.000Z' }));
-    saveNamedVersion('Etter import');
-    const b = loadAutosave(localStorage);
-    expect(b.status === 'ok' && b.project.name).toBe('Importert');
-    appStore.getState().undo();
-    saveNamedVersion('Etter angre');
-    const c = loadAutosave(localStorage);
-    expect(c.status === 'ok' && c.project.name).toBe('Testhytte');
-    expect(noticeStore.getState().notices).not.toContain('other-tab');
-  });
-});
-
-describe('versions and import', () => {
-  it('saves and restores a named version (undoable)', () => {
-    appStore.getState().replaceProject(makeTestProject({ id: 'p' }));
-    const r = saveNamedVersion('Før endring');
-    expect(r.ok).toBe(true);
-    appStore.getState().renameRoom('room-1', 'Endret');
-    const id = r.ok ? r.version.id : '';
-    expect(restoreVersion(id)).toBe(true);
-    expect(appStore.getState().project.variants[0].rooms[0].name).toBe('Stue');
-    expect(appStore.getState().ui.source).toBe('version');
-    expect(restoreVersion('missing')).toBe(false);
-    expect(noticeStore.getState().notices).toContain('version-failed');
-  });
-
-  it('restores versions of another project too', () => {
-    saveVersion(localStorage, makeTestProject({ id: 'other', name: 'Annet' }), 'x');
+  it('restoreVersion adds the version’s proposals; a missing one is flagged', () => {
+    saveVersion(localStorage, makeTestProject({ id: 'other', variants: [makeVariant('v-1', 'Gammel versjon')] }), 'x');
     const [v] = listVersions(localStorage, 'other');
     expect(restoreVersion(v.id)).toBe(true);
-    expect(appStore.getState().project.id).toBe('other');
+    expect(names()).toEqual(['Forslag D', 'Gammel versjon']);
+    expect(restoreVersion('missing')).toBe(false);
+    expect(noticeStore.getState().notices).toContain('version-failed');
+    expect(saveNamedVersion('ny').ok).toBe(true);
   });
+});
 
-  it('applyImportedProject replaces the project (undoable)', () => {
-    const before = appStore.getState().project;
-    applyImportedProject(makeTestProject({ id: 'imported' }));
-    expect(appStore.getState().project.id).toBe('imported');
-    expect(appStore.getState().project.updatedAt).not.toBe(makeTestProject().updatedAt);
+describe('kept for the banners', () => {
+  it('read-only view: "Lag min egen kopi" adds the shared variant to the own project (undoable); "Tilbake" returns', () => {
+    const mine = appStore.getState().project;
+    showReadOnly(makeTestProject({ id: 'shared', variants: [makeVariant('v-1', 'Forslag D')] }));
+    expect(appStore.getState().ui).toMatchObject({ readOnly: true, source: 'link' });
+    expect(noticeStore.getState().sharedHasOwn).toBe(true);
+    makeMyOwnCopy();
+    expect(appStore.getState().ui.readOnly).toBe(false);
+    expect(appStore.getState().project.id).toBe(mine.id);
+    expect(names()).toEqual(['Forslag D', 'Forslag D (delt)']);
     appStore.getState().undo();
-    expect(appStore.getState().project).toEqual({ ...before, updatedAt: expect.any(String) });
-    expect(appStore.getState().project.updatedAt).not.toBe(before.updatedAt);
+    expect(names()).toEqual(['Forslag D']);
+    showReadOnly(makeTestProject({ id: 'shared' }));
+    leaveSharedView();
+    expect(appStore.getState().project.id).toBe(mine.id);
   });
 
+  it('without an own project "Lag min egen kopi" makes the shown project the own one', () => {
+    appStore.getState().replaceProject(makeTestProject({ id: 'shared' }), { readOnly: true, source: 'link' });
+    makeMyOwnCopy();
+    expect(appStore.getState().project.basedOnProjectId).toBe('shared');
+    expect(appStore.getState().ui.readOnly).toBe(false);
+  });
+
+  it('other-tab banner buttons dismiss it; "Hent ny Forslag D" / "Tilbakestill" show Forslag D', () => {
+    noticeStore.setState({ notices: ['other-tab'] });
+    acceptExternalChange();
+    expect(noticeStore.getState().notices).not.toContain('other-tab');
+    noticeStore.setState({ notices: ['other-tab'] });
+    keepOwnChanges();
+    expect(noticeStore.getState().notices).not.toContain('other-tab');
+    const id = appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Mitt forslag');
+    expect(appStore.getState().project.activeVariantId).toBe(id);
+    fetchNewSeed();
+    expect(appStore.getState().project.activeVariantId).toBe(SEED_VARIANT_ID);
+    activateProposal(id ?? '');
+    appStore.getState().select({ kind: 'wall', id: 'x' });
+    resetToSeed();
+    expect(appStore.getState().project.activeVariantId).toBe(SEED_VARIANT_ID);
+    expect(appStore.getState().ui.selection).toBeNull();
+    expect(names()).toEqual(['Forslag D', 'Mitt forslag']);
+  });
 });

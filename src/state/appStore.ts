@@ -1,50 +1,82 @@
 /**
- * The app-wide store singleton, its bootstrap and the session actions that combine the store with persistence
- * (share links, versions, import, seed updates, other tabs). Components import `useAppStore` from here; tests
- * use `createAppStore` (store.ts) with a fixture instead.
+ * The app-wide store singleton, its bootstrap and the session actions that combine the store with persistence and
+ * the family's proposals (docs/phase2-plan.md §5). Components import `useAppStore` from here; tests use
+ * `createAppStore` (store.ts) with a fixture instead.
  *
- * Bootstrap (module load): share link `#d=` (read-only) → autosave → fresh Forslag D seed with a new project id
- * (see persistence.loadInitialState). The view defaults to the plan (DEFAULT_UI) unless the user chose one before. `startPersistence()` (called once from main.tsx) starts the autosave (which writes a fresh
- * project right away, so its id survives a reload), the other-tab detection and the `hashchange` handler for links
- * pasted into an open tab.
+ * The project on screen = the bundled Forslag D (locked, never stored, always the current bundled one) + the family's
+ * proposals. Where the proposals live depends on the mode (`familyMode`, familyStore.ts `resolveFamilyMode`):
+ *  - 'shared': src/state/firebaseConfig.ts holds a config (and this is not a test / browser automation): Firestore, in
+ *    the family space `#f=<id>` (from the link, else the id stored on this device, else a new one made once). The
+ *    Firebase code is loaded with `import()` by `startPersistence`, so a bundle without a config never loads it. The
+ *    address bar keeps `#f=<id>&p=<proposal>` so a bookmark or a home-screen icon (iOS keeps its own storage) opens
+ *    the same family.
+ *  - 'local': the proposals are stored in this browser (familyStore.local.ts) — "Kun på denne enheten".
+ * familyStore.sync.ts keeps the store and the family store in step (autosave, live merge, conflict guard); its state
+ * (status pill, "sist endret av …", Papirkurv, conflicts) is mirrored into `familyUiStore` (`useFamily`).
  *
- * Shared links: opening one in a tab that shows the user's own project keeps that project and its undo history
- * aside (`stash`). "Lag min egen kopi" ADDS the shared variant(s) to the user's own project (new variant ids, names
- * suffixed " (delt)" on a clash, one undo step) and only creates a project from the link when the user has none.
- * "Tilbake til mitt prosjekt" returns to the stash or the autosave ("Vis Forslag D" when there is none).
+ * Bootstrap (module load, synchronous): the old whole-project autosave of phase 1 / 2a becomes proposals (local: at
+ * once; shared: after the first list, then the old key is retired); a `#d=` link is imported as new proposal(s)
+ * (ids derived from the link, so opening it twice adds nothing twice) and shown; `#p=<id>` (or the proposal shown
+ * last on this device) is activated as soon as it is there. `startPersistence()` (main.tsx, once) starts the sync,
+ * the UI-prefs autosave, `navigator.storage.persist()` and the `hashchange` handler.
  *
- * Notices (banners) live in a small separate store so they never touch the undo history.
+ * Kept for the existing UI: the read-only link view ("Lag min egen kopi" / "Tilbake til mitt prosjekt") still works
+ * when something puts the store into it (`showReadOnly`), named versions can be read and added as proposals, and the
+ * seed-update banner never shows (Forslag D is always current).
  */
 import { create, useStore } from 'zustand';
 import { nanoid } from 'nanoid';
-import { createForslagD, SEED_REVISION } from '../model/seed/forslagD';
+import { nb } from '../i18n/nb';
+import { createForslagD, SEED_REVISION, SEED_VARIANT_ID } from '../model/seed/forslagD';
 import type { Id, Project, Variant } from '../model/types';
+import { firebaseConfig } from './firebaseConfig';
 import {
+  cleanVariant,
+  createMyName,
+  FAMILY_KEYS,
+  familyHash,
+  familyLink,
+  hashHasFamily,
+  isValidFamilyId,
+  newFamilyId,
+  parseHash,
+  resolveFamilyMode,
+} from './familyStore';
+import type { EncodeContext, FamilyMode, FamilyStore, ProposalList, RevisionInfo } from './familyStore';
+import { createLocalFamilyStore, LOCAL_KEYS } from './familyStore.local';
+import { createProposalSync } from './familyStore.sync';
+import type { ProposalSync, SyncState } from './familyStore.sync';
+import {
+  AUTOSAVE_DELAY_MS,
   backupInvalidAutosave,
   decodeShare,
   downloadProject,
+  downloadText,
   getStorage,
+  legacyProposals,
+  linkProposals,
   loadAutosave,
   loadDismissedSeedRevision,
-  loadInitialState,
+  loadUiPrefs,
   loadVersion,
   makeOwnCopy,
   makeShareLink,
-  projectKey,
+  projectFileName,
   readProjectFile,
-  removeShareHash,
+  readRaw,
+  retireLegacyAutosave,
   saveDismissedSeedRevision,
   saveVersion,
-  shareParamFromHash,
-  startAutosave,
+  serializeProject,
+  startPrefsAutosave,
+  writeRaw,
 } from './persistence';
-import type { AutosaveController, LoadResult, Notice, SaveVersionResult, ShareLink } from './persistence';
-import { createAppStore, EMPTY_HISTORY } from './store';
+import type { LoadResult, Notice, PrefsAutosave, SaveVersionResult, ShareLink } from './persistence';
+import { createAppStore, selectActiveVariant } from './store';
 import type { AppState, HistorySnapshot } from './store';
-import { nb } from '../i18n/nb';
 
 // ---------------------------------------------------------------------------
-// Singleton
+// Mode, family id
 // ---------------------------------------------------------------------------
 
 const hasWindow = typeof window !== 'undefined';
@@ -54,51 +86,203 @@ function nowISO(): string {
   return new Date().toISOString();
 }
 
-/** A fresh Forslag D project for a new user: current timestamps and its own project id. */
+const startHash = hasWindow ? window.location.hash : '';
+const startParams = parseHash(startHash);
+
+export const familyMode: FamilyMode = resolveFamilyMode({
+  hasConfig: firebaseConfig !== null,
+  testMode: import.meta.env.MODE === 'test',
+  buildOverride: typeof import.meta.env.VITE_FAMILY_STORE === 'string' ? import.meta.env.VITE_FAMILY_STORE : null,
+  storedOverride: readRaw(storage, FAMILY_KEYS.modeOverride),
+  webdriver: hasWindow && typeof navigator !== 'undefined' && navigator.webdriver === true,
+});
+
+/** Shared mode: the family of a `#f=` link (remembered), else the one stored here, else a new one (made once). */
+function chooseFamilyId(): string {
+  const stored = readRaw(storage, FAMILY_KEYS.familyId);
+  const known = isValidFamilyId(stored) ? stored : null;
+  if (startParams.family) {
+    if (known && known !== startParams.family) {
+      // Switching family: remember the old id (nothing is lost; it can be opened again with its link).
+      let previous: string[] = [];
+      try {
+        const parsed = JSON.parse(readRaw(storage, FAMILY_KEYS.previousFamilies) ?? '[]') as unknown;
+        if (Array.isArray(parsed)) previous = parsed.filter(isValidFamilyId);
+      } catch {
+        // ignore
+      }
+      writeRaw(storage, FAMILY_KEYS.previousFamilies, JSON.stringify([...previous.filter((x) => x !== known), known].slice(-10)));
+    }
+    writeRaw(storage, FAMILY_KEYS.familyId, startParams.family);
+    return startParams.family;
+  }
+  if (known) return known;
+  const id = newFamilyId();
+  writeRaw(storage, FAMILY_KEYS.familyId, id);
+  return id;
+}
+
+/** The family space (shared mode), null in local mode. */
+export const familyId: string | null = familyMode === 'shared' ? chooseFamilyId() : null;
+const activeKey = `${FAMILY_KEYS.activeProposal}:${familyId ?? 'local'}`;
+
+// ---------------------------------------------------------------------------
+// The bundled base and the initial project
+// ---------------------------------------------------------------------------
+
+/** A fresh Forslag D project: current timestamps and its own project id. */
 export function freshSeedProject(): Project {
   return { ...createForslagD(nowISO()), id: nanoid(12) };
 }
 
-const initial = loadInitialState({
-  storage,
-  hash: hasWindow ? window.location.hash : '',
-  createSeed: freshSeedProject,
-});
+const seedProject = freshSeedProject();
+const baseVariant: Variant = seedProject.variants[0];
+const encodeContext = (): EncodeContext => ({ site: seedProject.site, seedRevision: SEED_REVISION });
 
-export const appStore = createAppStore(initial.project, initial.ui);
+/** The local store (local mode); the shared one is created by `startPersistence`. */
+const localFamily: FamilyStore | null =
+  familyMode === 'local' ? createLocalFamilyStore({ storage, target: hasWindow ? window : null, context: encodeContext }) : null;
+
+const startNotices: Notice[] = [];
+if (!storage) startNotices.push('storage-unavailable');
+
+/** Notices of the family layer (shown by the top bar). */
+export type FamilyNotice = 'family-unavailable';
+const startFamilyNotices: FamilyNotice[] = familyMode === 'local' && hashHasFamily(startHash) ? ['family-unavailable'] : [];
+
+/** Toasts to show once the store exists. */
+const startToasts: string[] = [];
+
+// 1. The old whole-project autosave → proposals.
+let legacyPending: Variant[] = [];
+{
+  const legacy = loadAutosave(storage);
+  if (legacy.status === 'ok') legacyPending = legacyProposals(legacy.project, baseVariant);
+  else if (legacy.status === 'invalid') {
+    backupInvalidAutosave(storage);
+    startNotices.push('autosave-invalid');
+    retireLegacyAutosave(storage);
+  }
+}
+
+// 2. A `#d=` link → new proposal(s).
+let linkPending: { variants: Variant[]; activeId: Id } | null = null;
+if (startParams.delta) {
+  const r = decodeShare(startParams.delta);
+  if (r.status === 'ok') {
+    if (r.rebased) startNotices.push('link-rebased');
+    linkPending = linkProposals(r.project, startParams.delta, [], nowISO());
+  } else {
+    startNotices.push(r.status === 'too-new' ? 'link-too-new' : 'link-invalid');
+  }
+}
+
+/** Names of link proposals made unique against `taken` (the link's own ids are kept). */
+function nameAgainst(variants: Variant[], taken: Iterable<string>): Variant[] {
+  const names = new Set(taken);
+  return variants.map((v) => {
+    let name = v.name;
+    for (let n = 1; names.has(name); n++) name = nb.share.sharedName(v.name, n);
+    names.add(name);
+    return name === v.name ? v : { ...v, name };
+  });
+}
+
+/** Write proposals into the local store right away (local mode); returns the ids now stored (or in the Papirkurv). */
+function storeLocally(family: FamilyStore, variants: Variant[]): Set<Id> {
+  const list = () => family.currentList();
+  const present = (id: Id) => list().proposals.some((p) => p.id === id);
+  for (const v of variants) if (!present(v.id)) void family.saveProposal(v, { base: null, by: null });
+  return new Set([...list().proposals, ...list().trash].map((p) => p.id));
+}
+
+if (localFamily) {
+  if (legacyPending.length > 0) {
+    const stored = storeLocally(localFamily, legacyPending);
+    if (legacyPending.every((v) => stored.has(v.id))) retireLegacyAutosave(storage);
+    legacyPending = [];
+  }
+  if (linkPending) {
+    const proposals = localFamily.currentList().proposals;
+    const existing = new Set(proposals.map((p) => p.id));
+    const fresh = nameAgainst(
+      linkPending.variants.filter((v) => !existing.has(v.id)),
+      [baseVariant.name, ...proposals.map((p) => p.name)],
+    );
+    storeLocally(localFamily, fresh);
+    const shown = localFamily.currentList().proposals.find((p) => p.id === linkPending?.activeId);
+    if (shown) startToasts.push(fresh.some((v) => v.id === shown.id) ? nb.family.linkImported(shown.name) : nb.family.linkKnown(shown.name));
+  }
+}
+
+const remembered = readRaw(storage, activeKey);
+const wantedActive: Id | null = linkPending?.activeId ?? startParams.proposal ?? remembered;
+const startProposals = localFamily ? localFamily.currentList().proposals.map((p) => p.variant) : [];
+const initialProject: Project = {
+  ...seedProject,
+  variants: [baseVariant, ...startProposals],
+  activeVariantId: wantedActive && startProposals.some((v) => v.id === wantedActive) ? wantedActive : baseVariant.id,
+};
+/** Shared mode: the proposal to show once the first list has it (unless the user picked another meanwhile). */
+let pendingActivate: Id | null = familyMode === 'shared' && wantedActive && wantedActive !== baseVariant.id ? wantedActive : null;
+
+export const appStore = createAppStore(initialProject, { ...loadUiPrefs(storage), readOnly: false, source: 'local' });
+for (const text of startToasts) appStore.getState().showToast({ text });
 
 export function useAppStore<T>(selector: (state: AppState) => T): T {
   return useStore(appStore, selector);
 }
 
 // ---------------------------------------------------------------------------
-// The user's own project while a shared link is shown
+// Family UI state (status pill, menu metadata, Papirkurv, conflicts, name prompt)
 // ---------------------------------------------------------------------------
 
-/** The own project (and its undo history) that was on screen when a link was opened in this tab. */
+export interface FamilyUiState extends SyncState {
+  /** Show "Hva heter du?" (shared mode, the first save on a device without a name). */
+  askName: boolean;
+  /**
+   * Shared mode, but Firebase could not be loaded: the proposals are kept on this device (the local store) until the
+   * family space can be reached; the pill says «Kun på denne enheten (familiens plass kan ikke nås nå)».
+   */
+  fallback: boolean;
+  notices: FamilyNotice[];
+}
+
+function initialSyncState(): SyncState {
+  const list: ProposalList = localFamily?.currentList() ?? { proposals: [], trash: [], tooNew: [] };
+  const meta: SyncState['meta'] = Object.fromEntries(list.proposals.map(({ variant: _v, ...m }) => [m.id, m]));
+  return {
+    mode: familyMode,
+    familyId,
+    phase: familyMode === 'local' ? 'ready' : 'connecting',
+    saving: false,
+    pending: 0,
+    online: hasWindow && typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
+    failed: false,
+    meta,
+    trash: list.trash,
+    tooNew: list.tooNew,
+    conflicts: [],
+    overwritten: [],
+  };
+}
+
+export const familyUiStore = create<FamilyUiState>()(() => ({ ...initialSyncState(), askName: false, fallback: false, notices: [...startFamilyNotices] }));
+
+export function useFamily<T>(selector: (s: FamilyUiState) => T): T {
+  return useStore(familyUiStore, selector);
+}
+
+export function dismissFamilyNotice(n: FamilyNotice): void {
+  familyUiStore.setState((s) => ({ notices: s.notices.filter((x) => x !== n) }));
+}
+
+// ---------------------------------------------------------------------------
+// The user's own project while a (legacy) read-only view is shown
+// ---------------------------------------------------------------------------
+
+/** The own project (and its undo history) that was on screen when a read-only view replaced it. */
 let stash: { project: Project; history: HistorySnapshot } | null = null;
-
-/** Does the user have a project of their own to go back to (or to add a shared variant to)? */
-function hasOwnProject(): boolean {
-  if (stash) return true;
-  const status = loadAutosave(storage).status;
-  return status === 'ok' || status === 'too-new';
-}
-
-/**
- * The project "Lag min egen kopi" / "Tilbake til mitt prosjekt" go back to: the stash when it is still what is
- * stored (another tab may have saved since), else the autosave; null when there is none, 'too-new' when the
- * autosave belongs to a newer app version.
- */
-function ownProject(): { project: Project; history: HistorySnapshot } | 'too-new' | null {
-  const saved = loadAutosave(storage);
-  if (saved.status === 'too-new') return 'too-new';
-  if (saved.status === 'ok') {
-    return stash && projectKey(stash.project) === projectKey(saved.project) ? stash : { project: saved.project, history: EMPTY_HISTORY };
-  }
-  if (saved.status === 'invalid') backupInvalidAutosave(storage);
-  return stash;
-}
 
 // ---------------------------------------------------------------------------
 // Notices (banners)
@@ -108,19 +292,19 @@ export type AppNotice = Notice | 'other-tab' | 'save-failed' | 'import-failed' |
 
 interface NoticeState {
   notices: AppNotice[];
-  /** Newer project saved by another tab, offered by the 'other-tab' banner. */
+  /** Kept for the banner API; the family store's conflict guard replaced the other-tab banner. */
   external: Project | null;
   /** Seed revision the user dismissed the "Forslag D er oppdatert" banner for. */
   dismissedSeedRevision: number;
-  /** While a shared link is shown: the user has an own project (banner texts, "Tilbake til mitt prosjekt"). */
+  /** While a read-only view is shown: an own project is kept aside. */
   sharedHasOwn: boolean;
 }
 
 export const noticeStore = create<NoticeState>()(() => ({
-  notices: [...initial.notices],
+  notices: [...startNotices],
   external: null,
   dismissedSeedRevision: loadDismissedSeedRevision(storage),
-  sharedHasOwn: initial.ui.source === 'link' ? hasOwnProject() : false,
+  sharedHasOwn: false,
 }));
 
 export function useNotices<T>(selector: (s: NoticeState) => T): T {
@@ -139,53 +323,374 @@ export function dismissNotice(n: AppNotice): void {
 // Persistence wiring
 // ---------------------------------------------------------------------------
 
-let autosave: AutosaveController | null = null;
+let family: FamilyStore | null = localFamily;
+let sync: ProposalSync | null = null;
+let prefs: PrefsAutosave | null = null;
+let started = false;
+const names = createMyName(storage);
 
-/** Start autosave, other-tab detection and link handling. Idempotent; returns a stop function. */
-export function startPersistence(): () => void {
-  if (autosave || !hasWindow) return () => {};
-  autosave = startAutosave(appStore, {
-    storage,
-    target: window,
-    onExternalChange: (project) => {
-      noticeStore.setState({ external: project });
-      pushNotice('other-tab');
+/** Shared mode: ids of the old autosave's proposals not stored yet (the old key is retired when none is left). */
+const legacyIds = new Set<Id>(legacyPending.map((v) => v.id));
+
+/**
+ * Shared mode: the local store this device fell back to while Firebase could not be loaded (`connectShared`), and the
+ * ids of the proposals kept there that the family space does not have yet. Once the family space answers (later in
+ * the session, or at the next start) they are saved there, and the local copy is removed when all of them are.
+ */
+let fallbackStore: FamilyStore | null = null;
+const leftoverIds = new Set<Id>();
+
+function clearLeftoversWhenStored(): void {
+  if (leftoverIds.size > 0) return;
+  for (const key of [LOCAL_KEYS.proposals, LOCAL_KEYS.revisions]) {
+    try {
+      storage?.removeItem(key);
+    } catch {
+      // storage blocked: nothing to clear
+    }
+  }
+}
+
+/** Shared mode, first list of the family space: proposals kept on this device while it was unreachable go there. */
+function importLeftovers(list: ProposalList): void {
+  if (familyMode !== 'shared' || !sync || family?.mode !== 'shared') return;
+  const local = createLocalFamilyStore({ storage, context: encodeContext });
+  const kept = local.currentList().proposals.map((p) => p.variant);
+  local.dispose();
+  if (kept.length === 0) return;
+  const stored = new Set([...list.proposals, ...list.trash].map((p) => p.id));
+  const present = new Set(appStore.getState().project.variants.map((v) => v.id));
+  const missing = kept.filter((v) => !stored.has(v.id));
+  for (const v of missing) leftoverIds.add(v.id);
+  // Those still on screen (the fallback ran in this session) are new to this sync and saved by its first flush.
+  sync.addVariants(missing.filter((v) => !present.has(v.id)));
+  clearLeftoversWhenStored();
+}
+
+function retireLegacyWhenStored(): void {
+  if (legacyIds.size === 0 && loadAutosave(storage).status !== 'missing') retireLegacyAutosave(storage);
+}
+
+/** After the first list: legacy and link proposals (shared mode), the proposal to show, the Papirkurv's old ones. */
+function onFirstList(list: ProposalList): void {
+  if (!sync || !family) return;
+  importLeftovers(list);
+  const stored = new Set([...list.proposals, ...list.trash].map((p) => p.id));
+  if (legacyPending.length > 0) {
+    for (const v of legacyPending) if (stored.has(v.id)) legacyIds.delete(v.id);
+    sync.addVariants(legacyPending.filter((v) => !stored.has(v.id)));
+    legacyPending = [];
+    retireLegacyWhenStored();
+  }
+  if (linkPending && familyMode === 'shared') {
+    const fresh = nameAgainst(
+      linkPending.variants.filter((v) => !stored.has(v.id)),
+      [baseVariant.name, ...list.proposals.map((p) => p.name)],
+    );
+    sync.addVariants(fresh, linkPending.activeId);
+    const shown = appStore.getState().project.variants.find((v) => v.id === linkPending?.activeId);
+    if (shown) appStore.getState().showToast({ text: fresh.some((v) => v.id === shown.id) ? nb.family.linkImported(shown.name) : nb.family.linkKnown(shown.name) });
+    pendingActivate = null;
+  }
+  linkPending = null;
+  if (pendingActivate && appStore.getState().project.activeVariantId === baseVariant.id) sync.activate(pendingActivate);
+  pendingActivate = null;
+  void family.purgeTrash().catch(() => 0);
+}
+
+function attachSync(store: FamilyStore): void {
+  family = store;
+  sync = createProposalSync({
+    store: appStore,
+    family: store,
+    delayMs: familyMode === 'shared' ? 1000 : AUTOSAVE_DELAY_MS,
+    target: hasWindow ? window : null,
+    onNeedsName: () => familyUiStore.setState({ askName: true }),
+    onSaved: (id) => {
+      if (legacyIds.delete(id)) retireLegacyWhenStored();
+      if (store.mode === 'shared' && leftoverIds.delete(id)) clearLeftoversWhenStored();
     },
-    onSaveError: () => pushNotice('save-failed'),
+    onFirstList,
   });
+  sync.subscribe((s) => familyUiStore.setState(s));
+  familyUiStore.setState(sync.getState());
+}
+
+let connectTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Retry delay (ms) while Firebase cannot be loaded. */
+const CONNECT_RETRY_MS = 15_000;
+
+/** Load Firebase (familyStore.firestore.ts, a lazy chunk) and make the family's shared store. */
+async function loadShared(): Promise<{ store: FamilyStore; dispose: () => void }> {
+  if (!firebaseConfig || !familyId) throw new Error('no family space');
+  const mod = await import('./familyStore.firestore');
+  const adapter = await mod.loadFirebaseAdapter(firebaseConfig);
+  return { store: mod.createFirestoreFamilyStore({ adapter, familyId, storage, context: encodeContext }), dispose: () => adapter.dispose() };
+}
+
+/** While the fallback runs: the device came online, so try the family space again right away. */
+function retryNow(): void {
+  if (connectTimer !== null) clearTimeout(connectTimer);
+  connectTimer = null;
+  void connectShared();
+}
+
+/** Firebase could not be loaded: keep the proposals on this device (the local store) meanwhile. */
+function startFallback(): void {
+  fallbackStore = createLocalFamilyStore({ storage, target: hasWindow ? window : null, context: encodeContext });
+  attachSync(fallbackStore);
+  familyUiStore.setState({ fallback: true });
+  if (hasWindow) window.addEventListener('online', retryNow);
+}
+
+/** The family space answers: save what the fallback holds and hand over (its proposals become leftovers). */
+async function leaveFallback(): Promise<void> {
+  const s = sync;
+  const f = fallbackStore;
+  await s?.flush();
+  for (const p of f?.currentList().proposals ?? []) leftoverIds.add(p.id);
+  s?.stop();
+  f?.dispose();
+  sync = null;
+  family = null;
+  fallbackStore = null;
+  if (hasWindow) window.removeEventListener('online', retryNow);
+  familyUiStore.setState({ fallback: false });
+}
+
+/**
+ * Load Firebase (lazily) and attach the shared store. When that fails (Firebase blocked, a broken cache), the app
+ * keeps working on this device (`startFallback`) and tries again every CONNECT_RETRY_MS and whenever the device comes
+ * online; once it connects, the
+ * proposals kept here are saved in the family space. (Offline with Firebase loaded is not a failure: Firestore's
+ * own cache answers and queues the writes — "Lagret her – sendes når du er på nett".)
+ */
+async function connectShared(): Promise<void> {
+  if (familyMode !== 'shared') return;
+  try {
+    const loaded = await loadShared();
+    if (!started) {
+      loaded.dispose();
+      return;
+    }
+    if (fallbackStore) await leaveFallback();
+    attachSync(loaded.store);
+  } catch {
+    if (!started) return;
+    if (!sync) startFallback();
+    connectTimer = setTimeout(() => {
+      connectTimer = null;
+      void connectShared();
+    }, CONNECT_RETRY_MS);
+  }
+}
+
+/** Ask the browser to keep this site's storage (proposals, the offline cache) when space runs low. */
+function requestPersistentStorage(): void {
+  try {
+    const s = navigator.storage;
+    if (!s?.persist) return;
+    void s
+      .persisted()
+      .then((already) => (already ? true : s.persist()))
+      .catch(() => false);
+  } catch {
+    // not supported
+  }
+}
+
+function setHash(hash: string): void {
+  if (!hasWindow) return;
+  try {
+    const { pathname, search } = window.location;
+    if (window.location.hash === hash) return;
+    window.history.replaceState(window.history.state, '', `${pathname}${search}${hash}`);
+  } catch {
+    // sandboxed iframes
+  }
+}
+
+/** The address bar: `#f=<family>&p=<proposal>` in shared mode (bookmarks, home-screen icons), nothing locally. */
+function syncHash(): void {
+  const { project } = appStore.getState();
+  if (familyId) setHash(familyHash(familyId, project.activeVariantId === baseVariant.id ? null : project.activeVariantId));
+  else setHash('');
+}
+
+/** Start the family sync, the UI-prefs autosave and link handling. Idempotent; returns a stop function. */
+export function startPersistence(): () => void {
+  if (started || !hasWindow) return () => {};
+  started = true;
+  prefs = startPrefsAutosave(appStore, { storage, target: window });
+  requestPersistentStorage();
+  if (localFamily) attachSync(localFamily);
+  else void connectShared();
+
+  syncHash();
+  const unsubscribeActive = appStore.subscribe((s, prev) => {
+    if (s.project.activeVariantId === prev.project.activeVariantId) return;
+    pendingActivate = null;
+    writeRaw(storage, activeKey, s.project.activeVariantId);
+    syncHash();
+  });
+
   const onHash = () => {
-    const encoded = shareParamFromHash(window.location.hash);
-    if (encoded) openSharedLink(encoded);
+    const params = parseHash(window.location.hash);
+    if (params.delta) {
+      openSharedLink(params.delta);
+      return;
+    }
+    if (hashHasFamily(window.location.hash)) {
+      if (familyMode === 'shared' && params.family && params.family !== familyId) {
+        // Another family: start over in it (the old one stays reachable with its own link).
+        writeRaw(storage, FAMILY_KEYS.familyId, params.family);
+        reloadPage();
+        return;
+      }
+      if (familyMode === 'local') familyUiStore.setState((s) => (s.notices.includes('family-unavailable') ? s : { notices: [...s.notices, 'family-unavailable'] }));
+    }
+    if (params.proposal) activateProposal(params.proposal);
   };
   window.addEventListener('hashchange', onHash);
   return () => {
     window.removeEventListener('hashchange', onHash);
-    autosave?.stop();
-    autosave = null;
+    unsubscribeActive();
+    prefs?.stop();
+    prefs = null;
+    sync?.stop();
+    sync = null;
+    if (family !== localFamily) family?.dispose();
+    if (connectTimer !== null) clearTimeout(connectTimer);
+    connectTimer = null;
+    family = localFamily;
+    fallbackStore = null;
+    window.removeEventListener('online', retryNow);
+    started = false;
   };
 }
 
-function flushAutosave(): void {
-  autosave?.flush();
+// ---------------------------------------------------------------------------
+// Family session actions
+// ---------------------------------------------------------------------------
+
+/** Save pending edits now (e.g. before a reload). */
+export async function flushProposals(): Promise<void> {
+  prefs?.flush();
+  await sync?.flush();
+}
+
+/** Save pending edits and wait (at most `timeoutMs`) until the server has them — before "Oppdater" reloads. */
+export async function flushProposalsAll(timeoutMs = 4000): Promise<void> {
+  prefs?.flush();
+  await sync?.flushAll(timeoutMs);
+}
+
+/** "Hent endringene" / "Lagre over". */
+export function resolveConflict(id: Id, choice: 'fetch' | 'overwrite'): Promise<void> {
+  return sync?.resolveConflict(id, choice) ?? Promise.resolve();
+}
+
+export function dismissOverwritten(id: Id): void {
+  sync?.dismissOverwritten(id);
+}
+
+/** Show a proposal (no undo step when the sync runs). */
+export function activateProposal(id: Id): boolean {
+  if (sync) return sync.activate(id);
+  if (!appStore.getState().project.variants.some((v) => v.id === id)) return false;
+  appStore.getState().setActiveVariant(id);
+  return true;
+}
+
+/** Delete a proposal (after the two confirmations): into the Papirkurv; Angre in the toast brings it back. */
+export function deleteProposal(id: Id): void {
+  const state = appStore.getState();
+  const v = state.project.variants.find((x) => x.id === id);
+  if (!v || v.locked || state.ui.readOnly) return;
+  state.deleteVariant(id);
+  if (!appStore.getState().project.variants.some((x) => x.id === id)) state.showToast({ text: nb.family.delete.done(v.name), undo: true });
+}
+
+/** From the Papirkurv back into the list, and shown. */
+export async function restoreFromTrash(id: Id): Promise<boolean> {
+  if (!sync) return false;
+  const ok = await sync.restoreFromTrash(id);
+  if (ok) {
+    sync.activate(id);
+    const v = appStore.getState().project.variants.find((x) => x.id === id);
+    if (v) appStore.getState().showToast({ text: nb.family.restoredFromTrash(v.name) });
+  }
+  return ok;
+}
+
+export async function listRevisions(id: Id): Promise<RevisionInfo[]> {
+  return family ? family.listRevisions(id) : [];
+}
+
+export async function restoreRevision(id: Id, revisionId: string): Promise<boolean> {
+  if (!sync) return false;
+  const ok = await sync.restoreRevision(id, revisionId);
+  const v = appStore.getState().project.variants.find((x) => x.id === id);
+  if (ok && v) appStore.getState().showToast({ text: nb.family.revisionRestored(v.name) });
+  return ok;
+}
+
+/** "Hva heter du?" — '' declines (never asked again). */
+export function setMyName(name: string): void {
+  if (family) family.setMyName(name);
+  else names.set(name);
+  familyUiStore.setState({ askName: false });
+}
+
+export function myName(): string | null {
+  return family ? family.whoAmI() : names.get();
+}
+
+export function askForName(): void {
+  familyUiStore.setState({ askName: true });
+}
+
+/** The links of "Send forslaget" in shared mode: the family link and the proposal's deep link (null locally). */
+export function familyShareLinks(proposalId: Id): { family: string; proposal: string } | null {
+  if (!familyId || !hasWindow) return null;
+  const base = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+  return { family: familyLink(base, familyId), proposal: familyLink(base, familyId, proposalId) };
 }
 
 // ---------------------------------------------------------------------------
-// Session actions
+// Links, files and versions (imported as proposals)
 // ---------------------------------------------------------------------------
 
-/** Show a decoded share link read-only; the own project on screen is saved and kept aside with its history. */
+/**
+ * A `#d=` link (pasted into an open tab): its proposal(s) are added (no undo step while the sync runs) and shown.
+ * The same link twice shows the proposal it added before.
+ */
 export function openSharedLink(encoded: string): void {
   const result = decodeShare(encoded);
+  setHash(familyId ? familyHash(familyId) : '');
   if (result.status !== 'ok') {
     pushNotice(result.status === 'too-new' ? 'link-too-new' : 'link-invalid');
     return;
   }
-  flushAutosave();
-  const state = appStore.getState();
-  if (!state.ui.readOnly) stash = { project: state.project, history: state.history() };
-  state.replaceProject(result.project, { readOnly: true, source: 'link' });
-  noticeStore.setState({ sharedHasOwn: hasOwnProject() });
   if (result.rebased) pushNotice('link-rebased');
+  const project = appStore.getState().project;
+  const { variants, activeId } = linkProposals(result.project, encoded, [], nowISO());
+  const present = new Set(project.variants.map((v) => v.id));
+  const fresh = nameAgainst(
+    variants.filter((v) => !present.has(v.id)),
+    project.variants.map((v) => v.name),
+  );
+  if (sync) {
+    sync.addVariants(fresh, activeId);
+    sync.activate(activeId);
+  } else {
+    appStore.getState().addVariants(fresh, { activeId });
+    if (appStore.getState().project.activeVariantId !== activeId) appStore.getState().setActiveVariant(activeId);
+  }
+  const shown = appStore.getState().project.variants.find((v) => v.id === activeId);
+  if (shown) appStore.getState().showToast({ text: fresh.length > 0 ? nb.family.linkImported(shown.name) : nb.family.linkKnown(shown.name) });
+  syncHash();
 }
 
 /**
@@ -194,7 +699,7 @@ export function openSharedLink(encoded: string): void {
  * the shared project's active variant.
  */
 export function sharedVariantsFor(own: Project, shared: Project, now: string = nowISO()): { variants: Variant[]; activeId: Id } {
-  const names = new Set(own.variants.map((v) => v.name));
+  const taken = new Set(own.variants.map((v) => v.name));
   const ids = new Set(own.variants.map((v) => v.id));
   let activeId = '';
   const variants = shared.variants.map((v) => {
@@ -202,70 +707,139 @@ export function sharedVariantsFor(own: Project, shared: Project, now: string = n
     while (ids.has(id)) id = nanoid(10);
     ids.add(id);
     let name = v.name;
-    for (let n = 1; names.has(name); n++) name = nb.share.sharedName(v.name, n);
-    names.add(name);
+    for (let n = 1; taken.has(name); n++) name = nb.share.sharedName(v.name, n);
+    taken.add(name);
     if (v.id === shared.activeVariantId) activeId = id;
     return { ...structuredClone(v), id, name, createdAt: now, basedOnId: v.id };
   });
   return { variants, activeId: activeId || variants[0]?.id || '' };
 }
 
+/** A file's (or a version's) proposals added as new, unlocked proposals (one undo step); the first is shown. */
+export function importProjectAsProposals(project: Project): number {
+  const own = appStore.getState().project;
+  const unlocked = project.variants.filter((v) => !v.locked);
+  if (unlocked.length === 0) return 0;
+  const { variants, activeId } = sharedVariantsFor(own, { ...project, variants: unlocked });
+  appStore.getState().addVariants(
+    variants.map((v) => cleanVariant(v)),
+    { activeId },
+  );
+  return variants.length;
+}
+
+/** "Åpne fil": parse; the caller confirms and then calls `applyImportedProject`. */
+export async function readImportFile(file: Blob): Promise<LoadResult> {
+  const result = await readProjectFile(file);
+  if (result.status === 'too-new') pushNotice('import-too-new');
+  else if (result.status !== 'ok') pushNotice('import-failed');
+  return result;
+}
+
+/** Add the file's proposals (the locked base in it is skipped). */
+export function applyImportedProject(project: Project): void {
+  const n = importProjectAsProposals(project);
+  if (n > 0) appStore.getState().showToast({ text: nb.family.fileImported(n) });
+}
+
+/** "Eksporter JSON": every proposal with Forslag D as one project file. */
+export function exportProjectFile(): void {
+  downloadProject(appStore.getState().project);
+}
+
+/** "Lagre som fil": the proposal on screen as a project file of its own (opens again with "Åpne fil"). */
+export function downloadActiveProposal(): void {
+  const project = appStore.getState().project;
+  const v = selectActiveVariant({ project });
+  const single: Project = { ...project, name: v.name, variants: [v], activeVariantId: v.id };
+  downloadText(projectFileName(single), serializeProject(single), 'application/json');
+}
+
+/** Save a named version of the whole project (kept for the old Versjoner dialog). */
+export function saveNamedVersion(name: string): SaveVersionResult {
+  return saveVersion(storage, appStore.getState().project, name);
+}
+
+/** A stored named version: its proposals are added as new proposals. Returns false when it could not be read. */
+export function restoreVersion(id: Id): boolean {
+  const result = loadVersion(storage, id);
+  if (result.status !== 'ok') {
+    pushNotice('version-failed');
+    return false;
+  }
+  applyImportedProject(result.project);
+  return true;
+}
+
+/** `#d=` link for `project` based on the current page address (local mode's "Send forslaget"). */
+export function shareLinkFor(project: Project, allVariants: boolean): ShareLink {
+  const base = hasWindow ? `${window.location.origin}${window.location.pathname}${window.location.search}` : '';
+  return makeShareLink(project, { allVariants }, base);
+}
+
+export function reloadPage(): void {
+  if (hasWindow) window.location.reload();
+}
+
+// ---------------------------------------------------------------------------
+// Kept for the banners: the read-only view, other tabs, seed updates
+// ---------------------------------------------------------------------------
+
+/** Show a project read-only, keeping the own one (and its history) aside (links import as proposals now). */
+export function showReadOnly(project: Project): void {
+  const state = appStore.getState();
+  if (!state.ui.readOnly) stash = { project: state.project, history: state.history() };
+  state.replaceProject(project, { readOnly: true, source: 'link' });
+  noticeStore.setState({ sharedHasOwn: stash !== null });
+}
+
 /**
- * "Lag min egen kopi": the shared variant(s) are added to the user's own project (kept with its undo history;
- * adding is one undo step) and become active. Without an own project the shared project becomes the user's
- * (new id, basedOnProjectId). The hash is removed.
+ * "Lag min egen kopi" in a read-only view: the shared variant(s) are added to the own project kept aside (one undo
+ * step) and become active; without one the shared project becomes the user's (new id, basedOnProjectId).
  */
 export function makeMyOwnCopy(): void {
   const shared = appStore.getState().project;
-  const own = ownProject();
-  if (own === 'too-new') {
-    // A newer app version owns the autosave; never overwrite it from a stale page.
-    pushNotice('schema-too-new');
-    return;
-  }
-  // From here on, what is stored is ours to overwrite (it is merged below, or there is none).
-  autosave?.adopt();
-  if (own) {
-    const { variants, activeId } = sharedVariantsFor(own.project, shared);
-    appStore.getState().replaceProject(own.project, { readOnly: false, source: 'local' }, own.history);
+  if (stash) {
+    const { variants, activeId } = sharedVariantsFor(stash.project, shared);
+    appStore.getState().replaceProject(stash.project, { readOnly: false, source: 'local' }, stash.history);
     appStore.getState().addVariants(variants, { activeId });
   } else {
     appStore.getState().replaceProject(makeOwnCopy(shared), { readOnly: false, source: 'local' });
   }
   stash = null;
   noticeStore.setState({ sharedHasOwn: false });
-  if (hasWindow) removeShareHash(window);
-  flushAutosave();
+  syncHash();
 }
 
-/** Leave a shared link without copying it: back to the own project (with its history), or a fresh Forslag D. */
+/** Forslag D + the proposals the family store holds now. */
+function composedProject(): Project {
+  const list = family?.currentList() ?? { proposals: [] };
+  return { ...seedProject, variants: [baseVariant, ...list.proposals.map((p) => p.variant)], activeVariantId: baseVariant.id };
+}
+
+/** Leave a read-only view: back to the own project (with its history), or Forslag D and the family's proposals. */
 export function leaveSharedView(): void {
-  if (hasWindow) removeShareHash(window);
-  const own = ownProject();
-  if (own === 'too-new') appStore.getState().replaceProject(freshSeedProject(), { readOnly: true, source: 'local' });
-  else if (own) appStore.getState().replaceProject(own.project, { readOnly: false, source: 'local' }, own.history);
-  else appStore.getState().replaceProject(freshSeedProject(), { readOnly: false, source: 'local' });
+  if (stash) appStore.getState().replaceProject(stash.project, { readOnly: false, source: 'local' }, stash.history);
+  else if (appStore.getState().ui.readOnly) appStore.getState().replaceProject(composedProject(), { readOnly: false, source: 'local' });
   stash = null;
   noticeStore.setState({ sharedHasOwn: false });
 }
 
-/** Take over the newer project another tab saved. */
+/** The old other-tab banner's "Hent endringene": every open conflict takes the stored version. */
 export function acceptExternalChange(): void {
-  const { external } = noticeStore.getState();
-  if (external) appStore.getState().replaceProject(external, { readOnly: false, source: 'local' });
+  for (const c of familyUiStore.getState().conflicts) void resolveConflict(c.id, 'fetch');
   noticeStore.setState({ external: null });
   dismissNotice('other-tab');
 }
 
-/** "Behold mine endringer": this tab's project overwrites what the other tab saved. */
+/** The old other-tab banner's "Behold mine endringer": every open conflict is saved over. */
 export function keepOwnChanges(): void {
-  autosave?.adopt();
+  for (const c of familyUiStore.getState().conflicts) void resolveConflict(c.id, 'overwrite');
   noticeStore.setState({ external: null });
   dismissNotice('other-tab');
-  autosave?.saveNow();
 }
 
-/** Is a newer bundled Forslag D available (and not dismissed)? */
+/** Is a newer bundled Forslag D available (and not dismissed)? Never for the composed project (always current). */
 export function seedUpdateAvailable(project: Project, dismissedRevision: number): boolean {
   return project.seedRevision < SEED_REVISION && dismissedRevision < SEED_REVISION;
 }
@@ -279,67 +853,23 @@ export function dismissSeedUpdate(): void {
 export function seedVariantFor(project: Project): Variant {
   const variant = createForslagD(nowISO()).variants[0];
   const ids = new Set(project.variants.map((v) => v.id));
-  const names = new Set(project.variants.map((v) => v.name));
+  const taken = new Set(project.variants.map((v) => v.name));
   const id = ids.has(variant.id) ? `${variant.id}-r${SEED_REVISION}-${nanoid(4)}` : variant.id;
-  const name = names.has(variant.name) ? nb.seed.variantName(SEED_REVISION) : variant.name;
+  const name = taken.has(variant.name) ? nb.seed.variantName(SEED_REVISION) : variant.name;
   return { ...variant, id, name };
 }
 
-/** "Hent ny Forslag D": add the bundled seed as a new variant, keep the user's variants. Undoable. */
+/** "Hent ny Forslag D": the bundled one is always current — show it. */
 export function fetchNewSeed(): void {
-  const { project, addVariant } = appStore.getState();
-  addVariant(seedVariantFor(project), { activate: true, seedRevision: SEED_REVISION });
+  resetToSeed();
 }
 
-/** "Tilbakestill til Forslag D": the whole project becomes the bundled seed (same project id). Undoable. */
+/** "Tilbakestill til Forslag D" / the error box: show Forslag D (no proposal is touched). */
 export function resetToSeed(): void {
   const state = appStore.getState();
-  const seed = createForslagD(nowISO());
   if (state.ui.readOnly) return;
-  state.setProject({ ...seed, id: state.project.id });
-}
-
-/** Save a named version; the project itself is autosaved first, so the version is listed after a reload. */
-export function saveNamedVersion(name: string): SaveVersionResult {
-  autosave?.saveNow();
-  return saveVersion(storage, appStore.getState().project, name);
-}
-
-/** Replace the project by a stored version (undoable). Returns false when it could not be read. */
-export function restoreVersion(id: Id): boolean {
-  const result = loadVersion(storage, id);
-  if (result.status !== 'ok') {
-    pushNotice('version-failed');
-    return false;
-  }
-  appStore.getState().setProject(result.project);
-  appStore.getState().setUi({ source: 'version' });
-  return true;
-}
-
-/** Parse a JSON file; the caller confirms and then calls `applyImportedProject`. */
-export async function readImportFile(file: Blob): Promise<LoadResult> {
-  const result = await readProjectFile(file);
-  if (result.status === 'too-new') pushNotice('import-too-new');
-  else if (result.status !== 'ok') pushNotice('import-failed');
-  return result;
-}
-
-export function applyImportedProject(project: Project): void {
-  appStore.getState().setProject(project);
-  appStore.getState().setUi({ source: 'local' });
-}
-
-export function exportProjectFile(): void {
-  downloadProject(appStore.getState().project);
-}
-
-/** Share link for `project` based on the current page address (without its hash). */
-export function shareLinkFor(project: Project, allVariants: boolean): ShareLink {
-  const base = hasWindow ? `${window.location.origin}${window.location.pathname}${window.location.search}` : '';
-  return makeShareLink(project, { allVariants }, base);
-}
-
-export function reloadPage(): void {
-  if (hasWindow) window.location.reload();
+  const base = state.project.variants.find((v) => v.id === SEED_VARIANT_ID && v.locked) ?? state.project.variants.find((v) => v.locked);
+  if (base) activateProposal(base.id);
+  else state.setProject({ ...createForslagD(nowISO()), id: state.project.id });
+  appStore.getState().select(null);
 }
