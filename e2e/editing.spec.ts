@@ -30,6 +30,15 @@
  *  (t) after deleting w-104-103 a click on the middle of its ghost selects the ghost (no room label covers it);
  *  (c) also checks that the "Ny advarsel" toast of the unnamed piece goes away once the piece is named, and (e) that
  *      the door has its end handles at the starting zoom.
+ * Final fix round after 2b:
+ *  (u) w-vf-korr 0.3 m north, then w-103-korr 0.3 m south, then "Ta tilbake" on w-103-korr: w-vf-korr stays where
+ *      the user put it (before: the restore reset it, with no toast);
+ *  (v) a Vedskjul clicked 0.2 m south of the sauna wall moves no furniture of the house (before: the sauna stove was
+ *      pushed out through the wall onto the terrace);
+ *  (w) a Vedskjul dragged onto the terrace table pushes the table out (with the toast); deleting the shed leaves the
+ *      table (before: the shed owned it, carried it along and deleted it);
+ *  (x) a wall drag that cannot go on (lw-split north, on the loft) says so on the hint line while the drag lasts, and
+ *      the wall stays.
  * No state may produce a 'generic' warning (a failed derive or a geometry fallback).
  *
  * Screenshots (e2e/screenshots/): plan-editing.png (the deck selected: vertex and "+" handles), plan-unit-on-deck.png,
@@ -148,17 +157,17 @@ async function existingAreas(page: Page): Promise<{ bya: number; bra: number; ax
 
 /**
  * The point of the segment a–b (the drawn line of wall or ghost `id`) farthest from every other wall line, opening
- * and edge ghost of Plan 1, so a click there selects `id` and nothing drawn beside it.
+ * and edge ghost of the plan's storey (default Plan 1), so a click there selects `id` and nothing drawn beside it.
  */
-async function clearPointOn(page: Page, id: string, a: Vec2, b: Vec2): Promise<Vec2> {
+async function clearPointOn(page: Page, id: string, a: Vec2, b: Vec2, storey = 'ground'): Promise<Vec2> {
   return page.evaluate(
-    ({ id, a, b }) => {
+    ({ id, a, b, storey }) => {
       type P = [number, number];
       const d = (window as HytteWindow).__hytte?.derived;
       if (!d) throw new Error('derived missing');
       const segs: [P, P][] = [];
       for (const w of d.walls) {
-        if (!w.storeyIds.includes('ground')) continue;
+        if (!w.storeyIds.includes(storey)) continue;
         if (w.id !== id) segs.push([w.a, w.b]);
         const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
         const u: P = [(w.b[0] - w.a[0]) / len, (w.b[1] - w.a[1]) / len];
@@ -192,7 +201,7 @@ async function clearPointOn(page: Page, id: string, a: Vec2, b: Vec2): Promise<V
       }
       return best;
     },
-    { id, a, b },
+    { id, a, b, storey },
   );
 }
 
@@ -839,5 +848,127 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     // The ghost runs x 3.05, y 4.24..6.2; the merged room's label must not cover its middle.
     await selectAt(page, [3.05, 5.22], { kind: 'ghost', id: 'w-104-103' });
     await expect(page.getByTestId('ghost-restore')).toBeVisible();
+  });
+});
+
+test.describe('editing a proposal (desktop, final fix round after 2b)', () => {
+  let pageErrors: string[] = [];
+  test.beforeEach(async ({ page }) => {
+    pageErrors = collectPageErrors(page);
+    await skipFirstRun(page);
+  });
+  test.afterEach(async ({ page }) => {
+    await assertNoGenericWarnings(page);
+    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+  });
+
+  /** Drag the wall `id` (by a point clear of everything else) `dy` m along plan y; returns its stored y afterwards. */
+  const dragWallY = async (page: Page, id: string, dy: number): Promise<number> => {
+    const w = await derivedLine(page, id);
+    const at = await clearPointOn(page, id, w.a, w.b);
+    await selectAt(page, at, { kind: 'wall', id });
+    const y0 = (await activeVariant(page)).walls.find((x) => x.id === id)?.a[1] ?? NaN;
+    await dragPlan(page, at, [at[0], at[1] + dy]);
+    await expect.poll(async () => Math.abs(((await activeVariant(page)).walls.find((x) => x.id === id)?.a[1] ?? y0) - y0), id).toBeGreaterThan(0.15);
+    await page.keyboard.press('Escape');
+    return (await activeVariant(page)).walls.find((x) => x.id === id)?.a[1] ?? NaN;
+  };
+
+  test('(u) w-vf-korr north, w-103-korr south, then "Ta tilbake" on w-103-korr: w-vf-korr stays where it was put', async ({ page }) => {
+    await freshProposal(page);
+    const y1 = await dragWallY(page, 'w-vf-korr', 0.3);
+    expect(y1, 'w-vf-korr moved north').toBeCloseTo(4.54, 1);
+    const y2 = await dragWallY(page, 'w-103-korr', -0.3);
+    expect(y2, 'w-103-korr moved south').toBeCloseTo(3.94, 1);
+    const vf = async () => (await activeVariant(page)).walls.find((x) => x.id === 'w-vf-korr');
+    const moved = await vf();
+    expect(moved?.a[1]).toBeCloseTo(y1, 6);
+
+    const g = await derivedLine(page, 'w-103-korr/ghost');
+    await selectAt(page, await clearPointOn(page, 'w-103-korr/ghost', g.a, g.b), { kind: 'ghost', id: 'w-103-korr/ghost' });
+    await page.getByTestId('ghost-restore').click();
+    await expect.poll(async () => (await activeVariant(page)).walls.find((x) => x.id === 'w-103-korr')?.status).toBe('existing');
+    // The other wall keeps the user's move: exactly as it was before the restore.
+    expect(await vf()).toEqual(moved);
+  });
+
+  /** Nytt bygg → Vedskjul, the pointer brought in from the side and clicked at plan point `p`; returns the new block's id. */
+  const placeShed = async (page: Page, p: Vec2): Promise<string> => {
+    const n = (await activeVariant(page)).blocks.length;
+    await page.getByTestId('tool-unit').click();
+    await page.getByTestId('unit-vedskjul').click();
+    const [x, y] = await planToClient(page, p);
+    await page.mouse.move(x - 20, y - 20);
+    await page.mouse.move(x, y, { steps: 5 });
+    await page.mouse.click(x, y);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(n + 1);
+    return (await activeVariant(page)).blocks[n].id;
+  };
+  const positions = async (page: Page) => new Map((await activeVariant(page)).furniture.map((f) => [f.id, f.position.join(',')]));
+
+  test('(v) a Vedskjul clicked 0.2 m south of the sauna wall moves no furniture of the house', async ({ page }) => {
+    await freshProposal(page);
+    const inRooms = (await page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.furniture ?? []).filter((f) => f.roomId).map((f) => f.id))).sort();
+    expect(inRooms.length).toBeGreaterThan(40);
+    const before = await positions(page);
+    // The sauna is in the wing's south end (wall y −2); the stove fu-badstue-2 stands at (18.34, −1.615).
+    await placeShed(page, [18.1, -2.2]);
+    const after = await positions(page);
+    const moved = inRooms.filter((id) => after.get(id) !== before.get(id));
+    expect(moved, 'house furniture moved by the shed').toEqual([]);
+    await expect(page.locator('[data-testid=toast]').filter({ hasText: 'er flyttet ut av' })).toHaveCount(0);
+  });
+
+  test('(w) a Vedskjul dragged onto the terrace table pushes it out; deleting the shed leaves the table', async ({ page }) => {
+    await freshProposal(page);
+    const n0 = (await activeVariant(page)).furniture.length;
+    const table0 = (await activeVariant(page)).furniture.find((f) => f.id === 'fu-terrasse-2');
+    expect(table0?.position).toEqual([12.8, -2.3]);
+    // West of the table, on the terrace: nothing to push.
+    const id = await placeShed(page, [10.6, -3.6]);
+    expect((await activeVariant(page)).furniture.find((f) => f.id === 'fu-terrasse-2')?.position).toEqual([12.8, -2.3]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id });
+    await dismissToasts(page);
+    // Dragged by its body so its middle comes to (12.8, −2.0), over the table.
+    const box = bbox(blockPolygon(await activeVariant(page), id));
+    const c: Vec2 = [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2];
+    await dragPlan(page, c, [12.8, -2.0], 20);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), id)).x0).toBeGreaterThan(box.x0 + 1.5);
+    const moved = bbox(blockPolygon(await activeVariant(page), id));
+    // The table is pushed out of the shed, and the toast says so.
+    await expect(page.locator('[data-testid=toast]').filter({ hasText: '«Utebord» er flyttet ut av «Vedskjul».' })).toBeVisible();
+    const t1 = (await activeVariant(page)).furniture.find((f) => f.id === 'fu-terrasse-2');
+    const inside = (p: Vec2) => p[0] > moved.x0 && p[0] < moved.x1 && p[1] > moved.y0 && p[1] < moved.y1;
+    expect(t1, 'the table is still there').toBeDefined();
+    expect(inside(t1!.position), `the table at ${t1!.position.join(', ')} is out of the shed`).toBe(false);
+    // Delete the shed: the table stays where it was pushed.
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id });
+    await page.keyboard.press('Delete');
+    await expect.poll(async () => (await activeVariant(page)).blocks.some((b) => b.id === id)).toBe(false);
+    const v = await activeVariant(page);
+    expect(v.furniture.length, 'no furniture deleted with the shed').toBe(n0);
+    expect(v.furniture.find((f) => f.id === 'fu-terrasse-2')?.position).toEqual(t1!.position);
+  });
+
+  test('(x) lw-split dragged north on the loft: the hint line says the wall cannot go on, and the wall stays', async ({ page }) => {
+    await freshProposal(page);
+    await page.getByTestId('plan-storey-loft').click();
+    const w = await derivedLine(page, 'lw-split');
+    const at = await clearPointOn(page, 'lw-split', w.a, w.b, 'loft');
+    await selectAt(page, at, { kind: 'wall', id: 'lw-split' });
+    const before = (await activeVariant(page)).walls.find((x) => x.id === 'lw-split');
+    const hint = page.getByTestId('hint-line');
+    const STUCK = 'Veggen kan ikke flyttes lenger hit – enden står fast';
+    await expect(hint).not.toContainText(STUCK);
+    // Press, and move 0.8 m north in steps without letting go.
+    const [x0, y0] = await planToClient(page, at);
+    const [, y1] = await planToClient(page, [at[0], at[1] + 0.8]);
+    await page.mouse.move(x0, y0);
+    await page.mouse.down();
+    for (let i = 1; i <= 12; i++) await page.mouse.move(x0, y0 + ((y1 - y0) * i) / 12);
+    await expect(hint).toContainText(STUCK);
+    await page.mouse.up();
+    await expect(hint).not.toContainText(STUCK);
+    expect((await activeVariant(page)).walls.find((x) => x.id === 'lw-split')).toEqual(before);
   });
 });

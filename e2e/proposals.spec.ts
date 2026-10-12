@@ -14,7 +14,14 @@
  *    space are offered («Hent forslagene fra den forrige plassen»); accepting copies them in and puts the old ones in
  *    the old space's Papirkurv. The family space is an in-browser fake: the page's Firestore module
  *    (src/state/familyStore.firestore.ts, served by the dev server) is routed to the real module with
- *    `loadFirebaseAdapter` replaced by a store in localStorage (`FAKE_FIRESTORE`), which lasts across reloads.
+ *    `loadFirebaseAdapter` replaced by a store in localStorage (`FAKE_FIRESTORE`), which lasts across reloads; a
+ *    write in one tab reaches the other tabs' listeners through the `storage` event.
+ * Final fix round:
+ *  - an old tab at the first space's link after the switch is no switch: «Denne lenken går til en plass du har byttet
+ *    bort fra.» with «Bytt tilbake» / «Bli her», nothing offered, the stored family unchanged;
+ *  - Angre right after «+ Nytt forslag» does not delete the proposal (making one is no undo step);
+ *  - two tabs on the fake family space: B holds a drag while A saves, B lets go → conflict; «Lagre over» stores B's
+ *    version and keeps A's under Tidligere versjoner (restored from there it comes back).
  *
  * Screenshots: proposals-menu.png (the open menu), share-dialog.png (local "Send forslaget"), family-carry-over.png
  * (the offer after the switch).
@@ -32,6 +39,7 @@ import {
   dragPlan,
   type HytteWindow,
   loadAndWaitReady,
+  planToClient,
   projectOnScreen,
   READY_TIMEOUT_MS,
   selectAt,
@@ -82,6 +90,9 @@ export async function loadFirebaseAdapter() {
   const watchers = new Set();
   const emit = () => { const docs = e2eLoad(); for (const w of watchers) w.onNext(e2eChildren(docs, w.path), { fromCache: false, hasPendingWrites: false }); };
   e2eEmitters.add(emit);
+  // Another tab of the same browser context wrote: its listeners hear it like the SDK's live listeners would.
+  const onStorage = (e) => { if (e.key === E2E_KEY) emit(); };
+  addEventListener('storage', onStorage);
   return {
     async signIn() {},
     watch(path, onNext) {
@@ -95,7 +106,7 @@ export async function loadFirebaseAdapter() {
     write(ops) {
       const docs = e2eLoad();
       for (const op of ops) {
-        if (op.kind === 'set') docs[op.path] = structuredClone(op.data);
+        if (op.kind === 'set') docs[op.path] = op.merge ? { ...(docs[op.path] || {}), ...structuredClone(op.data) } : structuredClone(op.data);
         else if (op.kind === 'update') {
           if (!docs[op.path]) return { acked: Promise.reject(Object.assign(new Error('not-found'), { code: 'not-found' })) };
           docs[op.path] = applyUpdate(docs[op.path], op);
@@ -107,7 +118,7 @@ export async function loadFirebaseAdapter() {
       return { acked: new Promise((r) => setTimeout(r, 0)) };
     },
     async waitForPendingWrites() {},
-    dispose() { e2eEmitters.delete(emit); watchers.clear(); },
+    dispose() { e2eEmitters.delete(emit); removeEventListener('storage', onStorage); watchers.clear(); },
   };
 }
 `;
@@ -373,6 +384,134 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     await reloadReady(page);
     await page.waitForTimeout(500);
     await expect(page.getByTestId('carry-over-banner')).toHaveCount(0);
+
+    // Final fix round: an old tab still at the first space's link is opened again (iOS reloads old Safari tabs). It
+    // is no switch: the device stays in F2, nothing is offered, and the banner asks.
+    page.once('dialog', (d) => void d.accept('Ny idé i familien'));
+    await page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await activeVariant(page)).name).toBe('Ny idé i familien');
+    await expect.poll(async () => Object.keys(await fakeDocs(page, `families/${F2}/proposals/`)).length).toBe(2);
+    const oldTab = await page.context().newPage();
+    const oldTabErrors = collectPageErrors(oldTab);
+    await withFakeFamilySpace(oldTab);
+    await oldTab.goto(`/#f=${F1}`);
+    await waitReady(oldTab);
+    const left = oldTab.getByTestId('left-family-banner');
+    await expect(left).toBeVisible();
+    await expect(left).toContainText('Denne lenken går til en plass du har byttet bort fra.');
+    await expect.poll(async () => (await projectOnScreen(oldTab)).variants.map((v) => v.name)).toEqual(['Forslag D', 'Mammas idé', 'Ny idé i familien']);
+    await oldTab.waitForTimeout(500);
+    await expect(oldTab.getByTestId('carry-over-banner')).toHaveCount(0);
+    expect(await oldTab.evaluate(() => localStorage.getItem('hytte-planlegger:family'))).toBe(F2);
+    expect(new URL(oldTab.url()).hash, 'the link stays until the user answers').toBe(`#f=${F1}`);
+    await oldTab.getByTestId('left-family-stay').click();
+    await expect(left).toHaveCount(0);
+    await expect.poll(() => new URL(oldTab.url()).hash.startsWith(`#f=${F2}`)).toBe(true);
+    // Nothing left the family space.
+    const inF2 = await fakeDocs(oldTab, `families/${F2}/proposals/`);
+    expect(Object.values(inF2).map((d) => d.deletedAt ?? null)).toEqual([null, null]);
+    await oldTab.close();
+    expect([...pageErrors, ...oldTabErrors]).toEqual([]);
+  });
+});
+
+test.describe('conflicts and undo (final fix round after 2b)', () => {
+  test.beforeEach(async ({ page }) => skipFirstRun(page));
+
+  test('Angre right after «+ Nytt forslag» does not delete the new proposal', async ({ page }) => {
+    const pageErrors = collectPageErrors(page);
+    await loadAndWaitReady(page);
+    await createNewProposal(page);
+    const id = (await activeVariant(page)).id;
+    // Making a proposal is no undo step: Angre has nothing to undo, and Ctrl+Z leaves the proposal.
+    await expect(page.getByTestId('undo')).toBeDisabled();
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(300);
+    expect((await projectOnScreen(page)).variants.map((v) => v.id)).toContain(id);
+    expect((await activeVariant(page)).id).toBe(id);
+    // An edit after it is undone on its own; the proposal stays.
+    const tub0 = (await activeVariant(page)).outdoor.hotTubs[0].centre;
+    await selectAt(page, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    await dragPlan(page, [21.7, -3.2], [19.7, -3.2]);
+    await expect.poll(async () => (await activeVariant(page)).outdoor.hotTubs[0].centre[0]).toBeLessThan(tub0[0] - 1.5);
+    await page.getByTestId('undo').click();
+    await expect.poll(async () => (await activeVariant(page)).outdoor.hotTubs[0].centre).toEqual(tub0);
+    await expect(page.getByTestId('undo')).toBeDisabled();
+    expect((await activeVariant(page)).id).toBe(id);
+    await page.waitForTimeout(1200);
+    await reloadReady(page);
+    expect((await projectOnScreen(page)).variants.map((v) => v.id)).toContain(id);
     expect(pageErrors).toEqual([]);
+  });
+
+  test('a conflict resolved with «Lagre over» keeps the other version under Tidligere versjoner (fake family space)', async ({ page }) => {
+    const pageErrors = collectPageErrors(page);
+    await withFakeFamilySpace(page);
+    // A name is set (both tabs share it), so «Hva heter du?» does not cover the plan.
+    await page.addInitScript(() => localStorage.setItem('hytte-planlegger:my-name', 'Mamma'));
+    const F = 'e2e-conflict-family-0123456789abc';
+    await page.goto(`/#f=${F}`);
+    await waitReady(page);
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced');
+    page.once('dialog', (d) => void d.accept('Felles'));
+    await page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await activeVariant(page)).name).toBe('Felles');
+    const id = (await activeVariant(page)).id;
+    const doc = `families/${F}/proposals/${id}`;
+    const tubIn = (d: Record<string, unknown> | undefined): number[] | null =>
+      typeof d?.project === 'string' ? ((JSON.parse(d.project) as Project).variants[0]?.outdoor.hotTubs[0]?.centre ?? null) : null;
+    await expect.poll(async () => tubIn((await fakeDocs(page, doc))[doc])).toEqual([21.7, -3.2]);
+
+    // A second tab is a second device for the sync (its own memory), on the same fake family space.
+    const other = await page.context().newPage();
+    const otherErrors = collectPageErrors(other);
+    await withFakeFamilySpace(other);
+    await other.goto(`/#f=${F}&p=${id}`);
+    await waitReady(other);
+    await expect(other.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced');
+    await expect.poll(async () => (await activeVariant(other)).id).toBe(id);
+
+    // B holds a drag of the hot tub (2 m west, not let go) while A moves it 2 m north and saves. (A tab in the
+    // background gets no animation frames: each tab is brought to the front before it is used.)
+    await selectAt(other, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    const [bx0, by0] = await planToClient(other, [21.7, -3.2]);
+    const [bx1, by1] = await planToClient(other, [19.7, -3.2]);
+    await other.mouse.move(bx0, by0);
+    await other.mouse.down();
+    for (let i = 1; i <= 10; i++) await other.mouse.move(bx0 + ((bx1 - bx0) * i) / 10, by0 + ((by1 - by0) * i) / 10);
+    await page.bringToFront();
+    await selectAt(page, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    await dragPlan(page, [21.7, -3.2], [21.7, -1.2]);
+    await expect.poll(async () => tubIn((await fakeDocs(page, doc))[doc])?.[1] ?? -9).toBeGreaterThan(-1.7);
+    const theirs = tubIn((await fakeDocs(page, doc))[doc]);
+    await other.bringToFront();
+    await other.waitForTimeout(600);
+    await other.mouse.up();
+
+    // B: a conflict, and the banner says what each button keeps.
+    const banner = other.getByTestId('conflict-banner');
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText('«Lagre over» legger den andre utgaven der.');
+    await expect(other.getByTestId('status-pill')).toHaveAttribute('data-state', 'conflict');
+    await other.getByTestId('conflict-overwrite').click();
+    await expect(banner).toHaveCount(0);
+    // B's version is stored; A's is a revision (within 5 minutes of the first one).
+    await expect.poll(async () => tubIn((await fakeDocs(page, doc))[doc])?.[0] ?? 99).toBeLessThan(20.2);
+    const revs = Object.values(await fakeDocs(page, `${doc}/revisions/`)).map(tubIn);
+    expect(revs, 'the other version is kept').toContainEqual(theirs);
+    // A sees B's version.
+    await expect.poll(async () => (await activeVariant(page)).outdoor.hotTubs[0].centre[0]).toBeLessThan(20.2);
+    await other.bringToFront();
+
+    // Tidligere versjoner on B lists it; restoring the newest brings A's version back.
+    await other.getByTestId('more-menu').locator('summary').click();
+    await other.getByTestId('more-revisions').click();
+    const items = other.getByTestId('revision-item');
+    await expect.poll(() => items.count()).toBeGreaterThanOrEqual(2);
+    other.once('dialog', (d) => void d.accept());
+    await items.first().getByRole('button').click();
+    await expect.poll(async () => (await activeVariant(other)).outdoor.hotTubs[0].centre).toEqual(theirs);
+    expect([...pageErrors, ...otherErrors]).toEqual([]);
+    await other.close();
   });
 });

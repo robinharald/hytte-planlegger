@@ -20,8 +20,19 @@
  *  - a tap on a placed unit selects the unit, a second tap its room (whose mini-bar has "Roter 90°" and "Velg
  *    bygningsdelen");
  *  - the delete toast sits below the tool row and the hint line, also with the tool row scrolled to the top.
+ * Final fix round (the first-time flow and the door's end handles, at the starting zoom):
+ *  - move a door, then Nytt bygg → Vedskjul: the mini-bar is gone, and a tap where its Slett stood places the shed
+ *    (before: it deleted the door);
+ *  - with d-sov-ny selected, taps near it on o-stue-gang, w-gang-n, Gang and the bed select what they select with
+ *    nothing selected (before: the 1.2 m end-handle circles kept the door selected);
+ *  - with door-mellom-vf selected, a one-finger drag started 1.4 m from it pans (before: it widened the door);
+ *  - the whole first-time flow at the starting zoom, from the first-run card: «+ Nytt forslag», the door moved, Nytt
+ *    bygg → Vedskjul tapped where the door's Slett stood (the shed, no warning, the door kept), Soverom (ny fløy)
+ *    zoomed in and furnished from the library with nothing selected (Kommode in that room, free), Dupliser (the copy
+ *    free), Send — and the link opened on another device brings the proposal with all of it.
  * Screenshots: phone-edit.png (the dragged wall selected, handles and the mini-bar), phone-sheet.png (the sheet),
- * phone-tools.png (the tool row), phone-toast.png (the delete toast below the tool row).
+ * phone-tools.png (the tool row), phone-toast.png (the delete toast below the tool row), phone-first-flow.png (the
+ * duplicated chest of drawers in Soverom (ny fløy), Egenskaper open).
  */
 import { expect, test, type CDPSession, type Page } from '@playwright/test';
 import { join } from 'node:path';
@@ -424,5 +435,235 @@ test.describe('editing on an iPhone at the starting zoom (fix round after 2a)', 
     const file = join(SCREENSHOT_DIR, 'phone-toast.png');
     await page.screenshot({ path: file, fullPage: false, animations: 'disabled' });
     await testInfo.attach('phone-toast', { path: file, contentType: 'image/png' });
+  });
+});
+
+test.describe('editing on an iPhone (final fix round)', () => {
+  let pageErrors: string[] = [];
+  test.beforeEach(async ({ page }) => {
+    pageErrors = collectPageErrors(page);
+    await skipFirstRun(page);
+  });
+  test.afterEach(async ({ page }) => {
+    await assertNoGenericWarnings(page);
+    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+  });
+
+  const door = async (page: Page, id: string) => (await activeVariant(page)).openings.find((o) => o.id === id);
+  /** Chromium's touch emulation swallows the first tap after a touch drag: a harmless tap on the hint line first. */
+  const afterDrag = async (page: Page) => {
+    await page.getByTestId('hint-line').tap();
+    await page.waitForTimeout(100);
+  };
+
+  test('move a door, then Nytt bygg → Vedskjul: the tap where the door\'s mini-bar stood places the shed, the door stays', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    await tapPlan(page, [7.01, 6.2]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
+    // The first-time flow: the door moved 0.6 m west along the north wall.
+    const d0 = await door(page, 'door-mellom-vf');
+    await touchDragPlan(page, cdp, [7.01, 6.2], [6.41, 6.2], 10);
+    await expect.poll(async () => (await door(page, 'door-mellom-vf'))?.offset ?? 0).toBeGreaterThan((d0?.offset ?? 0) + 0.3);
+    const d1 = await door(page, 'door-mellom-vf');
+    await afterDrag(page);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
+    // Its mini-bar (with Slett) floats over the north deck.
+    await expect(page.getByTestId('mini-delete')).toBeVisible();
+    const slett = await page.getByTestId('mini-delete').boundingBox();
+    if (!slett) throw new Error('no Slett');
+    const at: Vec2 = [slett.x + slett.width / 2, slett.y + slett.height / 2];
+    expect(await onPlan(page, at), 'Slett lies over the plan').toBe(true);
+
+    // Nytt bygg → Vedskjul: the selection stays, the bar goes.
+    await page.getByTestId('tool-unit').tap();
+    await page.getByTestId('unit-vedskjul').tap();
+    await expect(page.getByTestId('mini-bar')).toHaveCount(0);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
+    // The tap where Slett was places the shed; the door is still there, where it was moved.
+    await page.touchscreen.tap(at[0], at[1]);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(5);
+    const d2 = await door(page, 'door-mellom-vf');
+    expect(d2, 'the door still exists').toBeDefined();
+    expect(d2?.offset).toBeCloseTo(d1?.offset ?? NaN, 6);
+    expect(d2?.width).toBeCloseTo(d0?.width ?? NaN, 6);
+    expect((await page.locator('[data-testid=toast]').allTextContents()).join(' ')).not.toContain('Slettet');
+  });
+
+  test('a selected door at the starting zoom has no end handles: taps near it select the window, wall and room there', async ({ page }) => {
+    await phoneProposal(page);
+    expect(await planScale(page), 'the starting zoom').toBeLessThan(16);
+    // Around d-sov-ny (17.3, 3.4) on w-gang-n: the opening o-stue-gang (16, 2.8), the wall 1.6 m east of the door,
+    // Gang's floor and the bed in Soverom (ny fløy). Before, the door's 1.2 m end-handle circles (centred 1.6 m from
+    // the door's middle) caught them all.
+    const points: [string, Vec2][] = [
+      ['o-stue-gang', [16.0, 2.8]],
+      ['w-gang-n east of the door', [18.9, 3.4]],
+      ['Gang', [18.6, 2.8]],
+      ['the bed in Soverom (ny fløy)', [19.3, 4.0]],
+    ];
+    const selectDoor = async () => {
+      await page.keyboard.press('Escape');
+      await expect.poll(() => selection(page)).toBeNull();
+      await tapPlan(page, [17.3, 3.4]);
+      await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'd-sov-ny' });
+      await expect(page.locator('[data-testid=plan-view] [data-handle^="oe:"]')).toHaveCount(0);
+    };
+    const kinds = new Set<string>();
+    for (const [name, p] of points) {
+      // What the tap selects with nothing selected …
+      await page.keyboard.press('Escape');
+      await expect.poll(() => selection(page)).toBeNull();
+      await tapPlan(page, p);
+      await expect.poll(() => selection(page), name).not.toBeNull();
+      const want = await selection(page);
+      expect(want?.id, `${name} is not the door`).not.toBe('d-sov-ny');
+      kinds.add(want?.kind ?? '');
+      // … it selects with the door selected too.
+      await selectDoor();
+      await tapPlan(page, p);
+      await expect.poll(async () => (await selection(page))?.id, name).toBe(want?.id);
+    }
+    expect([...kinds].sort()).toEqual(expect.arrayContaining(['opening', 'room', 'wall']));
+  });
+
+  test('with a door selected at the starting zoom, a pan started 1.4 m from it pans and leaves the door alone', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    await tapPlan(page, [7.01, 6.2]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
+    const d0 = await door(page, 'door-mellom-vf');
+    const t0 = await rootTransform(page);
+    // The review's drag: from 1.4 m east and 0.6 m north of the door's middle (in Mellombygg), 1.5 m east.
+    await touchDragPlan(page, cdp, [8.41, 6.8], [9.91, 6.8], 12);
+    await expect.poll(() => rootTransform(page)).not.toBe(t0);
+    const d1 = await door(page, 'door-mellom-vf');
+    expect(d1?.width, 'the door keeps its width').toBeCloseTo(d0?.width ?? NaN, 6);
+    expect(d1?.offset, 'and its place').toBeCloseTo(d0?.offset ?? NaN, 6);
+    expect(d1?.status).toBe('existing');
+  });
+});
+
+test.describe('the first-time flow on an iPhone (final fix round)', () => {
+  test('open, «+ Nytt forslag», move a door, a shed where its mini-bar was, furnish a bedroom from the library, Dupliser, Send', async ({ page }, testInfo) => {
+    const pageErrors = collectPageErrors(page);
+    // Open the app as a new family member: the first-run card (and then the home-screen card) come first.
+    await loadAndWaitReady(page);
+    await expect(page.getByTestId('first-run')).toBeVisible();
+    await page.getByTestId('first-run-ok').tap();
+    await expect(page.getByTestId('first-run')).toHaveCount(0);
+    const install = page.getByTestId('install-card');
+    await page.waitForTimeout(300);
+    if ((await install.count()) > 0) {
+      await page.getByTestId('install-ok').tap();
+      await expect(install).toHaveCount(0);
+    }
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    expect(await planScale(page), 'the starting zoom').toBeLessThan(16);
+    const v0 = await activeVariant(page);
+    const door = async (id: string) => (await activeVariant(page)).openings.find((o) => o.id === id);
+    const afterDrag = async () => {
+      // Chromium's touch emulation swallows the first tap after a touch drag: a harmless tap on the hint line first.
+      await page.getByTestId('hint-line').tap();
+      await page.waitForTimeout(100);
+    };
+
+    // 1. The door between Mellombygg and Vindfang 0.6 m west.
+    await tapPlan(page, [7.01, 6.2]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
+    const d0 = await door('door-mellom-vf');
+    await touchDragPlan(page, cdp, [7.01, 6.2], [6.41, 6.2], 10);
+    await expect.poll(async () => (await door('door-mellom-vf'))?.offset ?? 0).toBeGreaterThan((d0?.offset ?? 0) + 0.3);
+    const d1 = await door('door-mellom-vf');
+    await afterDrag();
+    await expect(page.getByTestId('mini-delete')).toBeVisible();
+    const slett = await page.getByTestId('mini-delete').boundingBox();
+    if (!slett) throw new Error('no Slett');
+    const at: Vec2 = [slett.x + slett.width / 2, slett.y + slett.height / 2];
+
+    // 2. Nytt bygg → Vedskjul, tapped on the deck right where the door's Slett stood: the shed, and the door stays.
+    await page.getByTestId('tool-unit').tap();
+    await page.getByTestId('unit-vedskjul').tap();
+    await expect(page.getByTestId('mini-bar')).toHaveCount(0);
+    await page.touchscreen.tap(at[0], at[1]);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(v0.blocks.length + 1);
+    const shed = (await activeVariant(page)).blocks[v0.blocks.length];
+    expect(shed).toMatchObject({ template: 'vedskjul' });
+    expect((await door('door-mellom-vf'))?.offset).toBeCloseTo(d1?.offset ?? NaN, 6);
+    expect((await page.locator('[data-testid=toast]').allTextContents()).join(' ')).not.toContain('Slettet');
+    const placedWarnings = await page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.warnings ?? []).map((w) => w.kind));
+    expect(placedWarnings, 'the shed brings no warning').toEqual([]);
+    await dismissToasts(page);
+
+    // 3. Zoom into Soverom (ny fløy) with two fingers, bring it to the middle, nothing selected, Møbler → Kommode.
+    const mid: Vec2 = [18.35, 4.75];
+    await pinch(cdp, await planToClient(page, mid), 20, 70);
+    await expect.poll(() => planScale(page)).toBeGreaterThan(30);
+    const box = await page.getByTestId('plan-view').boundingBox();
+    const vp = page.viewportSize();
+    if (!box || !vp) throw new Error('no plan box');
+    const top = Math.max(box.y, 0);
+    const bottom = Math.min(box.y + box.height, vp.height);
+    await touchDrag(cdp, await planToClient(page, mid), [box.x + box.width / 2, (top + bottom) / 2], 12);
+    await afterDrag();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => selection(page)).toBeNull();
+    const n0 = (await activeVariant(page)).furniture.length;
+    await page.getByTestId('tool-furniture').tap();
+    const library = page.getByTestId('furniture-library-sheet');
+    await expect(library).toBeVisible();
+    await expect(library.getByTestId('furniture-intro')).toContainText('Trykk på et rom først');
+    await library.getByTestId('furniture-search').fill('kommode');
+    await library.getByTestId('furniture-item-kommode').tap();
+    await expect.poll(async () => (await activeVariant(page)).furniture.length).toBe(n0 + 1);
+    await expect(library).toHaveCount(0);
+    const kommode = (await activeVariant(page)).furniture[n0];
+    const derivedOf = async (id: string) => (await page.evaluate(() => (window as HytteWindow).__hytte?.derived?.furniture ?? [])).find((f) => f.id === id);
+    expect((await derivedOf(kommode.id))?.roomId, 'the kommode is in the room on screen').toBe('room-sov-ny');
+    expect((await derivedOf(kommode.id))?.collisions).toEqual([]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: kommode.id });
+
+    // 4. Egenskaper → Dupliser: the copy stands free beside it (or there is no room and nothing is added).
+    const sheet = page.getByTestId('properties-sheet');
+    await expect(async () => {
+      if ((await sheet.count()) === 0) await page.getByTestId('mini-properties').tap();
+      await expect(sheet).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 15_000 });
+    await sheet.getByTestId('furniture-duplicate').tap();
+    await expect.poll(async () => (await activeVariant(page)).furniture.length).toBe(n0 + 2);
+    const copy = (await activeVariant(page)).furniture[n0 + 1];
+    expect(copy.catalogId).toBe('kommode');
+    const dc = await derivedOf(copy.id);
+    expect(dc?.collisions, 'the copy collides with nothing').toEqual([]);
+    expect(dc?.blocksDoors, 'and blocks no door').toEqual([]);
+    expect(dc?.roomId, 'and stands in a room').toBeTruthy();
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: copy.id });
+    await shoot(page, testInfo, 'phone-first-flow');
+    await sheet.getByRole('button', { name: 'Lukk' }).tap();
+    await expect(sheet).toHaveCount(0);
+
+    // 5. Send: the link carries the whole proposal (door, shed, both chests of drawers).
+    await page.getByTestId('open-share').tap();
+    const link = await page.getByTestId('share-local-link').inputValue();
+    expect(link).toMatch(/#d=/);
+    // Opened on another device (a fresh browser), the link adds the proposal with all of it.
+    const fresh = await page.context().browser()!.newContext();
+    try {
+      const other = await fresh.newPage();
+      await other.goto(link);
+      await other.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: 60_000, polling: 250 });
+      await expect.poll(async () => (await projectOnScreen(other)).variants.length).toBe(2);
+      const got = await activeVariant(other);
+      expect(got.locked).not.toBe(true);
+      expect(got.blocks.filter((b) => b.template === 'vedskjul')).toHaveLength(1);
+      expect(got.openings.find((o) => o.id === 'door-mellom-vf')?.offset).toBeCloseTo(d1?.offset ?? NaN, 6);
+      const kommoder = (v: { furniture: { catalogId: string }[] }) => v.furniture.filter((f) => f.catalogId === 'kommode').length;
+      expect(kommoder(got)).toBe(kommoder(v0) + 2);
+    } finally {
+      await fresh.close();
+    }
+    await assertNoGenericWarnings(page);
+    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
   });
 });

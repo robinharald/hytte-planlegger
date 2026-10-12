@@ -18,6 +18,14 @@
  *  - Nytt bygg → Vedskjul tapped in the middle of the north deck stays within 0.3 m of the tap (no 2 m snap);
  *  - a selected door has its end handles outside its jambs at the starting zoom; dragging one stores whole cm and the
  *    other jamb stays.
+ * Final fix round:
+ *  - the rotate handle stands on a free side of the item and a tap on it always turns it (with the bed selected,
+ *    zoomed in, the taps on the wardrobe, the door and the rug still select them; a tap on the handle turns the bed);
+ *  - a selected door has no end handles at the starting zoom; zoomed in to about 46 px/m they are back, at most
+ *    0.3 m, outside the jambs, and a drag of one stores whole cm with the other jamb fixed;
+ *  - zoomed into Soverom (ny fløy) with nothing selected, «Kommode» from the library lands there, free;
+ *  - zoomed in on Spiseplass, a dining chair at the table has its handle on its back and a tap on it turns the chair
+ *    90° (before: the press went to the table).
  * Screenshot: phone-library.png (the library sheet), phone-rotate-handle.png (zoomed in, the bed's handle).
  */
 import { expect, test, type CDPSession, type Page } from '@playwright/test';
@@ -83,7 +91,7 @@ async function onPlan(page: Page, p: Vec2): Promise<boolean> {
 
 /**
  * A client point of `footprint` (plan metres, sampled on a grid, middle first) where the topmost plan element is
- * `selector`'s, also 3 px around it (the rotate handle hidden, as if it were not drawn); null if there is none.
+ * `selector`'s, also 3 px around it (so not under the rotate handle, which takes every press on it); null if none.
  */
 async function pointHitting(page: Page, footprint: Vec2[], selector: string): Promise<Vec2 | null> {
   return page.evaluate(
@@ -106,20 +114,14 @@ async function pointHitting(page: Page, footprint: Vec2[], selector: string): Pr
       for (let i = 0; i <= 20; i++) for (let j = 0; j <= 20; j++) cands.push([x0 + ((x1 - x0) * i) / 20, y0 + ((y1 - y0) * j) / 20]);
       const c: P = [(x0 + x1) / 2, (y0 + y1) / 2];
       cands.sort((a, b) => Math.hypot(a[0] - c[0], a[1] - c[1]) - Math.hypot(b[0] - c[0], b[1] - c[1]));
-      const rotate = [...document.querySelectorAll<SVGElement>('[data-layer="furniture-rotate"]')];
-      rotate.forEach((el) => (el.style.display = 'none'));
-      try {
-        for (const q of cands) {
-          const [x, y] = toClient(q);
-          if (x < 6 || y < 6 || x > innerWidth - 6 || y > innerHeight - 6) continue;
-          // The point and 3 px around it (a finger's tap is adjusted to nearby targets).
-          const around: P[] = [[0, 0], [3, 0], [-3, 0], [0, 3], [0, -3]];
-          if (around.every(([dx, dy]) => document.elementFromPoint(x + dx, y + dy)?.closest(selector))) return [x, y] as P;
-        }
-        return null;
-      } finally {
-        rotate.forEach((el) => (el.style.display = ''));
+      for (const q of cands) {
+        const [x, y] = toClient(q);
+        if (x < 6 || y < 6 || x > innerWidth - 6 || y > innerHeight - 6) continue;
+        // The point and 3 px around it (a finger's tap is adjusted to nearby targets).
+        const around: P[] = [[0, 0], [3, 0], [-3, 0], [0, 3], [0, -3]];
+        if (around.every(([dx, dy]) => document.elementFromPoint(x + dx, y + dy)?.closest(selector))) return [x, y] as P;
       }
+      return null;
     },
     { footprint, selector },
   );
@@ -300,7 +302,7 @@ test.describe('fix round after 2b on an iPhone', () => {
     await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: BED });
   };
 
-  test('with the bed selected, taps on the wardrobe, the door and the rug select them; the bed never turns', async ({ page }, testInfo) => {
+  test('with the bed selected, taps on the wardrobe, the door and the rug select them; only its handle turns the bed', async ({ page }, testInfo) => {
     await phoneProposal(page);
     const cdp = await touchSession(page);
     expect(await planScale(page), 'the starting zoom').toBeLessThan(16);
@@ -351,8 +353,7 @@ test.describe('fix round after 2b on an iPhone', () => {
     }
 
     // Zoomed in (about 40 px/m) the handle is drawn, at most 0.3 m in radius. Taps on the wardrobe, the door and the
-    // rug's edge select them; a tap on the handle where it stands on the rug (or the room's name) selects what is under
-    // it (the room), not a turn of the bed.
+    // rug's edge (beside the handle) select them; a tap on the handle turns the bed (final fix round: always).
     await pinch(cdp, await planToClient(page, [18.6, 4.75]), 20, 70);
     await expect.poll(() => planScale(page)).toBeGreaterThan(34);
     const s = await planScale(page);
@@ -368,41 +369,39 @@ test.describe('fix round after 2b on an iPhone', () => {
     expect(h, 'the handle is drawn when zoomed in').not.toBeNull();
     // Its radius (the box less its 2 px stroke) is at most 0.3 m.
     expect(h!.r - 1).toBeLessThanOrEqual(0.3 * s + 0.5);
-    // It stands on the rug (or on the room's name over it): both are what the tap is for.
-    expect(['rug', 'room name']).toContain(await underHandle(page, h!.at, fp('fu-sov-ny-5')));
+    // It stands on a side clear of the rug and the other furniture (not on the wardrobe, the rug or a wall).
+    expect(['floor', 'room name']).toContain(await underHandle(page, h!.at, fp('fu-sov-ny-5')));
     await dismissToasts(page);
     await shoot(page, testInfo, 'phone-rotate-handle');
     await page.touchscreen.tap(h!.at[0], h!.at[1]);
-    await expect.poll(async () => (await selection(page))?.id).not.toBe(BED);
-    expect(['room-sov-ny', 'fu-sov-ny-5']).toContain((await selection(page))?.id);
-    expect(await bedState(page)).toEqual(bed0);
+    await expect.poll(async () => (await bedState(page)).rotationDeg).not.toBe(270);
+    expect([0, 180]).toContain((await bedState(page)).rotationDeg);
+    expect(await selection(page)).toMatchObject({ kind: 'furniture', id: BED });
   });
 
   test('a pinch with one finger on the rotate handle zooms and moves nothing; a lone tap on it still turns', async ({ page }) => {
     await phoneProposal(page);
     const cdp = await touchSession(page);
-    // Room names off (Vis → Navn på rom), and close in on the bed's foot until its handle stands on the floor between the
-    // foot and the rug (0.24 m wide): there the handle keeps the press (on the rug or a name it hands it to the plan).
-    const labels = page.getByTestId('toggle-labels');
-    if (!(await labels.isVisible())) await page.locator('details.panel', { has: labels }).locator('summary').tap();
-    await labels.uncheck();
+    // Close in on the bed (its handle stands on a free side of it, and keeps every press on it).
     await page.getByTestId('plan-view').scrollIntoViewIfNeeded();
-    await pinch(cdp, await planToClient(page, [18.6, 4.75]), 12, 120);
+    await pinch(cdp, await planToClient(page, [19.4, 4.75]), 12, 120);
     await expect.poll(() => planScale(page)).toBeGreaterThan(90);
-    await selectBed(page, [19.0, 4.75]);
+    await selectBed(page, [19.4, 4.75]);
     const bed0 = await bedState(page);
-    const rug = ((await derivedFurniture(page)).find((f) => f.id === 'fu-sov-ny-5')?.footprint ?? []) as Vec2[];
 
     const twoFingers = async (handleFirst: boolean) => {
       const h = await rotateHandle(page, BED);
       expect(h, 'the handle is drawn').not.toBeNull();
-      expect(await underHandle(page, h!.at, rug), 'under the handle').toBe('floor');
       const a = h!.at;
-      const b = await planToClient(page, [18.85, 4.75]);
-      expect(b[0] - a[0], 'the bed finger is east of the handle').toBeGreaterThan(h!.r + 4);
+      // The other finger on the bed, at least a handle radius away from the handle.
+      const b = await planToClient(page, [19.4, 4.75]);
+      expect(Math.hypot(b[0] - a[0], b[1] - a[1]), 'the bed finger is off the handle').toBeGreaterThan(h!.r + 4);
       const s0 = await planScale(page);
-      const A = (dx: number) => ({ x: a[0] - dx, y: a[1], id: 1 });
-      const B = (dx: number) => ({ x: b[0] + dx, y: b[1], id: 2 });
+      // The fingers move apart along the line between them (whichever side of the bed the handle is on).
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const u = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+      const A = (dx: number) => ({ x: a[0] - u[0] * dx, y: a[1] - u[1] * dx, id: 1 });
+      const B = (dx: number) => ({ x: b[0] + u[0] * dx, y: b[1] + u[1] * dx, id: 2 });
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: handleFirst ? [A(0)] : [B(0)] });
       await page.waitForTimeout(40);
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [A(0), B(0)] });
@@ -415,13 +414,13 @@ test.describe('fix round after 2b on an iPhone', () => {
     };
     await twoFingers(true);
     // Back out a little so the next pinch has room to zoom in, then the other order.
-    await pinch(cdp, await planToClient(page, [18.6, 4.75]), 80, 40);
+    await pinch(cdp, await planToClient(page, [19.4, 4.75]), 80, 40);
     await expect.poll(async () => (await selection(page))?.id).toBe(BED);
     await twoFingers(false);
 
     // A lone tap on the handle still turns the bed 90° (one step).
     const h = await rotateHandle(page, BED);
-    expect(await underHandle(page, h!.at, rug)).toBe('floor');
+    expect(h, 'the handle is drawn').not.toBeNull();
     await page.touchscreen.tap(h!.at[0], h!.at[1]);
     await expect.poll(async () => (await bedState(page)).rotationDeg).not.toBe(270);
     expect([0, 180]).toContain((await bedState(page)).rotationDeg);
@@ -468,7 +467,7 @@ test.describe('fix round after 2b on an iPhone', () => {
     expect(off, `the shed's middle at ${c.map((v) => v.toFixed(2)).join(', ')}`).toBeLessThanOrEqual(0.3);
   });
 
-  test('a selected door has end handles outside its jambs at the starting zoom; a drag stores whole cm', async ({ page }) => {
+  test('a selected door: no end handles at the starting zoom; at about 46 px/m they are back and a drag stores whole cm', async ({ page }) => {
     await phoneProposal(page);
     const cdp = await touchSession(page);
     expect(await planScale(page), 'the starting zoom').toBeLessThan(16);
@@ -476,6 +475,14 @@ test.describe('fix round after 2b on an iPhone', () => {
     await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
     const start = page.locator('[data-testid=plan-view] [data-handle="oe:start"]');
     const end = page.locator('[data-testid=plan-view] [data-handle="oe:end"]');
+    // Final fix round: at most 0.3 m in radius on touch, so at 11.6 px/m (14 px = 1.2 m) they are not drawn.
+    await expect(start).toHaveCount(0);
+    await expect(end).toHaveCount(0);
+    // Two fingers zoom in on the door (×4: about 46 px/m); the door stays selected and gets its handles.
+    await pinch(cdp, await planToClient(page, [7.01, 6.2]), 20, 80);
+    await expect.poll(() => planScale(page)).toBeGreaterThan(40);
+    expect(await planScale(page)).toBeLessThan(60);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
     await expect(start).toHaveCount(1);
     await expect(end).toHaveCount(1);
     // The door runs x 6.555–7.465 on the north wall (y 6.2); its handles stand outside those jambs.
@@ -490,11 +497,14 @@ test.describe('fix round after 2b on an iPhone', () => {
     const xs = [hs[0], he[0]].sort((p, q) => p - q);
     expect(xs[0], 'the west handle is west of the west jamb').toBeLessThan(jw[0]);
     expect(xs[1], 'the east handle is east of the east jamb').toBeGreaterThan(je[0]);
-    // Drag the west one 0.5 m east (5.8 px): the door gets narrower, in whole centimetres, and its east jamb stays.
-    const west = hs[0] < he[0] ? hs : he;
+    // Each stands at most 0.3 m (plus its 2 px border) beyond its jamb.
     const s = await planScale(page);
+    expect(jw[0] - xs[0], 'the west handle hugs its jamb').toBeLessThanOrEqual(0.3 * s + 1.5);
+    expect(xs[1] - je[0], 'the east handle hugs its jamb').toBeLessThanOrEqual(0.3 * s + 1.5);
+    // Drag the west one 0.3 m east: the door gets narrower, in whole centimetres, and its east jamb stays.
+    const west = hs[0] < he[0] ? hs : he;
     const door0 = (await activeVariant(page)).openings.find((o) => o.id === 'door-mellom-vf');
-    await touchDrag(cdp, west, [west[0] + 0.5 * s, west[1]], 10);
+    await touchDrag(cdp, west, [west[0] + 0.3 * s, west[1]], 10);
     await expect.poll(async () => (await activeVariant(page)).openings.find((o) => o.id === 'door-mellom-vf')?.width ?? 0).toBeLessThan((door0?.width ?? 0) - 0.1);
     const w = (await activeVariant(page)).openings.find((o) => o.id === 'door-mellom-vf')?.width ?? 0;
     expect(Math.abs(w * 100 - Math.round(w * 100)), `width ${w} in whole cm`).toBeLessThan(1e-9);
@@ -510,5 +520,76 @@ test.describe('fix round after 2b on an iPhone', () => {
       return NaN;
     });
     expect(east, 'the east jamb stays').toBeCloseTo(7.465, 2);
+  });
+
+
+  test('zoomed in, a tap on the rotate handle of a dining chair at the table turns the chair, not the table', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    const CHAIR = 'fu-spiseplass-2';
+    const TABLE = 'fu-spiseplass-1';
+    const state = async (id: string) => {
+      const f = (await activeVariant(page)).furniture.find((x) => x.id === id);
+      return { position: f?.position, rotationDeg: f?.rotationDeg };
+    };
+    const chair0 = await state(CHAIR);
+    const table0 = await state(TABLE);
+    expect(chair0).toEqual({ position: [13.4, 4.1], rotationDeg: 180 });
+    // Zoom in on Spiseplass (about 45 px/m), where the handle is drawn.
+    await pinch(cdp, await planToClient(page, [13.4, 4.4]), 20, 80);
+    await expect.poll(() => planScale(page)).toBeGreaterThan(34);
+    await page.getByTestId('hint-line').tap();
+    // Select the chair (a second tap when the first one gives the room under a name).
+    await page.keyboard.press('Escape');
+    await expect.poll(() => selection(page)).toBeNull();
+    const at = await pointHitting(page, (await derivedFurniture(page)).find((f) => f.id === CHAIR)!.footprint as Vec2[], `[data-furniture-id="${CHAIR}"]`);
+    expect(at, 'a point of the chair on screen').not.toBeNull();
+    await page.touchscreen.tap(at![0], at![1]);
+    await expect.poll(async () => (await selection(page))?.kind ?? 'none').not.toBe('none');
+    if ((await selection(page))?.id !== CHAIR) await page.touchscreen.tap(at![0], at![1]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: CHAIR });
+    // The handle stands on the chair's free side (its back, away from the table) and a tap on it turns the chair 90°.
+    const h = await rotateHandle(page, CHAIR);
+    expect(h, 'the handle is drawn').not.toBeNull();
+    const back = await page.locator(`[data-testid=plan-view] [data-rotate-of="${CHAIR}"]`).getAttribute('data-rotate-side');
+    expect(back, 'the handle is on the back, away from the table').toBe('180');
+    await page.touchscreen.tap(h!.at[0], h!.at[1]);
+    await expect.poll(async () => (await state(CHAIR)).rotationDeg).not.toBe(180);
+    expect([90, 270]).toContain((await state(CHAIR)).rotationDeg);
+    expect(await selection(page)).toMatchObject({ kind: 'furniture', id: CHAIR });
+    expect(await state(TABLE), 'the table is untouched').toEqual(table0);
+  });
+  test('zoomed into Soverom (ny fløy) with nothing selected, «Kommode» from the library lands there, free', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    // Zoom in on the room with two fingers, then pan its middle to the middle of the plan on screen.
+    const mid: Vec2 = [18.35, 4.75];
+    await pinch(cdp, await planToClient(page, mid), 20, 70);
+    await expect.poll(() => planScale(page)).toBeGreaterThan(30);
+    const box = await page.getByTestId('plan-view').boundingBox();
+    const vp = page.viewportSize();
+    if (!box || !vp) throw new Error('no plan box');
+    const top = Math.max(box.y, 0);
+    const bottom = Math.min(box.y + box.height, vp.height);
+    await touchDrag(cdp, await planToClient(page, mid), [box.x + box.width / 2, (top + bottom) / 2], 12);
+    // Chromium's touch emulation swallows the first tap after a touch drag: a harmless tap on the hint line first.
+    await page.getByTestId('hint-line').tap();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => selection(page)).toBeNull();
+    const before = new Set((await activeVariant(page)).furniture.map((f) => f.id));
+    await page.getByTestId('tool-furniture').tap();
+    const sheet = page.getByTestId('furniture-library-sheet');
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByTestId('furniture-intro')).toContainText('Trykk på et rom først');
+    await sheet.getByTestId('furniture-search').fill('kommode');
+    await sheet.getByTestId('furniture-item-kommode').tap();
+    await expect.poll(async () => (await activeVariant(page)).furniture.length).toBe(before.size + 1);
+    const item = (await activeVariant(page)).furniture.find((f) => !before.has(f.id));
+    if (!item) throw new Error('no kommode');
+    const d = (await derivedFurniture(page)).find((f) => f.id === item.id);
+    // Before: Kjøkken, on the counter (the strip above the sheet lay in no room, and the fallback was the house's middle).
+    expect(d?.roomId, `the kommode at ${item.position.map((v) => v.toFixed(2)).join(', ')}`).toBe('room-sov-ny');
+    expect(d?.collisions).toEqual([]);
+    expect(d?.blocksDoors).toEqual([]);
   });
 });

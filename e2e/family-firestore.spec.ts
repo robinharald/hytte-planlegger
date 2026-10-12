@@ -9,11 +9,19 @@
  *    hadde sett de siste endringene dine …») and «Hent tilbake» brings B's version back on both devices.
  *  - A real phase-1 autosave (src/state/fixtures/phase1-autosave.plain-visit.json) brings no proposal into the family
  *    space; an edited one becomes «Forslag D (eget)» with a device-unique id.
+ *  - Final fix round, an old tab at a space the device left (the reviewer's scenario): tab 1 at R makes «Mammas idé»,
+ *    tab 2 opens the family link F, brings it along and makes «Ny idé i familien»; tab 1 reloaded at R is no switch —
+ *    the device stays in F, nothing is offered or moved, and another device opening F sees both proposals.
+ *  - Final fix round, «Lagre over» within 5 minutes of the last revision: B holds a drag while A moves the hot tub and
+ *    saves; B lets go (a conflict) and chooses «Lagre over». The server has B's version, A's is a revision (savedBy
+ *    Test A), and A finds it under Tidligere versjoner.
+ *  - Final fix round, leaving the app: an edit followed at once by visibilitychange → hidden (all iOS fires) is
+ *    written within 0.7 s, before the 1 s debounce, and is on the server after the context is closed.
  */
 import { readFileSync } from 'node:fs';
 import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
-import { activeVariant, collectPageErrors, dragPlan, FIRST_RUN_KEY, type HytteWindow, INSTALL_CARD_KEY, projectOnScreen, READY_TIMEOUT_MS, selectAt } from './helpers';
-import { e2eFamilyId, FIRESTORE_ENABLED, FIRESTORE_SKIP_REASON, proposalDocs, purgeFamily, tubOf } from './firestoreAdmin';
+import { activeVariant, collectPageErrors, dragPlan, FIRST_RUN_KEY, type HytteWindow, INSTALL_CARD_KEY, planToClient, projectOnScreen, READY_TIMEOUT_MS, selectAt } from './helpers';
+import { e2eFamilyId, FIRESTORE_ENABLED, FIRESTORE_SKIP_REASON, listDocs, proposalDocs, purgeFamily, tubOf } from './firestoreAdmin';
 
 const PHASE1_AUTOSAVE = readFileSync(new URL('../src/state/fixtures/phase1-autosave.plain-visit.json', import.meta.url), 'utf8');
 
@@ -125,5 +133,137 @@ test.describe('the real family space (Firestore), throwaway e2e- families', () =
     expect([...plain.errors, ...other.errors]).toEqual([]);
     await plain.context.close();
     await other.context.close();
+  });
+
+  test('an old tab reloaded at a space the device left switches nothing and offers nothing; the family keeps both proposals', async ({ browser }, testInfo) => {
+    const R = e2eFamilyId('old-tab-r');
+    const F = e2eFamilyId('old-tab-f');
+    families.push(R, F);
+    // Tab 1: the device's own space R, with «Mammas idé».
+    const A = await device(browser, testInfo, R, 'Test A');
+    A.page.once('dialog', (d) => void d.accept('Mammas idé'));
+    await A.page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await activeVariant(A.page)).name).toBe('Mammas idé');
+    const mammas = (await activeVariant(A.page)).id;
+    await expect.poll(async () => (await proposalDocs(R)).map((d) => d.id), { timeout: 30_000 }).toEqual([mammas]);
+
+    // Tab 2 (same device): the family link F. «Mammas idé» is offered and brought along; then a new one is made in F.
+    const tab2 = await A.context.newPage();
+    const tab2Errors = collectPageErrors(tab2);
+    await tab2.goto(`/#f=${F}`);
+    await tab2.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: READY_TIMEOUT_MS, polling: 250 });
+    await expect(tab2.getByTestId('carry-over-banner')).toBeVisible({ timeout: 30_000 });
+    await tab2.getByTestId('carry-over-accept').click();
+    await expect.poll(async () => (await proposalDocs(F)).map((d) => d.data.name), { timeout: 30_000 }).toEqual(['Mammas idé']);
+    tab2.once('dialog', (d) => void d.accept('Ny idé i familien'));
+    await tab2.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await proposalDocs(F)).map((d) => d.data.name).sort(), { timeout: 30_000 }).toEqual(['Mammas idé', 'Ny idé i familien']);
+    expect(await tab2.evaluate(() => localStorage.getItem('hytte-planlegger:family'))).toBe(F);
+
+    // Tab 1 is reloaded (its address is still #f=R): no switch, no offer, the banner asks.
+    await A.page.reload();
+    await A.page.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: READY_TIMEOUT_MS, polling: 250 });
+    await expect(A.page.getByTestId('left-family-banner')).toBeVisible({ timeout: 30_000 });
+    await expect(A.page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced', { timeout: 60_000 });
+    await expect.poll(async () => (await projectOnScreen(A.page)).variants.map((v) => v.name).sort(), { timeout: 30_000 }).toEqual(['Forslag D', 'Mammas idé', 'Ny idé i familien']);
+    await A.page.waitForTimeout(3000);
+    await expect(A.page.getByTestId('carry-over-banner')).toHaveCount(0);
+    expect(await A.page.evaluate(() => localStorage.getItem('hytte-planlegger:family')), 'the stored family is unchanged').toBe(F);
+    // «Bli her»: the address bar shows the family space again.
+    await A.page.getByTestId('left-family-stay').click();
+    await expect.poll(() => new URL(A.page.url()).hash.startsWith(`#f=${F}`)).toBe(true);
+
+    // Nothing left the family space: another device opening F sees both; R has only «Mammas idé» in its Papirkurv.
+    const other = await device(browser, testInfo, F, 'Test B');
+    await expect.poll(async () => (await projectOnScreen(other.page)).variants.map((v) => v.name).sort(), { timeout: 30_000 }).toEqual(['Forslag D', 'Mammas idé', 'Ny idé i familien']);
+    expect((await proposalDocs(F)).map((d) => d.data.deletedAt ?? null)).toEqual([null, null]);
+    const inR = await proposalDocs(R);
+    expect(inR.map((d) => [d.data.name, d.data.deletedAt !== null])).toEqual([['Mammas idé', true]]);
+    expect([...A.errors, ...tab2Errors, ...other.errors]).toEqual([]);
+    await A.context.close();
+    await other.context.close();
+  });
+
+  test('«Lagre over» within 5 minutes of a revision keeps the other device\'s version under Tidligere versjoner', async ({ browser }, testInfo) => {
+    const F = e2eFamilyId('save-over');
+    families.push(F);
+    const A = await device(browser, testInfo, F, 'Test A');
+    A.page.once('dialog', (d) => void d.accept('Felles'));
+    await A.page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await activeVariant(A.page)).name).toBe('Felles');
+    const id = (await activeVariant(A.page)).id;
+    await expect.poll(async () => (await proposalDocs(F)).map((d) => d.id), { timeout: 30_000 }).toEqual([id]);
+    const B = await device(browser, testInfo, F, 'Test B', { extra: `&p=${id}` });
+    await expect.poll(async () => (await activeVariant(B.page)).id).toBe(id);
+
+    // B holds a drag of the hot tub (2 m west, not let go) while A moves it 2 m north; A's save reaches the server.
+    await selectAt(B.page, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    const [bx0, by0] = await planToClient(B.page, [21.7, -3.2]);
+    const [bx1, by1] = await planToClient(B.page, [19.7, -3.2]);
+    await B.page.mouse.move(bx0, by0);
+    await B.page.mouse.down();
+    for (let i = 1; i <= 10; i++) await B.page.mouse.move(bx0 + ((bx1 - bx0) * i) / 10, by0 + ((by1 - by0) * i) / 10);
+    await selectAt(A.page, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    await dragPlan(A.page, [21.7, -3.2], [21.7, -1.2], 16);
+    await expect.poll(async () => tubOf((await proposalDocs(F))[0])?.[1] ?? -9, { timeout: 30_000 }).toBeGreaterThan(-1.7);
+    const theirs = tubOf((await proposalDocs(F))[0]);
+    // Let A's version reach B (it waits there while the drag lasts), then B lets go: a conflict.
+    await B.page.waitForTimeout(2000);
+    await B.page.mouse.up();
+    const banner = B.page.getByTestId('conflict-banner');
+    await expect(banner).toBeVisible({ timeout: 30_000 });
+    await expect(banner).toContainText('ble endret av Test A');
+    await expect(banner).toContainText('«Lagre over» legger den andre utgaven der.');
+    await B.page.getByTestId('conflict-overwrite').click();
+    await expect(banner).toHaveCount(0);
+
+    // The server has B's version; A's is a revision (the first revision is less than 5 minutes old).
+    await expect.poll(async () => tubOf((await proposalDocs(F))[0])?.[0] ?? 99, { timeout: 30_000 }).toBeLessThan(20.2);
+    expect((await proposalDocs(F))[0].data.updatedBy).toBe('Test B');
+    const revisions = await listDocs(`families/${F}/proposals/${id}/revisions`);
+    expect(revisions.map((r) => tubOf(r)), 'A\'s version is kept').toContainEqual(theirs);
+    expect(revisions.find((r) => JSON.stringify(tubOf(r)) === JSON.stringify(theirs))?.data.savedBy).toBe('Test A');
+    // A gets B's version on screen, and finds its own under Tidligere versjoner.
+    await expect.poll(async () => (await activeVariant(A.page)).outdoor.hotTubs[0].centre[0], { timeout: 30_000 }).toBeLessThan(20.2);
+    await A.page.getByTestId('more-menu').locator('summary').click();
+    await A.page.getByTestId('more-revisions').click();
+    await expect(A.page.getByTestId('revision-item').filter({ hasText: 'Test A' }).first()).toBeVisible({ timeout: 30_000 });
+    expect([...A.errors, ...B.errors]).toEqual([]);
+    await A.context.close();
+    await B.context.close();
+  });
+
+  test('an edit made just before the app goes to the background is sent at once (visibilitychange → hidden)', async ({ browser }, testInfo) => {
+    const F = e2eFamilyId('hidden');
+    families.push(F);
+    const A = await device(browser, testInfo, F, 'Test A');
+    A.page.once('dialog', (d) => void d.accept('Skjult'));
+    await A.page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await activeVariant(A.page)).name).toBe('Skjult');
+    await expect.poll(async () => (await proposalDocs(F)).length, { timeout: 30_000 }).toBe(1);
+    await A.page.waitForTimeout(2000);
+    const writes: number[] = [];
+    A.page.on('request', (r) => {
+      if (/Firestore\/Write\/channel/.test(r.url()) && r.method() === 'POST') writes.push(Date.now());
+    });
+
+    // The hot tub 1.5 m north, then at once the app goes to the background (iOS: only visibilitychange fires).
+    await selectAt(A.page, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    await dragPlan(A.page, [21.7, -3.2], [21.7, -1.7], 12);
+    const t0 = Date.now();
+    await A.page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    // The save goes out before the 1 s debounce would have sent it …
+    await expect.poll(() => writes.filter((t) => t >= t0).length, { timeout: 2000, intervals: [50] }).toBeGreaterThan(0);
+    const first = Math.min(...writes.filter((t) => t >= t0));
+    expect(first - t0, 'ms from hidden to the write').toBeLessThan(700);
+    // … so it reaches the server even when the app is then killed (the context closed, as iOS evicts a suspended app).
+    await A.page.waitForTimeout(500);
+    expect(A.errors).toEqual([]);
+    await A.context.close();
+    await expect.poll(async () => tubOf((await proposalDocs(F))[0])?.[1] ?? -9, { timeout: 30_000 }).toBeGreaterThan(-2.0);
   });
 });
