@@ -40,7 +40,7 @@ import { CURRENT_SCHEMA_VERSION } from '../model/types';
 import type { Id, Project, Site, Variant } from '../model/types';
 import { nb } from '../i18n/nb';
 import { cleanVariant, isValidProposalId, sameContent } from './familyStore';
-import { CAMERA_PRESET_KEYS } from './store';
+import { CAMERA_PRESET_KEYS, copyName } from './store';
 import type { ActiveView, AppStore, UiState } from './store';
 
 export const KEYS = {
@@ -206,10 +206,12 @@ function legacyBasesFor(saved: Project, base: Variant): Variant[] {
 }
 
 /**
- * Forslag D itself as an autosave holds it: `forslag-d` with its seed name, or the copy phase 1's «Hent ny Forslag D»
- * added (`forslag-d-r<n>-…`, «Forslag D (revisjon <n>)»). Any other copy has a name the user gave it or chose.
+ * Forslag D itself as an autosave holds it: `forslag-d` with its seed name, the copy phase 1's «Hent ny Forslag D»
+ * added (`forslag-d-r<n>-…`, «Forslag D (revisjon <n>)»), or a phase-1 «Dupliser» copy that still has the automatic
+ * name «Forslag D (kopi)» (`copyName`). Any other copy has a name the user gave it or chose.
  */
 function isSeedItself(v: Variant, base: Variant): boolean {
+  if (v.name === copyName(base.name)) return true;
   if (v.id === base.id) return v.name === base.name;
   const m = /-r(\d+)-[A-Za-z0-9_-]+$/.exec(v.id);
   return m !== null && v.id.startsWith(`${base.id}-r`) && (v.name === base.name || v.name === nb.seed.variantName(Number(m[1])));
@@ -217,8 +219,8 @@ function isSeedItself(v: Variant, base: Variant): boolean {
 
 /**
  * The legacy autosave moved into the family store: its unlocked variants, except Forslag D itself when it is untouched
- * (`isSeedItself`, equal to the Forslag D it was made from, `legacyBasesFor`). A copy with a name of its own is kept
- * even when nothing in it was changed («Urørt kopi», «Mammas utkast»). The ids are kept (so importing twice adds
+ * (`isSeedItself`, equal to the Forslag D it was made from, `legacyBasesFor`; also an untouched «Forslag D (kopi)»).
+ * A copy with a name of its own is kept even when nothing in it was changed («Urørt kopi», «Mammas utkast»). The ids are kept (so importing twice adds
  * nothing twice) unless they are not valid proposal ids or clash with the base: a working copy of Forslag D gets
  * `forslag-d-eget-<hash of the autosave's own project id and time>`, unique per device (phase 1 gave every device its
  * own project id) and the same on every import. A name equal to the base's gets " (eget)" ("Forslag D (eget)").
@@ -903,7 +905,7 @@ export function makeOwnCopy(project: Project, now: Date = new Date()): Project {
 // ---------------------------------------------------------------------------
 
 /** FNV-1a (32 bit) in base 36: short, stable ids derived from a link. */
-function fnv36(text: string): string {
+export function fnv36(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     h ^= text.charCodeAt(i);

@@ -602,6 +602,19 @@ describe('the legacy whole-project autosave → proposals', () => {
     expect(out.activeId).toBe('mamma-1');
   });
 
+  it('last fix round 5: an untouched copy with the automatic name «Forslag D (kopi)» is dropped; an edited one and any other name are kept', () => {
+    const raw = JSON.parse(phase1Text) as Record<string, unknown> & { variants: Record<string, unknown>[] };
+    const seedCopy = raw.variants[0];
+    raw.variants.push({ ...structuredClone(seedCopy), id: 'V1StGXR8_Z5j', name: 'Forslag D (kopi)', basedOnId: 'forslag-d' });
+    raw.variants.push({ ...structuredClone(seedCopy), id: 'urort-2', name: 'Forslag D (kopi) 2', basedOnId: 'forslag-d' });
+    expect(legacyImport(migrateProject(raw), base()).variants.map((v) => v.name)).toEqual(['Forslag D (kopi) 2']);
+    (raw.variants[1].rooms as { name: string }[])[0].name = 'Omdøpt rom';
+    expect(legacyImport(migrateProject(raw), base()).variants.map((v) => [v.id, v.name])).toEqual([
+      ['V1StGXR8_Z5j', 'Forslag D (kopi)'],
+      ['urort-2', 'Forslag D (kopi) 2'],
+    ]);
+  });
+
   it('final fix round 7b: an untouched Forslag D of the 11-minute revision-2 deploy brings no proposal, also after «Hent ny Forslag D»', () => {
     const rev2 = structuredClone(frozenRevision2) as unknown as Record<string, unknown> & { variants: Record<string, unknown>[] };
     expect(rev2.seedRevision).toBe(2);

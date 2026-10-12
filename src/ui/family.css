@@ -92,7 +92,8 @@
 }
 .status-pill[data-state='error'],
 .status-pill[data-state='failed'],
-.status-pill[data-state='localFailed'] {
+.status-pill[data-state='localFailed'],
+.status-pill[data-state='elsewhere'] {
   background: var(--warn-bg);
   color: var(--danger);
 }

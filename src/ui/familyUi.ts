@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { nb } from '../i18n/nb';
 import type { Id, Variant } from '../model/types';
 import { TRASH_MS } from '../state/familyStore';
-import type { ProposalMeta } from '../state/familyStore';
+import type { ProposalMeta, RevisionInfo } from '../state/familyStore';
 import type { SyncState } from '../state/familyStore.sync';
 
 // ---------------------------------------------------------------------------
@@ -20,14 +20,17 @@ export type PillState = keyof typeof nb.family.pill;
  * Which text the status pill shows (docs/phase2-plan.md §5; explained in docs/firebase-oppsett.md). An open conflict
  * comes first: that proposal's edits are not saved until the user picks «Hent endringene» or «Lagre over».
  * `pending` also counts writes queued before this page was loaded, so an offline reload never says «Lagret for alle».
+ * `elsewhere` (another tab switched this device to another space; this tab saves nothing) wins over everything.
  */
 export function pillState(
   s: Pick<SyncState, 'mode' | 'phase' | 'saving' | 'pending' | 'online' | 'failed'> & {
     fallback?: boolean;
     conflicts?: SyncState['conflicts'];
     noFamily?: boolean;
+    elsewhere?: boolean;
   },
 ): PillState {
+  if (s.elsewhere) return 'elsewhere';
   if (s.conflicts && s.conflicts.length > 0) return 'conflict';
   if (s.mode === 'local') return s.failed ? 'localFailed' : s.noFamily ? 'noFamily' : s.fallback ? 'unreachable' : 'local';
   if (s.failed) return 'failed';
@@ -67,6 +70,23 @@ export function metaLine(v: Variant, meta: ProposalMeta | undefined, now: number
   if (!meta) return f.notSaved;
   const at = f.when(meta.updatedAt, now);
   return meta.updatedBy ? f.changedBy(meta.updatedBy, at) : f.changed(at);
+}
+
+// ---------------------------------------------------------------------------
+// Tidligere versjoner
+// ---------------------------------------------------------------------------
+
+/** Each revision's line: when (with seconds when another one has the same minute), by whom, and its tags. */
+export function revisionLabels(revisions: readonly RevisionInfo[], now: number): string[] {
+  const r = nb.family.revisions;
+  const when = revisions.map((rev) => nb.family.when(rev.savedAt, now));
+  return revisions.map((rev, i) => {
+    const shared = when.some((w, j) => j !== i && w === when[i]);
+    const parts: string[] = [r.savedBy(shared ? nb.family.when(rev.savedAt, now, true) : when[i], rev.savedBy)];
+    if (rev.own) parts.push(r.tagOwn);
+    if (rev.reason === 'saveOver') parts.push(r.tagSavedOver);
+    return parts.join(' · ');
+  });
 }
 
 // ---------------------------------------------------------------------------

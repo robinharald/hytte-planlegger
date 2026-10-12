@@ -10,28 +10,38 @@
  *    a version of this device overwritten by an offline save (kept under Tidligere versjoner) or deleted by a device
  *    that had not seen it ([Hent tilbake] from the Papirkurv), proposals from a newer app version ([Oppdater] looks
  *    for the new version), a family link opened where there is no shared space, a family link that is not whole, and
- *    after a family switch the offer to bring along this device's proposals from the previous space; a family link to a
- *    space this device left («Denne lenken går til en plass du har byttet bort fra. [Bytt tilbake] [Bli her]»).
- *    The conflict banner says what each button keeps (the other version goes under Tidligere versjoner).
+ *    after a family switch the offer to bring along this device's proposals from the previous space; a family link to
+ *    another space («Denne lenken går til en annen delt plass. Plassen i lenken har N forslag (…); plassen du bruker nå
+ *    har M. [Bytt dit] [Bli her]», the space with proposals made on other devices highlighted, else «Bli her»; a link
+ *    to one proposal there: [Hent «…» som en kopi hit] [Bli her]); a link's space that is empty on a device without a
+ *    family («Denne plassen er tom. Er lenken hel?» [Begynn her]); another tab switched this device to another space
+ *    («… [Last på nytt]»: this tab saves nothing). A «Lagre over» from another device over a version saved here uses
+ *    the overwritten banner. The conflict banner says what each button keeps (the other version goes under Tidligere
+ *    versjoner).
  *  - `NameDialog`: "Hva heter du?" the first time this device saves something in the shared space.
  */
 import { useState } from 'react';
 import { nb } from '../i18n/nb';
 import {
   acceptCarryOver,
+  copyLinkedProposal,
   declineCarryOver,
+  dismissEmptyFamily,
   dismissFamilyNotice,
   dismissOverwritten,
   familyId,
   familyUiStore,
+  reloadInCurrentFamily,
   resolveConflict,
   restoreFromTrash,
-  returnToLeftFamily,
   setMyName,
+  startEmptyFamily,
   stayInFamily,
+  switchToLinkedFamily,
   useAppStore,
   useFamily,
 } from '../state/appStore';
+import type { OtherFamilyLink } from '../state/appStore';
 import { Modal } from './common';
 import { pillState, requestAppUpdateCheck, useMinuteClock } from './familyUi';
 
@@ -45,8 +55,9 @@ export function StatusPill() {
   const fallback = useFamily((s) => s.fallback);
   const conflicts = useFamily((s) => s.conflicts);
   const noFamily = useFamily((s) => s.noFamily);
+  const elsewhere = useFamily((s) => s.elsewhere);
   const readOnly = useAppStore((s) => s.ui.readOnly);
-  const state = pillState({ mode, phase, saving, pending, online, failed, fallback, conflicts: readOnly ? [] : conflicts, noFamily });
+  const state = pillState({ mode, phase, saving, pending, online, failed, fallback, conflicts: readOnly ? [] : conflicts, noFamily, elsewhere });
   const text = nb.family.pill[state];
   return (
     <span className="status-pill" data-state={state} data-testid="status-pill" role="status" aria-label={text} title={nb.family.pillTitle[state]}>
@@ -66,14 +77,30 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
   const tooNew = useFamily((s) => s.tooNew.length);
   const notices = useFamily((s) => s.notices);
   const carryOver = useFamily((s) => s.carryOver);
-  const leftFamily = useFamily((s) => s.leftFamily);
+  const otherFamily = useFamily((s) => s.otherFamily);
+  const emptyFamily = useFamily((s) => s.emptyFamily);
+  const elsewhere = useFamily((s) => s.elsewhere);
   const readOnly = useAppStore((s) => s.ui.readOnly);
   const [carrying, setCarrying] = useState(false);
   const now = useMinuteClock();
   const f = nb.family;
-  if (conflicts.length === 0 && overwritten.length === 0 && tooNew === 0 && notices.length === 0 && !carryOver && !leftFamily) return null;
+  if (conflicts.length === 0 && overwritten.length === 0 && tooNew === 0 && notices.length === 0 && !carryOver && !otherFamily && !emptyFamily && !elsewhere) {
+    return null;
+  }
   return (
     <div className="family-banners" data-testid="family-banners">
+      {elsewhere && (
+        <div className="banner warn" role="alert" data-testid="family-elsewhere-banner">
+          <div className="msg">
+            <strong>{f.elsewhere.text}</strong> <span>{f.elsewhere.hint}</span>
+          </div>
+          <div className="actions">
+            <button type="button" className="btn btn-small btn-primary" data-testid="family-elsewhere-reload" onClick={reloadInCurrentFamily}>
+              {f.elsewhere.reload}
+            </button>
+          </div>
+        </div>
+      )}
       {!readOnly &&
         conflicts.map((c) => {
           const by = c.by || f.someone;
@@ -98,7 +125,13 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
         })}
       {overwritten.map((o) => (
         <div key={o.id} className="banner" role="status" data-testid="overwritten-banner" data-kind={o.kind ?? 'changed'}>
-          <div className="msg">{o.kind === 'deleted' ? f.overwrittenDeleted(o.name, o.by || f.someone) : f.overwritten(o.name, o.by || f.someone)}</div>
+          <div className="msg">
+            {o.kind === 'deleted'
+              ? f.overwrittenDeleted(o.name, o.by || f.someone)
+              : o.kind === 'savedOver'
+                ? f.overwrittenSavedOver(o.name, o.by || f.someone)
+                : f.overwritten(o.name, o.by || f.someone)}
+          </div>
           <div className="actions">
             {o.kind === 'deleted' && (
               <button
@@ -144,17 +177,18 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           </div>
         </div>
       )}
-      {leftFamily && (
-        <div className="banner warn" role="status" data-testid="left-family-banner">
+      {otherFamily && <OtherFamilyBanner link={otherFamily} />}
+      {emptyFamily && (
+        <div className="banner warn" role="status" data-testid="empty-family-banner">
           <div className="msg">
-            <strong>{f.leftFamily.text}</strong> <span>{f.leftFamily.hint}</span>
+            <strong>{f.emptyFamily.text}</strong> <span>{f.emptyFamily.hint}</span>
           </div>
           <div className="actions">
-            <button type="button" className="btn btn-small" data-testid="left-family-back" onClick={returnToLeftFamily}>
-              {f.leftFamily.back}
+            <button type="button" className="btn btn-small" data-testid="empty-family-start" onClick={startEmptyFamily}>
+              {f.emptyFamily.start}
             </button>
-            <button type="button" className="btn btn-small btn-primary" data-testid="left-family-stay" onClick={stayInFamily}>
-              {f.leftFamily.stay}
+            <button type="button" className="btn btn-small btn-ghost" onClick={dismissEmptyFamily}>
+              {f.dismiss}
             </button>
           </div>
         </div>
@@ -193,6 +227,52 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A family link to another space than this device's. Nothing changes until the user answers. The highlighted button is
+ * the space that holds proposals made on other devices («Bytt dit» only when the link's space has some and this one
+ * has none; else «Bli her»). A link to one proposal there never switches: it offers a copy into this space.
+ */
+function OtherFamilyBanner(props: { link: OtherFamilyLink }) {
+  const f = nb.family.otherFamily;
+  const { info, proposal } = props.link;
+  if (proposal) {
+    const name = info?.proposalName ?? null;
+    return (
+      <div className="banner warn" role="status" data-testid="other-family-banner" data-kind="proposal">
+        <div className="msg">
+          <strong>{f.proposalText(name)}</strong> <span>{info && !name ? f.proposalMissing : f.proposalHint}</span>
+        </div>
+        <div className="actions">
+          {name && (
+            <button type="button" className="btn btn-small btn-primary" data-testid="other-family-copy" onClick={() => copyLinkedProposal()}>
+              {f.copy(name)}
+            </button>
+          )}
+          <button type="button" className={`btn btn-small${name ? '' : ' btn-primary'}`} data-testid="other-family-stay" onClick={stayInFamily}>
+            {f.stay}
+          </button>
+        </div>
+      </div>
+    );
+  }
+  const switchFirst = info !== null && info.others && !info.hereOthers;
+  return (
+    <div className="banner warn" role="status" data-testid="other-family-banner" data-kind="space" data-primary={switchFirst ? 'switch' : 'stay'}>
+      <div className="msg">
+        <strong>{f.text}</strong> <span>{info ? f.counts(info.count, info.names, info.hereCount) : f.hint}</span>
+      </div>
+      <div className="actions">
+        <button type="button" className={`btn btn-small${switchFirst ? ' btn-primary' : ''}`} data-testid="other-family-switch" onClick={switchToLinkedFamily}>
+          {f.switch}
+        </button>
+        <button type="button" className={`btn btn-small${switchFirst ? '' : ' btn-primary'}`} data-testid="other-family-stay" onClick={stayInFamily}>
+          {f.stay}
+        </button>
+      </div>
     </div>
   );
 }

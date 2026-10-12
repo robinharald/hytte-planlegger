@@ -55,6 +55,8 @@ const PILL = {
   conflict: 'Ikke lagret – velg Hent endringene eller Lagre over',
   /** Shared mode, but the `#f=` link was not whole and this device has no family yet: saved here until a whole link. */
   noFamily: 'Kun på denne enheten (familielenken er ikke hel)',
+  /** Another tab on this device switched to another family space: this tab saves nothing until it is reloaded. */
+  elsewhere: 'Ikke lagret – last siden på nytt',
 } as const;
 
 const MONTHS = ['jan.', 'feb.', 'mars', 'apr.', 'mai', 'juni', 'juli', 'aug.', 'sep.', 'okt.', 'nov.', 'des.'] as const;
@@ -63,18 +65,21 @@ function two(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
 
-/** "i dag 14.30", "i går 09.05", "3. okt. 14.30", "3. okt. 2025" (device time). */
-function when(iso: string, now: number = Date.now()): string {
+/**
+ * "i dag 14.30", "i går 09.05", "3. okt. 14.30", "3. okt. 2025" (device time); with `seconds` "i dag 14.30.07" (and in
+ * another year the time too), for two that share a minute.
+ */
+function when(iso: string, now: number = Date.now(), seconds = false): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  const time = `${two(d.getHours())}.${two(d.getMinutes())}`;
+  const time = `${two(d.getHours())}.${two(d.getMinutes())}${seconds ? `.${two(d.getSeconds())}` : ''}`;
   const today = new Date(now);
   const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((dayStart(today) - dayStart(d)) / 86_400_000);
   if (days === 0) return `i dag ${time}`;
   if (days === 1) return `i går ${time}`;
   const date = `${d.getDate()}. ${MONTHS[d.getMonth()]}`;
-  return d.getFullYear() === today.getFullYear() ? `${date} ${time}` : `${date} ${d.getFullYear()}`;
+  return d.getFullYear() === today.getFullYear() ? `${date} ${time}` : `${date} ${d.getFullYear()}${seconds ? ` ${time}` : ''}`;
 }
 
 /** "akkurat nå", "for 2 min siden", "for 3 timer siden", else `when`. */
@@ -164,7 +169,8 @@ export const nb = {
     lockedShort: 'Forslag D er grunnlaget og kan ikke endres.',
     newProposal: 'Nytt forslag',
     newProposalTitle: 'Lag en kopi som du kan endre, og gå over til den',
-    created: (name: string) => `«${name}» er laget. Nå kan du endre det – og angre alt med Angre.`,
+    /** After «+ Nytt forslag» / «Kopier»: the undo history starts empty in the new proposal (familyStore.sync.ts). */
+    created: (name: string) => `«${name}» er laget. Nå kan du endre det, og Angre tar tilbake endringene du gjør i det.`,
   },
 
   headline: {
@@ -322,6 +328,13 @@ export const nb = {
     /** Screen-reader status after a placement. */
     placedIn: (name: string, room: string) => `${name} er satt inn i ${room}.`,
     placed: (name: string) => `${name} er satt inn.`,
+    /**
+     * Toast after a library tap that landed in another room than the one picked (the selection) or, with nothing
+     * picked, the room in the middle of the plan (ui/furniturePlacer.ts `placeFurniture`): «Kommode er satt inn i
+     * «Gang».»; `room` null: a room without a name.
+     */
+    placedInToast: (item: string, room: string | null) =>
+      room ? `${item} er satt inn i «${room}».` : `${item} er satt inn i et rom uten navn.`,
   },
 
   toasts: {
@@ -877,6 +890,7 @@ export const nb = {
       localFailed: 'Ikke lagret',
       conflict: 'Ikke lagret',
       noFamily: 'Kun her',
+      elsewhere: 'Ikke lagret',
     } satisfies Record<keyof typeof PILL, string>,
     pillTitle: {
       local: 'Forslagene lagres automatisk i denne nettleseren. Trykk «Send forslaget» for å dele en kopi som lenke.',
@@ -893,6 +907,8 @@ export const nb = {
         'Forslaget ble endret et annet sted mens du endret det her. Endringene dine her lagres ikke før du velger «Hent endringene» eller «Lagre over».',
       noFamily:
         'Lenken til familiens plass var ikke hel, så appen vet ikke hvilken plass den skal bruke. Forslagene lagres på denne enheten til du åpner hele familielenken; da flyttes de inn i familiens plass.',
+      elsewhere:
+        'Denne enheten bruker en annen delt plass nå (den ble byttet i en annen fane). Det du endrer i denne fanen, lagres ikke før du laster siden på nytt.',
     } satisfies Record<keyof typeof PILL, string>,
     conflict: (name: string, by: string, at: string) => `«${name}» ble endret av ${by} ${at}.`,
     conflictDeleted: (name: string, by: string, at: string) => `«${name}» ble slettet av ${by} ${at}.`,
@@ -905,6 +921,8 @@ export const nb = {
     saveOver: 'Lagre over',
     overwritten: (name: string, by: string) =>
       `«${name}» ble endret av ${by} på en enhet uten nett mens du også endret det. Din utgave ligger under Tidligere versjoner.`,
+    /** Another device chose «Lagre over» over a version saved here (kept under Tidligere versjoner). */
+    overwrittenSavedOver: (name: string, by: string) => `«${name}» ble lagret over av ${by}. Din utgave ligger under Tidligere versjoner.`,
     overwrittenDeleted: (name: string, by: string) =>
       `«${name}» ble slettet av ${by} på en enhet som ikke hadde sett de siste endringene dine. Din utgave ligger i Papirkurv.`,
     showRevisions: 'Vis',
@@ -932,12 +950,39 @@ export const nb = {
       decline: 'Nei takk',
       done: (n: number) => (n === 1 ? 'Forslaget er hentet fra den forrige plassen.' : `${n} forslag er hentet fra den forrige plassen.`),
     },
-    /** A family link (an old tab, a bookmark) to a space this device switched away from: no switch until asked. */
-    leftFamily: {
-      text: 'Denne lenken går til en plass du har byttet bort fra.',
+    /**
+     * A family link (a new one, an old tab, a bookmark) to another space than the one this device uses: no switch until
+     * the user picks «Bytt dit»; a link to one proposal there offers a copy instead (never a switch).
+     */
+    otherFamily: {
+      text: 'Denne lenken går til en annen delt plass.',
+      /** What the two spaces hold: `names` are the people who made the proposals in the link's space. */
+      counts: (n: number, names: readonly string[], m: number) => {
+        const there =
+          n === 0 ? 'Plassen i lenken har ingen forslag (er lenken hel?)' : `Plassen i lenken har ${n} forslag${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
+        return `${there}; plassen du bruker nå har ${m === 0 ? 'ingen' : m}.`;
+      },
       hint: 'Du ser plassen du bruker nå.',
-      back: 'Bytt tilbake',
+      switch: 'Bytt dit',
       stay: 'Bli her',
+      proposalText: (name: string | null) =>
+        name ? `Denne lenken går til «${name}» i en annen delt plass.` : 'Denne lenken går til et forslag i en annen delt plass.',
+      proposalHint: 'Du kan hente det som en kopi hit. Plassen du bruker nå, byttes ikke.',
+      proposalMissing: 'Forslaget i lenken finnes ikke i den plassen.',
+      copy: (name: string) => `Hent «${name}» som en kopi hit`,
+      copied: (name: string) => `«${name}» er hentet som en kopi.`,
+    },
+    /** A link to a space with no proposals on a device without a family: nothing is stored until the user starts it. */
+    emptyFamily: {
+      text: 'Denne plassen er tom. Er lenken hel?',
+      hint: 'Lenken går til en delt plass uten forslag. Har du fått den fra familien, kan den være kuttet av – be om den på nytt. Er det en ny plass, kan du begynne her.',
+      start: 'Begynn her',
+    },
+    /** Another tab on this device switched to another family space. */
+    elsewhere: {
+      text: 'Denne enheten har byttet delt plass i en annen fane.',
+      hint: 'Det du endrer i denne fanen, lagres ikke.',
+      reload: 'Last på nytt',
     },
     linkImported: (name: string) => `«${name}» fra lenken er lagt til som et nytt forslag.`,
     linkKnown: (name: string) => `«${name}» fra lenken finnes alt i listen.`,
@@ -984,6 +1029,9 @@ export const nb = {
       loading: 'Henter versjonene …',
       failed: 'Versjonene kunne ikke hentes. Er du uten nett?',
       savedBy: (at: string, by: string | null) => (by ? `${at} · ${by}` : at),
+      /** Tags of a revision: a version this device saved, and the version a «Lagre over» put aside. */
+      tagOwn: 'din',
+      tagSavedOver: 'lagt bort ved Lagre over',
       restore: 'Gjenopprett',
       confirm: (at: string) => `Vil du gjenopprette versjonen fra ${at}? Det du har nå, blir tatt vare på som en tidligere versjon.`,
       restoreFailed: 'Versjonen kunne ikke gjenopprettes.',
@@ -1220,6 +1268,23 @@ export const nb = {
      * rooms next to it, so nothing is added.
      */
     duplicateNoSpace: 'Ingen ledig plass til en kopi.',
+    /**
+     * «Dupliser»: the original's room was full and the copy went to a room a door or opening of that room leads to;
+     * null: a room without a name.
+     */
+    copyIn: (room: string | null) => (room ? `Kopien står i «${room}».` : 'Kopien står i et rom uten navn.'),
+    /**
+     * A unit from Nytt bygg would stand on another building: the placement, a move or turn of the unit, or an edge or
+     * corner drag is refused or stops against that building's wall. The hint line as it is, with a full stop as a
+     * toast.
+     */
+    unitOnBlock: 'Bygget kan ikke stå oppå et annet bygg',
+    /** «Ta tilbake» gave merged-away rooms their own face back: "Rommet «WC» er tilbake." */
+    roomsBack: (names: readonly string[]) => {
+      const q = names.map((n) => `«${n}»`);
+      if (q.length <= 1) return `Rommet ${q[0] ?? ''} er tilbake.`;
+      return `Rommene ${q.slice(0, -1).join(', ')} og ${q[q.length - 1]} er tilbake.`;
+    },
     /**
      * Drag hint (`DragFeedback.hint`) while a wall drag is cut short or refused because an end of the wall cannot
      * follow (its support runs out, e.g. lw-split north).

@@ -108,6 +108,17 @@ describe('ids, links and mode', () => {
     expect(parseHash(`#f=${f.slice(0, 10)}.${f.slice(10)}`).family).toBeNull();
   });
 
+  it('last fix round 2: a generated (32-character) id with one trailing «_» or «-» is that id; other lengths keep theirs', () => {
+    const g = 'e2e-generated-0123456789abcdefgh';
+    expect(g).toHaveLength(32);
+    for (const tail of ['_', '-', '_.', '-)', '_%20']) expect(parseHash(`#f=${g}${tail}`).family, tail).toBe(g);
+    expect(parseHash(`#f=${g}__`).family).toBe(`${g}__`);
+    expect(parseHash(`#f=${g}x`).family).toBe(`${g}x`);
+    // An id of another length keeps its «_» / «-» (they are valid id characters).
+    const f = 'e2e-abcdefghijklmnopqrstuvwxyz';
+    expect(parseHash(`#f=${f}_`).family).toBe(`${f}_`);
+  });
+
   it('shared only with a config, never in tests or under automation unless overridden', () => {
     expect(resolveFamilyMode({ hasConfig: false, storedOverride: 'shared' })).toBe('local');
     expect(resolveFamilyMode({ hasConfig: true })).toBe('shared');

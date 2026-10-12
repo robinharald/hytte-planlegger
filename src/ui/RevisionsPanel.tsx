@@ -1,7 +1,8 @@
 /**
  * Tidligere versjoner (under Mer; docs/phase2-plan.md §5): the automatic revisions of the proposal on screen (up to 20,
- * at most one per five minutes of editing), newest first with when and by whom; "Gjenopprett" asks once, keeps what
- * is there now as a revision, and puts the old version back (for everyone in shared mode). Forslag D has none.
+ * at most one per five minutes of editing), newest first with when and by whom (with seconds when two share a minute),
+ * tagged «din» (saved on this device) and «lagt bort ved Lagre over»; "Gjenopprett" asks once, keeps what is there now
+ * as a revision, and puts the old version back (for everyone in shared mode). Forslag D has none.
  *
  * Below, collapsed: versions the user saved by name on this device before the proposals were shared (phase 1 / 2a
  * "Lagre versjon"); "Legg til" adds their proposals as new proposals, so nothing from before is out of reach.
@@ -13,7 +14,7 @@ import type { RevisionInfo } from '../state/familyStore';
 import { readVersions } from '../state/persistence';
 import { selectActiveVariant } from '../state/store';
 import { Modal } from './common';
-import { useMinuteClock } from './familyUi';
+import { revisionLabels, useMinuteClock } from './familyUi';
 import { formatBytes, formatDateTime } from './format';
 
 type Load = { state: 'loading' } | { state: 'failed' } | { state: 'ok'; revisions: RevisionInfo[] };
@@ -104,9 +105,9 @@ export function RevisionsPanel(props: { onClose: () => void }) {
           {load.state === 'ok' && load.revisions.length === 0 && <p className="muted">{r.empty}</p>}
           {load.state === 'ok' && load.revisions.length > 0 && (
             <ul className="revision-list">
-              {load.revisions.map((rev) => (
+              {load.revisions.map((rev, i) => (
                 <li key={rev.id} className="revision-item" data-testid="revision-item">
-                  <span>{r.savedBy(nb.family.when(rev.savedAt, now), rev.savedBy)}</span>
+                  <span>{revisionLabels(load.revisions, now)[i]}</span>
                   <button type="button" className="btn btn-small" disabled={busy || readOnly} onClick={() => void restore(rev)}>
                     {r.restore}
                   </button>

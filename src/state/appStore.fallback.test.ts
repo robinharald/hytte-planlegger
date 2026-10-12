@@ -54,6 +54,8 @@ const proposalDocs = (familyId: string) => [...firebase.fake.docs.keys()].filter
 
 beforeEach(() => {
   localStorage.clear();
+  // No family link left in the address bar by the previous test (a link's empty space would wait to be started).
+  window.history.replaceState(null, '', '/');
   firebase.fake = createFakeFirestore();
   vi.stubEnv('VITE_FAMILY_STORE', 'shared');
 });

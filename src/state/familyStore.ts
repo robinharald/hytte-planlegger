@@ -104,6 +104,8 @@ export interface ProposalMeta {
   deletedAt: string | null;
   /** `updatedAt` of the versions this one descends from, newest last (at most LINEAGE_LIMIT). */
   lineage: string[];
+  /** This version was written with «Lagre over» over the version stamped so (kept as a revision): its writer is told. */
+  overwrote?: string;
 }
 
 /**
@@ -145,6 +147,11 @@ export interface ProposalDoc {
   lastRevisionAt: string | null;
   /** Revision ids, oldest first (at most REVISION_LIMIT): pruning needs no query, also offline. */
   revisions: string[];
+  /**
+   * Set by «Lagre over» (`SaveOptions.overwrite`): the `updatedAt` of the version it wrote over (kept as a revision), so
+   * the device that saved that version can say so; written as null by the next content save (absent on older documents).
+   */
+  overwrote?: string | null;
 }
 
 /** Stored document of a revision ("Tidligere versjoner"): the proposal as it was saved at `savedAt` by `savedBy`. */
@@ -154,6 +161,8 @@ export interface RevisionDoc {
   schemaVersion: number;
   savedAt: string;
   savedBy: string | null;
+  /** 'saveOver': the version a «Lagre over» put aside (absent for the other revisions). */
+  reason?: 'saveOver';
 }
 
 export interface RevisionInfo {
@@ -162,6 +171,10 @@ export interface RevisionInfo {
   name: string;
   savedAt: string;
   savedBy: string | null;
+  /** 'saveOver': put aside by «Lagre over» (Tidligere versjoner tags it). */
+  reason?: 'saveOver';
+  /** A version this device saved (set by appStore.ts `listRevisions`; Tidligere versjoner tags it «din»). */
+  own?: boolean;
 }
 
 export interface ProposalList {
@@ -190,6 +203,11 @@ export interface SaveOptions {
   by?: string | null;
   /** Keep the replaced content as a revision even within REVISION_INTERVAL_MS. */
   forceRevision?: boolean;
+  /**
+   * «Lagre over»: the version written over is kept as a revision tagged 'saveOver', and the document names it
+   * (`overwrote`), so the device that saved it is told.
+   */
+  overwrite?: boolean;
 }
 
 /** Connection state for the status pill. */
@@ -345,7 +363,10 @@ function familyIdOf(value: string): string {
   } catch {
     // keep the raw value
   }
-  return v.replace(/[^A-Za-z0-9_-]+$/, '');
+  v = v.replace(/[^A-Za-z0-9_-]+$/, '');
+  // Generated ids are exactly FAMILY_ID_LENGTH characters: one more ending in `_` or `-` is a link copied with the
+  // underscore or hyphen of the message around it (chat italics `_…_`).
+  return v.length === FAMILY_ID_LENGTH + 1 && /[_-]$/.test(v) ? v.slice(0, -1) : v;
 }
 
 /** Parse `#f=…&p=…&d=…` (any order; unknown parts ignored; an invalid family id counts as absent). */
@@ -493,6 +514,7 @@ export function readProposalDoc(raw: unknown): ProposalDoc | null {
     lineage: Array.isArray(r.lineage) ? r.lineage.filter((x): x is string => typeof x === 'string') : [],
     lastRevisionAt: str(r.lastRevisionAt),
     revisions: Array.isArray(r.revisions) ? r.revisions.filter((x): x is string => typeof x === 'string') : [],
+    ...(typeof r.overwrote === 'string' ? { overwrote: r.overwrote } : {}),
   };
 }
 
@@ -503,7 +525,19 @@ export function readRevisionDoc(raw: unknown): RevisionDoc | null {
   const project = str(r.project);
   const savedAt = str(r.savedAt);
   if (name === null || project === null || savedAt === null) return null;
-  return { name, project, schemaVersion: typeof r.schemaVersion === 'number' ? r.schemaVersion : 1, savedAt, savedBy: str(r.savedBy) };
+  return {
+    name,
+    project,
+    schemaVersion: typeof r.schemaVersion === 'number' ? r.schemaVersion : 1,
+    savedAt,
+    savedBy: str(r.savedBy),
+    ...(r.reason === 'saveOver' ? { reason: 'saveOver' as const } : {}),
+  };
+}
+
+/** What Tidligere versjoner lists of a stored revision. */
+export function revisionInfoOf(id: string, proposalId: Id, doc: RevisionDoc): RevisionInfo {
+  return { id, proposalId, name: doc.name, savedAt: doc.savedAt, savedBy: doc.savedBy, ...(doc.reason ? { reason: doc.reason } : {}) };
 }
 
 export function metaOf(id: Id, doc: ProposalDoc): ProposalMeta {
@@ -516,6 +550,7 @@ export function metaOf(id: Id, doc: ProposalDoc): ProposalMeta {
     updatedBy: doc.updatedBy,
     deletedAt: doc.deletedAt,
     lineage: doc.lineage,
+    ...(typeof doc.overwrote === 'string' ? { overwrote: doc.overwrote } : {}),
   };
 }
 
@@ -602,6 +637,8 @@ export function planSave(cur: ProposalDoc | undefined, variant: Variant, o: Save
     lineage: cur ? [...cur.lineage, cur.updatedAt].slice(-LINEAGE_LIMIT) : [],
     lastRevisionAt: cur?.lastRevisionAt ?? null,
     revisions: cur?.revisions ?? [],
+    // A «Lagre over» marker of an earlier save is cleared by this one (merge writes keep fields they leave out).
+    ...(typeof cur?.overwrote === 'string' ? { overwrote: null } : {}),
   };
   // A proposal in the Papirkurv written over with other content (Angre of a delete that landed on a newer version,
   // "Lagre over" of a deleted one): what was there is kept as a revision, whatever the interval.
@@ -612,10 +649,13 @@ export function planSave(cur: ProposalDoc | undefined, variant: Variant, o: Save
   const id = newRevisionId(cur.updatedAt);
   const ids = [...cur.revisions, id];
   const keep = ids.slice(-REVISION_LIMIT);
+  // «Lagre over» over a version that was not in the Papirkurv: the document and the revision say so.
+  const savedOver = o.overwrite === true && !trashed;
+  const revision: RevisionDoc = { name: cur.name, project: cur.project, schemaVersion: cur.schemaVersion, savedAt: cur.updatedAt, savedBy: cur.updatedBy };
   return {
     kind: 'write',
-    doc: { ...doc, revisions: keep, lastRevisionAt: o.at },
-    revision: { id, doc: { name: cur.name, project: cur.project, schemaVersion: cur.schemaVersion, savedAt: cur.updatedAt, savedBy: cur.updatedBy } },
+    doc: { ...doc, revisions: keep, lastRevisionAt: o.at, ...(savedOver ? { overwrote: cur.updatedAt } : {}) },
+    revision: { id, doc: savedOver ? { ...revision, reason: 'saveOver' } : revision },
     pruned: ids.slice(0, ids.length - keep.length),
   };
 }

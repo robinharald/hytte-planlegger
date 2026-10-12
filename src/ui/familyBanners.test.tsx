@@ -31,7 +31,19 @@ function render(node: ReactNode) {
 beforeEach(() => {
   localStorage.clear();
   appStore.getState().replaceProject(start, { readOnly: false, source: 'local' });
-  familyUiStore.setState({ askName: false, notices: [], conflicts: [], overwritten: [], tooNew: [], carryOver: null, leftFamily: null, failed: false, saving: false });
+  familyUiStore.setState({
+    askName: false,
+    notices: [],
+    conflicts: [],
+    overwritten: [],
+    tooNew: [],
+    carryOver: null,
+    otherFamily: null,
+    emptyFamily: false,
+    elsewhere: false,
+    failed: false,
+    saving: false,
+  });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -103,15 +115,76 @@ describe('banners', () => {
 });
 
 describe('final fix round banners', () => {
-  it('a link to a space this device left: «Bytt tilbake» / «Bli her»; «Bli her» closes it', () => {
-    familyUiStore.setState({ leftFamily: 'e2e-old-family-abcdefghijklmn' });
+  const other = 'e2e-old-family-abcdefghijklmn';
+  const info = { count: 3, names: ['Pappa', 'Mamma'], others: true, hereCount: 1, hereOthers: false, proposalName: null };
+
+  it('a link to another space: says what each holds; the space with proposals made by others is highlighted', () => {
+    familyUiStore.setState({ otherFamily: { id: other, proposal: null, info: null } });
     render(<FamilyBanners />);
-    expect(byTestId('left-family-banner')?.textContent).toContain('Denne lenken går til en plass du har byttet bort fra.');
-    expect(byTestId('left-family-back')?.textContent).toBe('Bytt tilbake');
-    expect(byTestId('left-family-stay')?.textContent).toBe('Bli her');
-    act(() => byTestId('left-family-stay')?.click());
-    expect(familyUiStore.getState().leftFamily).toBeNull();
-    expect(byTestId('left-family-banner')).toBeNull();
+    const banner = () => byTestId('other-family-banner');
+    expect(banner()?.textContent).toContain('Denne lenken går til en annen delt plass.');
+    expect(banner()?.dataset.primary).toBe('stay');
+    expect(byTestId('other-family-switch')?.textContent).toBe('Bytt dit');
+    expect(byTestId('other-family-stay')?.textContent).toBe('Bli her');
+    // The link's space answered: proposals made by others there, only this device's own here → «Bytt dit».
+    act(() => familyUiStore.setState({ otherFamily: { id: other, proposal: null, info } }));
+    expect(banner()?.textContent).toContain('Plassen i lenken har 3 forslag (Pappa, Mamma); plassen du bruker nå har 1.');
+    expect(banner()?.dataset.primary).toBe('switch');
+    expect(byTestId('other-family-switch')?.className).toContain('btn-primary');
+    // Proposals by others here as well (or none there): «Bli her».
+    act(() => familyUiStore.setState({ otherFamily: { id: other, proposal: null, info: { ...info, hereOthers: true } } }));
+    expect(banner()?.dataset.primary).toBe('stay');
+    act(() => familyUiStore.setState({ otherFamily: { id: other, proposal: null, info: { ...info, count: 0, names: [], others: false, hereCount: 0 } } }));
+    expect(banner()?.textContent).toContain('Plassen i lenken har ingen forslag (er lenken hel?); plassen du bruker nå har ingen.');
+    expect(banner()?.dataset.primary).toBe('stay');
+    expect(byTestId('other-family-stay')?.className).toContain('btn-primary');
+    act(() => byTestId('other-family-stay')?.click());
+    expect(familyUiStore.getState().otherFamily).toBeNull();
+    expect(banner()).toBeNull();
+  });
+
+  it('a link to one proposal in another space: a copy is offered, never a switch', () => {
+    familyUiStore.setState({ otherFamily: { id: other, proposal: 'p-x', info: { ...info, proposalName: 'Mammas idé' } } });
+    render(<FamilyBanners />);
+    expect(byTestId('other-family-banner')?.textContent).toContain('Denne lenken går til «Mammas idé» i en annen delt plass.');
+    expect(byTestId('other-family-copy')?.textContent).toBe('Hent «Mammas idé» som en kopi hit');
+    expect(byTestId('other-family-switch')).toBeNull();
+    // Not there: only «Bli her».
+    act(() => familyUiStore.setState({ otherFamily: { id: other, proposal: 'p-x', info } }));
+    expect(byTestId('other-family-banner')?.textContent).toContain('Forslaget i lenken finnes ikke i den plassen.');
+    expect(byTestId('other-family-copy')).toBeNull();
+  });
+
+  it('an empty space on a device without a family: asked; another tab switched: reload; «Lagre over» by another device', () => {
+    familyUiStore.setState({ emptyFamily: true });
+    render(<FamilyBanners />);
+    expect(byTestId('empty-family-banner')?.textContent).toContain('Denne plassen er tom. Er lenken hel?');
+    expect(byTestId('empty-family-start')?.textContent).toBe('Begynn her');
+    act(() => familyUiStore.setState({ emptyFamily: false, elsewhere: true }));
+    expect(byTestId('family-elsewhere-banner')?.textContent).toContain('Denne enheten har byttet delt plass i en annen fane.');
+    expect(byTestId('family-elsewhere-reload')?.textContent).toBe('Last på nytt');
+    expect(pillState({ mode: 'shared', phase: 'ready', saving: false, pending: 0, online: true, failed: false, elsewhere: true })).toBe('elsewhere');
+    act(() =>
+      familyUiStore.setState({ elsewhere: false, overwritten: [{ id: 'p-1', name: 'Felles', by: 'Test B', at: new Date().toISOString(), kind: 'savedOver' }] }),
+    );
+    expect(byTestId('overwritten-banner')?.textContent).toContain('«Felles» ble lagret over av Test B. Din utgave ligger under Tidligere versjoner.');
+    expect(byTestId('overwritten-banner')?.dataset.kind).toBe('savedOver');
+  });
+
+  it('Tidligere versjoner: seconds when two share a minute; tagged «din» and «lagt bort ved Lagre over»', async () => {
+    const { revisionLabels } = await import('./familyUi');
+    const at = (h: number, m: number, sec: number) => new Date(2026, 9, 12, h, m, sec).toISOString();
+    const now = new Date(2026, 9, 12, 23, 0, 0).getTime();
+    const base = { proposalId: 'p-1', name: 'Felles', savedBy: 'Test A' };
+    const labels = revisionLabels(
+      [
+        { ...base, id: 'r3', savedAt: at(22, 50, 41), reason: 'saveOver', own: true },
+        { ...base, id: 'r2', savedAt: at(22, 50, 7), own: true },
+        { ...base, id: 'r1', savedAt: at(21, 10, 0), savedBy: null },
+      ],
+      now,
+    );
+    expect(labels).toEqual(['i dag 22.50.41 · Test A · din · lagt bort ved Lagre over', 'i dag 22.50.07 · Test A · din', 'i dag 21.10']);
   });
 
   it('the conflict banner says which version goes under Tidligere versjoner', () => {

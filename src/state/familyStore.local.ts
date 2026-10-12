@@ -31,6 +31,7 @@ import {
   planSave,
   readProposalDoc,
   readRevisionDoc,
+  revisionInfoOf,
   TRASH_MS,
 } from './familyStore';
 import type {
@@ -352,7 +353,7 @@ export function createLocalFamilyStore(opts: LocalFamilyStoreOptions): FamilySto
       const out: RevisionInfo[] = [];
       for (const [revId, raw] of Object.entries(revs)) {
         const doc = isRecord(raw) ? readRevisionDoc(unpack(raw)) : null;
-        if (doc) out.push({ id: revId, proposalId: id, name: doc.name, savedAt: doc.savedAt, savedBy: doc.savedBy });
+        if (doc) out.push(revisionInfoOf(revId, id, doc));
       }
       return out.sort((a, b) => b.savedAt.localeCompare(a.savedAt) || b.id.localeCompare(a.id));
     },

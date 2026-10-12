@@ -847,16 +847,21 @@ describe('final fix round: nothing lost when resolving a conflict or leaving the
     await settle();
     expect(names(dad)).toEqual(['Forslag D', 'Prøve']);
     expect(storedDoc(fake, id).deletedAt).toBeNull();
-    // Edits stay undoable; a copy made after them is no undo step either, and Angre undoes the edit, not the copy.
+    // Edits are undoable; a copy made after them clears the history (last fix round): Angre is greyed out until the
+    // next edit in the copy, and never undoes the edit made before it in «Prøve».
     editNotes(mum, id, 'endret');
+    expect(mum.store.getState().canUndo).toBe(true);
     const copy = mum.store.getState().duplicateVariant(id, 'Kopi av Prøve');
     if (!copy) throw new Error('duplicate');
-    expect(mum.store.getState().canUndo).toBe(true);
+    expect(mum.store.getState().canUndo).toBe(false);
     mum.store.getState().undo();
     expect(names(mum)).toEqual(['Forslag D', 'Prøve', 'Kopi av Prøve']);
-    expect(variant(mum, id)?.notes).toBeUndefined();
+    expect(mum.store.getState().project.activeVariantId).toBe(copy);
+    expect(variant(mum, id)?.notes).toBe('endret');
     expect(variant(mum, copy)?.notes).toBe('endret');
-    mum.store.getState().redo();
+    editNotes(mum, copy, 'i kopien');
+    mum.store.getState().undo();
+    expect(variant(mum, copy)?.notes).toBe('endret');
     expect(variant(mum, id)?.notes).toBe('endret');
     await settle();
     await mum.sync.flush();
@@ -874,3 +879,63 @@ function storedNotesOf(fake: FakeFirestore, id: string): string | undefined {
   const d = fake.docs.get(`families/${FID}/proposals/${id}`);
   return d ? (JSON.parse(String(d.project)) as Project).variants[0].notes : undefined;
 }
+
+describe('last fix round: «Lagre over» tells the other device; switching proposals clears the undo history', () => {
+  it('3: the device whose version a «Lagre over» put aside is told, and the revision is tagged', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum, 'Felles');
+    await settle();
+    dad.sync.stop();
+    const dadSync = createProposalSync({ store: dad.store, family: dad.family, delayMs: 60_000 });
+    cleanups.push(() => dadSync.stop());
+    await settle();
+    editNotes(dad, id, 'pappa');
+    editNotes(mum, id, 'mamma');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(dadSync.getState().conflicts).toHaveLength(1);
+    expect(mum.sync.getState().overwritten).toEqual([]);
+    await dadSync.resolveConflict(id, 'overwrite');
+    await settle();
+    // Mamma's screen changes to Pappa's version, and she is told: her version is under Tidligere versjoner.
+    expect(variant(mum, id)?.notes).toBe('pappa');
+    expect(mum.sync.getState().overwritten).toEqual([expect.objectContaining({ id, name: 'Felles', by: 'Pappa', kind: 'savedOver' })]);
+    const revisions = await mum.family.listRevisions(id);
+    const savedOver = revisions.filter((r) => r.reason === 'saveOver');
+    expect(savedOver).toHaveLength(1);
+    expect(savedOver[0].savedBy).toBe('Mamma');
+    expect(mum.sync.isOwnVersion(id, savedOver[0].savedAt)).toBe(true);
+    expect(dadSync.isOwnVersion(id, savedOver[0].savedAt)).toBe(false);
+    // Pappa is not told anything; a later ordinary save clears the marker, and nobody is told again.
+    expect(dadSync.getState().overwritten).toEqual([]);
+    mum.sync.dismissOverwritten(id);
+    editNotes(mum, id, 'mamma igjen');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(fake.docs.get(`families/${FID}/proposals/${id}`)?.overwrote).toBeNull();
+    expect(mum.sync.getState().overwritten).toEqual([]);
+  });
+
+  it('4: switching to another proposal clears the undo history (Angre never jumps back into the one left)', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    await settle();
+    const p1 = await newProposal(mum, 'P1');
+    const p2 = await newProposal(mum, 'P2');
+    mum.sync.activate(p1);
+    editNotes(mum, p1, 'flyttet badestampen');
+    expect(mum.store.getState().canUndo).toBe(true);
+    expect(mum.sync.activate(p1)).toBe(true); // already shown: nothing changes
+    expect(mum.store.getState().canUndo).toBe(true);
+    mum.sync.activate(p2);
+    expect(mum.store.getState().canUndo).toBe(false);
+    mum.store.getState().undo();
+    expect(mum.store.getState().project.activeVariantId).toBe(p2);
+    expect(variant(mum, p1)?.notes).toBe('flyttet badestampen');
+  });
+});

@@ -13,8 +13,9 @@
  *  The locked base (Forslag D) is never written, and nothing is written while a drag (transaction) is in progress.
  *  The debounce is skipped on `pagehide` / `beforeunload` and when the page is hidden (`visibilitychange`: iOS fires
  *  only that when the user leaves the app). A stamp never goes below the newest version this device has seen.
- *  Making a proposal is no undo step (the history step that added it is taken out): Angre right after «+ Nytt
- *  forslag» would otherwise delete it for everyone, without the two confirmations of the menu.
+ *  Making a proposal or switching to one clears the undo history (Angre is greyed out until the next edit in it):
+ *  Angre right after «+ Nytt forslag» would otherwise delete it for everyone, without the two confirmations of the
+ *  menu, or undo an edit in another proposal.
  *
  * In (the live list):
  *  - a new proposal → added as a variant; a removed one (deleted elsewhere) → removed; a changed one → replaced —
@@ -30,8 +31,9 @@
  *    can bring other content under a stamp this device knows: that counts as a change too.
  *  - A version saved here that another device overwrote or DELETED without having seen it (an offline device) is
  *    reported in `overwritten` (the overwritten one is kept as a revision; the deleted one is in the Papirkurv with
- *    this version's content). The last own version stamps per proposal are kept in storage (`FAMILY_KEYS.ownVersions`),
- *    so this works after a reload too. Leaving the page while a conflict is open asks first (`beforeunload`).
+ *    this version's content). A «Lagre over» from another device over a version saved here is reported too (kind
+ *    'savedOver': the document names the version it wrote over, kept under Tidligere versjoner). The last own version
+ *    stamps per proposal are kept in storage (`FAMILY_KEYS.ownVersions`), so this works after a reload too. Leaving the page while a conflict is open asks first (`beforeunload`).
  *
  * State for the UI (`getState` / `subscribe`): phase, saving / pending / online for the status pill, proposal
  * metadata for the menu ("sist endret av …"), the Papirkurv, conflicts, proposals of a newer app version.
@@ -54,7 +56,8 @@ export interface Conflict {
 
 /**
  * A version saved here that another device overwrote ('changed': kept under Tidligere versjoner) or deleted
- * ('deleted': the Papirkurv has it) without having seen it.
+ * ('deleted': the Papirkurv has it) without having seen it, or wrote over with «Lagre over» ('savedOver': kept under
+ * Tidligere versjoner).
  */
 export interface Overwritten {
   id: Id;
@@ -62,7 +65,7 @@ export interface Overwritten {
   by: string | null;
   at: string;
   /** Absent = 'changed'. */
-  kind?: 'changed' | 'deleted';
+  kind?: 'changed' | 'deleted' | 'savedOver';
 }
 
 export interface SyncState {
@@ -100,6 +103,8 @@ export interface ProposalSync {
   activate(id: Id): boolean;
   /** Close the "overwritten" notice of a proposal. */
   dismissOverwritten(id: Id): void;
+  /** Did this device save the version of `id` stamped `at` (one of its last few)? Tidligere versjoner tags it «din». */
+  isOwnVersion(id: Id, at: string): boolean;
   /**
    * Add variants made outside the store's actions (an opened link, an old autosave) without an undo step; they are
    * saved like new proposals. Ids already in the project are skipped. `activate` shows one of them. `at`: the time
@@ -331,6 +336,15 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
    * `mine` (the version this device knows) went into the Papirkurv: when this device saved it and the delete was made
    * from an older version (its lineage lacks `mine`: an offline device), say so — the Papirkurv has this version.
    */
+  /**
+   * `next` was written with «Lagre over» over `mine`, a version this device saved: it is kept under Tidligere versjoner
+   * (the other device's save kept it), and the user is told.
+   */
+  const tellIfSavedOver = (mine: Proposal, next: Proposal) => {
+    if (next.overwrote !== mine.updatedAt || !ownVersions.has(mine.id, mine.updatedAt)) return;
+    overwritten.set(mine.id, { id: mine.id, name: mine.name, by: next.updatedBy, at: next.updatedAt, kind: 'savedOver' });
+  };
+
   const tellIfDeletedUnseen = (mine: Proposal, list: ProposalList, name: string) => {
     if (!ownVersions.has(mine.id, mine.updatedAt)) return;
     const t = list.trash.find((x) => x.id === mine.id);
@@ -391,6 +405,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       }
       // Saved elsewhere since this device's version.
       rescueIfOverwritten(k.remote, p);
+      tellIfSavedOver(k.remote, p);
       if (!lv || failed.has(p.id)) {
         // Deleted here (the flush deletes it), or a refused write rolled back (the retry writes it again).
         known.set(p.id, { remote: p, local: k.local });
@@ -602,12 +617,21 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
   opts.doc?.addEventListener('visibilitychange', onVisibility);
 
   /**
-   * Making a proposal («+ Nytt forslag», «Kopier», a file) is not an undo step: Angre right after it would delete it
-   * for everyone, without the two confirmations. When the history gets the step that added a proposal no other state
-   * in the history has, that step is taken out and the proposal is put into every other state (as for a change from
-   * another device). Deleting stays in the menu, with its confirmations.
+   * Making a proposal («+ Nytt forslag», «Kopier», a file) is not an undo step, and it clears the undo history: Angre
+   * right after it would otherwise delete it for everyone (without the two confirmations), or undo an edit made before
+   * it in another proposal. When the history gets the step that added a proposal no other state in the history has,
+   * the history is cleared (Angre is greyed out until the next edit). Switching proposals clears it too (`activate`).
+   * Deleting stays in the menu, with its confirmations, and stays undoable.
    */
   let detaching = false;
+  const clearHistory = () => {
+    detaching = true;
+    try {
+      store.getState().clearHistory();
+    } finally {
+      detaching = false;
+    }
+  };
   const unsubscribeHistory = store.temporal.subscribe((t, prevT) => {
     if (detaching || stopped || t.futureStates.length > 0) return;
     const top = t.pastStates.at(-1)?.project;
@@ -615,18 +639,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     const inTop = new Set(top.variants.map((v) => v.id));
     const added = store.getState().project.variants.filter((v) => !inTop.has(v.id) && !isBase(v));
     const fresh = added.filter((v) => !t.pastStates.some((p) => p.project?.variants.some((x) => x.id === v.id)));
-    if (fresh.length === 0) return;
-    const withFresh = (p: Project): Project => {
-      const ids = new Set(p.variants.map((v) => v.id));
-      const extra = fresh.filter((v) => !ids.has(v.id));
-      return extra.length > 0 ? { ...p, variants: [...p.variants, ...extra] } : p;
-    };
-    detaching = true;
-    try {
-      store.temporal.setState({ pastStates: t.pastStates.slice(0, -1).map((p) => (p.project ? { ...p, project: withFresh(p.project) } : p)) });
-    } finally {
-      detaching = false;
-    }
+    if (fresh.length > 0) clearHistory();
   });
 
   return {
@@ -654,7 +667,9 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
         const here = store.getState().project.variants.find((x) => x.id === id);
         const stored = c.remote?.variant ?? known.get(id)?.remote.variant;
         if (here && (!stored || !sameContent(here, stored))) {
-          void family.keepRevision(id, here, { savedAt: stamp(storedAt(id)), savedBy: cleanName(family.whoAmI()) }).catch(() => false);
+          const savedAt = stamp(storedAt(id));
+          ownVersions.add(id, savedAt);
+          void family.keepRevision(id, here, { savedAt, savedBy: cleanName(family.whoAmI()) }).catch(() => false);
         }
         const changes = new Map<Id, Variant | null>();
         if (c.remote) {
@@ -675,7 +690,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
         const at = stamp(c.remote?.updatedAt, storedAt(id));
         own.set(`${id}@${at}`, v);
         // «Lagre over»: the version written over is always kept under Tidligere versjoner (whatever the 5-minute rule).
-        const r = await family.saveProposal(v, { base: null, force: true, forceRevision: true, at });
+        const r = await family.saveProposal(v, { base: null, force: true, forceRevision: true, overwrite: true, at });
         if (r.status === 'saved') {
           ownVersions.add(id, r.proposal.updatedAt);
           known.set(id, { remote: r.proposal, local: v });
@@ -727,9 +742,14 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
 
     activate(id) {
       if (!store.getState().project.variants.some((v) => v.id === id)) return false;
+      const switched = store.getState().project.activeVariantId !== id;
       applyChanges(new Map(), id);
+      // Another proposal on screen: Angre never jumps back to an edit in the one left.
+      if (switched) clearHistory();
       return true;
     },
+
+    isOwnVersion: (id, at) => ownVersions.has(id, at),
 
     stop() {
       stopped = true;

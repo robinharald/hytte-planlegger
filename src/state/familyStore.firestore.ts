@@ -38,6 +38,7 @@ import {
   planSave,
   readProposalDoc,
   readRevisionDoc,
+  revisionInfoOf,
   TRASH_MS,
 } from './familyStore';
 import type {
@@ -487,7 +488,7 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
       const out: RevisionInfo[] = [];
       for (const item of items) {
         const doc = readRevisionDoc(item.data);
-        if (doc) out.push({ id: item.id, proposalId: id, name: doc.name, savedAt: doc.savedAt, savedBy: doc.savedBy });
+        if (doc) out.push(revisionInfoOf(item.id, id, doc));
       }
       return out.sort((a, b) => b.savedAt.localeCompare(a.savedAt) || b.id.localeCompare(a.id));
     },
