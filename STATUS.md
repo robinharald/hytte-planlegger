@@ -1,13 +1,140 @@
 # Status
 
-Oppdatert 2026-10-12 (fikserunde 2a integrert etter gjennomgangen av fase 2a). Integratoren holder denne fila
-oppdatert: gjort / neste / kjente problemer.
+Oppdatert 2026-10-12 (fikserunde 2a, runde 2 integrert etter den andre gjennomgangen av fase 2a). Integratoren holder
+denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
 - **Fase 1** – Forslag D vises riktig i plan og 3D med romskjema og arealer; lagring, versjoner, deling og publisering.
 - **Fase 2a** – redigering: egne forslag, vegger, dører/vinduer, rom, bygningsdeler, nye bygg på terrassen, terrassen,
   badestampen; spøkelser for det som er flyttet/fjernet fra hytta i dag; PC og iPhone (`docs/phase2-plan.md`, rev. 3).
 - **Fase 2b** – møbler, delte forslag for familien (Firestore), offline/PWA.
+
+## Fikserunde 2a, runde 2 (12. okt 2026)
+
+Den andre gjennomgangen (redigeringskjernen og brukervennlighet, PC og iPhone) bekreftet at funnene fra første runde
+var rettet (dra-ytelsen delvis), og fant 3 store og 12 mindre feil som var igjen eller nye. De er rettet i tre
+parallelle deler (redigeringskjernen, planen, UI) og satt sammen her; dra-ytelsen for vegger og kanter er fortsatt
+bare delvis rettet (se «Ytelse»).
+
+### Gjort
+
+- **Glassutbygget (Leseskrok) følger status- og arealreglene** (stort funn). Det var den eneste delen av hytta i dag
+  uten egen «i dag»-del, så en flyttet glassvegg ble stående som «Hytta i dag» og alt Leseskrok fikk, ble regnet som
+  eksisterende areal.
+  - Seeden (`SEED_REVISION` 5) gir glassutbygget delen `part-glass-old` «Glassutbygg i dag» over hele omrisset.
+    Romskjema, arealer og farger for Forslag D er uendret (BYA 235,50, BRA 170,07, aksemål 170,16, 27 rom).
+  - En eksisterende bygningsdel uten deler (en kopi lagret før revisjon 5) får omrisset sitt som del «Hytta i dag»
+    første gang en endring flytter omrisset (`edit.ts todayPart`).
+  - Når en åpen sammenføyning dekker en ny bit av en vegg fra hytta i dag, får biten et spøkelse (glassets østvegg
+    +0,5 m åpner hovedhusets sørvegg x 9–9,5). «Ta tilbake» på det flytter den andre kanten tilbake.
+  - Østveggen +0,5 m: den flyttede veggen er ny med spøkelse, BRA og aksemål for hytta i dag står (103,51 / 98,00).
+    BYA i dag går 102,18 → 101,905, fordi de gamle kledningsstripene nå ligger inne i bygget (samme regel som for
+    vestgavlen).
+  - Et hjørne dratt ut og «Ta tilbake» på spøkelsene, i begge rekkefølger: ingen spøkelser igjen, seeden igjen (før:
+    et løst «Fjernet»-spøkelse utenfor bygget som gjorde glasset bredere igjen uten spøkelse).
+- **«Ta tilbake» etter at en vegg er flyttet** henter også naboveggen som flyttingen la like ved siden av linja
+  (`w-105-diag` → `w-104-diag`, `w-103-korr` → `w-104-103`). Alle eksisterende vegger flyttet ±0,2 / ±0,5 m og tatt
+  tilbake gir seeden igjen: 98 av 98 (før 82 av 86).
+- **Dører og vinduer som en kortere kant klemte**, går tilbake på plass og blir «Hytta i dag» igjen når kanten flyttes
+  tilbake for hånd (`door-green-e` ved nordkanten +0,5 / −0,5, `win-glass-e` / `-w`, `win-105-s`). En dør brukeren
+  selv har flyttet langs veggen, blir stående.
+- **Drag av dører og vinduer er raske**: åpningene er et eget, lite avledningstrinn (`derive.ts`), så et bilde i et
+  dør-drag gjenbruker vegger, rom, tak og arealer: 0,9 ms i Node (før ca. 47 ms; se «Ytelse»).
+- **«Roter 90°» holder kontakten**: en enhet med en kant mot en annen bygningsdel eller terrassekanten dreies om
+  midten og skyves tilbake på den linja. En Vedskjul inntil fløyas nordvegg står inntil etter to drei, uten
+  overlapp-advarsel, og står der den startet. En Vedskjul på terrassens nordkant blir stående på kanten.
+- **Telefon: vegger, dører og spøkelser kan trykkes igjen** (stort funn). Treffbåndet er 0,25 m, men minst 10 px og
+  høyst 24 px. Romnavnenes treffflater ligger nå under vegger, åpninger og spøkelser. Ved startzoom (11,6 px/m) velger
+  et trykk ±4 px fra en vegg eller dør den (før ±1,4 px), og 23 av 24 romnavn velger rommet.
+- **Snapping når hele ting flyttes** (stort funn), for enheter, bygningsdeler, terrassen og badestampen
+  (`snapPolygon` / `snapFootprint` / `snapCircle`): et mål trekker høyst 0,25 m, aldri tilbake til egen startlinje,
+  tar aldri tilbake mer enn halve draget og legger aldri til mer enn halvparten av det. Telefon: en Vedskjul dratt 2 m
+  vest flytter seg 2 ± 0,25 m (før 4 m), 1 m nord ca. 1 m (før 0). PC: hele fløya 0,4 m øst flytter seg 0,4 m.
+- **Punktsnapping ved endepunkt-drag**: ingen punkter ved startpunktet, høyst 0,25 m, aldri mer enn halve draget
+  tilbake, og Alt slår punktene av. Det gjelder også hjørnene på bygningsdeler og terrassen og frie vegger. Enden av
+  `w-vf-korr` dratt 0,36 m ved startzoom på PC flytter seg (før: ingenting).
+- **Endehåndtak** på vegger og åpninger vises fra én håndtaksdiameter på skjermen (døra `door-mellom-vf` har dem ved
+  startzoom på PC). Hjørne- og kanthåndtak vises fortsatt fra tre.
+- **Velge en satt ut enhet igjen**: første trykk velger enheten (den kan dras og dreies med en gang), neste trykk
+  rommet, så enheten igjen. På telefon har rommets mini-linje også «Roter 90°» og «Velg bygningsdelen».
+- **Romnavn dekker ikke spøkelser**: med «Vis hva som er nytt» holder etikettene seg unna spøkelsene, og spøkelsene
+  ligger over etikettenes treffflater. Et klikk midt på spøkelset av en slettet `w-104-103` velger spøkelset.
+- **Advarselstoaster**: lukkes ved neste steg, og så snart advarselen er borte (veggen tegnet, rommet navngitt:
+  toasten går). Det er bare én om gangen.
+- **Advarsler sier hvor**: «Vinduet i ytterveggen mot øst i Soverom (ny fløy) sitter i en vegg som nå er dekket av
+  «Vedskjul».»; taket «i enden mot øst»; «Trappa fra terrassen mot sør står der det nå er «Vedskjul»»; en løs vegg
+  «Veggen i «Ny tverrfløy» …».
+- **Telefon: toaster dekker ikke verktøylinja**: de står 8 px under verktøylinja og hjelpelinja, og følger med når
+  siden rulles.
+- **Ordbruk**:
+  - «Herav hytta i dag»; i lesefeltene «Høyde over gulv» og «Trinn», som i redigererne.
+  - «Dør/vindu» for en valgt dør eller et vindu, og «Slik bruker du planleggeren» i Hjelp.
+  - «eget bygg» i verktøytipset for Nytt bygg, og førstegangskortet nevner ikke møbler.
+  - Ingen «Klikk» igjen, heller ikke i kommentarer.
+- **Planen tegner mindre under drag**: uendrede lag og elementer gjenbrukes mellom bildene (React, dev-bygg i jsdom):
+  - et `w-gang-n`-drag går fra 16 til 7–8 ms per bilde, uten at konstruksjon, mål, ute, møbler, bygningsdeler og
+    spøkelser tegnes på nytt;
+  - et dør-drag går fra 3 til ca. 4,5 ms per bilde, som er kostnaden ved gjenbruken.
+- **Tester**: `npm test` 1245 tester i 65 filer, alle grønne (1184 før runden). `npm run typecheck`, `npm run lint`,
+  `npm run build` og `npx tsc --noEmit -p e2e/tsconfig.json` er rene. `npm run e2e` gir 31 av 31 grønne (22 før):
+  - `editing.spec.ts` (PC) har fått disse testene:
+    - (o) glassets østvegg 0,5 m: ny vegg med spøkelse, BRA og aksemål i dag uendret, BYA i dag 101,9;
+    - (p) et glasshjørne dratt ut og «Ta tilbake» på hvert spøkelse: ingen igjen, seeden igjen;
+    - (q) `w-105-diag` flyttet 0,2 m og tatt tilbake: seeden igjen, naboen også;
+    - (r) endehåndtaket på `w-vf-korr` dratt 0,36 m ved startzoom;
+    - (s) en Vedskjul inntil fløya dreid to ganger: fortsatt inntil, ingen overlapp;
+    - (t) et klikk midt på spøkelset av `w-104-103` velger det.
+
+    I tillegg sjekker (c) at advarselstoasten går når rommet får navn, (e) at døra har endehåndtak, og (n) at
+    Vedskjulen blir stående på terrassekanten.
+  - `phone-editing.spec.ts` (iPhone, startzoom) har fått:
+    - trykk ±4 px ved tre vegger og en dør;
+    - Vedskjul 2 m vest = 2 ± 0,25 m og 1 m nord ≈ 1 m;
+    - første trykk gir enheten, andre rommet, og «Velg bygningsdelen»;
+    - slette-toasten dekker verken verktøylinja eller hjelpelinja.
+  - Nye skjermbilder: `plan-glass-bump.png` (glassets østvegg flyttet: ny vegg, gammel vegg stiplet) og
+    `phone-toast.png` (toasten under verktøylinja). `phone-edit.png` er tatt på nytt.
+
+### Ytelse (målt 12. okt på denne maskinen)
+
+| Hva | Før runden | Nå |
+|---|---|---|
+| Avledning, bare en åpning endret (Node, 20 kjøringer) | ca. 40 ms | 0,2–0,9 ms (median 0,3) |
+| Avledning, en vegg flyttet (`w-gang-n`) | – | ca. 41 ms (40–48) |
+| Avledning, en blokk-kant flyttet (fløyas østkant) | 35–40 ms (fase 2a) | ca. 40 ms (39–42) |
+| Avledning, badestampen flyttet | – | ca. 4 ms |
+| Ett dra-bilde i Node, dør (`updateDrag` + avledningen ved tegning) | ca. 47 ms | 0,9 ms |
+| Ett dra-bilde i Node, `w-gang-n` / fløyas østkant | 52 / 57 ms (gjennomgangen, annen last) | 46 ms (i praksis uendret) |
+| Nettleser (dev-bygg, PC 1400 × 900, 30 musebevegelser), dør-drag | lange oppgaver ca. 95 ms | 16–18 ms per bilde, ingen lange oppgaver |
+| Nettleser, badestamp-drag | 17 ms per bilde | 17 ms (p90 22) |
+| Nettleser, `w-gang-n`-drag | lange oppgaver ca. 95 ms | lange oppgaver median 70 ms (p90-bilde 76 ms) |
+| Nettleser, fløyas østkant | lange oppgaver ca. 95 ms | lange oppgaver median 63 ms (p90-bilde 65 ms) |
+
+Ærlig sagt:
+- Dører, vinduer, badestampen, terrassen og trær dras nå jevnt.
+- Vegger og kanter avleder fortsatt hele byggetrinnet (vegger, rom, tak, arealer) én gang per bilde. Det gir ca. 13–15
+  bilder i sekundet i dev-bygget på denne PC-en, og færre på en telefon.
+- Det neste steget er å gjøre vegg- og romavledningen inkrementell (se «Kjente problemer»).
+
+### Avgjort i runde 2 (Robin kan endre)
+
+- **Glassutbygget har en egen «i dag»-del** (`SEED_REVISION` 5).
+  - Eksisterende autolagringer får «Forslag D er oppdatert (revisjon 5)» med «Hent ny Forslag D».
+  - Egne forslag lagret før dette beholder glassutbygget uten del. Det får delen fra omrisset første gang det endres.
+  - Et glassutbygg som alt var gjort større før revisjon 5, beholder den økningen som «hytta i dag».
+- **BYA i dag kan synke litt** når en gammel kant flyttes ut: kledningsstripa som havner inne i bygget, telles som ny
+  (glassets østvegg +0,5: 102,18 → 101,905), som vedtatt for vestgavlen.
+- **Treffbåndet ved berøring er minst 10 px, ikke 12.** Ved 11,6 px/m ligger hvert punkt i «Bod (ny)» innenfor 5,5 px
+  av en vegglinje, så 12 px ville gitt bare 21 av 24 romnavn.
+- **Snapping når ting flyttes** legger aldri til mer enn halve draget (`SNAP_ADD_FRACTION` 0,5). Skyggen fra Nytt bygg
+  fester seg innen 0,25 m (Vedskjul satt ut 5 cm fra terrassekanten fester seg fortsatt).
+- **En enhet som dreies inntil noe**, kan bli stående 5 cm utenfor 10 cm-rutenettet; frie enheter dreies på
+  rutenettet som før.
+- **Snapping (erstatter «Punkter … beholder 12 / 24 px» fra første runde)**:
+  - Under et drag gjelder samme regler for punkter som for linjer: høyst 0,25 m, ikke ved startpunktet, aldri mer enn
+    halve draget tilbake, og Alt slår dem av.
+  - Ingen snapping (heller ikke hjelpelinjene) tar tilbake mer enn halve draget.
+  - Uten drag (Vegg-, Mål- og plasseringsverktøyet) beholder punktene og hjelpelinjene 12 / 24 px.
 
 ## Fikserunde 2a (12. okt 2026)
 
@@ -43,17 +170,21 @@ sammen her.
   og med R. Rommet, veggene, åpningene og taket dreies med; hytta i dag kan ikke dreies.
 - **«Gi navn»** velger det nye rommet etterpå (før: «Det som var valgt finnes ikke lenger»).
 - **Håndtak skjuler ikke små ting**: ende-, hjørne- og kanthåndtak vises ikke når tingen er kortere enn tre
-  håndtak på skjermen, endehåndtak på vegger og åpninger står utenfor endene, og et trykk inne i tingen flytter den.
+  håndtak på skjermen (runde 2: endehåndtak fra én), endehåndtak på vegger og åpninger står utenfor endene, og et
+  trykk inne i tingen flytter den.
   En dør dratt 1,5 m på telefonen beholder bredden; en ny Vedskjul dras etter kroppen.
 - **Snapping slåss ikke med korte drag**: en vegg snapper aldri tilbake til sin egen linje (eller linjer på linje
   med den), linjer trekker høyst 0,25 m, en snap tar aldri tilbake mer enn halve draget, og Alt slår av
   linjesnapping. `w-gang-n` dratt 0,3 m ved startzoom havner på 3,7.
 - **Trykk på telefonen velger rom**: treffbåndet rundt vegger og åpninger er min(24 px, 0,25 m) ved berøring, og
   romnavnet i planen er et treff for rommet: 23 av 24 rom ved startzoom (før 6). Unntaket er Korridor (øvre), der
-  etikettpunktet ligger i trappa.
+  etikettpunktet ligger i trappa. (Runde 2: båndet ble bare ±1,4 px ved startzoom; nå minst 10 px, og romnavnene
+  ligger under veggene.)
 - **Forslag D**: et drag av det valgte viser låsetoasten én gang og verken panorerer eller flytter.
 - **Dra-sløyfa**: pekerbevegelser samles til én oppdatering per skjermbilde; drag av åpninger og ting ute (terrasse,
-  trapp, badestamp, trær) hopper over romavstemmingen og dens avledning (0 ekstra avledninger per bilde).
+  trapp, badestamp, trær) hopper over romavstemmingen og dens avledning. Rettelse (runde 2): et dør-drag ble likevel
+  ikke raskere, fordi planen avledet hele byggetrinnet når den tegnet (ca. 47 ms per bilde); det er rettet i runde 2
+  (0,9 ms).
 - **Telefon**: Egenskaper-arket åpner lavt (40 % av høyden, bare de viktigste feltene; «Vis mer» gir resten), siden
   rulles så verktøylinja står øverst, og planen panorerer så det valgte står synlig over arket (`viewportInsets`).
   Mini-linja følger det valgte når siden rulles, legger seg under det når det ikke er plass over, og dekker aldri
@@ -92,7 +223,7 @@ sammen her.
   en eksisterende nabobygningsdel kan krympe den eksisterende delen (bod-fløya når hovedhusets nordkant går +1);
   bitene den mister får spøkelser.
 - **Snapping**: linjer trekker høyst 0,25 m (uansett zoom), aldri tilbake til sin egen startlinje, og Alt slår av
-  linjesnapping. Punkter (vegg-ender, hjørner) og hjelpelinjene gjennom startpunktet beholder 12 / 24 px.
+  linjesnapping. (Punktene og hjelpelinjene ble skjerpet i runde 2, se «Avgjort i runde 2».)
 - Dør/vindu som settes oppå en åpning i samme veggbit flyttes til nærmeste ledige plass (10 cm-rutenett); finnes
   ingen, blir den stående og overlapp-advarselen vises.
 - Bygg satt ut med «Nytt bygg» kan roteres 90° om midten; hytta i dag kan ikke (samme regel som flytting).
@@ -107,7 +238,7 @@ sammen her.
   v1 → v2 er feltvis idempotent; en migrert fase-1-variant er ikke låst. Fase 1-seeden er fryst i
   `src/model/seed/frozen/forslagD.schema1.json`, så gamle `#d=`-lenker dekodes mot den (rekkverk og tre trapper beholdes).
   En autolagring fra fase 1 kopieres til `hytte-planlegger:project.backup-v1` rett før første lagring i skjema 2.
-- **Seeden** (`SEED_REVISION` 4): Forslag D er låst; terrassen er uendret (fra x 9, glassrekkverk 1,05 m, tre trapper),
+- **Seeden** (`SEED_REVISION` 4; 5 etter fikserunde 2a, runde 2): Forslag D er låst; terrassen er uendret (fra x 9, glassrekkverk 1,05 m, tre trapper),
   rekkverket går nå (9; −2,11) → … → (9,11; 12,1) – 11 cm kortere i hver ende enn før, fordi frie kanter stopper ved
   kledningen. Eksisterende autolagringer får «Forslag D er oppdatert (revisjon 4)» med «Hent ny Forslag D» (legges til
   som et nytt, låst forslag). BYA 235,50 (bygg 178,33 + terrasse 57,18, eks. 102,18), BRA 170,07, aksemål 170,16.
@@ -183,7 +314,8 @@ sammen her.
 ### Neste
 
 1. Robin ser over skjermbildene og prøver redigeringen (lokalt med `npm run dev`, eller etter push på nettsiden).
-   3D starter nå i naturlige farger med en egen bryter (se «Avgjort i fikserunden»).
+   3D starter nå i naturlige farger med en egen bryter (se «Avgjort i fikserunden»). Seeden er revisjon 5, så en
+   autolagring fra før får «Hent ny Forslag D» (se «Avgjort i runde 2»).
 2. Kjøre fase 2b (`docs/workflows/phase2b-furniture-offline.workflow.js`): møbelkatalog (biblioteket er en plassholder
    nå; 3D-mottaket for slipp finnes), delte forslag i Firestore med Papirkurv og revisjoner, statuspillen, «Send
    forslaget» med familielenke, PWA/offline.
@@ -202,13 +334,22 @@ sammen her.
   advarselen «stikker opp i taket». Flytt dem i Egenskaper eller i planen.
 - En vegg langs en gulvsone-kant (f.eks. trinnet i korridoren) etterlater en smal flate med «Gi navn» når den flyttes
   (gulvtrinnet står der det står).
-- En NY åpning som klemmes av flere separate endringer som krymper veggen, kommer ikke tilbake av seg selv (ett
-  sammenhengende drag gjør det). Åpninger i hytta i dag blir nye med spøkelse, og «Ta tilbake» setter dem på plass.
+- En NY åpning som klemmes av flere separate endringer som krymper veggen, kommer ikke tilbake av seg selv når veggen
+  blir lengre igjen (ett sammenhengende drag gjør det). Åpninger fra hytta i dag kommer tilbake til spøkelset sitt
+  (runde 2), men nye åpninger har ikke noe spøkelse å gå tilbake til.
+- Når glassutbygget gjøres mindre, vises biten av hovedhusets vegg som lukker åpningen som «Hytta i dag», selv om den
+  er ny.
+- Et eksisterende vindu på en vegg-bit som en åpen sammenføyning nå dekker, får ingen egen bokføring (bare
+  `opening-on-removed-edge`-advarselen); vegg-biten får spøkelse.
+- Tasten R på rommet i en satt ut enhet gjør ingenting (mini-linja og Egenskaper for bygningsdelen har «Roter 90°»).
 - Telefon: topplinja med forslagsknappene bruker ca. 250 px før planen begynner (når Egenskaper-arket åpnes, rulles
   siden så verktøylinja står øverst).
 - Telefon: et trykk på etikettpunktet til Korridor (øvre) treffer trappa (etikettpunktet ligger i trappa).
-- Dra-ytelse: et bilde der avstemmingen endrer rommene, avleder fortsatt to ganger (krever at byggetrinnet i
-  `derive.ts` deles); drag av vegger og kanter er ca. 40–60 ms per bilde på PC, nå én gang per skjermbilde.
+- Dra-ytelse for vegger og blokk-kanter: hvert bilde avleder hele byggetrinnet (ca. 40–48 ms i Node; lange
+  oppgaver ca. 65–70 ms i dev-bygget på PC, ca. 13–15 bilder i sekundet, tregere på telefon). Et bilde der
+  avstemmingen endrer rommene, avleder fortsatt to ganger. Neste steg: inkrementell vegg- og romavledning (bare den
+  delen av vegg-grafen som endres), eller et lettere forhåndsbilde under draget og full avledning ved slipp. Dører,
+  vinduer og ting ute er raske (se «Ytelse»).
 - BRA eks. kan stige litt når en gammel kant flyttes ut, fordi det høyere taket gir hemsen mer målbar høyde
   (nordkanten +1: 103,51 → 104,72).
 - Møbler: bare plassholdere (rektangel med navn, 1 × 1 × 1 m uten katalog); biblioteket er tomt (fase 2b).
@@ -371,7 +512,7 @@ Aksemål 170,16 m² (98,00 + 72,16). Korridor nedre + øvre = 10,28 m² mot IFC-
 2. Geometri: gi reserve-advarslene en egen `ModelWarning`-type i stedet for `'generic'` med «geometry fallback:», og
    legge eks./nytt-delingen av bygg og terrasse inn i `AreaSummary` (UI-en regner den ut selv i `ui/areaFigures.ts`).
 3. Husk: enhver endring av innholdet i Forslag D må øke `SEED_REVISION`, ellers dekodes gamle delingslenker mot en endret
-   seed (revisjon 4 er skjema 2; møblene i fase 2b blir revisjon 5).
+   seed (revisjon 4 er skjema 2, revisjon 5 glassutbyggets «i dag»-del; møblene i fase 2b blir revisjon 6).
 
 ## Avgjort av Robin
 

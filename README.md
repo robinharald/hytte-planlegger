@@ -28,7 +28,8 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
 - **Forslag D er grunnlaget og kan ikke endres.** Trykk «+ Nytt forslag» (eller «Nytt forslag» i hjelpelinja) for å få
   en kopi du kan endre. Alt i kopien kan endres, også hytta slik den er i dag.
 - **Trykk for å velge, dra det valgte for å flytte.** En vegg, en dør, et hjørne eller et helt nytt bygg flyttes ved å
-  trykke på det og så dra det. Å dra på noe annet flytter planen; hjulet eller to fingre zoomer. Håndtakene (hvite
+  trykke på det og så dra det. Første trykk på et nytt bygg med ett rom (et vedskjul) velger bygget, neste trykk
+  rommet i det. Å dra på noe annet flytter planen; hjulet eller to fingre zoomer. Håndtakene (hvite
   sirkler) flytter hjørner og kanter; «+» på en terrassekant lager et nytt hjørne.
 - **Verktøylinja:** Velg · Vegg (trykk der veggen begynner og der den slutter) · Dør/vindu (velg type, trykk på en
   vegg) · Nytt bygg (velg Vedskjul, Bod, Badstue, Anneks eller Eget bygg, «Roter», trykk der det skal stå – det fester
@@ -85,10 +86,14 @@ npm run dev        # http://localhost:5173
   telefon. `e2e/editing.spec.ts` redigerer et nytt forslag på PC (flytter fløyas yttervegg, setter et vedskjul på
   terrassen og fester det til fløya, tegner en vegg og gir rommet navn, skriver inn en dybde, flytter en dør og sletter
   en vegg i hytta i dag og tar dem tilbake, sjekker at Forslag D nekter alt, flytter badestampen, korte drag, Angre i
-  toasten, trær per forslag, vestgavlen flyttet, hele fløya flyttet, et vedskjul rotert), og
+  toasten, trær per forslag, vestgavlen flyttet, hele fløya flyttet, et vedskjul rotert; glassutbyggets østvegg og
+  hjørne flyttet og tatt tilbake, en diagonal vegg flyttet og tatt tilbake, enden av en vegg dratt kort, et vedskjul
+  inntil fløya dreid to ganger, et spøkelse valgt med et klikk, advarselstoasten som går når rommet får navn), og
   `e2e/phone-editing.spec.ts` gjør det samme på en iPhone 13 med berøring (panorering, dra en vegg, skrive inn et tall
   i arket nedenfra, sette inn en dør; ved startzoom: trykk på romnavn, dra en dør og et nytt bygg uten å endre
-  størrelsen, arket lar det valgte synes, alle seks verktøy). Skjermbildene i `e2e/screenshots/`
+  størrelsen, arket lar det valgte synes, alle seks verktøy, trykk 4 px ved siden av vegger og en dør, et vedskjul
+  som følger fingeren, første og andre trykk på et nytt bygg, toasten under verktøylinja). Skjermbildene i
+  `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
   `e2e/playwright-report/` og `e2e/test-results/` (ikke i git).
 - Typesjekk av testoppsettet: `npx tsc --noEmit -p e2e/tsconfig.json`.

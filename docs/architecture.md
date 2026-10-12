@@ -100,12 +100,15 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
   `block-overlap` (BYA still via union).
 - **Parts** split one block into existing/new areas without splitting its roof: the main house is one block
   [0,16]×[0,6.2] with parts "eksisterende" [0,12] and "stueforlengelse" [12,16]; the bod wing is one block
-  [5,9]×[6.2,12.1] with parts [6.2,10.1] existing and [10.1,12.1] new. Parts and floor zones are clipped to the
+  [5,9]×[6.2,12.1] with parts [6.2,10.1] existing and [10.1,12.1] new; the glass bump [5,9]×[−2,0] has one existing
+  part `part-glass-old` over its whole outline (`SEED_REVISION` 5). Parts and floor zones are clipped to the
   block polygon at derive time; the uncovered remainder is an implicit part/zone (no tiling invariant, so dragging a
   block edge just works). The implicit remainder of a block WITH explicit parts is new (`isNew: true`, phase 2): an
   explicit existing part never grows, so dragging an edge of today's cabin outwards adds new area and the existing
-  BYA stays (`walls.ts implicitIsNew`; the same rule in roof.ts and in the fallback regions of areas.ts). Overlapping
-  parts → `parts-overlap`.
+  BYA stays (`walls.ts implicitIsNew`; the same rule in roof.ts and in the fallback regions of areas.ts). An EXISTING
+  block without parts (a copy saved before revision 5) gets its pre-edit outline as the existing part `${id}-today`
+  ("Hytta i dag") the first time an edit changes its outline (copy-on-write, `edit.ts todayPart` in
+  `applyBlockPolygons`), so the same rule covers it. Overlapping parts → `parts-overlap`.
 - **Ghosts** (phase 2, docs/phase2-plan.md §1.2): walls and openings with status `removed` (`DerivedWall.isGhost`,
   `DerivedOpening.isGhost`) stay in the derived walls / openings and the `removed` wall unions for the plan, which
   draws them dashed ("Fjernet") only while "Vis hva som er nytt" is on. They take no part in room detection, areas,
@@ -114,7 +117,11 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
   and so do the ranges a shortened existing edge lost (partner stubs included; first free id `…/ghost`, `…/ghost/2`).
   Existing openings that a block-edge move carries or clamps turn new and leave their ghost at the old centre, hosted
   on a removed `'exterior-old'` wall with the edge ghost's id (`ensureGhostHost`), so the plan draws the old wall band
-  with its windows and "Ta tilbake" on the edge ghost puts the edge and those openings back.
+  with its windows and "Ta tilbake" on the edge ghost puts the edge and those openings back. When an `'open'` junction
+  newly covers a stretch of today's wall on a partner edge that did not move (the glass bump's east wall +0.5 m opens
+  blk-main's south wall x 9..9.5), that stretch gets an edge ghost too (`edit.ts addJunctionGhosts`; stretches that
+  were open already get none); `healGhosts` keeps it while the junction still covers it, and its "Ta tilbake" moves
+  the other block's edge back (`uncoverJunction`).
 - **Trees** (fix round after 2a): `Site.trees` are today's trees. A proposal gets its own copy in the optional
   `Variant.trees` on its first tree edit (copy-on-write in `editActions.ts`: add, move, delete, drag, nudge), so the
   site and Forslag D never change. Every reader goes through `treesOf(project, variant)` (geometry/derive.ts) =
@@ -165,7 +172,8 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
    outline. Exposes `roofUndersideAt(roof, x, y)` and
    `combinedUndersideAt(roofs, x, y)` = MAX over roofs whose outline contains the point (null if none) — the single
    function used by wall tops, opening head checks, chimney exit, measurable area and walk mode.
-3. `deriveWalls(variant, blocks, roofs)` (`walls.ts`) → exterior pieces (split at part + zone boundaries, junction
+3. `deriveWalls(variant, blocks, roofs)` (`walls.ts`; = `deriveWallPieces` then `attachWallOpenings`, which the
+   derive stages call separately) → exterior pieces (split at part + zone boundaries, junction
    handling, mitred corners at block vertices, butt ends elsewhere) + stored walls (interior, exterior-old,
    divider); each with footprint, `topProfile` (exact piecewise-linear upper envelope; level ceiling / fixed height
    where applicable), `levelIds` (stored walls: their own level plus every higher level whose elevation + 1.0 + 0.3
@@ -230,16 +238,23 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2)
    room of the item's storey containing the position, `catalog: null`, no clearances / collisions / warnings yet.
 
 **Memo split** (docs/phase2-plan.md §2): `deriveVariant` is memoised on (variant, site, terrain) and is assembled from
-three stages, each memoised on the identities of what it reads (nested WeakMaps, `IdentityMemo` in derive.ts):
-- building — (site, terrain, levels, blocks, walls, openings, rooms, structure): blocks, roofs, walls, rooms,
-  floors, structure, foundations, dimensions, wall unions, ground works, trees, BRA / axis / room areas
-  (`computeBuildingAreas`) and their warnings;
+stages, each memoised on the identities of what it reads (nested WeakMaps, `IdentityMemo` in derive.ts):
+- building — (site, terrain, levels, blocks, walls, rooms, structure, ghosts): blocks, roofs, the wall pieces WITHOUT
+  openings (`deriveWallPieces`), rooms, floors without the door thresholds, structure, foundations, dimensions, wall
+  unions, ground works, BRA / axis / room areas (`computeBuildingAreas`) and their warnings;
+- openings (second fix round after 2a) — (building, openings): the openings attached to copies of the pieces that
+  hold them (`attachWallOpenings`; pieces without openings stay the same objects), the door thresholds (the stairwell
+  floors are recomputed only when a threshold lies under a stair), the opening warnings (the warning order is kept);
+- trees — (building, `treesOf(project, variant)`);
 - outdoor — (building, outdoor.decks, outdoor.hotTubs): decks, railings, steps, hot tubs, BYA (`computeBya`, it
   needs the deck pieces), bounds, deck warnings;
 - furniture — (building, furniture).
-With immer's structural sharing an edit of the furniture (or of the outdoor) reuses the building stage: the derived
-`walls`, `rooms`, `floors` … are the same array instances (tested). Seed timings (this machine, best of runs): a
-block-edge change ≈ 35–40 ms (target 60; the test allows × 1.5 locally, where the files run in parallel, × 3 on CI), a furniture-only change ≈ 0.01 ms (limit 5).
+With immer's structural sharing an edit of the furniture (or of the outdoor) reuses the building and opening stages:
+the derived `walls`, `rooms`, `floors` … are the same array instances (tested); an opening edit reuses rooms, roofs,
+areas and the outdoor stage and re-derives only the opening stage (tested deep-equal to a derive from scratch). Seed
+timings (this machine, Node, 20 runs each, 2026-10-12): an opening-only change 0.2–0.9 ms (median 0.3; limit 8), a
+stored-wall move ≈ 41 ms, a block-edge change ≈ 40 ms (target 60; the test allows × 1.5 locally, where the files run
+in parallel, × 3 on CI), a hot-tub move ≈ 4 ms, a furniture-only change ≈ 0.01 ms (limit 5).
 `DerivedVariant` additions: `locked`, `ghosts`, `outdoor.steps`, `DerivedBlock.junctions` (`{ edgeIndex, s0, s1,
 otherBlockId, otherEdgeIndex, role: 'owner' | 'removed' | 'open' }`), `WallSource` (blockEdge) `s0` / `s1` (the piece's
 range on its edge), `DerivedWall.isGhost`, `DerivedOpening.levelId` (the level the sill is measured from) /
@@ -309,7 +324,9 @@ are `rail-terrasse/steps/0..2`, the ids the v1 → v2 migration gives the phase-
 - **Old wall strips** (fix round after 2a, `areas.ts ghostWallBands`): where an existing block edge was moved or
   shortened (an edge ghost), the strip between the old axis line and the old inner face counts as NEW in BRA, ahead of
   every part, the same way BYA counts the old cladding strip as new. Moving the old west gable 0 → −1 keeps BRA
-  existing at 103.51 (BYA existing 102.18 → 101.47, the integrator's decision). A junction shift may shrink an
+  existing at 103.51 (BYA existing 102.18 → 101.47, the integrator's decision; the glass bump's east wall +0.5 m:
+  BRA and axis existing unchanged, BYA existing 102.18 → 101.905, its old cladding strips being inside). A junction
+  shift may shrink an
   EXISTING partner block (blk-main's north edge +1 moves blk-bod's south edge: the bod's existing part loses 1 m); the
   lost stubs are edge ghosts. BRA existing can still rise when a larger roof gives the loft more free height (north
   edge +1: 104.72).
@@ -356,14 +373,24 @@ protocol (`beginDrag` → `updateDrag` per move → `endDrag`; Esc, pointercance
 its block edge. Handles: white circles with an accent border, 7 px radius (14 px on `(pointer: coarse)`): block
 vertices and edge midpoints, deck vertices, deck edges and the "+" midpoints (a tap inserts a vertex; a drag inserts
 and drags it in ONE undo step through `beginDrag({ kind: 'deckEdge', id }, p, 'insert')`), stored wall ends, opening
-jambs. Small things keep their body (fix round after 2a, `editModel.ts handlesFor(…, { scale, radius })`): end,
-corner and edge handles are left out while the object is shorter on screen than three handle diameters; wall and
+jambs. Small things keep their body (fix rounds after 2a, `editModel.ts handlesFor(…, { scale, radius })`): wall and
+opening end handles are left out only while the object is shorter on screen than one handle diameter
+(`endHandlesShown`; a 0.91 m door has them from about 16 px/m with a mouse), block corner and edge handles (and those
+of a selected exterior piece) below three diameters (`cornerHandlesShown`); wall and
 opening end handles sit one handle radius OUTSIDE the ends (`anchor`: a drag on one acts as if the end itself was
 grabbed); a press inside the object's body moves it even over a handle (`pressTarget` / `pressInBody`; blocks and
 exterior pieces count as body one handle radius inside their outline, so their corner and edge handles stay usable).
-Hit corridors: 12 px with a mouse; on touch `hitBandPx` = min(24 px, 0.25 m × zoom) for walls, ghosts and openings,
-and every drawn room label is a hit area for its room (so a tap on a label selects the room at the phone's starting
-zoom). Pointer moves during a drag are coalesced to one `updateDrag` per animation frame (the first at drag start,
+Hit corridors: 12 px with a mouse; on touch `hitBandPx` = 0.25 m × zoom clamped to 10–24 px (`TOUCH_BAND_MIN_PX`;
+the svg carries it as `data-hit-band` next to `data-scale`) for walls, ghosts and openings. Every drawn room label is
+a hit area for its room, drawn BELOW the walls, ghosts and openings (`LabelHitLayer` after `OtherStoreyLayer`; the
+label text stays on top without pointer events): at the phone's starting zoom (11.6 px/m) a tap ±4 px from a wall or
+a door selects it, and a tap on a room's name the room (23 of 24 rooms). With "Vis hva som er nytt" the label layout
+treats the ghosts (removed walls and openings, edge-ghost strips) as obstacles (`storeyData.ts ghostObstacles`). A
+tap on a placed single-room template unit (a Vedskjul) selects the unit, the next tap its room, the next the unit
+again (`tapSelection`). Rendering during a drag: `planLayerData` with `stable.ts shareEqual` / `useShared.ts` keeps
+unchanged parts identical between frames and walls, openings, labels, floors and rooms are memoised per item, so a
+wall drag re-renders neither structure, dimensions, outdoor, furniture, blocks nor ghosts (jsdom, dev build: about
+7–8 ms per w-gang-n frame, 4.5 ms per door frame). Pointer moves during a drag are coalesced to one `updateDrag` per animation frame (the first at drag start,
 the last position flushed before `endDrag`, a cancel drops it). On the locked base proposal a drag that starts on
 the selected element calls `onLocked` once (else the refusing `beginDrag`) and neither pans nor drags. With
 `viewportInsets` (the parts of the plan's box that a bottom sheet or the screen edges cover) the plan pans, never
@@ -374,7 +401,8 @@ the host; if the default-size opening would overlap one already in that wall pie
 centre in the piece, `freeOpeningOffset`); Nytt bygg (a snapped ghost of the template follows the pointer, a tap places it); Møbler (a tap calls
 `onDropFurniture`); Mål (two taps). Dør/vindu and Nytt bygg return to Velg with the new element selected. Snapping:
 `editActions.snapPoint` (geometry/snap.ts), radius 12 px (24 px coarse) converted to metres at the current zoom, line
-targets capped at 0.25 m (see Editing → Snapping); the
+targets (and every target in a drag) capped at 0.25 m, the Nytt bygg ghost attaching within 0.25 m (see Editing →
+Snapping); the
 overlay draws snap indicators, dimension chips, the dragged element's base outline, wall starts, the measurement, the
 unit ghost and the Egenskaper highlight (`overlay.highlight`: the wall a room-size field moves, "Avstand fra hjørne"
 as a temporary dimension). Esc is the plan's only while something is in progress (a drag, a wall start, a
@@ -514,6 +542,10 @@ shown, warning above 8 kB with "send som JSON-fil" fallback; never includes terr
 current seed, or the frozen revision 3 for a phase-1 link) is applied to that base (banner `link-rebased`); one
 from a newer revision than the bundled seed is treated as too new; old full-format links still open (and migrate).
 **Any change to Forslag D's content must bump `SEED_REVISION`**, otherwise old links decode against the changed seed.
+Revision 5 (second fix round after 2a) only adds the glass bump's existing part. A stored revision-4 copy
+(autosave, file, version) keeps `parts: []` and gets the part from its outline the first time an edit changes that
+outline (`todayPart`); a revision-4 share link decodes against the revision-5 seed, so an unchanged glass bump gets
+the seed's part. A glass bump already enlarged under revision 4 keeps that growth as today's cabin.
 All storage access in try/catch. Other tabs: a saved document is identified by `id@updatedAt`; autosave remembers
 what this tab last wrote and treats only a different stored document as another tab's. This tab then stops saving
 until the user picks "Hent endringene" or "Behold mine endringer" (closing the tab without choosing loses its
@@ -537,7 +569,9 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   `apply…` function from edit.ts (drags: from the pointer-down base), heals ghosts, derives the result, runs
   `reconcileRooms` against the base's derived model and stores it with `replaceVariant`: ONE undo step (drags and
   nudge runs: one per gesture / run). Creations return the new id; deletes toast "Slettet." with [Angre]. Opening
-  and outdoor drags (openings, deck, steps, hot tub, trees, furniture) skip `reconcileRooms` and its derive per frame.
+  and outdoor drags (openings, deck, steps, hot tub, trees, furniture) skip `reconcileRooms` and its derive per frame;
+  the render's derive then reuses the building stage (an opening drag frame ≈ 1 ms in Node, a hot-tub frame ≈ 8 ms).
+  Wall and block-edge drags still derive the building stage once per frame (≈ 40–48 ms in Node).
 - **Status bookkeeping.** Moving or resizing an existing stored wall / opening makes it 'new' and leaves a 'removed'
   copy `${id}/ghost` at the old place; deleting an existing one marks it 'removed' in place; moving an existing block
   edge records its old line in `Variant.ghosts`. Anything moved back onto its ghost heals (existing again, ghost gone).
@@ -545,7 +579,15 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   endpoint drag it first drags each end back through the same cascades (`endpointsBack`), so walls the drag carried,
   trimmed or extended return too; on an edge ghost it moves the edge back (for a stub, the adjacent edge) and restores
   the openings parked on the old line; on an opening ghost whose host wall is gone it restores that wall or edge as
-  well. Existing openings clamped in a wall-move cascade are bookkept like moved ones.
+  well. Existing openings clamped in a wall-move cascade are bookkept like moved ones. After a plain wall move it also
+  brings back the neighbours the forward move left just beside the moved wall's line (their ghost end on the restored
+  ghost, their live end within 5 cm of the moved wall or on the line it moved to: `neighbourEnds` /
+  `bringBackNeighbours`; w-105-diag → w-104-diag, w-103-korr → w-104-103), and `endpointsBack` no longer drags
+  existing walls that have no ghost (`applyMoveWallEndpoint` option `keep`). When a host gets longer again (a block
+  edge or a wall moved back by hand), an opening returns to its ghost if, before that edit, it was pressed against
+  the host's end (or centred on a host too short for it), its ghost is on the same host and it fits there without
+  overlapping another opening (`edit.ts pullBackOpenings`, after block edits, wall moves and endpoint drags); a door
+  the user moved along its wall stays where it is.
 - **Drag rules.** Wall moves: an endpoint with a non-parallel support (block edge, zone edge, a wall whose interior
   holds it) slides along it; a free node moves with its coincident walls; T-junction walls are trimmed / extended.
   Block edges move along their normal, junction partners follow, openings keep their plan position, collinear stored
@@ -556,7 +598,11 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   their edge. Units: `placeUnit(template, centre, rotation90)` makes a new block with one room and its door / open
   front; `rotateBlock(id, 90 | −90)` turns a placed template unit a quarter turn about a centre on the grid (walls,
   openings, rooms, furniture, the roof's ridge axis, slope side and extensions turn with it; +90 then −90 gives the same
-  footprint); refused for blocks with existing area (toast), blocks without a template and Forslag D.
+  footprint); refused for blocks with existing area (toast), blocks without a template and Forslag D. A unit whose
+  edge lies on another block's edge or a deck edge turns about its middle and is then shifted back onto that line (onto
+  both lines in a corner; `contactsOf` / `contactTurn`), so a Vedskjul against the wing stays against it (no
+  `block-overlap`) and one on the deck's north edge keeps its back on y 12.1; free units turn on the 10 cm grid as
+  before, units with a contact can sit 5 cm off it.
 - **Rooms under edits.** `reconcileRooms`: a Room keeps the face its previous inner polygon overlaps; one Room per
   face, as many Rooms kept as possible, then the largest total overlap (`matchRoomsToFaces`, exact per connected
   component), so dragging a wall past the middle of the next room moves the boundary instead of swapping or merging
@@ -575,8 +621,15 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   Radius 12 px / 24 px coarse at the current zoom, but line targets reach at most 0.25 m (`LINE_SNAP_MAX_M`, also in
   `snap()`); a dragged line (`snapLineOffset`) never snaps to its own starting line or lines collinear with it, stays
   at its start while the pointer is within 5 cm of it, and a snap never takes back more than half the drag; Alt turns
-  line targets off (and the grid to 1 cm). Point targets and the ortho guides through the start point keep the full
-  radius; polygon, hot tub and furniture snaps are unchanged.
+  line targets off (and the grid to 1 cm). Drags (second fix round; the drag start reaches snap.ts as
+  `SnapContext.origin`, set by `editActions.dragSnapContext`): `snap()` (wall ends, block / deck vertices, free walls)
+  drops point targets at the dragged point's start or coincident with it, caps point reach at 0.25 m too, turns points
+  off with Alt, and no target — point, intersection, line or ortho guide — may take back more than half the drag;
+  `snapPolygon` / `snapFootprint` / `snapCircle` (unit, block and deck moves, furniture, the hot tub) reach at most
+  0.25 m per direction, never put an edge back on its own starting line, never take back more than half the drag nor
+  add more than `SNAP_ADD_FRACTION` = 0.5 of it, and keep an axis at its start while it has moved under 5 cm. Without
+  a drag (the placement tools) point targets and the ortho guides through the start keep the full radius; unit
+  placement gets the 0.25 m reach only.
 - **Strings**: nb.ts `nb.editor` (editor core), `nb.plan2d.edit` (legend, hints, handle tooltips; the hints are
   `nb.hints`, one source each); the unit template names (`nb.editor.units`) become project data when a unit is placed.
 - **Toasts and undo** (fix round after 2a, `ui/toastRegistry.ts`): the store keeps plain toast records; the UI ties
@@ -586,7 +639,15 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   «Bad» er nå ett rom."). "Nytt forslag" toasts have no Angre. A NEW warning after an edit shows once as "Ny
   advarsel: …" with "Vis" (opens Advarsler; `ui/warningToasts.ts`), and the toolbar carries a warning count badge;
   warnings name walls and openings by type and place ("døra i veggen mellom Gang og Soverom (ny fløy)", directions
-  from true north), never by id (`ui/warnings.ts`).
+  from true north), never by id (`ui/warnings.ts`); `opening-on-removed-edge` names the opening from its block's edge
+  and the building part standing outside it ("Vinduet i ytterveggen mot øst i Soverom (ny fløy) sitter i en vegg som
+  nå er dekket av «Vedskjul»."), `roof-no-meet` the end ("i enden mot øst"), `deck-steps-blocked` the side and the
+  part in the way; a lookup that does not know the place falls back to the plain sentence, never an id
+  (`NameLookup` kinds in nb.ts). A warning toast is bound to the undo step like the undo toasts (any later step closes
+  it, `toastRegistry.markShowsWarnings`), closes as soon as none of its warnings is left (`warningToasts.ts
+  retireResolved`, on every derive outside a drag), and a newer one replaces it: one at a time. On phones the toast
+  stack sits 8 px below the tool row and the hint line (`toastLayout.ts phoneToastTop(toolbarBottom())`, updated on
+  scroll and resize; the CSS default at the top of the screen when the tool row is scrolled away).
 
 ## UI (`ui/`)
 
@@ -612,7 +673,9 @@ Bygninger with its own eks./nytt split and the deck on its own line (the buildin
 Phone (< 800 px): stacked, panels collapsible, heights in `100dvh`, canvas and SVG with `touch-action: none`; the
 six tools sit in a 6-column grid (icon above a label that may wrap; "Dør/vindu" breaks after the slash), Angre / Gjør
 om as icons; no Egenskaper panel in the right column: a floating mini-bar (Egenskaper · Roter / "Roter 90°" for a
-placed unit · Slett; `miniBarPlacement.ts placeMiniBar` from the plan's `anchor.rect`: above the selection, flipped
+placed unit · Slett; the room of a placed single-room unit also gets the unit's "Roter 90°" and "Velg bygningsdelen",
+`commands.ts unitOfRoom` / `rotateUnit`, and with four buttons the bar is compact, icon above a short label;
+`miniBarPlacement.ts placeMiniBar` from the plan's `anchor.rect`: above the selection, flipped
 below it when there is no room, never over the toolbar, the hint line or an open sheet, hidden while the plan reports
 no anchor) opens the properties as a bottom sheet (schedule rows too). The sheet opens LOW (40dvh, basic fields only)
 and "Vis mer" / the handle opens it to 88dvh with everything; it reports its height (`overlay.ts setSheetHeight`),
@@ -621,7 +684,9 @@ as `viewportInsets` (`planInsets.ts`) while a sheet is open. The furniture libra
 / Versjoner / Eksporter / Importer sit in a "Mer" menu. Read-only (shared link): banner with "Lag min egen kopi";
 edit panels/tools hidden, view controls, schedule and areas kept. Wording (fix round after 2a): "Trykk" in every
 hint, "Roter" the only rotate verb, `device.ts undoHow()` = "Angre" on touch and "Angre eller Ctrl+Z" with a keyboard;
-the ghost tag reads "Fra hytta i dag"; Romskjema, headline and Arealer say "i dag". The first-run card and the hint
+the ghost tag reads "Fra hytta i dag"; Romskjema, headline and Arealer say "i dag" ("Herav hytta i dag"); read-only
+rows use the editors' names ("Høyde over gulv", "Trinn"); a selected door or window is tagged "Dør/vindu"; the help
+heading is "Slik bruker du planleggeren". The first-run card and the hint
 line on Forslag D say it is the fixed base and that "+ Nytt forslag" makes a copy to change; "Nytt forslag" closes the
 first-run card for good (`firstRun.ts`) and, while the card is open, toasts move above it (`toastLayout.ts`). Theme tokens from the old model (self-hosted Barlow / Barlow Semi Condensed,
 `--accent #4f6b55`, `--new #c8742a`, light + dark). All strings in `i18n/nb.ts`.
@@ -840,10 +905,17 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   anchors, whole-wing moves keeping 27 rooms, block-edge bookkeeping sweeps, restore after endpoint drags, trees per
   proposal (`editActions.test.ts`, `edit.test.ts`); derive calls per drag frame (`editActions.drag.test.ts`); short
   drags and Alt (`dragSnap.test.ts`, `snap.test.ts`); small targets and handles (`smallTargets.test.ts`); phone taps on
-  room labels (`touchTaps.test.ts`, 23 of 24 rooms at 11.6 px/m); the locked drag, the drag loop, the anchor rect and
-  `viewportInsets` (`PlanView.fixes.test.tsx`); toast undo binding and warning toasts
-  (`toastUndo.integration.test.tsx`); the phone layout, sheet and mini-bar (`phoneLayout.test.tsx`); wording
-  (`wording.test.ts`).
+  room labels and ±4 px wall / door / ghost taps through the rendered DOM (`touchTaps.test.tsx` with the test-only
+  `svgHitTest.ts`); the locked drag, the drag loop, the anchor rect and `viewportInsets` (`PlanView.fixes.test.tsx`);
+  toast undo binding and warning toasts (`toastUndo.integration.test.tsx`); the phone layout, sheet and mini-bar
+  (`phoneLayout.test.tsx`); wording (`wording.test.ts`). Second fix round: the glass bump (east wall +0.5, corner
+  drags × both restore orders, a part-less revision-4 copy), "Ta tilbake" bringing neighbours back (a sweep of every
+  existing wall ±0.2 / ±0.5 m), clamped openings pulled back, Roter keeping contact (`editActions.test.ts`); the
+  opening stage reuse and an opening-only change ≤ 8 ms (`derive.schema2.test.ts`); drag snapping of units, blocks,
+  the hot tub and endpoints (`dragSnap.test.ts`, `snap.test.ts`); end handles from one diameter
+  (`smallTargets.test.ts`); the unit tap order and render counts per drag frame (`PlanView.fixes2.test.tsx`,
+  `stable.test.ts`); labels avoiding ghosts (`storeyData.test.ts`); warning toasts retiring, placeless warning texts,
+  phone toast placement and the unit room's mini-bar (`toastUndo.integration`, `wording`, `phoneLayout`).
 - `npm run e2e` → Playwright (Chromium; projects 'chromium' at 1400 × 900 and 'iphone' = devices['iPhone 13'] with touch
   through the DevTools protocol). smoke.spec.ts loads the app, waits for `window.__hytte.ready`, checks that no 'generic'
   warning exists, that a fresh start has the bundled `SEED_REVISION` (terrace from x 9, the three steps, the locked
@@ -862,12 +934,21 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   fix round: a 0.3 m drag of w-gang-n lands on 3.7, the delete toast's Angre undoes only the delete (and a later
   edit retires it), a tree moved in a proposal leaves the site and Forslag D unchanged, the old west gable moved to
   −1 turns its three windows new with ghosts, the whole wing moved 3 m keeps every room named, a placed Vedskjul
-  turns 90°; screenshots `plan-editing.png` (deck handles), `plan-unit-on-deck.png`, `plan-ghosts.png`.
+  turns 90° and keeps its back on the deck edge; second fix round: the glass bump's east wall moved 0.5 m (new piece,
+  ghosts, BRA / axis existing unchanged, BYA existing 101.9), a glass corner dragged and "Ta tilbake" on every ghost
+  (none left, the seed again), w-105-diag moved 0.2 m and restored (the neighbour too), the end handle of w-vf-korr
+  dragged 0.36 m at the starting zoom, a Vedskjul against the wing turned twice (still attached, no overlap), a click
+  on the middle of w-104-103's ghost selects it, the "Ny advarsel" toast gone once the piece is named, the door's end
+  handles at the starting zoom; screenshots `plan-editing.png` (deck handles), `plan-unit-on-deck.png`,
+  `plan-ghosts.png`, `plan-glass-bump.png`.
   phone-editing.spec.ts (iPhone): "Nytt forslag", a one-finger pan and a pinch move nothing, a wall tapped and dragged,
   a number typed in the properties bottom sheet, a door tap-placed; at the starting zoom: taps on 8 room label points
   select the room (≥ 7), a selected door dragged 1.5 m keeps its width, a fresh Vedskjul dragged by its body keeps
-  its size, the Egenskaper sheet leaves the selected wall in view above it, all six tools fit the screen;
-  `phone-edit.png`, `phone-sheet.png`, `phone-tools.png`.
+  its size, the Egenskaper sheet leaves the selected wall in view above it, all six tools fit the screen; second fix
+  round: taps ±4 px beside w-gang-n, w-104-103, dv-pass-n and door-mellom-vf select them (`data-hit-band` ≥ 8), the
+  Vedskjul dragged 2 m west moves 2 ± 0.25 m and 1 m north about 1 m, a first tap on a placed unit selects it and a
+  second its room (whose mini-bar has "Velg bygningsdelen"), the delete toast does not cover the tool row or the hint
+  line; `phone-edit.png`, `phone-sheet.png`, `phone-tools.png`, `phone-toast.png`.
 - `npm run build` must pass with zero TypeScript errors; `npm run lint` (oxlint) clean.
 
 ## Rules for contributors (humans and agents)
