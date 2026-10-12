@@ -15,6 +15,9 @@
  *  (G) main south 0.3 m in and glass east 0.5 m out, then «Ta tilbake» on the main wall's ghost first and the others one
  *      by one: after every single restore no ghost lies over a live wall of today, and the end is the seed;
  *  (H) a dining chair pushed 0.3 m in under the table edge (Shift+↑ three times) is tucked in: no collision, no warning.
+ * Last fix round:
+ *  (I) Dupliser in a full room: the Mellombygg's bench is copied through its door into the Vindfang with «Kopien står i
+ *      «Vindfang».»; the sauna bench is refused with «Ingen ledig plass til en kopi.» (before: copied into Stue).
  * Screenshots: plan-furnished.png (the new wing furnished, clearances on), 3d-inne-furnished.png (Inne, Ovenfra),
  * plan-drag-preview.png (a wall mid-drag: the dashed base outline and the solid moving one at the pointer).
  */
@@ -524,6 +527,37 @@ test.describe('furniture and the second review on a desktop (1400×900)', () => 
     expect(d.find((f) => f.id === 'fu-spiseplass-1')?.collisions).toEqual([]);
     expect(await warnings(page)).toEqual([]);
     await expect(page.locator('[data-testid=plan-view] [data-furniture-colliding]')).toHaveCount(0);
+  });
+
+  test('(I) Dupliser in a full room: through a door into the next room with a toast naming it, or refused with a toast', async ({ page }) => {
+    await freshProposal(page);
+    const n0 = (await activeVariant(page)).furniture.length;
+    const warnings0 = (await warnings(page)).length;
+    // The Mellombygg's bench has no room beside it: the copy goes through door-mellom-vf into the Vindfang (0.62 m).
+    const bench = (await activeVariant(page)).furniture.find((f) => f.id === 'fu-mellombygg-1');
+    if (!bench) throw new Error('fu-mellombygg-1 missing');
+    await selectAt(page, bench.position, { kind: 'furniture', id: 'fu-mellombygg-1' });
+    await page.keyboard.press('Control+d');
+    await expect.poll(async () => (await activeVariant(page)).furniture.length).toBe(n0 + 1);
+    await expect(page.getByTestId('toast').filter({ hasText: 'Kopien står i «Vindfang».' })).toBeVisible();
+    const copy = (await activeVariant(page)).furniture.at(-1);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: copy?.id });
+    const d = (await derivedFurniture(page)).find((f) => f.id === copy?.id);
+    expect(d?.roomId).toBe('room-vindfang');
+    expect(d?.collisions).toEqual([]);
+    expect((await warnings(page)).length, 'no new warning').toBe(warnings0);
+    await dismissToasts(page);
+    await page.keyboard.press('Escape');
+
+    // The sauna bench: no free spot in Badstue, and no room a door of it leads to has one: nothing is added (before:
+    // the copy went to Stue, 11.5 m away).
+    const bench2 = (await activeVariant(page)).furniture.find((f) => f.id === 'fu-badstue-1');
+    if (!bench2) throw new Error('fu-badstue-1 missing');
+    await selectAt(page, bench2.position, { kind: 'furniture', id: 'fu-badstue-1' });
+    await page.keyboard.press('Control+d');
+    await expect(page.getByTestId('toast').filter({ hasText: 'Ingen ledig plass til en kopi.' })).toBeVisible();
+    expect((await activeVariant(page)).furniture.length).toBe(n0 + 1);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: 'fu-badstue-1' });
   });
 
   test('3D: the furnished cabin, Inne, from above', async ({ page }, testInfo) => {

@@ -39,6 +39,15 @@
  *      table (before: the shed owned it, carried it along and deleted it);
  *  (x) a wall drag that cannot go on (lw-split north, on the loft) says so on the hint line while the drag lasts, and
  *      the wall stays.
+ * Last fix round:
+ *  (y) the Nytt bygg ghost over the house says «Bygget kan ikke stå oppå et annet bygg» on the hint line and a click
+ *      there is refused with it; an Anneks dragged 4 m north into the wing stops against its wall (the hint while the
+ *      pointer is in the house), with no overlap warning (before: it stood on the house and took its walls, names and
+ *      furniture along when moved or deleted);
+ *  (z) a Bod's north edge dragged over the terrace table pushes the table out (with the toast); the Bod moved and
+ *      deleted leaves the table (before: the enlarged Bod owned it, carried it and deleted it);
+ *  (aa) w-106-korr 0.3 m north carries the loft wall lw-106-top (`carriedBy`); lw-106-top moved on by the user, then
+ *      «Ta tilbake» on lw-106-top: w-106-korr stays where the user put it (before: it was reset to the seed).
  * No state may produce a 'generic' warning (a failed derive or a geometry fallback).
  *
  * Screenshots (e2e/screenshots/): plan-editing.png (the deck selected: vertex and "+" handles), plan-unit-on-deck.png,
@@ -970,5 +979,154 @@ test.describe('editing a proposal (desktop, final fix round after 2b)', () => {
     await page.mouse.up();
     await expect(hint).not.toContainText(STUCK);
     expect((await activeVariant(page)).walls.find((x) => x.id === 'lw-split')).toEqual(before);
+  });
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Last fix round: a unit never stands on another building; an enlarged unit pushes terrace furniture out; «Ta
+  // tilbake» on a carried wall leaves its carrier.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  const ON_BLOCK = 'Bygget kan ikke stå oppå et annet bygg';
+  const overlapWarnings = (page: Page) =>
+    page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.warnings ?? []).filter((w) => w.kind === 'block-overlap').length);
+
+  /** Nytt bygg → `template`, the pointer brought in from the side to plan point `p` (the ghost there, nothing clicked). */
+  const hoverUnit = async (page: Page, template: string, p: Vec2): Promise<void> => {
+    await page.getByTestId('tool-unit').click();
+    await page.getByTestId(`unit-${template}`).click();
+    const [x, y] = await planToClient(page, p);
+    await page.mouse.move(x - 20, y - 20);
+    await page.mouse.move(x, y, { steps: 5 });
+  };
+
+  test('(y) Nytt bygg over the house says so and is refused; an Anneks dragged onto the house stops against its wall', async ({ page }) => {
+    await freshProposal(page);
+    const hint = page.getByTestId('hint-line');
+    const n = (await activeVariant(page)).blocks.length;
+    // The ghost over the middle of the house: the hint line says it cannot stand there, and a click is refused.
+    await hoverUnit(page, 'anneks', [12, 3]);
+    await expect(hint).toContainText(ON_BLOCK);
+    const [hx, hy] = await planToClient(page, [12, 3]);
+    await page.mouse.click(hx, hy);
+    await expect(page.getByTestId('toast').filter({ hasText: `${ON_BLOCK}.` })).toBeVisible();
+    expect((await activeVariant(page)).blocks.length).toBe(n);
+    // (The toasts sit at the bottom of the plan, over the terrace.)
+    await dismissToasts(page);
+    // Out on the terrace south of the wing the hint goes, and a click places it.
+    const [tx, ty] = await planToClient(page, [18.4, -6.5]);
+    await page.mouse.move(tx, ty, { steps: 8 });
+    await expect(hint).not.toContainText(ON_BLOCK);
+    await page.mouse.click(tx, ty);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(n + 1);
+    const id = (await activeVariant(page)).blocks[n].id;
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id });
+    await dismissToasts(page);
+    const box0 = bbox(blockPolygon(await activeVariant(page), id));
+    expect(box0.y1, 'placed clear of the wing (its south wall is at y −2)').toBeLessThan(-2.5);
+
+    // Dragged by its body 4 m north, into the wing: while the pointer is in the house the hint says why it stops.
+    const c: Vec2 = [(box0.x0 + box0.x1) / 2, (box0.y0 + box0.y1) / 2];
+    const [x0, y0] = await planToClient(page, c);
+    const [, y1] = await planToClient(page, [c[0], c[1] + 4]);
+    await page.mouse.move(x0, y0);
+    await page.mouse.down();
+    for (let i = 1; i <= 16; i++) await page.mouse.move(x0, y0 + ((y1 - y0) * i) / 16);
+    await expect(hint).toContainText(ON_BLOCK);
+    await page.mouse.up();
+    await expect(hint).not.toContainText(ON_BLOCK);
+    // It stops at the contact: against the wing's south wall, not on it, with no overlap warning.
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), id)).y1).toBeGreaterThan(box0.y1 + 0.5);
+    const box1 = bbox(blockPolygon(await activeVariant(page), id));
+    expect(box1.y1, `the Anneks ends at y ${box1.y1}`).toBeLessThanOrEqual(-2 + 1e-6);
+    expect(box1.y1).toBeGreaterThan(-2.05);
+    expect(box1.x0).toBeCloseTo(box0.x0, 2);
+    expect(await overlapWarnings(page)).toBe(0);
+  });
+
+  test('(z) a Bod\'s north edge dragged over the terrace table pushes the table out; moved and deleted, the table stays', async ({ page }) => {
+    await freshProposal(page);
+    const n0 = (await activeVariant(page)).furniture.length;
+    const table0 = (await activeVariant(page)).furniture.find((f) => f.id === 'fu-terrasse-2');
+    expect(table0?.position).toEqual([12.8, -2.3]);
+    const nb = (await activeVariant(page)).blocks.length;
+    await hoverUnit(page, 'bod', [12.8, -5.4]);
+    const [px, py] = await planToClient(page, [12.8, -5.4]);
+    await page.mouse.click(px, py);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(nb + 1);
+    const bod = (await activeVariant(page)).blocks[nb];
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: bod.id });
+    await dismissToasts(page);
+    const box0 = bbox(bod.polygon.map((q) => q.p));
+    expect(box0.y1, 'south of the table').toBeLessThan(-2.8);
+    // The north edge's handle (the edge from the north-east corner), dragged to y −1.1, over the table.
+    const north = bod.polygon.find((q, i) => {
+      const next = bod.polygon[(i + 1) % bod.polygon.length];
+      return Math.abs(q.p[1] - box0.y1) < 1e-6 && Math.abs(next.p[1] - box0.y1) < 1e-6;
+    });
+    if (!north) throw new Error('no north edge');
+    await expect(page.locator(`[data-testid=plan-view] [data-handle="be:${north.id}"]`)).toHaveCount(1);
+    const mid: Vec2 = [(box0.x0 + box0.x1) / 2, box0.y1];
+    await dragPlan(page, mid, [mid[0], -1.1], 16);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), bod.id)).y1).toBeGreaterThan(-1.6);
+    const box1 = bbox(blockPolygon(await activeVariant(page), bod.id));
+    await expect(page.getByTestId('toast').filter({ hasText: '«Utebord» er flyttet ut av «Bod».' })).toBeVisible();
+    const t1 = (await activeVariant(page)).furniture.find((f) => f.id === 'fu-terrasse-2');
+    const inside = (p: Vec2) => p[0] > box1.x0 && p[0] < box1.x1 && p[1] > box1.y0 && p[1] < box1.y1;
+    expect(t1, 'the table is still there').toBeDefined();
+    expect(inside(t1!.position), `the table at ${t1!.position.join(', ')} is out of the Bod`).toBe(false);
+    const d = (await page.evaluate(() => (window as HytteWindow).__hytte?.derived?.furniture ?? [])).find((f) => f.id === 'fu-terrasse-2');
+    expect(d?.roomId ?? null, 'the table is in no room of the Bod').toBeNull();
+    await dismissToasts(page);
+    // Moved 3 m south by its body and deleted: the table stays where it was pushed.
+    const c: Vec2 = [(box1.x0 + box1.x1) / 2, (box1.y0 + box1.y1) / 2];
+    await page.keyboard.press('Escape');
+    await selectAt(page, c, { kind: 'block', id: bod.id });
+    await dragPlan(page, c, [c[0], c[1] - 3], 16);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), bod.id)).y1).toBeLessThan(box1.y1 - 2);
+    expect((await activeVariant(page)).furniture.find((f) => f.id === 'fu-terrasse-2')?.position).toEqual(t1!.position);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: bod.id });
+    await page.keyboard.press('Delete');
+    await expect.poll(async () => (await activeVariant(page)).blocks.some((b) => b.id === bod.id)).toBe(false);
+    const v = await activeVariant(page);
+    expect(v.furniture.length, 'no furniture deleted with the Bod').toBe(n0);
+    expect(v.furniture.find((f) => f.id === 'fu-terrasse-2')?.position).toEqual(t1!.position);
+  });
+
+  /** As dragWallY, on the storey `storey` ('loft': Hems), zoomed in `zoom` wheel steps around the wall first. */
+  const dragWallYOn = async (page: Page, id: string, dy: number, storey: string, zoom: number): Promise<number> => {
+    const w = await derivedLine(page, id);
+    await zoomAt(page, [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2], zoom);
+    const at = await clearPointOn(page, id, w.a, w.b, storey);
+    await selectAt(page, at, { kind: 'wall', id });
+    const y0 = (await activeVariant(page)).walls.find((x) => x.id === id)?.a[1] ?? NaN;
+    await dragPlan(page, at, [at[0], at[1] + dy]);
+    await expect.poll(async () => Math.abs(((await activeVariant(page)).walls.find((x) => x.id === id)?.a[1] ?? y0) - y0), id).toBeGreaterThan(0.15);
+    await page.keyboard.press('Escape');
+    return (await activeVariant(page)).walls.find((x) => x.id === id)?.a[1] ?? NaN;
+  };
+
+  test('(aa) w-106-korr north (it carries the loft wall lw-106-top), lw-106-top north again, «Ta tilbake» on lw-106-top: w-106-korr stays', async ({ page }) => {
+    await freshProposal(page);
+    const wall = async (id: string) => (await activeVariant(page)).walls.find((x) => x.id === id);
+    const top0 = await wall('lw-106-top');
+    const korrY = await dragWallY(page, 'w-106-korr', 0.3);
+    expect(korrY, 'w-106-korr moved north').toBeCloseTo(2.48, 1);
+    // The loft wall above it in line was carried along (and knows by what).
+    expect((await wall('lw-106-top'))?.carriedBy?.by).toBe('w-106-korr');
+    await page.getByTestId('plan-storey-loft').click();
+    await dismissToasts(page);
+    // The carry left lw-106-top a 0.2 m stub beside the landing's door (as before this round): zoomed in to grab it.
+    const topY = await dragWallYOn(page, 'lw-106-top', 0.3, 'loft', 10);
+    expect(topY, 'lw-106-top moved on by the user').toBeGreaterThan(korrY + 0.15);
+    const korr = await wall('w-106-korr');
+
+    const g = await derivedLine(page, 'lw-106-top/ghost');
+    await selectAt(page, await clearPointOn(page, 'lw-106-top/ghost', g.a, g.b, 'loft'), { kind: 'ghost', id: 'lw-106-top/ghost' });
+    await page.getByTestId('ghost-restore').click();
+    await expect.poll(async () => (await wall('lw-106-top'))?.status).toBe(top0?.status);
+    expect((await wall('lw-106-top'))?.a).toEqual(top0?.a);
+    expect((await wall('lw-106-top'))?.b).toEqual(top0?.b);
+    // The carrier keeps the user's move: exactly as it was before the restore.
+    expect(await wall('w-106-korr')).toEqual(korr);
   });
 });

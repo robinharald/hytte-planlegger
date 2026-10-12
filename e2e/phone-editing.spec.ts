@@ -26,10 +26,13 @@
  *  - with d-sov-ny selected, taps near it on o-stue-gang, w-gang-n, Gang and the bed select what they select with
  *    nothing selected (before: the 1.2 m end-handle circles kept the door selected);
  *  - with door-mellom-vf selected, a one-finger drag started 1.4 m from it pans (before: it widened the door);
+ *  - last fix round: a Vedskjul tapped 0.2 m outside the sauna wall (three places) attaches against it, never on the
+ *    wing, and moves no furniture; tapped well inside the sauna it is refused («Bygget kan ikke stå oppå et annet bygg.»);
  *  - the whole first-time flow at the starting zoom, from the first-run card: «+ Nytt forslag», the door moved, Nytt
  *    bygg → Vedskjul tapped where the door's Slett stood (the shed, no warning, the door kept), Soverom (ny fløy)
- *    zoomed in and furnished from the library with nothing selected (Kommode in that room, free), Dupliser (the copy
- *    free), Send — and the link opened on another device brings the proposal with all of it.
+ *    zoomed in and furnished from the library (Kommode in that room, free; last fix round: in the real order, with
+ *    the new shed still selected — a phone has no Escape key), Dupliser (the copy free), Send — and the link opened
+ *    on another device brings the proposal with all of it.
  * Screenshots: phone-edit.png (the dragged wall selected, handles and the mini-bar), phone-sheet.png (the sheet),
  * phone-tools.png (the tool row), phone-toast.png (the delete toast below the tool row), phone-first-flow.png (the
  * duplicated chest of drawers in Soverom (ny fløy), Egenskaper open).
@@ -542,6 +545,38 @@ test.describe('editing on an iPhone (final fix round)', () => {
     expect(d1?.offset, 'and its place').toBeCloseTo(d0?.offset ?? NaN, 6);
     expect(d1?.status).toBe('existing');
   });
+  test('a Vedskjul tapped 0.2 m outside the sauna wall attaches against it; tapped on the wing it is refused (last fix round)', async ({ page }) => {
+    const ON_BLOCK = 'Bygget kan ikke stå oppå et annet bygg';
+    await phoneProposal(page);
+    const v0 = await activeVariant(page);
+    const n = v0.blocks.length;
+    const overlaps = () => page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.warnings ?? []).filter((w) => w.kind === 'block-overlap').length);
+    // The wing's south wall (the sauna's) is at y −2; taps 0.2 m south of it at the starting zoom (before: the shed
+    // could land on the wing and later take its walls, names and furniture along).
+    for (const x of [18.1, 16.6, 19.6]) {
+      await page.getByTestId('tool-unit').tap();
+      await page.getByTestId('unit-vedskjul').tap();
+      await tapPlan(page, [x, -2.2]);
+      await expect.poll(async () => (await activeVariant(page)).blocks.length, `tap at ${x}`).toBe(n + 1);
+      const shed = (await activeVariant(page)).blocks[n];
+      const b = bbox(shed.polygon.map((q) => q.p));
+      expect(b.y1, `tap at ${x}: against the wall, not on it`).toBeLessThanOrEqual(-2 + 1e-6);
+      expect(b.y1, `tap at ${x}: attached`).toBeGreaterThan(-2.05);
+      expect(await overlaps(), `tap at ${x}`).toBe(0);
+      expect(JSON.stringify((await activeVariant(page)).furniture), `tap at ${x}: no furniture moved`).toBe(JSON.stringify(v0.furniture));
+      // Angre, for the next tap.
+      await page.getByTestId('undo').tap();
+      await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(n);
+      await dismissToasts(page);
+    }
+    // A tap well inside the sauna: refused with the toast; nothing added.
+    await page.getByTestId('tool-unit').tap();
+    await page.getByTestId('unit-vedskjul').tap();
+    await tapPlan(page, [18.1, -0.9]);
+    await expect(page.getByTestId('toast').filter({ hasText: `${ON_BLOCK}.` })).toBeVisible();
+    expect((await activeVariant(page)).blocks.length).toBe(n);
+    expect(await overlaps()).toBe(0);
+  });
 });
 
 test.describe('the first-time flow on an iPhone (final fix round)', () => {
@@ -596,7 +631,9 @@ test.describe('the first-time flow on an iPhone (final fix round)', () => {
     expect(placedWarnings, 'the shed brings no warning').toEqual([]);
     await dismissToasts(page);
 
-    // 3. Zoom into Soverom (ny fløy) with two fingers, bring it to the middle, nothing selected, Møbler → Kommode.
+    // 3. Zoom into Soverom (ny fløy) with two fingers and bring it to the middle — as a phone user does it: no Escape
+    // key, so the new shed stays selected (last fix round; before, the kommode went into the shed) — Møbler → Kommode.
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: shed.id });
     const mid: Vec2 = [18.35, 4.75];
     await pinch(cdp, await planToClient(page, mid), 20, 70);
     await expect.poll(() => planScale(page)).toBeGreaterThan(30);
@@ -607,8 +644,7 @@ test.describe('the first-time flow on an iPhone (final fix round)', () => {
     const bottom = Math.min(box.y + box.height, vp.height);
     await touchDrag(cdp, await planToClient(page, mid), [box.x + box.width / 2, (top + bottom) / 2], 12);
     await afterDrag();
-    await page.keyboard.press('Escape');
-    await expect.poll(() => selection(page)).toBeNull();
+    expect(await selection(page), 'the shed is still selected').toMatchObject({ kind: 'block', id: shed.id });
     const n0 = (await activeVariant(page)).furniture.length;
     await page.getByTestId('tool-furniture').tap();
     const library = page.getByTestId('furniture-library-sheet');
