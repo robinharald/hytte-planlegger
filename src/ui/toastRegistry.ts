@@ -10,7 +10,10 @@
  *      undo or redo, a cleared or replaced history) dismisses it, so a later click can never undo something else.
  *    - The toasts of one step form one message (`undoGroups`): "Slettet." and "«Soverom 1» og «Bad» er nå ett rom."
  *      read "Slettet. «Soverom 1» og «Bad» er nå ett rom." with one Angre.
- * 2. A toast can carry the "Vis" button that opens Advarsler (`markShowsWarnings`; warningToasts.ts).
+ * 2. A toast can carry the "Vis" button that opens Advarsler (`markShowsWarnings`; warningToasts.ts). It remembers the
+ *    warnings it announced (their `warningKey`s) and, like an undo toast, the step on top of the undo stack when it
+ *    appeared: any later step (the next edit, an undo or redo) closes it, and warningToasts.ts closes it as soon as
+ *    none of its warnings is left, so "Vis" never opens an empty Advarsler panel.
  *
  * `createToastRegistry(store)` subscribes to the store and its temporal (zundo) store; the app's registry
  * (`toastRegistry()`) is created on first use, which Toasts.tsx does when it is imported, before any toast exists.
@@ -45,14 +48,18 @@ export interface ToastRegistry {
   undo(group: readonly Toast[]): boolean;
   /** Toasts in display order, those of one undo step merged (see the header). */
   groups(toasts: readonly Toast[]): UndoGroup[];
-  markShowsWarnings(toastId: string): void;
+  /** The toast has "Vis" (opens Advarsler) and announces these warnings (ui/warnings.ts `warningKey`). */
+  markShowsWarnings(toastId: string, keys?: Iterable<string>): void;
   showsWarnings(toastId: string): boolean;
+  /** The warning keys a "Vis" toast announced (empty when none were given). */
+  warningKeysOf(toastId: string): ReadonlySet<string>;
   dispose(): void;
 }
 
 export function createToastRegistry(store: AppStore, deletedText: string = nb.toasts.deleted): ToastRegistry {
   const tags = new Map<string, { seq: number; entry: HistoryEntry | null }>();
-  const warningToasts = new Set<string>();
+  /** "Vis" toasts: the warnings each announced and the step on top of the undo stack when it was shown. */
+  const warningToasts = new Map<string, { keys: ReadonlySet<string>; entry: HistoryEntry | null }>();
   let lastTop = topEntry(store);
 
   const tag = (t: Toast) => {
@@ -66,7 +73,7 @@ export function createToastRegistry(store: AppStore, deletedText: string = nb.to
     const ids = new Set(s.toasts.map((t) => t.id));
     for (const t of s.toasts) if (t.undo) tag(t);
     for (const id of [...tags.keys()]) if (!ids.has(id)) tags.delete(id);
-    for (const id of [...warningToasts]) if (!ids.has(id)) warningToasts.delete(id);
+    for (const id of [...warningToasts.keys()]) if (!ids.has(id)) warningToasts.delete(id);
   });
 
   // zundo mutates its arrays in place (undo splices), so compare with our own copy of the top, not `prev`.
@@ -76,6 +83,7 @@ export function createToastRegistry(store: AppStore, deletedText: string = nb.to
     lastTop = top;
     for (const t of store.getState().toasts) {
       if (t.undo && tags.get(t.id)?.entry !== top) store.getState().dismissToast(t.id);
+      else if (warningToasts.has(t.id) && warningToasts.get(t.id)?.entry !== top) store.getState().dismissToast(t.id);
     }
   });
 
@@ -122,8 +130,9 @@ export function createToastRegistry(store: AppStore, deletedText: string = nb.to
       for (const g of out) if (g.toasts.length > 1) g.toasts.sort((a, b) => Number(b.text === deletedText) - Number(a.text === deletedText));
       return out;
     },
-    markShowsWarnings: (id) => void warningToasts.add(id),
+    markShowsWarnings: (id, keys = []) => void warningToasts.set(id, { keys: new Set(keys), entry: topEntry(store) }),
     showsWarnings: (id) => warningToasts.has(id),
+    warningKeysOf: (id) => warningToasts.get(id)?.keys ?? new Set<string>(),
     dispose() {
       unsubToasts();
       unsubHistory();

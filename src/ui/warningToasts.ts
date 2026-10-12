@@ -6,6 +6,10 @@
  *  - Compared with the warnings before the edit; a warning that stays is not shown again on later edits.
  *  - Not for an undo (or a cleared / replaced history), not when another proposal is shown, not while read-only.
  *  - A drag (a transaction) is compared when it ends, against the warnings from before it started.
+ *  - The toast goes as soon as it is out of date, so "Vis" never opens an empty panel and two warning toasts never
+ *    contradict each other: when none of the warnings it announced is left (`retireResolved`), on the next step in
+ *    the undo history (the next edit, an undo or redo: toastRegistry.ts, like an undo toast), and when a newer
+ *    warning toast replaces it (one warning toast at a time).
  */
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { nb, warningText } from '../i18n/nb';
@@ -14,7 +18,7 @@ import type { Id, Site, Variant } from '../model/types';
 import { appStore, useAppStore } from '../state/appStore';
 import type { AppStore } from '../state/store';
 import { useActiveVariant, useDerived } from '../state/useDerived';
-import { showToast } from './editorBridge';
+import { dismissToast, showToast } from './editorBridge';
 import { formatM2 } from './format';
 import { toastRegistry, topEntry } from './toastRegistry';
 import { makeNameLookup, warningKey } from './warnings';
@@ -37,6 +41,20 @@ export function createBackCounter(store: Pick<AppStore, 'temporal'>): { count():
 let appBack: ReturnType<typeof createBackCounter> | null = null;
 const backCount = () => (appBack ??= createBackCounter(appStore)).count();
 
+/** The toast for the warnings that are not in `before` (its text and their keys), or null when there are none. */
+export function newWarnings(
+  before: ReadonlySet<string>,
+  derived: DerivedVariant,
+  variant: Variant,
+  site?: Pick<Site, 'planNorthBearing'>,
+): { text: string; keys: string[] } | null {
+  const fresh = derived.warnings.filter((w) => !before.has(warningKey(w)));
+  if (fresh.length === 0) return null;
+  const keys = fresh.map(warningKey);
+  if (fresh.length > 1) return { text: nb.toasts.newWarnings(fresh.length), keys };
+  return { text: nb.toasts.newWarning(warningText(fresh[0], makeNameLookup(derived, variant, site), formatM2)), keys };
+}
+
 /** The text of the toast for these new warnings, or null when there are none. */
 export function newWarningsText(
   before: ReadonlySet<string>,
@@ -44,10 +62,25 @@ export function newWarningsText(
   variant: Variant,
   site?: Pick<Site, 'planNorthBearing'>,
 ): string | null {
-  const fresh = derived.warnings.filter((w) => !before.has(warningKey(w)));
-  if (fresh.length === 0) return null;
-  if (fresh.length > 1) return nb.toasts.newWarnings(fresh.length);
-  return nb.toasts.newWarning(warningText(fresh[0], makeNameLookup(derived, variant, site), formatM2));
+  return newWarnings(before, derived, variant, site)?.text ?? null;
+}
+
+/** The warning toasts (with "Vis") on screen. */
+function warningToastIds(): string[] {
+  const registry = toastRegistry();
+  return appStore
+    .getState()
+    .toasts.filter((t) => registry.showsWarnings(t.id))
+    .map((t) => t.id);
+}
+
+/** Close the warning toasts none of whose warnings is among `current` any more (nothing left for "Vis" to show). */
+export function retireResolved(current: ReadonlySet<string>): void {
+  const registry = toastRegistry();
+  for (const id of warningToastIds()) {
+    const keys = registry.warningKeysOf(id);
+    if (keys.size > 0 && ![...keys].some((k) => current.has(k))) dismissToast(id);
+  }
 }
 
 const subscribeHistory = (onChange: () => void) => appStore.temporal.subscribe(onChange);
@@ -70,8 +103,12 @@ export function useNewWarningToasts(): void {
     const back = backCount();
     const p = prev.current;
     prev.current = { variantId: derived.variantId, keys, back };
+    retireResolved(keys);
     if (!p || readOnly || p.variantId !== derived.variantId || p.back !== back) return;
-    const text = newWarningsText(p.keys, derived, variant, site);
-    if (text) toastRegistry().markShowsWarnings(showToast({ text }));
+    const fresh = newWarnings(p.keys, derived, variant, site);
+    if (!fresh) return;
+    // One warning toast at a time: the new one replaces any older one.
+    for (const id of warningToastIds()) dismissToast(id);
+    toastRegistry().markShowsWarnings(showToast({ text: fresh.text }), fresh.keys);
   }, [derived, variant, site, readOnly, top]);
 }

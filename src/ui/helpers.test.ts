@@ -151,8 +151,9 @@ describe('warnings', () => {
   it('texts use names and Norwegian number formatting', () => {
     const items = warningItems(derived, variant);
     expect(items[0].text).toBe('Rom uten navn på Hovedplan (1,2 m²).');
-    // Walls and openings are named by type and place, never by id (the fixture's w-1 stands in no room).
-    expect(items[1].text).toBe('En vegg henger løs og danner ikke noe rom.');
+    // Walls and openings are named by type and place, never by id (the fixture's w-1 stands in no named room, so it
+    // is placed by the building part it stands in).
+    expect(items[1].text).toBe('Veggen i «Hytta» henger løs og danner ikke noe rom.');
     expect(items[1].text).not.toContain('w-1');
     expect(items[2].text).toBe('Arealet 170,2 m² er over grensen på 150,0 m².');
     expect(items[0].target).toEqual({ kind: 'room', id: 'face-abc', levelId: 'main' });

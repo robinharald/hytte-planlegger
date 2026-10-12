@@ -48,7 +48,7 @@ describe('App shell (plan only)', () => {
     act(() => appStore.getState().select({ kind: 'room', id: 'room-1' }));
     const helpButton = [...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Hjelp'));
     act(() => helpButton?.click());
-    expect(byTestId('help-dialog')?.textContent).toContain('Slik bruker du den');
+    expect(byTestId('help-dialog')?.textContent).toContain('Slik bruker du planleggeren');
     expect(byTestId('help-dialog')?.textContent).toContain('Ctrl+Z');
     act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(byTestId('help-dialog')).toBeNull();

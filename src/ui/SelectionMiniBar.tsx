@@ -12,13 +12,16 @@
  *    sheet is open (the sheet already covers that).
  *  - Egenskaper opens the bottom sheet; Roter for furniture and placed "Nytt bygg" units (commands.ts `canRotate`);
  *    Slett only for what can be deleted. On the locked base proposal Roter / Slett show the refusal toast.
+ *  - The room of a placed single-room unit (a Vedskjul's room, commands.ts `unitOfRoom`) also gets the unit's
+ *    "Roter 90°" and "Velg bygningsdelen" (selects the unit, which can then be dragged). With four buttons the bar
+ *    is compact (`data-compact`: icon above a short label) so it fits a 390 px phone.
  */
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { nb } from '../i18n/nb';
-import { useAppStore } from '../state/appStore';
+import { appStore, useAppStore } from '../state/appStore';
 import { useDerived } from '../state/useDerived';
-import { canRotate, deleteCall, deleteResolved, rotateResolved } from './commands';
-import { IconRotate, IconSliders, IconTrash } from './common';
+import { canRotate, deleteCall, deleteResolved, rotateResolved, rotateUnit, unitOfRoom } from './commands';
+import { IconHouse, IconRotate, IconSliders, IconTrash } from './common';
 import { useUiEditActions } from './editorBridge';
 import { BAR_HEIGHT, BAR_WIDTH, placeMiniBar } from './miniBarPlacement';
 import { setPropertiesSheet, usePropertiesSheet, useSelectionAnchor, useSheetInset } from './overlay';
@@ -35,6 +38,7 @@ export function SelectionMiniBar() {
   const sheetInset = useSheetInset();
   const actions = useUiEditActions();
   const resolved = useMemo(() => resolveUiSelection(derived, selection), [derived, selection]);
+  const unit = useMemo(() => unitOfRoom(resolved, derived), [resolved, derived]);
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: BAR_WIDTH, height: BAR_HEIGHT });
   // Measure the bar once it is on screen (its buttons depend on the selection); jsdom measures 0 and keeps the default.
@@ -51,6 +55,8 @@ export function SelectionMiniBar() {
   if (planShown && !anchor) return null;
 
   const deletable = deleteCall(resolved, actions) !== null;
+  const rotatable = canRotate(resolved) || !!unit;
+  const compact = 1 + Number(rotatable) + Number(!!unit) + Number(deletable) >= 4;
   const placed =
     anchor && typeof window !== 'undefined'
       ? placeMiniBar({
@@ -68,6 +74,7 @@ export function SelectionMiniBar() {
       className="mini-bar"
       data-anchored={placed ? true : undefined}
       data-below={placed?.below || undefined}
+      data-compact={compact || undefined}
       style={placed ? { left: placed.left, top: placed.top } : undefined}
       role="toolbar"
       aria-label={nb.miniBar.label}
@@ -77,10 +84,16 @@ export function SelectionMiniBar() {
         <IconSliders />
         <span>{nb.miniBar.properties}</span>
       </button>
-      {canRotate(resolved) && (
-        <button type="button" onClick={() => rotateResolved(resolved, actions)} data-testid="mini-rotate">
+      {rotatable && (
+        <button type="button" onClick={() => (unit ? rotateUnit(unit, actions) : rotateResolved(resolved, actions))} data-testid="mini-rotate">
           <IconRotate />
-          <span>{resolved.kind === 'block' ? nb.edit.block.rotate : nb.miniBar.rotate}</span>
+          <span>{resolved.kind === 'block' || unit ? nb.edit.block.rotate : nb.miniBar.rotate}</span>
+        </button>
+      )}
+      {unit && (
+        <button type="button" onClick={() => appStore.getState().select({ kind: 'block', id: unit.block.id })} data-testid="mini-select-block">
+          <IconHouse />
+          <span>{nb.edit.room.selectBlock}</span>
         </button>
       )}
       {deletable && (

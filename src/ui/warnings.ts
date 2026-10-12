@@ -4,11 +4,17 @@
  *
  * Walls and openings are named for a family member by type and place, never by id (`nb.warnings.names`): "vinduet i
  * veggen mellom Gang og Soverom (ny fløy)", "døra i ytterveggen mot nord i Kjøkken". The place comes from the derived
- * model: the named rooms a wall bounds (else the room around its middle), and for an exterior wall the compass
- * direction it faces (true north with the site, else plan +y).
+ * model: the named rooms a wall bounds (else the room around its middle, else the building part it stands in), and
+ * for an exterior wall the compass direction it faces (true north with the site, else plan +y).
+ *
+ * The other place words the warning texts need (i18n/nb.ts `NameLookup`):
+ *  - an opening on a stretch of block edge that is gone (`opening-on-removed-edge`): its place from the block's own
+ *    edge, and the building part now standing against that stretch;
+ *  - the end of a roof that does not meet its neighbour (`roof-no-meet`): the compass direction of that end;
+ *  - blocked deck steps (`deck-steps-blocked`): the direction they face and the building part in their way.
  */
 import type { DerivedOpening, DerivedVariant, DerivedWall, ModelWarning } from '../model/derived';
-import type { Id, Site, Variant, Vec2 } from '../model/types';
+import type { Block, Id, Roof, Site, Variant, Vec2 } from '../model/types';
 import { bearingOfPlanDir } from '../geometry/geo';
 import { pointInPolygon } from '../geometry/polygon';
 import { nb, warningText } from '../i18n/nb';
@@ -23,6 +29,23 @@ export function compassWord(dir: Vec2, site?: Pick<Site, 'planNorthBearing'>): s
   const deg = site ? bearingOfPlanDir(site as Site, dir) : ((Math.atan2(dir[0], dir[1]) * 180) / Math.PI + 360) % 360;
   return N.directions[Math.round(deg / 45) % 8];
 }
+
+/** The block whose axis polygon contains `p` (the first in `blocks` order, never `except`), if any. */
+function blockAt(blocks: readonly Block[], p: Vec2, except?: Id): Block | undefined {
+  return blocks.find((b) => b.id !== except && b.polygon.length >= 3 && pointInPolygon(p, b.polygon.map((v) => v.p)));
+}
+
+/** Plan axis a roof's ridge runs along (as geometry/roof.ts `axisOf`); its `start` end is at the low coordinate. */
+function ridgeAxis(roof: Roof): 'x' | 'y' | null {
+  if (roof.type === 'mono') {
+    const s = roof.slopeTo ?? 'S';
+    return s === 'N' || s === 'S' ? 'x' : 'y';
+  }
+  return roof.type === 'gable' ? (roof.ridgeAxis ?? 'x') : null;
+}
+
+/** How far outside an edge (m) to look for the building part standing against it. */
+const OUTSIDE_PROBE = 0.1;
 
 /** Place words for walls and openings of one derived model. */
 export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planNorthBearing'>) {
@@ -59,7 +82,10 @@ export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planN
       const towards = N.towards(compassWord(outward ?? [-n[0], -n[1]], site));
       return rooms.length === 1 ? `${N.exterior} ${towards} ${N.inRoom(rooms[0])}` : `${N.exterior} ${towards}`;
     }
-    return rooms.length === 1 ? `${base} ${N.inRoom(rooms[0])}` : N.looseWall;
+    if (rooms.length === 1) return `${base} ${N.inRoom(rooms[0])}`;
+    // No named room: the building part it stands in, if any.
+    const block = derived.blocks.find((b) => pointInPolygon(p, b.axis));
+    return block ? `${base} ${N.inBlock(block.block.name)}` : N.looseWall;
   };
 
   const wall = (id: Id): string => {
@@ -72,6 +98,39 @@ export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planN
     return type ? N.opening[type] : N.unknownOpening;
   };
 
+  /**
+   * An opening on a block edge that is on no wall piece (its stretch of the edge is gone: another building part stands
+   * against it). From the block's own geometry at the opening's centre: "ytterveggen mot øst i Soverom (ny fløy)", and
+   * the building part just outside that point ('' when none).
+   */
+  const onBlockEdge = (id: Id, variant: Variant): { place: string; coveredBy: string } | null => {
+    const o = variant.openings.find((x) => x.id === id);
+    if (o?.host.kind !== 'blockEdge') return null;
+    const h = o.host;
+    const block = variant.blocks.find((b) => b.id === h.blockId);
+    const i = block ? block.polygon.findIndex((v) => v.id === h.edgeId) : -1;
+    if (!block || i < 0) return null;
+    const a = block.polygon[i].p;
+    const b = block.polygon[(i + 1) % block.polygon.length].p;
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 1e-9) return null;
+    const u: Vec2 = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+    const nIn: Vec2 = [-u[1], u[0]]; // CCW polygon: the inside is on the left
+    const s = Math.min(len, Math.max(0, o.offset));
+    const p: Vec2 = [a[0] + u[0] * s, a[1] + u[1] * s];
+    const depth = block.wall.thickness - block.wall.outerOffset + 0.05;
+    const inside: Vec2 = [p[0] + nIn[0] * depth, p[1] + nIn[1] * depth];
+    const zone = block.floorZones.find((z) => z.kind === 'replace' && pointInPolygon(inside, z.polygon));
+    const level = o.levelId ?? zone?.levelId ?? block.levelId;
+    const room = roomAt(inside, [level]) || roomAt(inside, []);
+    const towards = N.towards(compassWord([-nIn[0], -nIn[1]], site));
+    const outside: Vec2 = [p[0] - nIn[0] * OUTSIDE_PROBE, p[1] - nIn[1] * OUTSIDE_PROBE];
+    return {
+      place: room ? `${N.exterior} ${towards} ${N.inRoom(room)}` : `${N.exterior} ${towards}`,
+      coveredBy: blockAt(variant.blocks, outside, block.id)?.name ?? '',
+    };
+  };
+
   const openingPlace = (id: Id, variant?: Variant): string => {
     const hosted = openingHost.get(id);
     if (hosted) {
@@ -79,19 +138,37 @@ export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planN
       const t = Math.min(1, Math.max(0, hosted.opening.offset / len));
       return N.inRoom(wallPhrase(hosted.wall, t, hosted.opening.outward));
     }
-    let host: DerivedWall | undefined;
-    if (variant) {
-      const o = variant.openings.find((x) => x.id === id);
-      if (o?.host.kind === 'wall') host = wallsById.get(o.host.wallId);
-      else if (o?.host.kind === 'blockEdge') {
-        const h = o.host;
-        host = derived.walls.find((w) => w.source.kind === 'blockEdge' && w.source.blockId === h.blockId && w.source.edgeId === h.edgeId);
-      }
+    const o = variant?.openings.find((x) => x.id === id);
+    if (variant && o?.host.kind === 'blockEdge') {
+      const edge = onBlockEdge(id, variant);
+      return edge ? N.inRoom(edge.place) : '';
     }
+    const host = o?.host.kind === 'wall' ? wallsById.get(o.host.wallId) : undefined;
     return host ? N.inRoom(wallPhrase(host)) : '';
   };
 
-  return { wall, openingType, openingPlace };
+  /** The building part standing against an opening's stretch of block edge ('' when none, or when it is on a wall). */
+  const openingCoveredBy = (id: Id, variant: Variant): string => (openingHost.has(id) ? '' : (onBlockEdge(id, variant)?.coveredBy ?? ''));
+
+  /** "nord", …: the direction of a roof's `start` (low coordinate) or `end` end along its ridge ('' when unknown). */
+  const roofEnd = (blockId: Id, end: 'start' | 'end', variant: Variant): string => {
+    const block = variant.blocks.find((b) => b.id === blockId);
+    const axis = block ? ridgeAxis(block.roof) : null;
+    if (!axis) return '';
+    const sign = end === 'start' ? -1 : 1;
+    return compassWord(axis === 'x' ? [sign, 0] : [0, sign], site);
+  };
+
+  /** Deck steps: the direction they face ('' when unknown) and the building part in their way ('' when none). */
+  const steps = (id: Id, variant: Variant): { towards: string; blockedBy: string } => {
+    const st = derived.outdoor.steps.find((x) => x.id === id);
+    if (!st) return { towards: '', blockedBy: '' };
+    const probe = (d: number): Vec2 => [st.at[0] + st.outward[0] * d, st.at[1] + st.outward[1] * d];
+    const block = blockAt(variant.blocks, probe(OUTSIDE_PROBE)) ?? blockAt(variant.blocks, probe(-OUTSIDE_PROBE)) ?? blockAt(variant.blocks, st.at);
+    return { towards: compassWord(st.outward, site), blockedBy: block?.name ?? '' };
+  };
+
+  return { wall, openingType, openingPlace, openingCoveredBy, roofEnd, steps };
 }
 
 export function makeNameLookup(derived: DerivedVariant, variant: Variant, site?: Pick<Site, 'planNorthBearing'>): NameLookup {
@@ -112,6 +189,18 @@ export function makeNameLookup(derived: DerivedVariant, variant: Variant, site?:
         return place.openingType(id, variant);
       case 'openingPlace':
         return place.openingPlace(id, variant);
+      case 'openingCoveredBy':
+        return place.openingCoveredBy(id, variant);
+      case 'roofEnd': {
+        // `${blockId}:start` or `${blockId}:end`
+        const at = id.lastIndexOf(':');
+        const end = id.slice(at + 1);
+        return at > 0 && (end === 'start' || end === 'end') ? place.roofEnd(id.slice(0, at), end, variant) : '';
+      }
+      case 'stepsTowards':
+        return place.steps(id, variant).towards;
+      case 'stepsBlockedBy':
+        return place.steps(id, variant).blockedBy;
       case 'wall':
         return place.wall(id);
       case 'furniture': {

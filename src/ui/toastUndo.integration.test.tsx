@@ -5,7 +5,9 @@
  *  - one toast per user action ("Slettet." merged with the room merge), and its Angre undoes exactly that step;
  *  - a later step (a nudge) closes the delete's toast, so its Angre can never undo the nudge;
  *  - "Nytt forslag" toasts without Angre and closes the first-run card; the toasts keep clear of the card;
- *  - an edit that makes a new warning shows it once as a toast with "Vis".
+ *  - an edit that makes a new warning shows it once as a toast with "Vis";
+ *  - (second fix round) that toast goes as soon as its warning is gone or the next edit is made, and a newer warning
+ *    toast replaces it, so "Vis" never opens an empty panel and two warning toasts never contradict each other.
  */
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -23,7 +25,7 @@ import { FIRST_RUN_KEY } from './firstRun';
 import { Toasts } from './Toasts';
 import { toastBottomAvoiding } from './toastLayout';
 import { toastRegistry } from './toastRegistry';
-import { useNewWarningToasts } from './warningToasts';
+import { retireResolved, useNewWarningToasts } from './warningToasts';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -182,5 +184,55 @@ describe('new warnings', () => {
     act(() => appStore.getState().undo());
     act(() => appStore.getState().undo());
     expect(appStore.getState().toasts.filter((t) => toastRegistry().showsWarnings(t.id))).toHaveLength(0);
+  });
+
+  const warningToastEls = () => appStore.getState().toasts.filter((t) => toastRegistry().showsWarnings(t.id));
+
+  it('the toast goes when its warning is gone: draw a wall across a room, then name the new piece', () => {
+    act(() => appStore.setState({ toasts: [] }));
+    // A wall across Soverom (ny fløy) (UX evidence d5): the strip it cuts off has no name.
+    act(() => void core.addWall([16, 4.75], [20.8, 4.75]));
+    const unnamed = deriveForState(appStore.getState()).warnings.find((w) => w.kind === 'room-unnamed');
+    expect(unnamed).toBeDefined();
+    expect(warningToastEls()).toHaveLength(1);
+    expect(warningToastEls()[0].text).toMatch(/^Ny advarsel: Rom uten navn på Hovedplan/);
+    expect(byTestId('toast-show-warnings')).not.toBeNull();
+
+    if (unnamed?.kind !== 'room-unnamed') throw new Error('no unnamed room');
+    act(() => void core.nameFace(unnamed.faceId, 'Kontor', { levelId: unnamed.levelId }));
+    expect(deriveForState(appStore.getState()).warnings).toEqual([]);
+    expect(warningToastEls()).toHaveLength(0);
+    expect(byTestId('toast-show-warnings')).toBeNull();
+    expect(toastEls()).toHaveLength(0);
+  });
+
+  it('a later edit retires the toast, and a newer warning toast replaces it (never two at once)', () => {
+    act(() => appStore.setState({ toasts: [] }));
+    act(() => void core.addWall([16, 4.75], [20.8, 4.75]));
+    expect(warningToastEls()).toHaveLength(1);
+    const first = warningToastEls()[0].id;
+
+    // An edit that leaves the warning in place still closes the toast (like an undo toast).
+    act(() => nudgeSelection({ kind: 'wall', id: 'w-104-103' }, 0.01, 0, actions));
+    expect(appStore.getState().toasts.some((t) => t.id === first)).toBe(false);
+
+    // A new warning: exactly one warning toast, the new one.
+    const door = selectActiveVariant(appStore.getState()).openings.find((o) => o.id === 'd-sov-ny');
+    act(() => void core.addOpening({ kind: 'wall', wallId: 'w-gang-n' }, door!.offset, 'window'));
+    expect(warningToastEls()).toHaveLength(1);
+    expect(warningToastEls()[0].text).toContain('overlapper hverandre');
+    expect(document.querySelectorAll('[data-testid="toast-show-warnings"]')).toHaveLength(1);
+  });
+
+  it('a warning toast is closed as soon as none of the warnings it announced is left, even without a new step', () => {
+    let id = '';
+    act(() => {
+      id = appStore.getState().showToast({ text: 'Ny advarsel: X' });
+      toastRegistry().markShowsWarnings(id, ['kind=room-small|roomId=r']);
+    });
+    act(() => retireResolved(new Set(['kind=room-small|roomId=r', 'kind=other'])));
+    expect(appStore.getState().toasts.some((t) => t.id === id)).toBe(true);
+    act(() => retireResolved(new Set(['kind=other'])));
+    expect(appStore.getState().toasts.some((t) => t.id === id)).toBe(false);
   });
 });

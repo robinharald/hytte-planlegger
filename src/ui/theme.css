@@ -1562,6 +1562,19 @@ abbr[title] {
 .mini-bar .danger {
   color: var(--danger);
 }
+/* Four buttons (the room of a placed unit: Egenskaper · Roter 90° · Velg bygningsdelen · Slett): icon above a
+ * smaller label that may wrap between words, so the bar fits a 390 px phone (about 300 px wide). */
+.mini-bar[data-compact] button {
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  max-width: 104px;
+  padding: 4px 6px;
+  font-size: 12px;
+  line-height: 1.15;
+  text-align: center;
+  white-space: normal;
+}
 
 /* ------------------------------------------------------------------ responsive */
 
@@ -1750,6 +1763,8 @@ abbr[title] {
   .hint-line {
     font-size: 13px;
   }
+  /* The top of the screen while the toolbar is scrolled away; else Toasts.tsx sets `top` just below the toolbar and
+   * hint line (toastLayout.ts `phoneToastTop`), so a toast never covers the tools or Angre. */
   .toasts {
     top: calc(8px + env(safe-area-inset-top));
     bottom: auto;

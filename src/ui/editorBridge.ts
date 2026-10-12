@@ -89,7 +89,7 @@ export function useToasts(): Toast[] {
 
 /**
  * Switch tools. Picking 'opening' / 'unit' fills in a default type / template (and 0 quarter turns) when none is
- * chosen; any switch clears a tool-specific hint (the plan sets e.g. "Klikk der den skal slutte" while a wall is half drawn).
+ * chosen; any switch clears a tool-specific hint (the plan sets e.g. "Trykk der den skal slutte" while a wall is half drawn).
  */
 export function setTool(tool: ToolKind, options?: ToolOptions): void {
   const state = appStore.getState();

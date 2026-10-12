@@ -92,7 +92,7 @@ describe('toasts and tool state', () => {
   it('defaults: Velg, no options, no clearances, no hint', () => {
     expect(DEFAULT_UI).toMatchObject({ tool: 'select', toolOptions: {}, showClearances: false, hint: null });
     const s = setup();
-    s.getState().setUi({ tool: 'unit', toolOptions: { unitTemplate: 'vedskjul', unitRotation90: 1 }, hint: 'Klikk der bygget skal stå' });
+    s.getState().setUi({ tool: 'unit', toolOptions: { unitTemplate: 'vedskjul', unitRotation90: 1 }, hint: 'Trykk der bygget skal stå' });
     expect(s.getState().ui).toMatchObject({ tool: 'unit', toolOptions: { unitTemplate: 'vedskjul' } });
     expect(s.temporal.getState().pastStates).toHaveLength(0);
   });

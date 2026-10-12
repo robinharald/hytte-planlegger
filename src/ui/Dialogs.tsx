@@ -1,5 +1,5 @@
 /**
- * Modal dialogs: Hjelp ("Slik bruker du den": how-to, the six tools, the shortcuts), Send forslaget (share link with
+ * Modal dialogs: Hjelp ("Slik bruker du planleggeren": how-to, the six tools, the shortcuts), Send forslaget (share link with
  * size, > 8 kB warning and the JSON-file fallback; today's `#d=` link) and Versjoner (named versions of this project,
  * other projects' versions, reset).
  */

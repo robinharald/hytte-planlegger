@@ -7,7 +7,9 @@
  *    "Roter 90°" for a placed "Nytt bygg" unit;
  *  - the Egenskaper sheet opens low with the basic fields; the part of the plan it covers reaches the plan as
  *    `viewportInsets` (kept current while the page scrolls); opening it scrolls the plan up under the toolbar;
- *  - the 3D view's own "Vis hva som er nytt i 3D" (off by default) while the plan keeps "Vis hva som er nytt" on.
+ *  - the 3D view's own "Vis hva som er nytt i 3D" (off by default) while the plan keeps "Vis hva som er nytt" on;
+ *  - (second fix round) toasts sit below the toolbar and hint line, wherever the page has scrolled them; the room of
+ *    a placed unit gets the unit's "Roter 90°" and "Velg bygningsdelen" in the mini-bar.
  */
 import { act } from 'react';
 import type { ReactNode } from 'react';
@@ -46,6 +48,9 @@ const { Stage } = await import('./Stage');
 const { Controls } = await import('./Controls');
 const { PropertiesSheet } = await import('./PropertiesPanel');
 const { SelectionMiniBar } = await import('./SelectionMiniBar');
+const { Toasts } = await import('./Toasts');
+const { placeUnit } = await import('../state/editActions');
+const { deriveForState } = await import('../state/useDerived');
 const { placeMiniBar } = await import('./miniBarPlacement');
 const { EditActionsProvider, NOOP_EDIT_ACTIONS, TOOL_KINDS, createNewProposal } = await import('./editorBridge');
 const { overlayStore, setPropertiesSheet, setSelectionAnchor } = await import('./overlay');
@@ -192,6 +197,100 @@ describe('mini-bar placement', () => {
     // Today's cabin (no template) cannot be turned.
     act(() => appStore.getState().select({ kind: 'block', id: 'blk-main' }));
     expect(byTestId('mini-rotate')).toBeNull();
+  });
+});
+
+describe('toasts on a phone', () => {
+  /** A 390 × 664 px phone; the toolbar and hint line at the given viewport tops (px). */
+  function layout(toolbarTop: number) {
+    const rects: Record<string, Partial<DOMRect>> = {
+      'toolbar-wrap': { top: toolbarTop, bottom: toolbarTop + 65, height: 65 },
+      'hint-line': { top: toolbarTop + 71, bottom: toolbarTop + 93, height: 22 },
+    };
+    const keyOf = (el: Element) => (el.classList.contains('toolbar-wrap') ? 'toolbar-wrap' : el.getAttribute('data-testid') === 'hint-line' ? 'hint-line' : '');
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return { x: 0, y: 0, left: 0, right: 390, top: 0, bottom: 0, width: 390, height: 0, toJSON: () => ({}), ...rects[keyOf(this)] } as DOMRect;
+    });
+    return rects;
+  }
+  const toastTop = () => byTestId('toasts')?.style.top ?? '';
+
+  it('sit just below the toolbar and hint line, never over Velg, Vegg or Angre, and follow the page scroll', () => {
+    phone(true);
+    // The sheet scrolled the page so the toolbar is at the top (UX evidence p13: toolbar 0–65, hint 71–93).
+    const rects = layout(0);
+    act(() => void createNewProposal());
+    render(
+      <>
+        <Toolbar />
+        <HintLine />
+        <Toasts />
+      </>,
+    );
+    act(() => void appStore.getState().showToast({ text: nb.toasts.deleted, undo: true }));
+    expect(byTestId('toast')).not.toBeNull();
+    expect(toastTop()).toBe('101px');
+    expect(parseFloat(toastTop())).toBeGreaterThan(rects['hint-line'].bottom!);
+    expect(byTestId('tool-select')?.closest('.toolbar-wrap')).not.toBeNull();
+
+    // At the top of the page the toolbar is lower (100–165, hint 171–193): the toasts move down with it.
+    Object.assign(rects, layout(100));
+    act(() => void window.dispatchEvent(new Event('scroll')));
+    expect(toastTop()).toBe('201px');
+
+    // Scrolled away (the toolbar above the screen): the CSS default, the top of the screen.
+    layout(-200);
+    act(() => void window.dispatchEvent(new Event('scroll')));
+    expect(toastTop()).toBe('');
+    expect(phoneRule('.toasts')).toMatch(/top: calc\(8px \+ env\(safe-area-inset-top\)\);/);
+  });
+
+  it('on a PC they stay at the bottom (no top set)', () => {
+    phone(false);
+    layout(0);
+    render(<Toasts />);
+    act(() => void appStore.getState().showToast({ text: nb.toasts.deleted, undo: true }));
+    expect(byTestId('toast')).not.toBeNull();
+    expect(toastTop()).toBe('');
+  });
+});
+
+describe('the mini-bar for the room of a placed unit', () => {
+  it('offers the unit actions "Roter 90°" and "Velg bygningsdelen" (compact, four buttons)', () => {
+    act(() => void createNewProposal());
+    let shed: string | null = null;
+    act(() => {
+      shed = placeUnit(appStore, 'vedskjul', [14, 11.35]);
+    });
+    if (!shed) throw new Error('no shed');
+    const room = deriveForState(appStore.getState()).rooms.find((r) => r.blockId === shed);
+    if (!room) throw new Error('no room in the shed');
+    const actions = { ...NOOP_EDIT_ACTIONS, rotateBlock: vi.fn() } as UiEditActions & { rotateBlock: ReturnType<typeof vi.fn> };
+    render(
+      <EditActionsProvider actions={actions}>
+        <SelectionMiniBar />
+      </EditActionsProvider>,
+    );
+    act(() => setSelectionAnchor({ x: 200, y: 300 }));
+    act(() => appStore.getState().select({ kind: 'room', id: room.id }));
+    const labels = [...(byTestId('mini-bar')?.querySelectorAll('button') ?? [])].map((b) => b.textContent);
+    expect(labels).toEqual([nb.miniBar.properties, nb.edit.block.rotate, nb.edit.room.selectBlock, nb.miniBar.delete]);
+    expect(byTestId('mini-bar')?.hasAttribute('data-compact')).toBe(true);
+    expect(themeCss).toMatch(/\.mini-bar\[data-compact\] button \{[^}]*flex-direction: column;/);
+
+    click(byTestId('mini-rotate'));
+    expect(actions.rotateBlock).toHaveBeenCalledWith(shed, 90);
+    click(byTestId('mini-select-block'));
+    expect(appStore.getState().ui.selection).toEqual({ kind: 'block', id: shed });
+    // The unit itself: Roter 90° and Slett, no "Velg bygningsdelen".
+    expect(byTestId('mini-select-block')).toBeNull();
+    expect(byTestId('mini-rotate')).not.toBeNull();
+
+    // A room of today's cabin: neither.
+    act(() => appStore.getState().select({ kind: 'room', id: 'room-sov1' }));
+    expect(byTestId('mini-rotate')).toBeNull();
+    expect(byTestId('mini-select-block')).toBeNull();
+    expect(byTestId('mini-bar')?.hasAttribute('data-compact')).toBe(false);
   });
 });
 

@@ -7,9 +7,12 @@ import { describe, expect, it } from 'vitest';
 import { nb, warningText } from '../i18n/nb';
 import type { ModelWarning } from '../model/derived';
 import type { Variant } from '../model/types';
+import { placeUnit } from '../state/editActions';
+import { createAppStore, selectActiveVariant } from '../state/store';
 import { undoHow } from './device';
 import { hintFor } from './hints';
 import { seedFixture } from './testSeed';
+import { formatM2 } from './format';
 import { compassWord, makeNameLookup, warningItems, warningKey } from './warnings';
 
 /** Every user-visible string in nb (functions called with sample arguments). */
@@ -94,6 +97,29 @@ describe('nb.ts wording', () => {
     expect(nb.firstRun.items.some((t) => /det faste grunnlaget/.test(t) && t.includes('«+ Nytt forslag» lager en kopi'))).toBe(true);
   });
 
+  it('second fix round: one name per thing, no English, no furniture before the library exists', () => {
+    // No English words in any text (the geometry fallback's technical detail is an argument, not part of nb).
+    expect(allTexts().filter((t) => /(click|tap|delete|undo|redo|save|load|warning|error|the|and|select|rotate|room|wall|door|window|building)/i.test(t))).toEqual([]);
+    // "Nytt bygg": the tool's tooltip names every template the chooser and the help offer.
+    for (const u of Object.values(nb.tools.units)) expect(nb.tools.titles.unit.toLowerCase()).toContain(u.name.toLowerCase());
+    // The first-run card does not promise furniture (the library comes in the next update).
+    expect(nb.firstRun.items.join(' ')).not.toMatch(/møbel|møbler/i);
+    // The same value has the same name in the editor and in the read-only rows; "i dag" rather than "eksisterende".
+    expect(nb.properties.fields.sill).toBe(nb.edit.opening.sill);
+    expect(nb.properties.fields.risers).toBe(nb.edit.steps.risers);
+    expect(nb.properties.fields.areaExisting).toBe('Herav hytta i dag');
+    expect(nb.schedule.statusTitle).not.toContain('(i dag)');
+    expect(nb.schedule.statusTitle).toContain(`«${nb.schedule.existingTag}»`);
+    expect(nb.schedule.statusTitle).toContain(`«${nb.schedule.newTag}»`);
+    // A selected door or window is tagged like the tool that makes it.
+    expect(nb.selectionKinds.opening).toBe(nb.tools.names.opening);
+    expect(nb.help.heading).toBe('Slik bruker du planleggeren');
+    // Toast sentences end with a full stop.
+    for (const t of [nb.editor.existingBlockMove, nb.editor.existingBlockDelete, nb.editor.deckMinVertices, nb.editor.deckVertexCrosses, nb.editor.tooSmall]) {
+      expect(t.endsWith('.'), t).toBe(true);
+    }
+  });
+
   it('a delete that merges rooms reads as one sentence: "Slettet. «Soverom 1» og «Bad» er nå ett rom."', () => {
     expect(`${nb.toasts.deleted} ${nb.editor.merged('Soverom 1', 'Bad')}`).toBe('Slettet. «Soverom 1» og «Bad» er nå ett rom.');
   });
@@ -135,6 +161,109 @@ describe('warnings name walls and openings by type and place', () => {
     expect(texts[0]).toBe('Døra i veggen mellom Gang og Soverom (ny fløy) får ikke plass i veggen.');
     expect(texts[2]).toBe('Døra i veggen mellom Gang og Soverom (ny fløy) blokkeres av veggen mellom Bad og Soverom 1.');
     for (const t of texts) expect(t).not.toMatch(/d-sov-ny|win-kjk-n|w-104-103|w-gang-n|op-/);
+  });
+
+  /** "Mitt forslag" with a Vedskjul placed at each point (the real editor action), optionally listed before the other blocks. */
+  function withShed(at: [number, number][], shedsFirst = false): { variant: Variant } {
+    const store = createAppStore({ ...seed.project, variants: [...seed.project.variants, seed.variant], activeVariantId: seed.variant.id });
+    const sheds = at.map((p) => placeUnit(store, 'vedskjul', p));
+    if (sheds.some((id) => !id)) throw new Error('no shed');
+    const v = selectActiveVariant(store.getState());
+    const isShed = (id: string) => sheds.includes(id);
+    const variant = shedsFirst ? { ...v, blocks: [...v.blocks.filter((b) => isShed(b.id)), ...v.blocks.filter((b) => !isShed(b.id))] } : v;
+    return { variant };
+  }
+  /** Against the wing's north wall (UX evidence d3/d4), and on the terrace's east steps. */
+  const AT_WING: [number, number] = [18.4, 6.95];
+  const ON_STEPS: [number, number] = [24.2, 9.1];
+  const textsOf = (variant: Variant) => warningItems(seed.derive(variant), variant, seed.project.site).map((w) => w.text);
+
+  it('an opening whose wall is now covered by another building part says which opening, where, and by what', () => {
+    // A Vedskjul against the wing's north wall (UX evidence d3/d4). Listed first, the shed keeps the shared wall and
+    // the wing's windows there lose theirs; listed last (as placed), the shed's own open front is the one covered.
+    const first = withShed([AT_WING], true);
+    const covered = seed.derive(first.variant).warnings.filter((w) => w.kind === 'opening-on-removed-edge');
+    expect(covered.map((w) => (w.kind === 'opening-on-removed-edge' ? w.openingId : ''))).toContain('win-sov-n');
+    expect(textsOf(first.variant)).toContain('Vinduet i ytterveggen mot øst i Soverom (ny fløy) sitter i en vegg som nå er dekket av «Vedskjul».');
+
+    const placed = withShed([AT_WING]);
+    const texts = textsOf(placed.variant);
+    expect(texts).toContain('Åpningen i ytterveggen mot vest i Vedskjul sitter i en vegg som nå er dekket av «Ny tverrfløy».');
+    for (const t of texts) expect(t).not.toMatch(/op-|blk-|win-|en vegg som er fjernet/);
+
+    // A lookup that knows no covering part keeps the old sentence (never an id).
+    const bare = (kind: string, id: string) => (kind === 'opening' ? 'åpningen' : id);
+    expect(warningText({ kind: 'opening-on-removed-edge', openingId: 'op-1' }, bare, String)).toBe('Åpningen sitter i en vegg som er fjernet.');
+  });
+
+  it('a roof that does not meet its neighbour names the end by compass direction', () => {
+    const { variant } = withShed([AT_WING]);
+    // The wing's ridge runs along plan y; its high (end) end faces plan +y, which bears 106°: east.
+    expect(textsOf(variant)).toContain('Taket på «Ny tverrfløy» møter ikke nabotaket i enden mot øst.');
+    const bare = (_kind: string, id: string) => id;
+    expect(warningText({ kind: 'roof-no-meet', blockId: 'b', end: 'start' }, bare, String)).toBe('Taket på «b» møter ikke nabotaket i den ene enden.');
+  });
+
+  it('blocked deck steps say which steps and which building part is in the way', () => {
+    // A Vedskjul on the terrace's east steps (centre (23.2, 9.1), facing plan +x: south).
+    const { variant } = withShed([ON_STEPS]);
+    expect(textsOf(variant)).toContain('Trappa fra terrassen mot sør står der det nå er «Vedskjul». Flytt trappa langs terrassekanten eller slett den.');
+  });
+
+  it('every warning kind on the real seed: no id, no placeless "a wall" / "a building" / "one end"', () => {
+    // On the seed with a Vedskjul listed first against the wing's north wall (so win-sov-n's wall is covered) and one
+    // on the terrace's east steps.
+    const { variant } = withShed([AT_WING, ON_STEPS], true);
+    const lookup = makeNameLookup(seed.derive(variant), variant, seed.project.site);
+    // One sample per kind (the compiler insists on every kind of ModelWarning).
+    const samples: { [K in ModelWarning['kind']]: Extract<ModelWarning, { kind: K }> } = {
+      'room-unnamed': { kind: 'room-unnamed', faceId: 'face-x1', levelId: 'main', area: 4.3 },
+      'room-anchor-lost': { kind: 'room-anchor-lost', roomId: 'room-sov1' },
+      'room-small': { kind: 'room-small', roomId: 'room-sov1', area: 1, min: 2 },
+      'opening-outside-host': { kind: 'opening-outside-host', openingId: 'win-kjk-n' },
+      'opening-overlap': { kind: 'opening-overlap', openingIds: ['d-sov-ny', 'win-kjk-n'] },
+      'opening-above-roof': { kind: 'opening-above-roof', openingId: 'win-kjk-n', headZ: 2.5, roofZ: 2.2 },
+      'opening-on-removed-edge': { kind: 'opening-on-removed-edge', openingId: 'win-sov-n' },
+      'door-blocked': { kind: 'door-blocked', openingId: 'd-sov-ny', by: 'w-104-103' },
+      'wall-dangling': { kind: 'wall-dangling', wallId: 'w-gang-n' },
+      'block-overlap': { kind: 'block-overlap', blockIds: ['blk-wing', 'blk-main'] },
+      'block-self-intersecting': { kind: 'block-self-intersecting', blockId: 'blk-wing' },
+      'parts-overlap': { kind: 'parts-overlap', blockId: 'blk-main' },
+      'roof-no-meet': { kind: 'roof-no-meet', blockId: 'blk-wing', end: 'start' },
+      'area-limit': { kind: 'area-limit', limit: 150, actual: 170 },
+      'deck-steps-blocked': { kind: 'deck-steps-blocked', stepsId: 'rail-terrasse/steps/2', deckId: 'deck-terrasse' },
+      // Furniture is named from the catalogue (phase 2b); the unknown type is quoted on purpose.
+      'furniture-overlap': { kind: 'furniture-overlap', furnitureIds: ['f-1', 'f-2'] },
+      'furniture-in-wall': { kind: 'furniture-in-wall', furnitureId: 'f-1', wallId: 'w-gang-n' },
+      'furniture-outside': { kind: 'furniture-outside', furnitureId: 'f-1' },
+      'furniture-unknown': { kind: 'furniture-unknown', furnitureId: 'f-1', catalogId: 'rakett' },
+      'furniture-needs-wet-room': { kind: 'furniture-needs-wet-room', furnitureId: 'f-1' },
+      generic: { kind: 'generic', message: 'geometry fallback: rooms on storey ground' },
+    };
+    const ids = /face-x1|room-sov1|win-|d-sov-ny|w-104|w-gang|blk-|rail-|deck-terrasse|steps\/|op-/;
+    const placeless = /^En vegg |en vegg som er fjernet|den ene enden|den andre enden|et bygg\b|Ukjent advarsel/;
+    for (const w of Object.values(samples)) {
+      const text = warningText(w, lookup, formatM2);
+      expect(text, w.kind).not.toMatch(placeless);
+      if (!w.kind.startsWith('furniture-')) expect(text, w.kind).not.toMatch(ids);
+    }
+    expect(warningText(samples['roof-no-meet'], lookup, formatM2)).toBe('Taket på «Ny tverrfløy» møter ikke nabotaket i enden mot vest.');
+    expect(warningText(samples['deck-steps-blocked'], lookup, formatM2)).toMatch(/^Trappa fra terrassen mot sør står der det nå er «Vedskjul 2»\./);
+  });
+
+  it('a loose wall in no named room is placed by the building part it stands in', () => {
+    // A wall across Soverom (ny fløy) leaves an unnamed strip (y 3.4 … 4.2); a short stub in it dangles.
+    const base = seed.variant.walls.find((w) => w.id === 'w-gang-n');
+    if (!base) throw new Error('no w-gang-n');
+    const variant: Variant = {
+      ...seed.variant,
+      walls: [
+        ...seed.variant.walls,
+        { ...base, id: 'w-split', a: [16, 4.2], b: [20.8, 4.2], status: 'new' },
+        { ...base, id: 'w-stub', a: [19, 3.6], b: [19, 3.9], status: 'new' },
+      ],
+    };
+    expect(textsOf(variant)).toContain('Veggen i «Ny tverrfløy» henger løs og danner ikke noe rom.');
   });
 
   it('a warning keeps its identity when only its figures change (not shown as new again)', () => {

@@ -109,7 +109,7 @@ export interface UiState {
   toolOptions: ToolOptions;
   /** Draw furniture clearance zones in the plan. */
   showClearances: boolean;
-  /** Tool-specific hint line text (e.g. "Klikk der den skal slutte"); null = the tool's default text. */
+  /** Tool-specific hint line text (e.g. "Trykk der den skal slutte"); null = the tool's default text. */
   hint: string | null;
   /** Sun study: local date (YYYY-MM-DD) and minutes after local midnight at the site (Site.timezone). */
   sun: { date: string; minutes: number };

@@ -12,8 +12,11 @@
  *    furniture. Exterior walls, decks, railings, structure and ghosts cannot.
  *  - Rotate (90°): furniture, and new template units ("Nytt bygg": a placed Vedskjul turned around its centre,
  *    `rotateBlock`). Duplicate: furniture and new blocks.
+ *  - The room of a placed single-room unit (`unitOfRoom`): the phone mini-bar also offers the unit's "Roter 90°"
+ *    (`rotateUnit`) and "Velg bygningsdelen", so the unit can be turned and moved again without a detour.
  */
 import { nb } from '../i18n/nb';
+import type { DerivedBlock, DerivedVariant } from '../model/derived';
 import { appStore } from '../state/appStore';
 import type { Selection } from '../state/selection';
 import { selectActiveVariant } from '../state/store';
@@ -98,6 +101,22 @@ export function isRotatableBlock(r: UiResolved | null): boolean {
 
 export function canRotate(r: UiResolved | null): boolean {
   return r?.kind === 'furniture' || isRotatableBlock(r);
+}
+
+/**
+ * The placed "Nytt bygg" unit (a new block from a template) whose only room `r` is, e.g. a Vedskjul's room; else null.
+ */
+export function unitOfRoom(r: UiResolved | null, derived: DerivedVariant): DerivedBlock | null {
+  if (r?.kind !== 'room' || !r.room.blockId) return null;
+  const id = r.room.blockId;
+  const unit = derived.blocks.find((b) => b.block.id === id);
+  if (!unit || !unit.block.isNew || !unit.block.template) return null;
+  return derived.rooms.filter((x) => x.blockId === id).length === 1 ? unit : null;
+}
+
+/** Turn a placed unit 90° (the mini-bar's "Roter 90°" for the room of a unit, `unitOfRoom`). */
+export function rotateUnit(unit: DerivedBlock, actions: UiEditActions): void {
+  guarded(() => actions.rotateBlock(unit.block.id, 90));
 }
 
 export function rotateResolved(r: UiResolved, actions: UiEditActions): void {

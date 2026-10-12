@@ -215,7 +215,7 @@ export const nb = {
       select: 'Velg og flytt det som er tegnet (Esc)',
       wall: 'Tegn en ny vegg: trykk der den begynner og der den slutter',
       opening: 'Sett inn en dør, et vindu eller en åpning i en vegg',
-      unit: 'Sett et nytt bygg på tomta eller terrassen: vedskjul, bod, badstue eller anneks',
+      unit: 'Sett et nytt bygg på tomta eller terrassen: vedskjul, bod, badstue, anneks eller eget bygg',
       furniture: 'Sett inn møbler fra møbelbiblioteket',
       measure: 'Mål avstanden mellom to punkter',
     },
@@ -446,8 +446,8 @@ export const nb = {
     heading: 'Slik kommer du i gang',
     /** docs/phase2-plan.md §5 first-run card. */
     items: [
-      'Trykk på et rom, en vegg eller et møbel for å se målene. I ditt eget forslag drar du det valgte for å flytte det.',
-      'Forslag D er det faste grunnlaget og kan ikke endres. «+ Nytt forslag» lager en kopi som du kan endre: flytt vegger, dører, vinduer og møbler – og angre alt med Angre.',
+      'Trykk på et rom, en vegg, en dør eller et vindu for å se målene. I ditt eget forslag drar du det valgte for å flytte det.',
+      'Forslag D er det faste grunnlaget og kan ikke endres. «+ Nytt forslag» lager en kopi som du kan endre: flytt vegger, dører og vinduer, sett ut nye bygg – og angre alt med Angre.',
       'Alt lagres automatisk og deles med familien. Trykk «Send forslaget» for å sende lenken.',
     ],
     ok: 'Skjønner',
@@ -486,7 +486,7 @@ export const nb = {
     room: 'Rom',
     block: 'Bygningsdel',
     status: 'Status',
-    statusTitle: 'Hytta i dag (i dag) eller nytt',
+    statusTitle: '«i dag»: slik hytta er i dag. «nytt»: nytt i dette forslaget.',
     dims: 'Mål (m)',
     dimsTitle: 'Innvendige mål, bredde × dybde. «ca.» når rommet ikke er et rektangel.',
     area: 'Areal',
@@ -558,7 +558,7 @@ export const nb = {
       block: 'Bygningsdel',
       dims: 'Innvendige mål',
       area: 'Areal',
-      areaExisting: 'Herav eksisterende',
+      areaExisting: 'Herav hytta i dag',
       areaNew: 'Herav nytt',
       floor: 'Gulv',
       note: 'Merknad',
@@ -570,7 +570,7 @@ export const nb = {
       topZ: 'Overkant',
       openings: 'Åpninger',
       width: 'Bredde',
-      sill: 'Brystning',
+      sill: 'Høyde over gulv',
       host: 'Sitter i',
       roof: 'Tak',
       pitch: 'Takvinkel',
@@ -591,7 +591,7 @@ export const nb = {
       vertex: 'Hjørne',
       from: 'Fra',
       to: 'Til',
-      risers: 'Opptrinn',
+      risers: 'Trinn',
     },
     zNote: 'Høyder er målt fra gulvet i hovedplanet.',
     railingStyles: { glass: 'Glass', boards: 'Bord' } as Record<string, string>,
@@ -625,6 +625,8 @@ export const nb = {
       between: (a: string, b: string) => `mellom ${a} og ${b}`,
       /** "i Kjøkken", "i veggen mellom …". */
       inRoom: (place: string) => `i ${place}`,
+      /** A wall with no named room around it, inside a building part: "i «Ny tverrfløy»". */
+      inBlock: (block: string) => `i «${block}»`,
       towards: (direction: string) => `mot ${direction}`,
       /** Compass points from north, clockwise (45° each). */
       directions: ['nord', 'nordøst', 'øst', 'sørøst', 'sør', 'sørvest', 'vest', 'nordvest'],
@@ -636,7 +638,7 @@ export const nb = {
   },
 
   help: {
-    heading: 'Slik bruker du den',
+    heading: 'Slik bruker du planleggeren',
     close: 'Lukk',
     intro:
       'Planleggeren viser Forslag D for hytta ved Merkesvatnet som 2D-plan og 3D-modell. Alt lages fra én ' +
@@ -819,7 +821,7 @@ export const nb = {
     wall: 'Vegg',
     blockEdge: 'Yttervegg',
     blockVertex: 'Hjørne',
-    opening: 'Åpning',
+    opening: 'Dør/vindu',
     room: 'Rom',
     block: 'Bygningsdel',
     deck: 'Terrasse',
@@ -913,7 +915,7 @@ export const nb = {
     /** §3.6: deleteBlock of a block with existing area. */
     existingBlockDelete: EXISTING_BLOCK_DELETE,
     /** moveBlock of a block with existing area. */
-    existingBlockMove: 'Hytta i dag kan ikke flyttes som helhet – flytt veggene i stedet',
+    existingBlockMove: 'Hytta i dag kan ikke flyttes som helhet – flytt veggene i stedet.',
     /** §3.7: a room size field whose side has only block edges. */
     resizeBlockEdge: 'Endres under bygningsdelen',
     /** deleteDeckVertex on a deck with three corners. */
@@ -956,9 +958,27 @@ const GEOMETRY_FALLBACK_PREFIX = 'geometry fallback:';
  * item's catalogue name. Walls and openings are named by type and place (ui/warnings.ts, `nb.warnings.names`), never
  * by id: 'opening' = "vinduet i veggen mellom Gang og Bad", 'openingType' = "vinduet", 'openingPlace' = "i veggen
  * mellom Gang og Bad", 'wall' = "veggen mellom Gang og Bad" (all lower case; `warningText` capitalises).
+ *
+ * Place words for the rest ('' when unknown; `warningText` then falls back to a text without them):
+ *  - 'openingCoveredBy' (opening id): the building part now standing where the opening's stretch of wall was;
+ *  - 'roofEnd' (`${blockId}:start` or `${blockId}:end`): the compass direction of that end of the roof, "øst";
+ *  - 'stepsTowards' (steps id): the direction the deck steps face, "sør";
+ *  - 'stepsBlockedBy' (steps id): the building part in the steps' way.
  */
 export type NameLookup = (
-  kind: 'level' | 'room' | 'block' | 'opening' | 'openingType' | 'openingPlace' | 'wall' | 'furniture',
+  kind:
+    | 'level'
+    | 'room'
+    | 'block'
+    | 'opening'
+    | 'openingType'
+    | 'openingPlace'
+    | 'wall'
+    | 'furniture'
+    | 'openingCoveredBy'
+    | 'roofEnd'
+    | 'stepsTowards'
+    | 'stepsBlockedBy',
   id: string,
 ) => string;
 
@@ -976,6 +996,12 @@ function cap(s: string): string {
 function joinAnd(items: string[]): string {
   if (items.length <= 1) return items.join('');
   return `${items.slice(0, -1).join(', ')} ${nb.warnings.names.and} ${items[items.length - 1]}`;
+}
+
+/** A place word from the lookup, or '' when it does not know one (an unknown id comes back as itself). */
+function placeWord(names: NameLookup, kind: Parameters<NameLookup>[0], id: string): string {
+  const v = names(kind, id);
+  return v && v !== id ? v : '';
 }
 
 /** Overlapping openings: "Døra og vinduet i veggen mellom …" when they share the wall, else each with its place. */
@@ -1000,8 +1026,12 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
       return `${cap(overlapNames(w.openingIds, names))} overlapper hverandre.`;
     case 'opening-above-roof':
       return `${cap(names('opening', w.openingId))} stikker opp i taket (overkant ${metres2(w.headZ)}, tak ${metres2(w.roofZ)}).`;
-    case 'opening-on-removed-edge':
-      return `${cap(names('opening', w.openingId))} sitter i en vegg som er fjernet.`;
+    case 'opening-on-removed-edge': {
+      const by = placeWord(names, 'openingCoveredBy', w.openingId);
+      return by
+        ? `${cap(names('opening', w.openingId))} sitter i en vegg som nå er dekket av «${by}».`
+        : `${cap(names('opening', w.openingId))} sitter i en vegg som er fjernet.`;
+    }
     case 'door-blocked':
       return `${cap(names('opening', w.openingId))} blokkeres av ${names('wall', w.by)}.`;
     case 'wall-dangling':
@@ -1012,12 +1042,19 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
       return `Bygningsdelen «${names('block', w.blockId)}» krysser seg selv – sjekk hjørnene.`;
     case 'parts-overlap':
       return `Delene i «${names('block', w.blockId)}» overlapper hverandre.`;
-    case 'roof-no-meet':
-      return `Taket på «${names('block', w.blockId)}» møter ikke nabotaket i ${w.end === 'start' ? 'den ene' : 'den andre'} enden.`;
+    case 'roof-no-meet': {
+      const towards = placeWord(names, 'roofEnd', `${w.blockId}:${w.end}`);
+      const end = towards ? `enden mot ${towards}` : `${w.end === 'start' ? 'den ene' : 'den andre'} enden`;
+      return `Taket på «${names('block', w.blockId)}» møter ikke nabotaket i ${end}.`;
+    }
     case 'area-limit':
       return `Arealet ${fmtArea(w.actual)} er over grensen på ${fmtArea(w.limit)}.`;
-    case 'deck-steps-blocked':
-      return 'En trapp fra terrassen står der det nå er et bygg. Flytt trappa langs terrassekanten eller slett den.';
+    case 'deck-steps-blocked': {
+      const towards = placeWord(names, 'stepsTowards', w.stepsId);
+      const by = placeWord(names, 'stepsBlockedBy', w.stepsId);
+      const steps = towards ? `Trappa fra terrassen mot ${towards}` : 'En trapp fra terrassen';
+      return `${steps} står der det nå er ${by ? `«${by}»` : 'et bygg'}. Flytt trappa langs terrassekanten eller slett den.`;
+    }
     case 'furniture-overlap':
       return `Møblene «${names('furniture', w.furnitureIds[0])}» og «${names('furniture', w.furnitureIds[1])}» står oppå hverandre.`;
     case 'furniture-in-wall':

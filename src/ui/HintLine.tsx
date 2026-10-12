@@ -1,6 +1,6 @@
 /**
  * Hint line under the toolbar (docs/phase2-plan.md §3.2): the plan's tool-specific text while a tool is in progress
- * (`ui.hint`, e.g. "Klikk der den skal slutte (Esc avbryter)"), else the active tool's default text. On the locked
+ * (`ui.hint`, e.g. "Trykk der den skal slutte (Esc avbryter)"), else the active tool's default text. On the locked
  * base proposal with Velg active it says so and offers "Nytt forslag" (rule 1: "Nytt forslag" primary). Hidden
  * while read-only (shared link).
  */

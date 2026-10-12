@@ -1,6 +1,8 @@
 /**
  * Toasts (store `toasts`, docs/phase2-plan.md §3.5 "every delete toasts «Slettet. [Angre]»", §1 rule 1 refusal with
- * "Nytt forslag"): bottom centre (top on phones), newest last, at most three (store TOAST_LIMIT). Each closes by itself
+ * "Nytt forslag"): bottom centre (on phones at the top, just below the toolbar and hint line so they never cover the
+ * tools or Angre: toastLayout.ts `phoneToastTop`, kept current while the page scrolls), newest last, at most three
+ * (store TOAST_LIMIT). Each closes by itself
  * after 6 s, 10 s when it has a button (the timer restarts when the same text is shown again: `seq`), or with ×.
  *
  *  - ONE message per user action: the undo toasts of one undo step are merged, the action's own text first
@@ -18,9 +20,9 @@ import { appStore } from '../state/appStore';
 import { IconClose } from './common';
 import { createNewProposal, dismissToast, toastOffersNewProposal, useToasts } from './editorBridge';
 import { useFirstRunOpen } from './firstRun';
-import { PHONE_QUERY } from './hooks';
-import { revealWarnings } from './reveal';
-import { toastBottomAvoiding } from './toastLayout';
+import { PHONE_QUERY, useMediaQuery } from './hooks';
+import { revealWarnings, toolbarBottom } from './reveal';
+import { phoneToastTop, toastBottomAvoiding } from './toastLayout';
 import { topEntry, toastRegistry } from './toastRegistry';
 import type { UndoGroup } from './toastRegistry';
 
@@ -106,7 +108,9 @@ function measureCardOffset(): number | null {
 export function Toasts() {
   const toasts = useToasts();
   const cardOpen = useFirstRunOpen();
+  const isPhone = useMediaQuery(PHONE_QUERY);
   const [bottom, setBottom] = useState<number | null>(null);
+  const [phoneTop, setPhoneTop] = useState<number | null>(null);
 
   useLayoutEffect(() => {
     const update = () => setBottom(cardOpen ? measureCardOffset() : null);
@@ -116,7 +120,23 @@ export function Toasts() {
     return () => window.removeEventListener('resize', update);
   }, [cardOpen, toasts]);
 
+  // Phones: below the toolbar and hint line, wherever the page has scrolled them.
+  const shown = toasts.length > 0;
+  useLayoutEffect(() => {
+    const active = isPhone && shown && typeof window !== 'undefined';
+    const update = () => setPhoneTop(active ? phoneToastTop(toolbarBottom()) : null);
+    update();
+    if (!active) return;
+    window.addEventListener('scroll', update, { capture: true, passive: true });
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, { capture: true });
+      window.removeEventListener('resize', update);
+    };
+  }, [isPhone, shown, toasts]);
+
   const groups = registry.groups(toasts);
+  const style = isPhone ? (phoneTop !== null ? { top: phoneTop } : undefined) : bottom !== null ? { bottom } : undefined;
   return (
     <div
       className="toasts"
@@ -124,7 +144,7 @@ export function Toasts() {
       aria-label={nb.toasts.region}
       aria-live="polite"
       data-testid="toasts"
-      style={bottom !== null ? { bottom } : undefined}
+      style={style}
     >
       {groups.map((g) => (
         <ToastView key={g.key} group={g} />

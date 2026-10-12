@@ -1,4 +1,4 @@
-/** Where the toasts go while the first-run card is open (Toasts.tsx). Pure. */
+/** Where the toasts go: clear of the first-run card (PC, tablet) and of the toolbar and hint line (phones). Pure. */
 
 /** Gap kept between the toasts and the first-run card (px). */
 const CARD_GAP = 8;
@@ -14,4 +14,16 @@ export function toastBottomAvoiding(card: { top: number; left: number; right: nu
   const right = left + width;
   if (card.right <= left || card.left >= right) return null;
   return Math.max(0, viewport.height - card.top + CARD_GAP);
+}
+
+/** Gap kept between the toasts and the toolbar + hint line on phones (px). */
+const CHROME_GAP = 8;
+
+/**
+ * Phones: top (px) of the toast stack, just below the toolbar and the hint line (`chromeBottom`, their bottom in
+ * viewport px: reveal.ts `toolbarBottom`), so a toast never covers Velg, Vegg, Dør/vindu or Angre. null while they
+ * are scrolled out of view: the CSS default (the top of the screen, past the notch) then applies.
+ */
+export function phoneToastTop(chromeBottom: number): number | null {
+  return chromeBottom > 0 ? Math.round(chromeBottom + CHROME_GAP) : null;
 }
