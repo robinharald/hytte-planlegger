@@ -9,13 +9,18 @@
  *    the family space `#f=<id>` (from the link, else the id stored on this device, else a new one made once). The
  *    Firebase code is loaded with `import()` by `startPersistence`, so a bundle without a config never loads it. The
  *    address bar keeps `#f=<id>&p=<proposal>` so a bookmark or a home-screen icon (iOS keeps its own storage) opens
- *    the same family.
+ *    the same family. A link to another family (at start-up or pasted into the tab) switches to it: the old id is
+ *    remembered (`family.previous`), and once the new family answers, the proposals this device created in the old
+ *    one are offered («Hent forslagene fra den forrige plassen»: copied here, put in the old space's Papirkurv). A
+ *    `#f=` whose id is not whole (cut off) never starts a new family: the stored one is used, or — on a device without
+ *    one — the proposals are kept on this device (`noFamily`) until a whole link is opened; a banner says so.
  *  - 'local': the proposals are stored in this browser (familyStore.local.ts) — "Kun på denne enheten".
  * familyStore.sync.ts keeps the store and the family store in step (autosave, live merge, conflict guard); its state
  * (status pill, "sist endret av …", Papirkurv, conflicts) is mirrored into `familyUiStore` (`useFamily`).
  *
  * Bootstrap (module load, synchronous): the old whole-project autosave of phase 1 / 2a becomes proposals (local: at
- * once; shared: after the first list, then the old key is retired); a `#d=` link is imported as new proposal(s)
+ * once; shared: after the first list, then the old key is retired), keeping its own time as «sist endret» and
+ * showing the proposal it had on screen; a `#d=` link is imported as new proposal(s)
  * (ids derived from the link, so opening it twice adds nothing twice) and shown; `#p=<id>` (or the proposal shown
  * last on this device) is activated as soon as it is there. `startPersistence()` (main.tsx, once) starts the sync,
  * the UI-prefs autosave, `navigator.storage.persist()` and the `hashchange` handler.
@@ -39,6 +44,7 @@ import {
   hashHasFamily,
   isValidFamilyId,
   newFamilyId,
+  newProposalId,
   parseHash,
   resolveFamilyMode,
 } from './familyStore';
@@ -53,7 +59,7 @@ import {
   downloadProject,
   downloadText,
   getStorage,
-  legacyProposals,
+  legacyImport,
   linkProposals,
   loadAutosave,
   loadDismissedSeedRevision,
@@ -97,33 +103,72 @@ export const familyMode: FamilyMode = resolveFamilyMode({
   webdriver: hasWindow && typeof navigator !== 'undefined' && navigator.webdriver === true,
 });
 
-/** Shared mode: the family of a `#f=` link (remembered), else the one stored here, else a new one (made once). */
-function chooseFamilyId(): string {
-  const stored = readRaw(storage, FAMILY_KEYS.familyId);
-  const known = isValidFamilyId(stored) ? stored : null;
+function readJson(key: string): unknown {
+  try {
+    return JSON.parse(readRaw(storage, key) ?? 'null') as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Switching family: remember the old id (nothing is lost; it can be opened again with its link) and that its
+ * proposals are still to be offered in the new one (`offerCarryOver`).
+ */
+function rememberPreviousFamily(old: string): void {
+  const parsed = readJson(FAMILY_KEYS.previousFamilies);
+  const previous = Array.isArray(parsed) ? parsed.filter(isValidFamilyId) : [];
+  writeRaw(storage, FAMILY_KEYS.previousFamilies, JSON.stringify([...previous.filter((x) => x !== old), old].slice(-10)));
+  writeRaw(storage, FAMILY_KEYS.switchedFrom, old);
+}
+
+/** Proposals this device created in each family (`FAMILY_KEYS.createdHere`). */
+function createdHere(): Record<string, string[]> {
+  const parsed = readJson(FAMILY_KEYS.createdHere);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [f, ids] of Object.entries(parsed as Record<string, unknown>)) {
+    if (isValidFamilyId(f) && Array.isArray(ids)) out[f] = ids.filter((x): x is string => typeof x === 'string');
+  }
+  return out;
+}
+
+function recordCreated(family: string, id: Id): void {
+  const all = createdHere();
+  const ids = all[family] ?? [];
+  if (ids.includes(id)) return;
+  all[family] = [...ids, id].slice(-200);
+  writeRaw(storage, FAMILY_KEYS.createdHere, JSON.stringify(all));
+}
+
+const storedFamily = readRaw(storage, FAMILY_KEYS.familyId);
+/** The start link has `#f=` but its id is not whole (cut off when copied or sent): never a new family for it. */
+const badFamilyLink = familyMode === 'shared' && hashHasFamily(startHash) && !startParams.family;
+
+/**
+ * Shared mode: the family of a `#f=` link (remembered), else the one stored here, else a new one (made once) — but
+ * not for a broken `#f=` on a device without a family: null (the proposals stay on this device until a whole link).
+ */
+function chooseFamilyId(): string | null {
+  const known = isValidFamilyId(storedFamily) ? storedFamily : null;
   if (startParams.family) {
-    if (known && known !== startParams.family) {
-      // Switching family: remember the old id (nothing is lost; it can be opened again with its link).
-      let previous: string[] = [];
-      try {
-        const parsed = JSON.parse(readRaw(storage, FAMILY_KEYS.previousFamilies) ?? '[]') as unknown;
-        if (Array.isArray(parsed)) previous = parsed.filter(isValidFamilyId);
-      } catch {
-        // ignore
-      }
-      writeRaw(storage, FAMILY_KEYS.previousFamilies, JSON.stringify([...previous.filter((x) => x !== known), known].slice(-10)));
-    }
+    if (known && known !== startParams.family) rememberPreviousFamily(known);
     writeRaw(storage, FAMILY_KEYS.familyId, startParams.family);
     return startParams.family;
   }
   if (known) return known;
+  if (badFamilyLink) return null;
   const id = newFamilyId();
   writeRaw(storage, FAMILY_KEYS.familyId, id);
   return id;
 }
 
-/** The family space (shared mode), null in local mode. */
+/** The family space (shared mode), null in local mode (and in shared mode without a family, `noFamily`). */
 export const familyId: string | null = familyMode === 'shared' ? chooseFamilyId() : null;
+/** Shared mode, but a broken `#f=` link on a device without a family: kept on this device (the local store) meanwhile. */
+const noFamily = familyMode === 'shared' && familyId === null;
+/** The `#f=…` part of a broken start link, kept in the address bar while `noFamily` (a reload must not start a family). */
+const brokenFamilyHash = noFamily ? `#${startHash.replace(/^#/, '').split('&').find((x) => x.startsWith('f=')) ?? ''}` : '';
 const activeKey = `${FAMILY_KEYS.activeProposal}:${familyId ?? 'local'}`;
 
 // ---------------------------------------------------------------------------
@@ -139,26 +184,36 @@ const seedProject = freshSeedProject();
 const baseVariant: Variant = seedProject.variants[0];
 const encodeContext = (): EncodeContext => ({ site: seedProject.site, seedRevision: SEED_REVISION });
 
-/** The local store (local mode); the shared one is created by `startPersistence`. */
+/** The local store (local mode, or shared mode without a family); the shared one is created by `startPersistence`. */
 const localFamily: FamilyStore | null =
-  familyMode === 'local' ? createLocalFamilyStore({ storage, target: hasWindow ? window : null, context: encodeContext }) : null;
+  familyMode === 'local' || noFamily ? createLocalFamilyStore({ storage, target: hasWindow ? window : null, context: encodeContext }) : null;
 
 const startNotices: Notice[] = [];
 if (!storage) startNotices.push('storage-unavailable');
 
-/** Notices of the family layer (shown by the top bar). */
-export type FamilyNotice = 'family-unavailable';
-const startFamilyNotices: FamilyNotice[] = familyMode === 'local' && hashHasFamily(startHash) ? ['family-unavailable'] : [];
+/** Notices of the family layer (shown by the top bar). 'family-link-invalid': a `#f=` whose id is not whole. */
+export type FamilyNotice = 'family-unavailable' | 'family-link-invalid';
+const startFamilyNotices: FamilyNotice[] = [];
+if (familyMode === 'local' && hashHasFamily(startHash)) startFamilyNotices.push('family-unavailable');
+if (badFamilyLink) startFamilyNotices.push('family-link-invalid');
 
 /** Toasts to show once the store exists. */
 const startToasts: string[] = [];
 
-// 1. The old whole-project autosave → proposals.
+// 1. The old whole-project autosave → proposals (keeping its own time; the one it had on screen is shown).
 let legacyPending: Variant[] = [];
+let legacyActive: Id | null = null;
+let legacyAt: string | undefined;
 {
   const legacy = loadAutosave(storage);
-  if (legacy.status === 'ok') legacyPending = legacyProposals(legacy.project, baseVariant);
-  else if (legacy.status === 'invalid') {
+  if (legacy.status === 'ok') {
+    const moved = legacyImport(legacy.project, baseVariant);
+    legacyPending = moved.variants;
+    legacyActive = moved.activeId;
+    legacyAt = moved.updatedAt ?? undefined;
+    // Nothing to bring (a phase-1 plain visit: an untouched copy of Forslag D): retired right away.
+    if (legacyPending.length === 0) retireLegacyAutosave(storage);
+  } else if (legacy.status === 'invalid') {
     backupInvalidAutosave(storage);
     startNotices.push('autosave-invalid');
     retireLegacyAutosave(storage);
@@ -188,17 +243,23 @@ function nameAgainst(variants: Variant[], taken: Iterable<string>): Variant[] {
   });
 }
 
-/** Write proposals into the local store right away (local mode); returns the ids now stored (or in the Papirkurv). */
-function storeLocally(family: FamilyStore, variants: Variant[]): Set<Id> {
+/**
+ * Write proposals into the local store right away (local mode); returns the ids now stored (or in the Papirkurv).
+ * `at`: the time to stamp them with (1 ms later for each next one, so they keep their order).
+ */
+function storeLocally(family: FamilyStore, variants: Variant[], at?: string): Set<Id> {
   const list = () => family.currentList();
   const present = (id: Id) => list().proposals.some((p) => p.id === id);
-  for (const v of variants) if (!present(v.id)) void family.saveProposal(v, { base: null, by: null });
+  const t = at ? Date.parse(at) : NaN;
+  variants.forEach((v, i) => {
+    if (!present(v.id)) void family.saveProposal(v, { base: null, by: null, at: Number.isFinite(t) ? new Date(t + i).toISOString() : undefined });
+  });
   return new Set([...list().proposals, ...list().trash].map((p) => p.id));
 }
 
 if (localFamily) {
   if (legacyPending.length > 0) {
-    const stored = storeLocally(localFamily, legacyPending);
+    const stored = storeLocally(localFamily, legacyPending, legacyAt);
     if (legacyPending.every((v) => stored.has(v.id))) retireLegacyAutosave(storage);
     legacyPending = [];
   }
@@ -216,7 +277,7 @@ if (localFamily) {
 }
 
 const remembered = readRaw(storage, activeKey);
-const wantedActive: Id | null = linkPending?.activeId ?? startParams.proposal ?? remembered;
+const wantedActive: Id | null = linkPending?.activeId ?? startParams.proposal ?? legacyActive ?? remembered;
 const startProposals = localFamily ? localFamily.currentList().proposals.map((p) => p.variant) : [];
 const initialProject: Project = {
   ...seedProject,
@@ -224,7 +285,7 @@ const initialProject: Project = {
   activeVariantId: wantedActive && startProposals.some((v) => v.id === wantedActive) ? wantedActive : baseVariant.id,
 };
 /** Shared mode: the proposal to show once the first list has it (unless the user picked another meanwhile). */
-let pendingActivate: Id | null = familyMode === 'shared' && wantedActive && wantedActive !== baseVariant.id ? wantedActive : null;
+let pendingActivate: Id | null = !localFamily && wantedActive && wantedActive !== baseVariant.id ? wantedActive : null;
 
 export const appStore = createAppStore(initialProject, { ...loadUiPrefs(storage), readOnly: false, source: 'local' });
 for (const text of startToasts) appStore.getState().showToast({ text });
@@ -245,6 +306,10 @@ export interface FamilyUiState extends SyncState {
    * family space can be reached; the pill says «Kun på denne enheten (familiens plass kan ikke nås nå)».
    */
   fallback: boolean;
+  /** Shared mode, but a broken `#f=` link on a device without a family: kept here until a whole link is opened. */
+  noFamily: boolean;
+  /** After a family switch: the proposals this device created in the previous space, offered to bring along. */
+  carryOver: { from: string; names: string[] } | null;
   notices: FamilyNotice[];
 }
 
@@ -252,9 +317,9 @@ function initialSyncState(): SyncState {
   const list: ProposalList = localFamily?.currentList() ?? { proposals: [], trash: [], tooNew: [] };
   const meta: SyncState['meta'] = Object.fromEntries(list.proposals.map(({ variant: _v, ...m }) => [m.id, m]));
   return {
-    mode: familyMode,
+    mode: localFamily ? 'local' : familyMode,
     familyId,
-    phase: familyMode === 'local' ? 'ready' : 'connecting',
+    phase: localFamily ? 'ready' : 'connecting',
     saving: false,
     pending: 0,
     online: hasWindow && typeof navigator !== 'undefined' ? navigator.onLine !== false : true,
@@ -267,7 +332,14 @@ function initialSyncState(): SyncState {
   };
 }
 
-export const familyUiStore = create<FamilyUiState>()(() => ({ ...initialSyncState(), askName: false, fallback: false, notices: [...startFamilyNotices] }));
+export const familyUiStore = create<FamilyUiState>()(() => ({
+  ...initialSyncState(),
+  askName: false,
+  fallback: false,
+  noFamily,
+  carryOver: null,
+  notices: [...startFamilyNotices],
+}));
 
 export function useFamily<T>(selector: (s: FamilyUiState) => T): T {
   return useStore(familyUiStore, selector);
@@ -275,6 +347,10 @@ export function useFamily<T>(selector: (s: FamilyUiState) => T): T {
 
 export function dismissFamilyNotice(n: FamilyNotice): void {
   familyUiStore.setState((s) => ({ notices: s.notices.filter((x) => x !== n) }));
+}
+
+function pushFamilyNotice(n: FamilyNotice): void {
+  familyUiStore.setState((s) => (s.notices.includes(n) ? s : { notices: [...s.notices, n] }));
 }
 
 // ---------------------------------------------------------------------------
@@ -378,11 +454,15 @@ function onFirstList(list: ProposalList): void {
   const stored = new Set([...list.proposals, ...list.trash].map((p) => p.id));
   if (legacyPending.length > 0) {
     for (const v of legacyPending) if (stored.has(v.id)) legacyIds.delete(v.id);
-    sync.addVariants(legacyPending.filter((v) => !stored.has(v.id)));
+    sync.addVariants(
+      legacyPending.filter((v) => !stored.has(v.id)),
+      undefined,
+      { at: legacyAt },
+    );
     legacyPending = [];
     retireLegacyWhenStored();
   }
-  if (linkPending && familyMode === 'shared') {
+  if (linkPending && !localFamily) {
     const fresh = nameAgainst(
       linkPending.variants.filter((v) => !stored.has(v.id)),
       [baseVariant.name, ...list.proposals.map((p) => p.name)],
@@ -396,6 +476,93 @@ function onFirstList(list: ProposalList): void {
   if (pendingActivate && appStore.getState().project.activeVariantId === baseVariant.id) sync.activate(pendingActivate);
   pendingActivate = null;
   void family.purgeTrash().catch(() => 0);
+  if (family.mode === 'shared') offerCarryOver(list);
+}
+
+// ---------------------------------------------------------------------------
+// After a family switch: bring along the proposals this device created in the previous space
+// ---------------------------------------------------------------------------
+
+/** Opens another family space on the loaded Firebase (set by `loadShared`). */
+let openFamily: ((id: string) => FamilyStore) | null = null;
+/** The open offer: the previous space's store and the proposals offered from it. */
+let carry: { from: string; store: FamilyStore; offered: Variant[]; stop: () => void } | null = null;
+/** How long the previous space may take to answer before the offer is given up (it stays on this device's list). */
+const CARRY_WAIT_MS = 10_000;
+
+function endCarryOver(forget: boolean): void {
+  carry?.stop();
+  carry?.store.dispose();
+  carry = null;
+  if (forget) {
+    try {
+      storage?.removeItem(FAMILY_KEYS.switchedFrom);
+    } catch {
+      // storage blocked
+    }
+  }
+  familyUiStore.setState({ carryOver: null });
+}
+
+/**
+ * The device switched families (`FAMILY_KEYS.switchedFrom`): read the previous space and offer the proposals this
+ * device created there that are still there (not deleted) and not here yet. Nothing to offer once the previous space
+ * answered online: the switch is forgotten; offline it is tried again at the next start.
+ */
+function offerCarryOver(here: ProposalList): void {
+  const from = readRaw(storage, FAMILY_KEYS.switchedFrom);
+  if (carry || !openFamily || !familyId || !isValidFamilyId(from) || from === familyId) return;
+  const mine = new Set(createdHere()[from] ?? []);
+  if (mine.size === 0) {
+    endCarryOver(true);
+    return;
+  }
+  const hereIds = new Set([...here.proposals, ...here.trash].map((p) => p.id));
+  const store = openFamily(from);
+  const timer = setTimeout(() => {
+    if (carry?.store === store && carry.offered.length === 0) endCarryOver(hasWindow && navigator.onLine !== false);
+  }, CARRY_WAIT_MS);
+  const unsubscribe = store.listProposals((list) => {
+    if (carry?.store !== store) return;
+    const offered = list.proposals.filter((p) => mine.has(p.id) && !hereIds.has(p.id)).map((p) => p.variant);
+    carry.offered = offered;
+    familyUiStore.setState({ carryOver: offered.length > 0 ? { from, names: offered.map((v) => v.name) } : null });
+  });
+  carry = {
+    from,
+    store,
+    offered: [],
+    stop: () => {
+      clearTimeout(timer);
+      unsubscribe();
+    },
+  };
+}
+
+/**
+ * «Hent forslagene fra den forrige plassen»: the offered proposals are added here (saved as new proposals, names
+ * made unique), then put in the previous space's Papirkurv (kept there 30 days). Returns how many were brought.
+ */
+export async function acceptCarryOver(): Promise<number> {
+  const c = carry;
+  if (!c || !sync) return 0;
+  const project = appStore.getState().project;
+  const ids = new Set(project.variants.map((v) => v.id));
+  const copies = nameAgainst(
+    c.offered.map((v) => (ids.has(v.id) ? { ...v, id: newProposalId() } : v)),
+    project.variants.map((v) => v.name),
+  );
+  sync.addVariants(copies);
+  await sync.flush();
+  for (const v of c.offered) await c.store.deleteProposal(v.id);
+  endCarryOver(true);
+  if (copies.length > 0) appStore.getState().showToast({ text: nb.family.carryOver.done(copies.length) });
+  return copies.length;
+}
+
+/** «Nei takk»: not offered again (the previous space keeps them; its id stays under `family.previous`). */
+export function declineCarryOver(): void {
+  endCarryOver(true);
 }
 
 function attachSync(store: FamilyStore): void {
@@ -409,6 +576,9 @@ function attachSync(store: FamilyStore): void {
     onSaved: (id) => {
       if (legacyIds.delete(id)) retireLegacyWhenStored();
       if (store.mode === 'shared' && leftoverIds.delete(id)) clearLeftoversWhenStored();
+    },
+    onCreated: (id) => {
+      if (store.mode === 'shared' && store.familyId) recordCreated(store.familyId, id);
     },
     onFirstList,
   });
@@ -426,6 +596,8 @@ async function loadShared(): Promise<{ store: FamilyStore; dispose: () => void }
   if (!firebaseConfig || !familyId) throw new Error('no family space');
   const mod = await import('./familyStore.firestore');
   const adapter = await mod.loadFirebaseAdapter(firebaseConfig);
+  // Another family space on the same Firebase (the previous one after a switch); its dispose leaves Firebase running.
+  openFamily = (id) => mod.createFirestoreFamilyStore({ adapter: { ...adapter, dispose: () => {} }, familyId: id, storage, context: encodeContext });
   return { store: mod.createFirestoreFamilyStore({ adapter, familyId, storage, context: encodeContext }), dispose: () => adapter.dispose() };
 }
 
@@ -511,11 +683,14 @@ function setHash(hash: string): void {
   }
 }
 
-/** The address bar: `#f=<family>&p=<proposal>` in shared mode (bookmarks, home-screen icons), nothing locally. */
+/**
+ * The address bar: `#f=<family>&p=<proposal>` in shared mode (bookmarks, home-screen icons), nothing locally — and
+ * the broken `#f=…` while `noFamily` (so a reload does not start a new family either).
+ */
 function syncHash(): void {
   const { project } = appStore.getState();
   if (familyId) setHash(familyHash(familyId, project.activeVariantId === baseVariant.id ? null : project.activeVariantId));
-  else setHash('');
+  else setHash(brokenFamilyHash);
 }
 
 /** Start the family sync, the UI-prefs autosave and link handling. Idempotent; returns a stop function. */
@@ -543,12 +718,19 @@ export function startPersistence(): () => void {
     }
     if (hashHasFamily(window.location.hash)) {
       if (familyMode === 'shared' && params.family && params.family !== familyId) {
-        // Another family: start over in it (the old one stays reachable with its own link).
+        // Another family: start over in it. The current one is remembered first (the reload would not know it any
+        // more), so its proposals are offered there and its id is kept.
+        if (familyId) rememberPreviousFamily(familyId);
         writeRaw(storage, FAMILY_KEYS.familyId, params.family);
-        reloadPage();
+        void flushProposals().finally(reloadPage);
         return;
       }
-      if (familyMode === 'local') familyUiStore.setState((s) => (s.notices.includes('family-unavailable') ? s : { notices: [...s.notices, 'family-unavailable'] }));
+      if (familyMode === 'shared' && !params.family) {
+        // A broken link: stay where we are and say so.
+        pushFamilyNotice('family-link-invalid');
+        syncHash();
+      }
+      if (familyMode === 'local') pushFamilyNotice('family-unavailable');
     }
     if (params.proposal) activateProposal(params.proposal);
   };
@@ -560,6 +742,7 @@ export function startPersistence(): () => void {
     prefs = null;
     sync?.stop();
     sync = null;
+    endCarryOver(false);
     if (family !== localFamily) family?.dispose();
     if (connectTimer !== null) clearTimeout(connectTimer);
     connectTimer = null;
@@ -668,7 +851,7 @@ export function familyShareLinks(proposalId: Id): { family: string; proposal: st
  */
 export function openSharedLink(encoded: string): void {
   const result = decodeShare(encoded);
-  setHash(familyId ? familyHash(familyId) : '');
+  setHash(familyId ? familyHash(familyId) : brokenFamilyHash);
   if (result.status !== 'ok') {
     pushNotice(result.status === 'too-new' ? 'link-too-new' : 'link-invalid');
     return;

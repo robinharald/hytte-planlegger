@@ -29,6 +29,9 @@ import type { EncodeContext, FamilyStore, ProposalDoc, ProposalList } from './fa
 import { createLocalFamilyStore, LOCAL_KEYS } from './familyStore.local';
 import { createFirestoreFamilyStore } from './familyStore.firestore';
 import { createFakeFirestore } from './familyStore.fake';
+import { createProposalSync } from './familyStore.sync';
+import { createAppStore } from './store';
+import { pillState } from '../ui/familyUi';
 import { makeTestProject, makeVariant } from './testProject';
 
 const T0 = Date.parse('2026-10-12T12:00:00.000Z');
@@ -526,5 +529,116 @@ describe('Firestore store on the fake', () => {
     for (let i = 0; i < 3; i++) await tick();
     expect(s.currentList().proposals).toEqual([]);
     expect(s.currentList().tooNew.map((m) => m.name)).toEqual(['Fra framtida']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round after 2b: field updates, writes queued before the page, trashed content kept
+// ---------------------------------------------------------------------------
+
+describe('data safety (fix round after 2b)', () => {
+  const fid = 'e2e-family-abcdefghijklmnopqrstu';
+  const path = (id: string) => `families/${fid}/proposals/${id}`;
+  const storedNotes = (fake: ReturnType<typeof createFakeFirestore>, id: string) =>
+    (JSON.parse(String(fake.docs.get(path(id))?.project)) as { variants: Variant[] }).variants[0].notes;
+  const ticks = async (n = 6) => {
+    for (let i = 0; i < n; i++) await tick();
+  };
+
+  it('a delete made offline from an old view lands on the newer version: its content stays (Papirkurv), lineage tells', async () => {
+    const fake = createFakeFirestore();
+    const mum = fake.device();
+    const dad = fake.device();
+    const a = createFirestoreFamilyStore({ adapter: mum.adapter, familyId: fid, storage: memoryStorage(), context, connectivity: mum.connectivity });
+    const b = createFirestoreFamilyStore({ adapter: dad.adapter, familyId: fid, storage: memoryStorage(), context, connectivity: dad.connectivity });
+    disposers.push(() => a.dispose(), () => b.dispose());
+    const r = await a.saveProposal(proposalVariant('p-1'), { base: null, by: 'Mamma' });
+    if (r.status !== 'saved') throw new Error('save');
+    await ticks();
+    mum.setOnline(false);
+    await a.deleteProposal('p-1', { by: 'Mamma' });
+    expect(a.currentList().trash.map((t) => t.id)).toEqual(['p-1']);
+    const d = await b.saveProposal({ ...proposalVariant('p-1'), notes: 'pappa' }, { base: r.proposal.updatedAt, by: 'Pappa' });
+    expect(d.status).toBe('saved');
+    if (d.status !== 'saved') return;
+    await ticks();
+    mum.setOnline(true);
+    await ticks();
+    const doc = fake.docs.get(path('p-1')) ?? {};
+    expect(doc.deletedAt).not.toBeNull();
+    expect(doc.updatedBy).toBe('Mamma');
+    expect(storedNotes(fake, 'p-1')).toBe('pappa');
+    // The delete was made from Mamma's version, not Pappa's: the lineage says so.
+    const trashed = b.currentList().trash.find((t) => t.id === 'p-1');
+    expect(trashed?.lineage).toContain(r.proposal.updatedAt);
+    expect(trashed?.lineage).not.toContain(d.proposal.updatedAt);
+    // Restored (also a field update): Pappa's version.
+    expect((await b.restoreProposal('p-1'))?.variant.notes).toBe('pappa');
+    await ticks();
+    expect((await a.getProposal('p-1'))?.variant.notes).toBe('pappa');
+  });
+
+  it('keepRevision from an old view only adds a revision id: content saved meanwhile stays', async () => {
+    const fake = createFakeFirestore();
+    const mum = fake.device();
+    const dad = fake.device();
+    const a = createFirestoreFamilyStore({ adapter: mum.adapter, familyId: fid, storage: memoryStorage(), context, connectivity: mum.connectivity });
+    const b = createFirestoreFamilyStore({ adapter: dad.adapter, familyId: fid, storage: memoryStorage(), context, connectivity: dad.connectivity });
+    disposers.push(() => a.dispose(), () => b.dispose());
+    const r = await a.saveProposal(proposalVariant('p-1'), { base: null });
+    if (r.status !== 'saved') throw new Error('save');
+    await ticks();
+    mum.setOnline(false);
+    expect(await a.keepRevision('p-1', { ...proposalVariant('p-1'), notes: 'gammel' }, { savedAt: '2026-10-12T10:00:00.000Z', savedBy: 'Mamma' })).toBe(true);
+    await b.saveProposal({ ...proposalVariant('p-1'), notes: 'pappa' }, { base: r.proposal.updatedAt, by: 'Pappa' });
+    await ticks();
+    mum.setOnline(true);
+    await ticks();
+    expect(storedNotes(fake, 'p-1')).toBe('pappa');
+    const revisions = await b.listRevisions('p-1');
+    expect(revisions.some((x) => x.savedBy === 'Mamma')).toBe(true);
+    expect(((fake.docs.get(path('p-1'))?.revisions ?? []) as string[]).length).toBe(revisions.length);
+  });
+
+  it('writes queued before the store was created (an offline reload) are pending until the server has them', async () => {
+    const fake = createFakeFirestore();
+    const dev = fake.device({ online: false });
+    // The earlier page queued a save while offline, then the page was reloaded (still offline).
+    const plan = planSave(undefined, proposalVariant('p-1'), { base: null, at: '2026-10-12T12:00:00.000Z', by: 'Mamma' }, ctx);
+    if (plan.kind !== 'write') throw new Error('plan');
+    void dev.adapter.write([{ kind: 'set', path: path('p-1'), data: { ...plan.doc } }]).acked.catch(() => {});
+    const s = createFirestoreFamilyStore({ adapter: dev.adapter, familyId: fid, storage: memoryStorage(), context, connectivity: dev.connectivity, retryMs: 10 });
+    disposers.push(() => s.dispose());
+    const store = createAppStore(makeTestProject({ variants: [{ ...makeVariant('base', 'Forslag D'), locked: true }], activeVariantId: 'base' }));
+    const sync = createProposalSync({ store, family: s, delayMs: 5 });
+    disposers.push(() => sync.stop());
+    await ticks();
+    expect(s.currentList().proposals.map((p) => p.id)).toEqual(['p-1']);
+    expect(s.status()).toMatchObject({ phase: 'ready', pending: 1, online: false });
+    expect(pillState(sync.getState())).toBe('pending');
+    let flushed = false;
+    void s.flush().then(() => (flushed = true));
+    await ticks();
+    expect(flushed).toBe(false);
+    dev.setOnline(true);
+    await ticks();
+    expect(fake.docs.has(path('p-1'))).toBe(true);
+    expect(s.status().pending).toBe(0);
+    expect(flushed).toBe(true);
+    expect(pillState(sync.getState())).toBe('synced');
+  });
+
+  it('planSave: writing over a proposal in the Papirkurv with other content keeps that content as a revision', () => {
+    const v = proposalVariant('p-1');
+    const fresh = planSave(undefined, v, { base: null, at: '2026-10-12T12:00:00.000Z', by: 'Mamma' }, ctx);
+    if (fresh.kind !== 'write') throw new Error('plan');
+    const trashed: ProposalDoc = { ...fresh.doc, deletedAt: '2026-10-12T12:00:30.000Z', updatedAt: '2026-10-12T12:00:30.000Z', updatedBy: 'Pappa', lastRevisionAt: '2026-10-12T12:00:10.000Z' };
+    const back = planSave(trashed, { ...v, notes: 'annet' }, { base: null, at: '2026-10-12T12:01:00.000Z', by: 'Mamma' }, ctx);
+    if (back.kind !== 'write') throw new Error('plan');
+    expect(back.doc.deletedAt).toBeNull();
+    expect(back.revision?.doc).toMatchObject({ project: fresh.doc.project, savedBy: 'Pappa' });
+    // The same content back (Angre of a delete): nothing to keep.
+    const same = planSave(trashed, v, { base: null, at: '2026-10-12T12:01:00.000Z', by: 'Mamma' }, ctx);
+    expect(same.kind === 'write' && same.revision).toBeNull();
   });
 });

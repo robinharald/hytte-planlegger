@@ -9,8 +9,11 @@
  *  - A "too new" notice (a link, a file or a stored proposal from a newer app version) checks right away
  *    (`registration.update()`), so the toast appears as soon as the newer app is found; `requestAppUpdateCheck` does
  *    the same for the "Oppdater" button of the too-new banner (familyUi.ts).
- *  - `controllerchange` while this page runs the old code (another tab updated the app): "Appen er oppdatert i en
- *    annen fane … [Last på nytt]" (saves first). Not on the very first install and not for this page's own update.
+ *  - Another tab pressed Oppdater: the new worker takes over every tab, and the plugin calls `onNeedReload` in each
+ *    one that saw the waiting worker (without the callback it reloads them all by itself). Only the tab that pressed
+ *    Oppdater reloads; the others show "Appen er oppdatert i en annen fane … [Last på nytt]" (saves first).
+ *    `controllerchange` shows the same notice in a tab that never saw the waiting worker. Not on the very first
+ *    install and not for this page's own update.
  * In `npm run dev` the plugin's register module is a stub: nothing registers, nothing shows.
  */
 import { useEffect, useRef, useState } from 'react';
@@ -32,6 +35,11 @@ export function UpdateToast() {
   } = useRegisterSW({
     onRegisteredSW(_url, r) {
       setUpdateRegistration(r ?? null);
+    },
+    // The new version took over: reload only the tab that asked for it; the others say so and wait for the user.
+    onNeedReload() {
+      if (updating.current) reloadPage();
+      else setElsewhere(true);
     },
   });
   const tooNew = useNotices((s) => s.notices.some((n) => n === 'link-too-new' || n === 'import-too-new' || n === 'schema-too-new'));
@@ -79,11 +87,13 @@ export function UpdateToast() {
     reloadPage();
   };
 
+  // Updated in another tab: the waiting version is active now, so "Oppdater" would do nothing — offer the reload.
+  const offerUpdate = needRefresh && !elsewhere;
   return (
     <div className="update-toast" role="status" data-testid="update-toast">
-      <span>{needRefresh ? u.ready : u.updatedElsewhere}</span>
-      <button type="button" className="btn btn-small" disabled={busy} data-testid="update-now" onClick={() => void (needRefresh ? update() : reload())}>
-        {needRefresh ? u.button : u.reload}
+      <span>{offerUpdate ? u.ready : u.updatedElsewhere}</span>
+      <button type="button" className="btn btn-small" disabled={busy} data-testid="update-now" onClick={() => void (offerUpdate ? update() : reload())}>
+        {offerUpdate ? u.button : u.reload}
       </button>
     </div>
   );

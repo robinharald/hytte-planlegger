@@ -48,13 +48,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function device(fake: FakeFirestore, project: Project = baseProject(), extra: { onNeedsName?: () => void; name?: string } = {}): Device {
+function device(
+  fake: FakeFirestore,
+  project: Project = baseProject(),
+  extra: { onNeedsName?: () => void; name?: string; target?: Pick<Window, 'addEventListener' | 'removeEventListener'> } = {},
+): Device {
   const dev = fake.device();
   const storage = memoryStorage();
   const family = createFirestoreFamilyStore({ adapter: dev.adapter, familyId: FID, storage, context, connectivity: dev.connectivity, retryMs: 20 });
   if (extra.name) family.setMyName(extra.name);
   const store = createAppStore(project);
-  const sync = createProposalSync({ store, family, delayMs: 5, onNeedsName: extra.onNeedsName, retryMs: 10 });
+  const sync = createProposalSync({ store, family, delayMs: 5, onNeedsName: extra.onNeedsName, retryMs: 10, target: extra.target });
   cleanups.push(() => {
     sync.stop();
     family.dispose();
@@ -506,5 +510,147 @@ describe('proposal sync on the local store', () => {
     // Dad's device wrote nothing back.
     expect(fake.writes).toBe(writes);
     expect(dad.family.currentList().proposals.find((x) => x.id === id)?.updatedBy).toBe('Mamma');
+  });
+});
+
+describe('fix round after 2b: deletes from an old view, drags, leaving with a conflict', () => {
+  const storedDoc = (fake: FakeFirestore, id: string) => fake.docs.get(`families/${FID}/proposals/${id}`) ?? {};
+  const storedNotes = (fake: FakeFirestore, id: string) => (JSON.parse(String(storedDoc(fake, id).project)) as Project).variants[0].notes;
+
+  it('a delete made offline from an old view: the newer version stays in the Papirkurv and its author is told', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    // Mamma, offline, deletes (both confirmations) …
+    mum.setOnline(false);
+    mum.store.getState().deleteVariant(id);
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    // … while Pappa, online, saves an edit.
+    editNotes(dad, id, 'pappa');
+    await settle();
+    await dad.sync.flush();
+    await settle();
+    expect(storedNotes(fake, id)).toBe('pappa');
+    mum.setOnline(true);
+    await settle(16);
+    // Deleted for everyone, but with Pappa's content: nothing is lost.
+    expect(storedDoc(fake, id).deletedAt).not.toBeNull();
+    expect(storedNotes(fake, id)).toBe('pappa');
+    expect(names(dad)).toEqual(['Forslag D']);
+    // Pappa is told (his version went into the Papirkurv unseen); Mamma is not.
+    expect(dad.sync.getState().overwritten).toEqual([expect.objectContaining({ id, kind: 'deleted', by: 'Mamma' })]);
+    expect(mum.sync.getState().overwritten).toEqual([]);
+    // Hent tilbake: Pappa's version, for everyone.
+    dad.sync.dismissOverwritten(id);
+    expect(await dad.sync.restoreFromTrash(id)).toBe(true);
+    expect(variant(dad, id)?.notes).toBe('pappa');
+    await settle();
+    expect(variant(mum, id)?.notes).toBe('pappa');
+  });
+
+  it('a delete made after seeing the newest version tells nobody', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    editNotes(dad, id, 'pappa');
+    await settle();
+    await dad.sync.flush();
+    await settle();
+    expect(variant(mum, id)?.notes).toBe('pappa');
+    mum.store.getState().deleteVariant(id);
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(names(dad)).toEqual(['Forslag D']);
+    expect(dad.sync.getState().overwritten).toEqual([]);
+  });
+
+  it('Angre of a delete made offline brings the proposal back as the server has it (the newer version stays)', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    mum.setOnline(false);
+    mum.store.getState().deleteVariant(id);
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    mum.store.getState().undo();
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    editNotes(dad, id, 'pappa');
+    await settle();
+    await dad.sync.flush();
+    await settle();
+    mum.setOnline(true);
+    await settle(16);
+    expect(storedDoc(fake, id).deletedAt).toBeNull();
+    expect(storedNotes(fake, id)).toBe('pappa');
+    expect(variant(mum, id)?.notes).toBe('pappa');
+    expect(variant(dad, id)?.notes).toBe('pappa');
+  });
+
+  it('nothing is written while a drag (transaction) is in progress; the end of the drag is saved', async () => {
+    const fake = createFakeFirestore();
+    const mum = device(fake);
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    const writes = fake.writes;
+    mum.store.getState().setActiveVariant(id);
+    mum.store.getState().beginTransaction('drag');
+    editNotes(mum, id, 'midt i draget');
+    await new Promise((r) => setTimeout(r, 40));
+    await mum.sync.flush();
+    await settle();
+    expect(fake.writes).toBe(writes);
+    editNotes(mum, id, 'slutten av draget');
+    mum.store.getState().commitTransaction();
+    await new Promise((r) => setTimeout(r, 320));
+    await settle();
+    expect(storedNotes(fake, id)).toBe('slutten av draget');
+    // No stored version (the proposal or a revision of it) ever held the in-between state.
+    expect([...fake.docs.values()].some((d) => String(d.project).includes('midt i draget'))).toBe(false);
+  });
+
+  it('leaving the page while a conflict is open asks first (beforeunload); without one it does not', async () => {
+    const fake = createFakeFirestore();
+    const target = new EventTarget();
+    const mum = device(fake, baseProject(), { name: 'Mamma' });
+    const dad = device(fake, baseProject(), { name: 'Pappa' });
+    await settle();
+    const id = await newProposal(mum);
+    await settle();
+    dad.sync.stop();
+    const dadSync = createProposalSync({ store: dad.store, family: dad.family, delayMs: 60_000, target });
+    cleanups.push(() => dadSync.stop());
+    await settle();
+    const leave = () => {
+      const e = new Event('beforeunload', { cancelable: true });
+      target.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    expect(leave()).toBe(false);
+    await settle();
+    editNotes(dad, id, 'pappa');
+    editNotes(mum, id, 'mamma');
+    await settle();
+    await mum.sync.flush();
+    await settle();
+    expect(dadSync.getState().conflicts).toHaveLength(1);
+    expect(leave()).toBe(true);
+    await dadSync.resolveConflict(id, 'fetch');
+    expect(leave()).toBe(false);
   });
 });

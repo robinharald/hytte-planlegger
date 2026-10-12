@@ -20,6 +20,7 @@ import {
   listVersions,
   loadAutosave,
   loadDismissedSeedRevision,
+  legacyImport,
   legacyProposals,
   linkProposals,
   loadUiPrefs,
@@ -49,6 +50,8 @@ import {
 import type { KeyValueStorage } from './persistence';
 import { createAppStore, DEFAULT_UI } from './store';
 import { makeTestProject, makeVariant } from './testProject';
+/** A REAL phase-1 autosave: localStorage 'hytte-planlegger:project' after a plain visit to the live phase-1 site. */
+import phase1Text from './fixtures/phase1-autosave.plain-visit.json?raw';
 
 function twoVariantProject(): Project {
   return makeTestProject({ variants: [makeVariant('v-1', 'Forslag D'), makeVariant('v-2', 'Forslag E')], activeVariantId: 'v-2' });
@@ -525,18 +528,19 @@ describe('the legacy whole-project autosave → proposals', () => {
     delete untouched.locked;
     const saved: Project = { ...seed, variants: [seed.variants[0], working, mine, untouched, { ...seed.variants[0], id: 'old-locked', name: 'Forslag D (revisjon 4)' }] };
     const out = legacyProposals(saved, base());
-    expect(out.map((v) => [v.id, v.name])).toEqual([
-      ['forslag-d-eget', 'Forslag D (eget)'],
-      ['v-mine', 'Mitt forslag'],
-    ]);
+    expect(out.map((v) => v.name)).toEqual(['Forslag D (eget)', 'Mitt forslag']);
+    expect(out[0].id).toMatch(/^forslag-d-eget-[a-z0-9]+$/);
+    expect(out[1].id).toBe('v-mine');
     expect(out.every((v) => v.locked === undefined)).toBe(true);
     expect(out[0].notes).toBe('mitt arbeid');
     // Importing again gives the same ids (nothing is added twice).
     expect(legacyProposals(saved, base()).map((v) => v.id)).toEqual(out.map((v) => v.id));
   });
 
-  it('a phase-1 autosave (schema 1) migrates and its working copy becomes a proposal with railing and steps', () => {
-    localStorage.setItem(KEYS.project, JSON.stringify({ ...frozenSchema1Project(), id: 'fase1' }));
+  it('an edited phase-1 autosave (schema 1) migrates; its working copy becomes a proposal with railing and steps', () => {
+    const phase1 = { ...frozenSchema1Project(), id: 'fase1' } as Record<string, unknown>;
+    (phase1.variants as Record<string, unknown>[])[0].notes = 'endret i fase 1';
+    localStorage.setItem(KEYS.project, JSON.stringify(phase1));
     const r = loadAutosave(localStorage);
     expect(r.status).toBe('ok');
     if (r.status !== 'ok') return;
@@ -545,6 +549,40 @@ describe('the legacy whole-project autosave → proposals', () => {
     expect(out[0].name).toBe('Forslag D (eget)');
     expect(out[0].outdoor.decks[0].steps).toHaveLength(3);
     expect(out[0].outdoor.decks[0].railing).toEqual({ style: 'glass', height: 1.05 });
+  });
+
+  it('a real phase-1 plain-visit autosave brings no proposal (its working copy equals the phase-1 Forslag D)', () => {
+    localStorage.setItem(KEYS.project, phase1Text);
+    const r = loadAutosave(localStorage);
+    expect(r.status).toBe('ok');
+    if (r.status !== 'ok') return;
+    expect(r.project.seedRevision).toBe(FROZEN_SEED_REVISION);
+    expect(legacyImport(r.project, base())).toEqual({ variants: [], activeId: null, updatedAt: r.project.updatedAt });
+  });
+
+  it('an edited phase-1 autosave brings one proposal with an id unique to the device, shown, with its own time', () => {
+    const edit = (projectId: string, at: string) => {
+      const raw = JSON.parse(phase1Text) as Record<string, unknown> & { variants: Record<string, unknown>[] };
+      raw.id = projectId;
+      raw.createdAt = at;
+      raw.updatedAt = '2026-10-01T08:30:00.000Z';
+      raw.variants[0].createdAt = at;
+      raw.variants[0].name = 'Forslag D';
+      (raw.variants[0].rooms as { name: string }[])[0].name = 'Omdøpt rom';
+      const r = migrateProject(raw);
+      return legacyImport(r, base());
+    };
+    const one = edit('buMrpErtH0V-', '2026-09-01T10:00:00.000Z');
+    expect(one.variants).toHaveLength(1);
+    const [v] = one.variants;
+    expect(v.name).toBe('Forslag D (eget)');
+    expect(v.id).toMatch(/^forslag-d-eget-[a-z0-9]+$/);
+    expect(v.rooms[0].name).toBe('Omdøpt rom');
+    expect(one.activeId).toBe(v.id);
+    expect(one.updatedAt).toBe('2026-10-01T08:30:00.000Z');
+    // The same autosave again: the same id. Another device's autosave: another id (both copies survive).
+    expect(edit('buMrpErtH0V-', '2026-09-01T10:00:00.000Z').variants[0].id).toBe(v.id);
+    expect(edit('Xy7_otherDev', '2026-09-02T11:00:00.000Z').variants[0].id).not.toBe(v.id);
   });
 
   it('retire: kept under project.before-2b, then removed; never overwrites an earlier copy', () => {

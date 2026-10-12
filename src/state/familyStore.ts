@@ -28,7 +28,11 @@
  *    first keeps the replaced content as a revision ("one per save burst, at most one per 5 minutes"); at most
  *    REVISION_LIMIT per proposal, the oldest go first. `restoreRevision` always keeps the current content first.
  *  - Delete is soft (`deletedAt`): the proposal sits in the Papirkurv for TRASH_DAYS days and can be restored; older
- *    ones are purged (with their revisions) by `purgeTrash`.
+ *    ones are purged (with their revisions) by `purgeTrash`. Delete, restore and `keepRevision` are FIELD UPDATES
+ *    (`ProposalPatch`): they never write the content, so a delete made from an out-of-date view (an offline device)
+ *    lands on the newest version and keeps it. A delete / restore adds the version it was made from to `lineage`, so
+ *    the device that saved a newer version can tell it was deleted unseen. Writing over a proposal in the Papirkurv
+ *    with other content keeps the content that was there as a revision first.
  *  - `listProposals` is a live subscription: the callback gets the whole list right away (or as soon as it is known)
  *    and again after every change, own writes included.
  */
@@ -62,6 +66,10 @@ export const FAMILY_KEYS = {
   familyId: 'hytte-planlegger:family',
   /** Family ids used before a `#f=` link switched to another one (nothing is lost). */
   previousFamilies: 'hytte-planlegger:family.previous',
+  /** The family this device switched away from, until its proposals were offered («Hent forslagene …») or declined. */
+  switchedFrom: 'hytte-planlegger:family.switched-from',
+  /** `{ [familyId]: proposalId[] }`: proposals this device created in each family (what a switch can bring along). */
+  createdHere: 'hytte-planlegger:family.created',
   /** The display name ("Hva heter du?"); '' = the user declined. */
   myName: 'hytte-planlegger:my-name',
   /** 'local' | 'shared': overrides the automatic choice (tests, debugging). */
@@ -88,6 +96,19 @@ export interface ProposalMeta {
   deletedAt: string | null;
   /** `updatedAt` of the versions this one descends from, newest last (at most LINEAGE_LIMIT). */
   lineage: string[];
+}
+
+/**
+ * A field update of a stored proposal (soft delete / restore, an extra revision): only these fields change, the content
+ * stays what the server has (Firestore `update` with `arrayUnion` / `arrayRemove`), so nothing another device saved
+ * meanwhile is written over.
+ */
+export interface ProposalPatch {
+  set: Partial<Pick<ProposalDoc, 'deletedAt' | 'updatedAt' | 'updatedBy'>>;
+  /** Values added to these arrays when they are not there yet (arrayUnion). */
+  add?: Partial<Record<'lineage' | 'revisions', string[]>>;
+  /** Values removed from these arrays (arrayRemove), after `add`. */
+  remove?: Partial<Record<'revisions', string[]>>;
 }
 
 export interface Proposal extends ProposalMeta {
@@ -167,7 +188,10 @@ export interface SaveOptions {
 export interface FamilyStoreStatus {
   /** 'connecting' until the first list is known; 'error' when signing in or reading failed. */
   phase: 'connecting' | 'ready' | 'error';
-  /** Writes made here that the server has not confirmed yet (always 0 for the local store). */
+  /**
+   * Writes on this device that the server has not confirmed yet — also those queued before this page was loaded (an
+   * offline reload) or by another tab (always 0 for the local store).
+   */
   pending: number;
   online: boolean;
   error: string | null;
@@ -554,7 +578,10 @@ export function planSave(cur: ProposalDoc | undefined, variant: Variant, o: Save
     lastRevisionAt: cur?.lastRevisionAt ?? null,
     revisions: cur?.revisions ?? [],
   };
-  if (!cur || cur.deletedAt !== null || !wantsRevision(cur, o.at, o.forceRevision) || sameStoredContent(cur.project, project)) {
+  // A proposal in the Papirkurv written over with other content (Angre of a delete that landed on a newer version,
+  // "Lagre over" of a deleted one): what was there is kept as a revision, whatever the interval.
+  const trashed = cur !== undefined && cur.deletedAt !== null;
+  if (!cur || sameStoredContent(cur.project, project) || (!trashed && !wantsRevision(cur, o.at, o.forceRevision))) {
     return { kind: 'write', doc, revision: null, pruned: [] };
   }
   const id = newRevisionId(cur.updatedAt);
@@ -568,9 +595,13 @@ export function planSave(cur: ProposalDoc | undefined, variant: Variant, o: Save
   };
 }
 
-/** The document after keeping `variant` as an extra revision (`keepRevision`): same content, one more revision id. */
+/**
+ * Keeping `variant` as an extra revision (`keepRevision`): the content stays, only the revision ids change (`patch`:
+ * the new id added, the ones beyond REVISION_LIMIT removed); `doc` is `cur` with the patch applied.
+ */
 export function planKeepRevision(cur: ProposalDoc, variant: Variant, saved: { savedAt: string; savedBy: string | null }, ctx: EncodeContext): {
   doc: ProposalDoc;
+  patch: ProposalPatch;
   revision: { id: string; doc: RevisionDoc };
   pruned: string[];
 } {
@@ -578,11 +609,38 @@ export function planKeepRevision(cur: ProposalDoc, variant: Variant, saved: { sa
   const ids = [...cur.revisions, id].sort();
   const keep = ids.slice(-REVISION_LIMIT);
   const v = cleanVariant(variant);
+  const pruned = ids.filter((r) => !keep.includes(r));
+  const patch: ProposalPatch = { set: {}, add: { revisions: [id] }, ...(pruned.length > 0 ? { remove: { revisions: pruned } } : {}) };
   return {
-    doc: { ...cur, revisions: keep },
+    doc: applyPatch(cur, patch),
+    patch,
     revision: { id, doc: { name: v.name, project: encodeProposalProject(v, ctx), schemaVersion: CURRENT_SCHEMA_VERSION, savedAt: saved.savedAt, savedBy: saved.savedBy } },
-    pruned: ids.filter((r) => !keep.includes(r)),
+    pruned,
   };
+}
+
+/**
+ * Soft delete (`deleted`) or restore of `cur` as a field update stamped `at` / `by`: the content is not touched, and
+ * the version it was made from (`cur.updatedAt`) joins the lineage, so the device whose newer version the delete
+ * landed on can tell it was deleted unseen (familyStore.sync.ts).
+ */
+export function planDeleted(cur: ProposalDoc, deleted: boolean, at: string, by: string | null): ProposalPatch {
+  return { set: { deletedAt: deleted ? at : null, updatedAt: at, updatedBy: by }, add: { lineage: [cur.updatedAt] } };
+}
+
+/** `doc` with `patch` applied (what the server does with the field update). */
+export function applyPatch(doc: ProposalDoc, patch: ProposalPatch): ProposalDoc {
+  const next: ProposalDoc = { ...doc, ...patch.set };
+  for (const key of ['lineage', 'revisions'] as const) {
+    const add = patch.add?.[key];
+    if (!add || add.length === 0) continue;
+    const values = [...next[key]];
+    for (const x of add) if (!values.includes(x)) values.push(x);
+    next[key] = values;
+  }
+  const remove = patch.remove?.revisions;
+  if (remove && remove.length > 0) next.revisions = next.revisions.filter((r) => !remove.includes(r));
+  return next;
 }
 
 /** A sortable revision id: time in base 36 (fixed width) + a random tail. */

@@ -168,28 +168,66 @@ export function backupInvalidAutosave(storage: KeyValueStorage | null): void {
   if (text !== null) writeRaw(storage, KEYS.projectBackup, text);
 }
 
+/** What the one-time move of a legacy autosave into the family store brings. */
+export interface LegacyImport {
+  /** Its proposals (`legacyProposals`). */
+  variants: Variant[];
+  /** The proposal (its id after the move) the autosave had on screen; null for Forslag D or a dropped untouched copy. */
+  activeId: Id | null;
+  /** The autosave's own last save time: its proposals keep it as «sist endret» (null when it is not a valid time). */
+  updatedAt: string | null;
+}
+
+let frozenBase: Variant | null = null;
+
 /**
- * The proposals in a legacy autosave: its unlocked variants, except an untouched copy of the current Forslag D.
- * The ids are kept (so importing twice adds nothing twice) unless they clash with the base or are not valid proposal
- * ids; a name equal to the base's gets " (eget)" ("Forslag D (eget)": a phase-1 user's working copy).
+ * The Forslag D an autosave's copies were made from: the bundled one for an autosave of the current seed revision,
+ * else the phase-1 Forslag D (the frozen schema-1 seed, migrated). Phase 1 wrote its working copy of Forslag D on a
+ * plain visit, so an untouched phase-1 copy equals the frozen seed — never the current, furnished one.
  */
-export function legacyProposals(saved: Project, base: Variant): Variant[] {
+function legacyBaseFor(saved: Project, base: Variant): Variant {
+  if (saved.seedRevision >= SEED_REVISION) return base;
+  try {
+    frozenBase ??= migrateProject(frozenSchema1Project()).variants[0] ?? null;
+  } catch {
+    frozenBase = null;
+  }
+  return frozenBase ?? base;
+}
+
+/**
+ * The legacy autosave moved into the family store: its unlocked variants, except an untouched copy of the Forslag D
+ * it was made from (`legacyBaseFor`). The ids are kept (so importing twice adds nothing twice) unless they are not
+ * valid proposal ids or clash with the base: a working copy of Forslag D gets `forslag-d-eget-<hash of the autosave's
+ * own project id and time>`, unique per device (phase 1 gave every device its own project id) and the same on every
+ * import. A name equal to the base's gets " (eget)" ("Forslag D (eget)").
+ */
+export function legacyImport(saved: Project, base: Variant): LegacyImport {
+  const ref = legacyBaseFor(saved, base);
   const ids = new Set<Id>([base.id]);
   const names = new Set<string>([base.name]);
-  const out: Variant[] = [];
+  const variants: Variant[] = [];
+  let activeId: Id | null = null;
   for (const v of saved.variants) {
     if (v.locked) continue;
-    if (sameContent({ ...v, id: base.id, name: base.name, createdAt: base.createdAt, basedOnId: base.basedOnId }, base)) continue;
+    if (sameContent({ ...v, id: ref.id, name: ref.name, createdAt: ref.createdAt, basedOnId: ref.basedOnId }, ref)) continue;
     let id = isValidProposalId(v.id) ? v.id : v.id.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 60) || 'forslag';
-    if (ids.has(id)) id = `${id}-eget`;
+    if (ids.has(id)) id = `${id}-eget-${fnv36(`${saved.id}|${saved.createdAt}|${v.createdAt}|${v.id}`)}`;
     for (let n = 2; ids.has(id); n++) id = `${v.id}-eget-${n}`;
     ids.add(id);
     let name = v.name;
     for (let n = 1; names.has(name); n++) name = nb.family.ownCopyName(v.name, n);
     names.add(name);
-    out.push(cleanVariant(v, id, name));
+    variants.push(cleanVariant(v, id, name));
+    if (v.id === saved.activeVariantId) activeId = id;
   }
-  return out;
+  const updatedAt = Number.isFinite(Date.parse(saved.updatedAt)) ? saved.updatedAt : null;
+  return { variants, activeId, updatedAt };
+}
+
+/** The proposals of a legacy autosave (`legacyImport`). */
+export function legacyProposals(saved: Project, base: Variant): Variant[] {
+  return legacyImport(saved, base).variants;
 }
 
 /** The legacy autosave has done its job: keep it under KEYS.projectBeforeFamily, then remove it. */

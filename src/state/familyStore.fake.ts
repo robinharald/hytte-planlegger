@@ -1,9 +1,14 @@
 /**
  * Test double of Firestore for familyStore tests (not used by the app): one in-memory "server" and any number of
- * devices (`FirestoreAdapter`s). Like the real SDK, a device sees its own writes at once (local cache + listeners),
- * other devices see them when they reach the server; while a device is offline its writes queue and `acked` waits.
- * `refuse` makes the server reject writes (rules), `signInFails` the anonymous sign-in.
+ * devices (`FirestoreAdapter`s). Like the real SDK, a device sees its own writes at once (its queued writes applied
+ * over the server's documents, in order — a field update to the newest version it knows), other devices see them
+ * when they reach the server; while a device is offline its writes queue and `acked` waits. A batch is applied to the
+ * server's CURRENT documents when it arrives (an `update` of a document that does not exist fails the batch,
+ * `not-found`). Documents with queued writes are flagged `pending` in snapshots, also writes made on the device before
+ * a store was created on it (an offline reload). `refuse` makes the server reject writes (rules), `signInFails` the
+ * anonymous sign-in.
  */
+import { applyUpdate } from './familyStore.firestore';
 import type { AdapterDoc, Connectivity, FirestoreAdapter, SnapshotMeta, WriteOp } from './familyStore.firestore';
 
 type Data = Record<string, unknown>;
@@ -34,6 +39,22 @@ function inCollection(path: string, collection: string): string | null {
   return rest.includes('/') ? null : rest;
 }
 
+/** `ops` applied in order on top of `get`; undefined = no document. Throws `not-found` for an update of a missing one. */
+function applyOps(ops: readonly WriteOp[], get: (path: string) => Data | undefined): Map<string, Data | undefined> {
+  const out = new Map<string, Data | undefined>();
+  const cur = (path: string) => (out.has(path) ? out.get(path) : get(path));
+  for (const op of ops) {
+    if (op.kind === 'set') out.set(op.path, clone(op.data));
+    else if (op.kind === 'delete') out.set(op.path, undefined);
+    else {
+      const d = cur(op.path);
+      if (!d) throw Object.assign(new Error('not-found'), { code: 'not-found' });
+      out.set(op.path, applyUpdate(d, op));
+    }
+  }
+  return out;
+}
+
 export function createFakeFirestore(): FakeFirestore {
   const devices = new Set<{ notify: () => void }>();
   const fake: FakeFirestore = {
@@ -42,28 +63,45 @@ export function createFakeFirestore(): FakeFirestore {
     writes: 0,
     device(opts = {}) {
       let online = opts.online ?? true;
-      /** Local writes not on the server yet (null = deleted). */
-      const overlay = new Map<string, Data | null>();
+      /** Writes not on the server yet, in order. */
       const queue: { ops: WriteOp[]; resolve: () => void; reject: (e: unknown) => void }[] = [];
+      const idle: (() => void)[] = [];
       const watchers = new Set<{ path: string; onNext: (docs: AdapterDoc[], meta: SnapshotMeta) => void }>();
       const connectivityListeners = new Set<(online: boolean) => void>();
 
-      const view = (collection: string): AdapterDoc[] => {
-        const out = new Map<string, Data>();
-        for (const [path, data] of fake.docs) {
-          const id = inCollection(path, collection);
-          if (id !== null) out.set(id, data);
+      /** This device's view of a document: the server's with the queued writes applied (an update of a missing one is skipped). */
+      const local = (path: string): Data | undefined => {
+        let d = fake.docs.get(path);
+        for (const item of queue) {
+          for (const op of item.ops) {
+            if (op.path !== path) continue;
+            if (op.kind === 'set') d = op.data;
+            else if (op.kind === 'delete') d = undefined;
+            else if (d) d = applyUpdate(d, op);
+          }
         }
-        for (const [path, data] of overlay) {
-          const id = inCollection(path, collection);
-          if (id === null) continue;
-          if (data === null) out.delete(id);
-          else out.set(id, data);
-        }
-        return [...out].map(([id, data]) => ({ id, data: clone(data) }));
+        return d;
       };
+      const queuedPaths = () => new Set(queue.flatMap((q) => q.ops.map((op) => op.path)));
+
+      const view = (collection: string): AdapterDoc[] => {
+        const pending = queuedPaths();
+        const ids = new Set<string>();
+        for (const path of [...fake.docs.keys(), ...pending]) {
+          const id = inCollection(path, collection);
+          if (id !== null) ids.add(id);
+        }
+        const out: AdapterDoc[] = [];
+        for (const id of ids) {
+          const path = `${collection}/${id}`;
+          const d = local(path);
+          if (d) out.push({ id, data: clone(d), pending: pending.has(path) });
+        }
+        return out;
+      };
+      const meta = (): SnapshotMeta => ({ fromCache: !online, hasPendingWrites: queue.length > 0 });
       const notify = () => {
-        for (const w of watchers) w.onNext(view(w.path), { fromCache: !online, hasPendingWrites: queue.length > 0 });
+        for (const w of watchers) w.onNext(view(w.path), meta());
       };
       const self = { notify };
       devices.add(self);
@@ -72,20 +110,26 @@ export function createFakeFirestore(): FakeFirestore {
         while (online && queue.length > 0) {
           const item = queue.shift();
           if (!item) break;
-          const refused = item.ops.some((op) => fake.refuse?.(op.path));
-          for (const op of item.ops) {
-            if (!refused) {
-              if (op.kind === 'set') fake.docs.set(op.path, clone(op.data));
-              else fake.docs.delete(op.path);
-            }
-            overlay.delete(op.path);
-          }
-          if (refused) item.reject(Object.assign(new Error('permission-denied'), { code: 'permission-denied' }));
+          let error: unknown = null;
+          let result: Map<string, Data | undefined> | null = null;
+          if (item.ops.some((op) => fake.refuse?.(op.path))) error = Object.assign(new Error('permission-denied'), { code: 'permission-denied' });
           else {
+            try {
+              result = applyOps(item.ops, (path) => fake.docs.get(path));
+            } catch (e) {
+              error = e;
+            }
+          }
+          if (result) {
+            for (const [path, d] of result) {
+              if (d) fake.docs.set(path, d);
+              else fake.docs.delete(path);
+            }
             fake.writes += item.ops.length;
             item.resolve();
-          }
+          } else item.reject(error);
         }
+        if (queue.length === 0) for (const r of idle.splice(0)) r();
         for (const d of devices) d.notify();
       };
 
@@ -96,32 +140,31 @@ export function createFakeFirestore(): FakeFirestore {
         watch(path, onNext) {
           const w = { path, onNext };
           watchers.add(w);
-          queueMicrotask(() => watchers.has(w) && onNext(view(path), { fromCache: !online, hasPendingWrites: queue.length > 0 }));
+          queueMicrotask(() => watchers.has(w) && onNext(view(path), meta()));
           return () => watchers.delete(w);
         },
         async read(path) {
           return view(path);
         },
         async get(path) {
-          if (overlay.has(path)) {
-            const d = overlay.get(path);
-            return d ? clone(d) : null;
-          }
-          const d = fake.docs.get(path);
+          const d = local(path);
           return d ? clone(d) : null;
         },
         write(ops) {
-          for (const op of ops) overlay.set(op.path, op.kind === 'set' ? clone(op.data) : null);
           let resolve!: () => void;
           let reject!: (e: unknown) => void;
           const acked = new Promise<void>((res, rej) => {
             resolve = res;
             reject = rej;
           });
-          queue.push({ ops, resolve, reject });
+          queue.push({ ops: ops.map((op) => (op.kind === 'delete' ? op : { ...op, data: clone(op.data) })), resolve, reject });
           notify();
           if (online) queueMicrotask(commit);
           return { acked };
+        },
+        waitForPendingWrites() {
+          if (queue.length === 0) return Promise.resolve();
+          return new Promise<void>((r) => idle.push(r));
         },
         dispose() {
           watchers.clear();

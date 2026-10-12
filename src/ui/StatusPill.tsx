@@ -3,20 +3,27 @@
  *
  *  - `StatusPill`: "Lagret for alle" / "Lagret her – sendes når du er på nett" / "Kun på denne enheten (ingen delt
  *    plass satt opp)" (or "(familiens plass kan ikke nås nå)" when Firebase could not be loaded, appStore.ts fallback),
- *    plus the passing states "Lagrer …" / "Kobler til …" and the failures (`pillState`). The long text
- *    is the pill's label (a short one on narrow screens); the tooltip explains it (familyUi.ts `pillState`).
+ *    plus the passing states "Lagrer …" / "Kobler til …", "Ikke lagret – velg Hent endringene eller Lagre over" while
+ *    a conflict is open, and the failures (`pillState`). The long text is the pill's label (a short one on narrow
+ *    screens); the tooltip explains it (familyUi.ts `pillState`).
  *  - `FamilyBanners`: the conflict guard ("«X» ble endret av Pappa for 2 min siden. [Hent endringene] [Lagre over]"),
- *    a version of this device overwritten by an offline save (kept under Tidligere versjoner), proposals from a newer
- *    app version ([Oppdater] looks for the new version), a family link opened where there is no shared space.
+ *    a version of this device overwritten by an offline save (kept under Tidligere versjoner) or deleted by a device
+ *    that had not seen it ([Hent tilbake] from the Papirkurv), proposals from a newer app version ([Oppdater] looks
+ *    for the new version), a family link opened where there is no shared space, a family link that is not whole, and
+ *    after a family switch the offer to bring along this device's proposals from the previous space.
  *  - `NameDialog`: "Hva heter du?" the first time this device saves something in the shared space.
  */
 import { useState } from 'react';
 import { nb } from '../i18n/nb';
 import {
+  acceptCarryOver,
+  declineCarryOver,
   dismissFamilyNotice,
   dismissOverwritten,
+  familyId,
   familyUiStore,
   resolveConflict,
+  restoreFromTrash,
   setMyName,
   useAppStore,
   useFamily,
@@ -32,7 +39,10 @@ export function StatusPill() {
   const online = useFamily((s) => s.online);
   const failed = useFamily((s) => s.failed);
   const fallback = useFamily((s) => s.fallback);
-  const state = pillState({ mode, phase, saving, pending, online, failed, fallback });
+  const conflicts = useFamily((s) => s.conflicts);
+  const noFamily = useFamily((s) => s.noFamily);
+  const readOnly = useAppStore((s) => s.ui.readOnly);
+  const state = pillState({ mode, phase, saving, pending, online, failed, fallback, conflicts: readOnly ? [] : conflicts, noFamily });
   const text = nb.family.pill[state];
   return (
     <span className="status-pill" data-state={state} data-testid="status-pill" role="status" aria-label={text} title={nb.family.pillTitle[state]}>
@@ -51,10 +61,12 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
   const overwritten = useFamily((s) => s.overwritten);
   const tooNew = useFamily((s) => s.tooNew.length);
   const notices = useFamily((s) => s.notices);
+  const carryOver = useFamily((s) => s.carryOver);
   const readOnly = useAppStore((s) => s.ui.readOnly);
+  const [carrying, setCarrying] = useState(false);
   const now = useMinuteClock();
   const f = nb.family;
-  if (conflicts.length === 0 && overwritten.length === 0 && tooNew === 0 && notices.length === 0) return null;
+  if (conflicts.length === 0 && overwritten.length === 0 && tooNew === 0 && notices.length === 0 && !carryOver) return null;
   return (
     <div className="family-banners" data-testid="family-banners">
       {!readOnly &&
@@ -78,10 +90,23 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           );
         })}
       {overwritten.map((o) => (
-        <div key={o.id} className="banner" role="status" data-testid="overwritten-banner">
-          <div className="msg">{f.overwritten(o.name, o.by || f.someone)}</div>
+        <div key={o.id} className="banner" role="status" data-testid="overwritten-banner" data-kind={o.kind ?? 'changed'}>
+          <div className="msg">{o.kind === 'deleted' ? f.overwrittenDeleted(o.name, o.by || f.someone) : f.overwritten(o.name, o.by || f.someone)}</div>
           <div className="actions">
-            {props.onShowRevisions && (
+            {o.kind === 'deleted' && (
+              <button
+                type="button"
+                className="btn btn-small"
+                data-testid="overwritten-restore"
+                onClick={() => {
+                  dismissOverwritten(o.id);
+                  void restoreFromTrash(o.id);
+                }}
+              >
+                {f.trash.restore}
+              </button>
+            )}
+            {o.kind !== 'deleted' && props.onShowRevisions && (
               <button type="button" className="btn btn-small" onClick={props.onShowRevisions}>
                 {f.showRevisions}
               </button>
@@ -98,6 +123,40 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           <div className="actions">
             <button type="button" className="btn btn-small btn-primary" onClick={requestAppUpdateCheck}>
               {nb.family.update.button}
+            </button>
+          </div>
+        </div>
+      )}
+      {notices.includes('family-link-invalid') && (
+        <div className="banner warn" role="status" data-testid="family-link-invalid">
+          <div className="msg">{f.linkInvalid(familyId !== null)}</div>
+          <div className="actions">
+            <button type="button" className="btn btn-small btn-ghost" onClick={() => dismissFamilyNotice('family-link-invalid')}>
+              {f.dismiss}
+            </button>
+          </div>
+        </div>
+      )}
+      {carryOver && (
+        <div className="banner" role="status" data-testid="carry-over-banner">
+          <div className="msg">
+            <strong>{f.carryOver.text(carryOver.names)}</strong> <span>{f.carryOver.hint(carryOver.names.length)}</span>
+          </div>
+          <div className="actions">
+            <button
+              type="button"
+              className="btn btn-small btn-primary"
+              disabled={carrying}
+              data-testid="carry-over-accept"
+              onClick={() => {
+                setCarrying(true);
+                void acceptCarryOver().finally(() => setCarrying(false));
+              }}
+            >
+              {f.carryOver.accept(carryOver.names.length)}
+            </button>
+            <button type="button" className="btn btn-small btn-ghost" disabled={carrying} data-testid="carry-over-decline" onClick={declineCarryOver}>
+              {f.carryOver.decline}
             </button>
           </div>
         </div>

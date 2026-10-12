@@ -7,8 +7,10 @@
  *  - an unlocked variant the family store does not know yet → saved as a new proposal (`base: null`; a proposal in
  *    the Papirkurv with that id is restored and overwritten — that is how Angre of a delete comes back);
  *  - a known variant whose object changed → `saveProposal(variant, { base: <remote updatedAt> })`;
- *  - a known variant that is gone from the project (Slett, after its two confirmations) → `deleteProposal` (soft).
- *  The locked base (Forslag D) is never written.
+ *  - a known variant that is gone from the project (Slett, after its two confirmations) → `deleteProposal` (soft);
+ *    when it comes back unchanged (Angre) → `restoreProposal`, a field update like the delete, so a version saved
+ *    elsewhere meanwhile stays (and is shown here).
+ *  The locked base (Forslag D) is never written, and nothing is written while a drag (transaction) is in progress.
  *
  * In (the live list):
  *  - a new proposal → added as a variant; a removed one (deleted elsewhere) → removed; a changed one → replaced —
@@ -18,7 +20,11 @@
  *    replacement), so Angre only ever undoes this device's own edits and can never write an old version of someone
  *    else's change back. They wait while a drag (transaction) is in progress, and the selection is kept.
  *  - The echo of an own write is recognised by its stamp (`at`, which this module chooses), so a save racing with
- *    further edits is never mistaken for someone else's change.
+ *    further edits is never mistaken for someone else's change. A field update (delete / restore from an old view)
+ *    can bring other content under a stamp this device knows: that counts as a change too.
+ *  - A version saved here that another device overwrote or DELETED without having seen it (an offline device) is
+ *    reported in `overwritten` (the overwritten one is kept as a revision; the deleted one is in the Papirkurv with
+ *    this version's content). Leaving the page while a conflict is open asks first (`beforeunload`).
  *
  * State for the UI (`getState` / `subscribe`): phase, saving / pending / online for the status pill, proposal
  * metadata for the menu ("sist endret av …"), the Papirkurv, conflicts, proposals of a newer app version.
@@ -39,12 +45,17 @@ export interface Conflict {
   at: string | null;
 }
 
-/** A version saved here that another device overwrote without having seen it (kept under Tidligere versjoner). */
+/**
+ * A version saved here that another device overwrote ('changed': kept under Tidligere versjoner) or deleted
+ * ('deleted': the Papirkurv has it) without having seen it.
+ */
 export interface Overwritten {
   id: Id;
   name: string;
   by: string | null;
   at: string;
+  /** Absent = 'changed'. */
+  kind?: 'changed' | 'deleted';
 }
 
 export interface SyncState {
@@ -84,9 +95,11 @@ export interface ProposalSync {
   dismissOverwritten(id: Id): void;
   /**
    * Add variants made outside the store's actions (an opened link, an old autosave) without an undo step; they are
-   * saved like new proposals. Ids already in the project are skipped. `activate` shows one of them.
+   * saved like new proposals. Ids already in the project are skipped. `activate` shows one of them. `at`: the time
+   * to stamp their first save with (an old autosave keeps its own "sist endret"), 1 ms later for each next one so
+   * they keep their order.
    */
-  addVariants(variants: Variant[], activate?: Id): void;
+  addVariants(variants: Variant[], activate?: Id, opts?: { at?: string }): void;
   /** The list the family store reported last. */
   lastList(): ProposalList;
   stop(): void;
@@ -106,6 +119,8 @@ export interface ProposalSyncOptions {
   onNeedsName?: () => void;
   /** After a proposal was saved (the legacy import uses it to retire the old autosave). */
   onSaved?: (id: Id) => void;
+  /** After this device saved a NEW proposal into the store (not a restore or an overwrite). */
+  onCreated?: (id: Id) => void;
   /** After a list was merged for the first time. */
   onFirstList?: (list: ProposalList) => void;
   /** Retry delay after a failed write (ms; doubles up to a minute). */
@@ -132,6 +147,10 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
   const deleting = new Set<Id>();
   /** The last state of variants that left the project (a delete): saved before the soft delete when it was newer. */
   const lastSeen = new Map<Id, Variant>();
+  /** Content of proposals this device deleted: when one comes back unchanged (Angre), it is restored, not rewritten. */
+  const removedHere = new Map<Id, Variant>();
+  /** Stamp for the first save of variants added with `addVariants(…, { at })`. */
+  const firstAt = new Map<Id, string>();
   const failed = new Set<Id>();
   const listeners = new Set<(s: SyncState) => void>();
 
@@ -254,7 +273,18 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     if (!ownVersions.has(`${mine.id}@${mine.updatedAt}`) || next.lineage.includes(mine.updatedAt)) return;
     if (sameContent(mine.variant, next.variant)) return;
     void family.keepRevision(mine.id, mine.variant, { savedAt: mine.updatedAt, savedBy: mine.updatedBy });
-    overwritten.set(mine.id, { id: mine.id, name: mine.name, by: next.updatedBy, at: next.updatedAt });
+    overwritten.set(mine.id, { id: mine.id, name: mine.name, by: next.updatedBy, at: next.updatedAt, kind: 'changed' });
+  };
+
+  /**
+   * `mine` (the version this device knows) went into the Papirkurv: when this device saved it and the delete was made
+   * from an older version (its lineage lacks `mine`: an offline device), say so — the Papirkurv has this version.
+   */
+  const tellIfDeletedUnseen = (mine: Proposal, list: ProposalList, name: string) => {
+    if (!ownVersions.has(`${mine.id}@${mine.updatedAt}`)) return;
+    const t = list.trash.find((x) => x.id === mine.id);
+    if (!t || t.lineage.includes(mine.updatedAt)) return;
+    overwritten.set(mine.id, { id: mine.id, name, by: t.updatedBy, at: t.deletedAt ?? t.updatedAt, kind: 'deleted' });
   };
 
   const applyList = (list: ProposalList): void => {
@@ -303,7 +333,8 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
         }
         continue;
       }
-      if (p.updatedAt === k.remote.updatedAt) {
+      // Same stamp: unchanged — unless a field update (a delete / restore made from an old view) landed on other content.
+      if (p.updatedAt === k.remote.updatedAt && (p.variant === k.remote.variant || sameContent(p.variant, k.remote.variant))) {
         if (k.remote !== p) known.set(p.id, { remote: p, local: k.local });
         continue;
       }
@@ -334,6 +365,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
         changes.set(id, null);
         known.delete(id);
         conflicts.delete(id);
+        tellIfDeletedUnseen(k.remote, list, lv.name);
       } else if (!conflicts.has(id)) {
         addConflict(id, lv.name, null);
       }
@@ -365,7 +397,9 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
 
   const save = async (v: Variant, k: { remote: Proposal; local: Variant } | undefined): Promise<void> => {
     maybeAskName();
-    const at = stamp(k?.remote.updatedAt);
+    const given = k ? undefined : firstAt.get(v.id);
+    firstAt.delete(v.id);
+    const at = given ?? stamp(k?.remote.updatedAt);
     const key = `${v.id}@${at}`;
     own.set(key, v);
     const force = failed.has(v.id);
@@ -375,7 +409,9 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       ownVersions.add(`${v.id}@${r.proposal.updatedAt}`);
       known.set(v.id, { remote: r.proposal, local: v });
       failed.delete(v.id);
+      removedHere.delete(v.id);
       if (failed.size === 0) retryDelay = baseRetry;
+      if (!k && r.proposal.createdAt === r.proposal.updatedAt) opts.onCreated?.(v.id);
       opts.onSaved?.(v.id);
       return;
     }
@@ -388,15 +424,24 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     }
   };
 
-  const remove = async (id: Id): Promise<void> => {
+  const remove = async (id: Id, content: Variant): Promise<void> => {
     deleting.add(id);
     known.delete(id);
     conflicts.delete(id);
+    removedHere.set(id, content);
     try {
       await family.deleteProposal(id, { at: stamp() });
     } finally {
       deleting.delete(id);
     }
+  };
+
+  /** Angre of a delete with nothing changed: back from the Papirkurv as it is there (a version saved meanwhile stays). */
+  const restore = async (v: Variant): Promise<void> => {
+    removedHere.delete(v.id);
+    const p = await family.restoreProposal(v.id, { at: stamp() });
+    if (!p) return save(v, undefined);
+    known.set(v.id, { remote: p, local: v });
   };
 
   const doFlush = async (): Promise<void> => {
@@ -405,6 +450,11 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     if (!listSeen || stopped) return;
     const s = store.getState();
     if (s.ui.readOnly) return;
+    // A drag in progress: its in-between states are never written (others would see a half-finished move).
+    if (s.inTransaction()) {
+      schedule(250);
+      return;
+    }
     const jobs: Promise<void>[] = [];
     const ids = new Set<Id>();
     for (const v of s.project.variants) {
@@ -416,7 +466,8 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
         k.local = v;
         continue;
       }
-      jobs.push(save(v, k));
+      const gone = k ? undefined : removedHere.get(v.id);
+      jobs.push(gone && lastList.trash.some((t) => t.id === v.id) && sameContent(gone, v) ? restore(v) : save(v, k));
     }
     for (const [id, k] of [...known]) {
       if (ids.has(id)) continue;
@@ -424,7 +475,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       lastSeen.delete(id);
       // Edits made just before the delete (within the debounce) are saved first, so the Papirkurv has them.
       const saveFirst = last && !conflicts.has(id) && !sameContent(last, k.local);
-      jobs.push(saveFirst ? save(last, k).then(() => remove(id)) : remove(id));
+      jobs.push(saveFirst ? save(last, k).then(() => remove(id, last)) : remove(id, last ?? k.local));
     }
     if (jobs.length === 0) return;
     busy++;
@@ -476,7 +527,15 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     scheduleRetry();
     emitState();
   });
-  const onLeave = () => void flush();
+  const onLeave = (e: Event) => {
+    void flush();
+    // Edits waiting for "Hent endringene" / "Lagre over" are not saved: ask before the page goes (desktop browsers;
+    // `pagehide` cannot ask, and iOS has no `beforeunload`).
+    if (e.type === 'beforeunload' && conflicts.size > 0 && !stopped) {
+      e.preventDefault();
+      (e as BeforeUnloadEvent).returnValue = '';
+    }
+  };
   opts.target?.addEventListener('pagehide', onLeave);
   opts.target?.addEventListener('beforeunload', onLeave);
 
@@ -553,9 +612,11 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       return true;
     },
 
-    addVariants(variants, activate) {
+    addVariants(variants, activate, o = {}) {
       const present = new Set(store.getState().project.variants.map((v) => v.id));
       const fresh = variants.filter((v) => !present.has(v.id));
+      const t = o.at ? Date.parse(o.at) : NaN;
+      if (Number.isFinite(t)) fresh.forEach((v, i) => firstAt.set(v.id, new Date(t + i).toISOString()));
       applyChanges(new Map(fresh.map((v) => [v.id, v] as const)), activate);
       if (fresh.length > 0) schedule(0);
     },

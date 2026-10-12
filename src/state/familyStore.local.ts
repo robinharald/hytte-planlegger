@@ -17,6 +17,7 @@ import LZString from 'lz-string';
 import { createForslagD, SEED_REVISION } from '../model/seed/forslagD';
 import type { Id, Variant } from '../model/types';
 import {
+  applyPatch,
   buildList,
   cleanName,
   createDecoder,
@@ -25,6 +26,7 @@ import {
   decodeProposalProject,
   metaOf,
   newProposalId,
+  planDeleted,
   planKeepRevision,
   planSave,
   readProposalDoc,
@@ -292,7 +294,7 @@ export function createLocalFamilyStore(opts: LocalFamilyStoreOptions): FamilySto
       const doc = docs.get(id);
       if (!doc || doc.deletedAt !== null) return;
       const at = o.at ?? stamp(doc.updatedAt);
-      docs.set(id, { ...doc, deletedAt: at, updatedAt: at, updatedBy: byOf(o.by) });
+      docs.set(id, applyPatch(doc, planDeleted(doc, true, at, byOf(o.by))));
       if (!persist()) {
         docs.set(id, doc);
         rebuild();
@@ -307,7 +309,7 @@ export function createLocalFamilyStore(opts: LocalFamilyStoreOptions): FamilySto
       if (!doc) return null;
       if (doc.deletedAt === null) return proposalOf(id, doc);
       const at = o.at ?? stamp(doc.updatedAt);
-      const next: ProposalDoc = { ...doc, deletedAt: null, updatedAt: at, updatedBy: byOf(o.by) };
+      const next: ProposalDoc = applyPatch(doc, planDeleted(doc, false, at, byOf(o.by)));
       docs.set(id, next);
       if (!persist()) {
         docs.set(id, doc);

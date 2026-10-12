@@ -10,13 +10,19 @@
  *    again and re-subscribes when the device is online.
  *  - Offline: the IndexedDB cache (`persistentLocalCache`, multi-tab) keeps everything opened, and writes queue there
  *    until the device is online. A write counts as pending until the server confirms it (`status().pending`), which
- *    the status pill shows as "Lagret her – sendes når du er på nett" while offline.
+ *    the status pill shows as "Lagret her – sendes når du er på nett" while offline. Writes queued before this page
+ *    was loaded (an offline reload) or by another tab count too: the listener flags every document with writes the
+ *    server does not have yet (`AdapterDoc.pending`), and `flush` waits for those as well (`waitForPendingWrites`).
+ *  - Soft delete, restore and `keepRevision` are field updates (`ProposalPatch`, Firestore `update` with
+ *    `arrayUnion` / `arrayRemove`): applied to the server's version, so a delete made offline from an old view never
+ *    writes old content over a newer save.
  *  - The conflict guard checks against the newest version this device knows (the live listener's cache view), so it
  *    works offline too; last write wins otherwise.
  *  - A write the server refuses (e.g. rules) is reported as `error` in the status (and through `onWriteError`).
  */
 import type { FirebaseOptions } from 'firebase/app';
 import {
+  applyPatch,
   buildList,
   cleanName,
   createDecoder,
@@ -25,6 +31,7 @@ import {
   decodeProposalProject,
   metaOf,
   newProposalId,
+  planDeleted,
   planKeepRevision,
   planSave,
   readProposalDoc,
@@ -38,6 +45,7 @@ import type {
   Proposal,
   ProposalDoc,
   ProposalList,
+  ProposalPatch,
   RevisionInfo,
   SaveOptions,
   SaveResult,
@@ -51,6 +59,8 @@ import type { Id, Variant } from '../model/types';
 export interface AdapterDoc {
   id: string;
   data: Record<string, unknown>;
+  /** This device has writes of the document the server has not confirmed (also from an earlier page or another tab). */
+  pending?: boolean;
 }
 
 export interface SnapshotMeta {
@@ -58,12 +68,48 @@ export interface SnapshotMeta {
   hasPendingWrites: boolean;
 }
 
-export type WriteOp = { kind: 'set'; path: string; data: Record<string, unknown> } | { kind: 'delete'; path: string };
+export type WriteOp =
+  | { kind: 'set'; path: string; data: Record<string, unknown> }
+  /**
+   * Field update of an existing document (the batch fails when it does not exist): `data` replaces those fields,
+   * `arrayUnion` / `arrayRemove` add / remove array values. Applied to the server's version when it arrives there.
+   */
+  | { kind: 'update'; path: string; data: Record<string, unknown>; arrayUnion?: Record<string, string[]>; arrayRemove?: Record<string, string[]> }
+  | { kind: 'delete'; path: string };
+
+/** What an `update` op does to a document (the fake Firestore uses it). */
+export function applyUpdate(doc: Record<string, unknown>, op: Extract<WriteOp, { kind: 'update' }>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...doc, ...op.data };
+  for (const [key, values] of Object.entries(op.arrayUnion ?? {})) {
+    const arr = Array.isArray(next[key]) ? [...(next[key] as unknown[])] : [];
+    for (const v of values) if (!arr.includes(v)) arr.push(v);
+    next[key] = arr;
+  }
+  for (const [key, values] of Object.entries(op.arrayRemove ?? {})) {
+    next[key] = (Array.isArray(next[key]) ? (next[key] as unknown[]) : []).filter((v) => !values.includes(v as string));
+  }
+  return next;
+}
+
+/** The update op(s) of a ProposalPatch (`arrayUnion` and `arrayRemove` of one field cannot share an op). */
+export function patchOps(path: string, patch: ProposalPatch): WriteOp[] {
+  const data: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(patch.set)) if (v !== undefined) data[k] = v;
+  const arrayUnion: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(patch.add ?? {})) if (v && v.length > 0) arrayUnion[k] = v;
+  const ops: WriteOp[] = [];
+  if (Object.keys(data).length > 0 || Object.keys(arrayUnion).length > 0) {
+    ops.push({ kind: 'update', path, data, ...(Object.keys(arrayUnion).length > 0 ? { arrayUnion } : {}) });
+  }
+  const removed = patch.remove?.revisions;
+  if (removed && removed.length > 0) ops.push({ kind: 'update', path, data: {}, arrayRemove: { revisions: removed } });
+  return ops;
+}
 
 export interface FirestoreAdapter {
   /** Anonymous sign-in (reuses the persisted session). */
   signIn(): Promise<void>;
-  /** Live listener on a collection (also delivers this device's own pending writes, flagged in `meta`). */
+  /** Live listener on a collection (also delivers this device's own pending writes, flagged per document and in `meta`). */
   watch(collectionPath: string, onNext: (docs: AdapterDoc[], meta: SnapshotMeta) => void, onError: (e: unknown) => void): () => void;
   /** Read a collection (the server when reachable, else the cache). */
   read(collectionPath: string): Promise<AdapterDoc[]>;
@@ -74,6 +120,8 @@ export interface FirestoreAdapter {
    * the server has confirmed (or refused) them — while offline, not before the device is online again.
    */
   write(ops: WriteOp[]): { acked: Promise<void> };
+  /** Resolves when every write this device has queued (this page's, an earlier page's, another tab's) is on the server. */
+  waitForPendingWrites(): Promise<void>;
   dispose(): void;
 }
 
@@ -123,6 +171,9 @@ function errorCode(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** An own write of a proposal document not confirmed yet: the whole document (null = deleted) or a field update. */
+type PendingChange = { doc: ProposalDoc | null } | { patch: ProposalPatch };
+
 /** The document as written to Firestore (no undefined anywhere). */
 function docData(doc: ProposalDoc): Record<string, unknown> {
   return { ...doc };
@@ -144,8 +195,13 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
   const statusListeners = new Set<(s: FamilyStoreStatus) => void>();
   /** The listener's view (server + the SDK's own latency compensation). */
   let server = new Map<Id, ProposalDoc>();
-  /** Own writes the server has not confirmed yet (null = deleted): they win over the listener's view meanwhile. */
-  const mine = new Map<Id, { doc: ProposalDoc | null; count: number }>();
+  /** Documents of the last snapshot with writes the server does not have yet (also queued by an earlier page). */
+  let snapshotPending = 0;
+  /**
+   * Own writes the server has not confirmed yet, in order: a whole document (null = deleted) or a field update. They
+   * are applied over the listener's view meanwhile (a field update to whatever version is shown).
+   */
+  const mine = new Map<Id, PendingChange[]>();
   /** Own writes the server refused: still shown here (the edit is not lost) until a later write of the id succeeds. */
   const refused = new Map<Id, ProposalDoc | null>();
   const writeErrorListeners = new Set<(id: Id) => void>();
@@ -171,15 +227,24 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
 
   const recompute = () => {
     const next = new Map(server);
-    const pending = new Map([...mine].map(([id, m]) => [id, m.doc] as const));
-    for (const overlay of [refused, pending]) {
-      for (const [id, doc] of overlay) {
-        if (doc) next.set(id, doc);
+    for (const [id, doc] of refused) {
+      if (doc) next.set(id, doc);
+      else next.delete(id);
+    }
+    for (const [id, changes] of mine) {
+      for (const c of changes) {
+        if ('patch' in c) {
+          const cur = next.get(id);
+          if (cur) next.set(id, applyPatch(cur, c.patch));
+        } else if (c.doc) next.set(id, c.doc);
         else next.delete(id);
       }
     }
     docs = next;
   };
+
+  /** Pending = own writes not confirmed yet, or documents the listener flags (writes queued before this page). */
+  const pendingCount = () => Math.max(acks.size, snapshotPending);
 
   const emit = () => {
     recompute();
@@ -193,14 +258,17 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
   };
   const byOf = (by: string | null | undefined): string | null => (by === undefined ? cleanName(names.get()) : cleanName(by));
 
-  const onSnapshot = (items: { id: string; data: Record<string, unknown> }[]) => {
+  const onSnapshot = (items: AdapterDoc[], meta: SnapshotMeta) => {
     const next = new Map<Id, ProposalDoc>();
+    let flagged = 0;
     for (const item of items) {
       const doc = readProposalDoc(item.data);
       if (doc) next.set(item.id, doc);
+      if (item.pending) flagged++;
     }
     server = next;
-    setStatus({ phase: 'ready', error: status.error === 'listen' ? null : status.error });
+    snapshotPending = flagged > 0 ? flagged : meta.hasPendingWrites ? 1 : 0;
+    setStatus({ phase: 'ready', pending: pendingCount(), error: status.error === 'listen' ? null : status.error });
     resolveReady();
     emit();
   };
@@ -217,7 +285,7 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
     unwatch?.();
     unwatch = adapter.watch(
       proposalsPath,
-      (items) => onSnapshot(items),
+      (items, meta) => onSnapshot(items, meta),
       () => {
         // Refused (not signed in yet) or broken: sign in again and listen again (once online).
         unwatch = null;
@@ -251,29 +319,33 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
   });
 
   /**
-   * Write ops; `changes` = the proposal documents they set (null = deleted). This device shows them right away and
-   * until the server confirmed or refused them; the confirmation is tracked as pending.
+   * Write ops; `changes` = what they do to proposal documents (a whole document, null = deleted, or a field update).
+   * This device shows them right away and until the server confirmed or refused them; the confirmation is tracked as
+   * pending.
    */
-  const write = (ops: Parameters<FirestoreAdapter['write']>[0], changes: Map<Id, ProposalDoc | null>) => {
+  const write = (ops: WriteOp[], changes: Map<Id, PendingChange>) => {
     const { acked } = adapter.write(ops);
-    for (const [id, doc] of changes) mine.set(id, { doc, count: (mine.get(id)?.count ?? 0) + 1 });
-    const settle = (id: Id) => {
-      const m = mine.get(id);
-      if (m && --m.count <= 0) mine.delete(id);
+    for (const [id, change] of changes) mine.set(id, [...(mine.get(id) ?? []), change]);
+    const settle = (id: Id, change: PendingChange) => {
+      const rest = (mine.get(id) ?? []).filter((c) => c !== change);
+      if (rest.length > 0) mine.set(id, rest);
+      else mine.delete(id);
     };
     const tracked = acked.then(
       () => {
-        for (const id of changes.keys()) {
-          settle(id);
+        for (const [id, change] of changes) {
+          settle(id, change);
           refused.delete(id);
         }
         if (status.error === 'write' && refused.size === 0) setStatus({ error: null });
         emit();
       },
       (e: unknown) => {
-        for (const [id, doc] of changes) {
-          settle(id);
-          refused.set(id, doc);
+        for (const [id, change] of changes) {
+          // Keep showing what this device wrote (the edit is not lost): the document as it looks with the change.
+          const shown = 'patch' in change ? (docs.get(id) ?? null) : change.doc;
+          settle(id, change);
+          refused.set(id, shown);
         }
         setStatus({ error: 'write' });
         emit();
@@ -284,10 +356,10 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
       },
     );
     acks.add(tracked);
-    setStatus({ pending: acks.size });
+    setStatus({ pending: pendingCount() });
     void tracked.finally(() => {
       acks.delete(tracked);
-      setStatus({ pending: acks.size });
+      setStatus({ pending: pendingCount() });
     });
   };
 
@@ -298,11 +370,11 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
     const at = o.at ?? stamp(cur?.updatedAt);
     const plan = planSave(cur, variant, { ...o, at, by: byOf(o.by) }, context());
     if (plan.kind === 'conflict') return { status: 'conflict', remote: plan.remote === 'current' && cur ? proposalOf(id, cur) : null };
-    const ops: Parameters<FirestoreAdapter['write']>[0] = [{ kind: 'set', path: proposalPath(id), data: docData(plan.doc) }];
+    const ops: WriteOp[] = [{ kind: 'set', path: proposalPath(id), data: docData(plan.doc) }];
     if (plan.revision) ops.push({ kind: 'set', path: `${revisionsPath(id)}/${plan.revision.id}`, data: { ...plan.revision.doc } });
     for (const old of plan.pruned) ops.push({ kind: 'delete', path: `${revisionsPath(id)}/${old}` });
     try {
-      write(ops, new Map([[id, plan.doc]]));
+      write(ops, new Map([[id, { doc: plan.doc }]]));
     } catch (e) {
       return { status: 'error', error: errorCode(e) };
     }
@@ -311,15 +383,16 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
     return saved ? { status: 'saved', proposal: saved } : { status: 'error', error: 'decode' };
   };
 
+  /** Soft delete / restore: a field update (deletedAt, updatedAt, updatedBy, lineage), never the content. */
   const setDeleted = async (id: Id, deleted: boolean, o: { at?: string; by?: string | null }): Promise<ProposalDoc | null> => {
     await ready;
     const doc = docs.get(id);
     if (!doc || (doc.deletedAt !== null) === deleted) return doc ?? null;
     const at = o.at ?? stamp(doc.updatedAt);
-    const next: ProposalDoc = { ...doc, deletedAt: deleted ? at : null, updatedAt: at, updatedBy: byOf(o.by) };
-    write([{ kind: 'set', path: proposalPath(id), data: docData(next) }], new Map([[id, next]]));
+    const patch = planDeleted(doc, deleted, at, byOf(o.by));
+    write(patchOps(proposalPath(id), patch), new Map([[id, { patch }]]));
     emit();
-    return next;
+    return docs.get(id) ?? applyPatch(doc, patch);
   };
 
   const store: FamilyStore = {
@@ -387,7 +460,7 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
         } catch {
           // offline: the ids the document lists
         }
-        write([...revisionIds.map((r): WriteOp => ({ kind: 'delete', path: `${revisionsPath(id)}/${r}` })), { kind: 'delete', path: proposalPath(id) }], new Map([[id, null]]));
+        write([...revisionIds.map((r): WriteOp => ({ kind: 'delete', path: `${revisionsPath(id)}/${r}` })), { kind: 'delete', path: proposalPath(id) }], new Map([[id, { doc: null }]]));
         count++;
       }
       if (count > 0) emit();
@@ -420,13 +493,14 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
       const cur = docs.get(id);
       if (!cur) return false;
       const plan = planKeepRevision(cur, variant, saved, context());
+      // Only the revision ids change (arrayUnion / arrayRemove): the content stays whatever the server has.
       write(
         [
-          { kind: 'set', path: proposalPath(id), data: docData(plan.doc) },
+          ...patchOps(proposalPath(id), plan.patch),
           { kind: 'set', path: `${revisionsPath(id)}/${plan.revision.id}`, data: { ...plan.revision.doc } },
           ...plan.pruned.map((r): WriteOp => ({ kind: 'delete', path: `${revisionsPath(id)}/${r}` })),
         ],
-        new Map([[id, plan.doc]]),
+        new Map([[id, { patch: plan.patch }]]),
       );
       emit();
       return true;
@@ -447,6 +521,8 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
 
     async flush() {
       await Promise.allSettled([...acks]);
+      // Writes queued before this page (an offline reload) or by another tab: the SDK knows them, this page does not.
+      await adapter.waitForPendingWrites().catch(() => {});
     },
 
     dispose() {
@@ -489,8 +565,17 @@ export async function loadFirebaseAdapter(config: FirebaseOptions, o: { persiste
   } catch {
     db = fs.getFirestore(app); // already initialised (hot reload)
   }
-  const auth = authMod.getAuth(app);
-  const toDocs = (snap: import('firebase/firestore').QuerySnapshot): AdapterDoc[] => snap.docs.map((d) => ({ id: d.id, data: d.data() }));
+  // Anonymous sign-in only: no popup / redirect resolver, so no Google scripts or auth iframe are loaded (getAuth
+  // installs `browserPopupRedirectResolver`, which loads apis.google.com and firebaseapp.com/__/auth/iframe on
+  // phones). getAuth only when this app's auth is already initialised (hot reload).
+  let auth: import('firebase/auth').Auth;
+  try {
+    auth = authMod.initializeAuth(app, { persistence: [authMod.indexedDBLocalPersistence, authMod.browserLocalPersistence] });
+  } catch {
+    auth = authMod.getAuth(app);
+  }
+  const toDocs = (snap: import('firebase/firestore').QuerySnapshot): AdapterDoc[] =>
+    snap.docs.map((d) => ({ id: d.id, data: d.data(), pending: d.metadata.hasPendingWrites }));
   return {
     async signIn() {
       await auth.authStateReady();
@@ -515,9 +600,17 @@ export async function loadFirebaseAdapter(config: FirebaseOptions, o: { persiste
       const batch = fs.writeBatch(db);
       for (const op of ops) {
         if (op.kind === 'set') batch.set(fs.doc(db, op.path), op.data);
-        else batch.delete(fs.doc(db, op.path));
+        else if (op.kind === 'update') {
+          const data: Record<string, unknown> = { ...op.data };
+          for (const [k, v] of Object.entries(op.arrayUnion ?? {})) data[k] = fs.arrayUnion(...v);
+          for (const [k, v] of Object.entries(op.arrayRemove ?? {})) data[k] = fs.arrayRemove(...v);
+          batch.update(fs.doc(db, op.path), data);
+        } else batch.delete(fs.doc(db, op.path));
       }
       return { acked: batch.commit() };
+    },
+    waitForPendingWrites() {
+      return fs.waitForPendingWrites(db);
     },
     dispose() {
       void fs.terminate(db).catch(() => {});

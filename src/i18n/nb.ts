@@ -51,6 +51,10 @@ const PILL = {
   error: 'Ikke koblet til familiens plass – lagres her',
   failed: 'Ikke lagret – prøver igjen',
   localFailed: 'Kunne ikke lagre på denne enheten (lite plass?)',
+  /** A conflict is open: the edits of that proposal wait for the user's choice. */
+  conflict: 'Ikke lagret – velg Hent endringene eller Lagre over',
+  /** Shared mode, but the `#f=` link was not whole and this device has no family yet: saved here until a whole link. */
+  noFamily: 'Kun på denne enheten (familielenken er ikke hel)',
 } as const;
 
 const MONTHS = ['jan.', 'feb.', 'mars', 'apr.', 'mai', 'juni', 'juli', 'aug.', 'sep.', 'okt.', 'nov.', 'des.'] as const;
@@ -870,6 +874,8 @@ export const nb = {
       error: 'Ikke koblet til',
       failed: 'Ikke lagret',
       localFailed: 'Ikke lagret',
+      conflict: 'Ikke lagret',
+      noFamily: 'Kun her',
     } satisfies Record<keyof typeof PILL, string>,
     pillTitle: {
       local: 'Forslagene lagres automatisk i denne nettleseren. Trykk «Send forslaget» for å dele en kopi som lenke.',
@@ -882,7 +888,11 @@ export const nb = {
       error: 'Fikk ikke kontakt med familiens delte plass. Endringene lagres på denne enheten og sendes når det går.',
       failed: 'Den siste endringen ble ikke lagret. Appen prøver igjen av seg selv.',
       localFailed: 'Nettleseren har ikke plass til flere endringer. Lagre forslaget som fil (Mer → Lagre som fil).',
-    },
+      conflict:
+        'Forslaget ble endret et annet sted mens du endret det her. Endringene dine her lagres ikke før du velger «Hent endringene» eller «Lagre over».',
+      noFamily:
+        'Lenken til familiens plass var ikke hel, så appen vet ikke hvilken plass den skal bruke. Forslagene lagres på denne enheten til du åpner hele familielenken; da flyttes de inn i familiens plass.',
+    } satisfies Record<keyof typeof PILL, string>,
     conflict: (name: string, by: string, at: string) => `«${name}» ble endret av ${by} ${at}.`,
     conflictDeleted: (name: string, by: string, at: string) => `«${name}» ble slettet av ${by} ${at}.`,
     conflictHint: 'Endringene dine her er ikke lagret ennå.',
@@ -890,6 +900,8 @@ export const nb = {
     saveOver: 'Lagre over',
     overwritten: (name: string, by: string) =>
       `«${name}» ble endret av ${by} på en enhet uten nett mens du også endret det. Din utgave ligger under Tidligere versjoner.`,
+    overwrittenDeleted: (name: string, by: string) =>
+      `«${name}» ble slettet av ${by} på en enhet som ikke hadde sett de siste endringene dine. Din utgave ligger i Papirkurv.`,
     showRevisions: 'Vis',
     dismiss: 'Lukk',
     tooNew: (n: number) =>
@@ -898,6 +910,23 @@ export const nb = {
         : `${n} forslag er laget med en nyere versjon av appen og vises ikke her. Oppdater appen for å se dem.`,
     familyUnavailable:
       'Lenken går til familiens delte plass, men den er ikke tilgjengelig her. Forslagene lagres bare på denne enheten.',
+    /** A `#f=` link whose family id is not whole (cut off when it was copied or sent). */
+    linkInvalid: (hasFamily: boolean) =>
+      hasFamily
+        ? 'Lenken til familiens plass er ikke hel (den kan ha blitt kuttet av). Du ser den plassen du brukte sist på denne enheten. Be om familielenken på nytt.'
+        : 'Lenken til familiens plass er ikke hel (den kan ha blitt kuttet av). Forslagene lagres bare på denne enheten til du åpner hele familielenken. Be om lenken på nytt.',
+    /** After a switch to another family space: proposals this device made in the one it used before. */
+    carryOver: {
+      text: (names: readonly string[]) =>
+        names.length === 1
+          ? `Du laget «${names[0]}» i en annen delt plass på denne enheten før du åpnet denne familielenken.`
+          : `Du laget ${names.length} forslag i en annen delt plass på denne enheten før du åpnet denne familielenken: ${names.map((n) => `«${n}»`).join(', ')}.`,
+      hint: (n: number) =>
+        n === 1 ? 'Det legges til her, og i den forrige plassen havner det i Papirkurv.' : 'De legges til her, og i den forrige plassen havner de i Papirkurv.',
+      accept: (n: number) => (n === 1 ? 'Hent forslaget fra den forrige plassen' : 'Hent forslagene fra den forrige plassen'),
+      decline: 'Nei takk',
+      done: (n: number) => (n === 1 ? 'Forslaget er hentet fra den forrige plassen.' : `${n} forslag er hentet fra den forrige plassen.`),
+    },
     linkImported: (name: string) => `«${name}» fra lenken er lagt til som et nytt forslag.`,
     linkKnown: (name: string) => `«${name}» fra lenken finnes alt i listen.`,
     fileImported: (n: number) => (n === 1 ? 'Forslaget fra fila er lagt til.' : `${n} forslag fra fila er lagt til.`),

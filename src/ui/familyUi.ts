@@ -16,9 +16,20 @@ import type { SyncState } from '../state/familyStore.sync';
 
 export type PillState = keyof typeof nb.family.pill;
 
-/** Which text the status pill shows (docs/phase2-plan.md §5; explained in docs/firebase-oppsett.md). */
-export function pillState(s: Pick<SyncState, 'mode' | 'phase' | 'saving' | 'pending' | 'online' | 'failed'> & { fallback?: boolean }): PillState {
-  if (s.mode === 'local') return s.failed ? 'localFailed' : s.fallback ? 'unreachable' : 'local';
+/**
+ * Which text the status pill shows (docs/phase2-plan.md §5; explained in docs/firebase-oppsett.md). An open conflict
+ * comes first: that proposal's edits are not saved until the user picks «Hent endringene» or «Lagre over».
+ * `pending` also counts writes queued before this page was loaded, so an offline reload never says «Lagret for alle».
+ */
+export function pillState(
+  s: Pick<SyncState, 'mode' | 'phase' | 'saving' | 'pending' | 'online' | 'failed'> & {
+    fallback?: boolean;
+    conflicts?: SyncState['conflicts'];
+    noFamily?: boolean;
+  },
+): PillState {
+  if (s.conflicts && s.conflicts.length > 0) return 'conflict';
+  if (s.mode === 'local') return s.failed ? 'localFailed' : s.noFamily ? 'noFamily' : s.fallback ? 'unreachable' : 'local';
   if (s.failed) return 'failed';
   if (s.phase === 'error') return 'error';
   if (s.phase === 'connecting') return 'connecting';
