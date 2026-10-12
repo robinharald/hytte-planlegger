@@ -40,18 +40,30 @@ og lenken du sender familien inneholder id-en til deres delte plass (se «Famili
 ## Familielenken
 
 Første gang appen åpnes på en enhet uten lenke, lager den en ny, tilfeldig id for familiens plass (32 tegn) og
-husker den. Adressefeltet viser den hele tiden:
+husker den. Adressefeltet viser den hele tiden. **Send familielenken til familien før de åpner nettsiden, og be dem
+åpne nettsiden bare med den** (også første gang, og når de legger den på Hjem-skjermen): den som åpner den vanlige
+adressen uten lenke, får sin egen, tomme plass.
 
 - **Familielenke:** `https://robinharald.github.io/hytte-planlegger/#f=<familie-id>` – den du sender familien. Den som
   åpner den, kommer inn i den samme delte plassen og ser alle forslagene.
 - **Lenke til ett forslag:** `…/#f=<familie-id>&p=<forslag-id>` – åpner familiens plass med det forslaget på skjermen.
   «Send forslaget» sender denne (via delingsarket på telefonen, ellers kopieres den), og viser begge lenkene.
-- Id-en må være 24–64 tegn (bokstaver, tall, `-` og `_`), ellers slipper reglene ingen inn.
-- Åpner en enhet en familielenke til en annen plass enn den den hadde, bytter den til den nye (den gamle id-en huskes
-  på enheten under `hytte-planlegger:family.previous`, så ingenting er borte).
+- Id-en må være 24–64 tegn (bokstaver, tall, `-` og `_`), ellers slipper reglene ingen inn. En lenke der id-en ikke er
+  hel (kuttet av i en melding), starter aldri en ny plass: appen sier fra («Lenken til familiens plass er ikke hel …»)
+  og bruker plassen enheten hadde fra før. Har enheten ingen, lagres forslagene bare på enheten (statusen sier
+  «Kun på denne enheten (familielenken er ikke hel)») til hele familielenken åpnes; da flyttes de inn i plassen.
+- Åpner en enhet en familielenke til en annen plass enn den den hadde (ved oppstart, eller limt inn i en åpen fane),
+  bytter den til den nye. Den gamle id-en huskes på enheten (`hytte-planlegger:family.previous`), og når den nye
+  plassen har svart, tilbyr appen «Hent forslagene fra den forrige plassen» («Hent forslaget …» når det er ett) for
+  forslagene som ble laget **på denne enheten** i den gamle plassen (enheten husker hvilke,
+  `hytte-planlegger:family.created`). Svarer du ja, legges de inn i den nye plassen, og i den gamle havner de i
+  Papirkurven (30 dager). «Nei takk» lar dem ligge i den gamle plassen; den kan fortsatt åpnes med sin egen lenke
+  (`…/#f=<gammel id>`). Forslag andre har laget i den gamle plassen, tilbys ikke.
 - Gamle lenker med `#d=` (en kopi av et forslag i selve lenken) virker fortsatt: forslaget legges til som et nytt
   forslag i familiens plass. Den samme lenken to ganger legger det ikke til to ganger.
-- Forslag som lå lagret i nettleseren fra før (den gamle autolagringen), flyttes inn i familiens plass første gang.
+- Forslag som lå lagret i nettleseren fra før (den gamle autolagringen), flyttes inn i familiens plass første gang,
+  med sin egen «sist endret»-tid, og det som var på skjermen vises. En urørt kopi av Forslag D (et vanlig besøk på den
+  gamle nettsiden) flyttes ikke; en endret kopi heter «Forslag D (eget)» og får en id som er unik for enheten.
 - På iPhone: legg appen på Hjem-skjermen mens familielenken er åpen. En app på Hjem-skjermen har sin egen lagring og
   åpner adressen den ble lagt til fra (manifestet har med vilje ingen `start_url`), så den kommer rett inn i familiens
   forslag.
@@ -62,13 +74,15 @@ Forslag D ligger ikke i den delte plassen: det følger med appen, er låst og er
 
 | Status | Betyr |
 |---|---|
-| «Lagret for alle» | Alt er lagret i familiens delte plass. Alle med familielenken ser det. |
-| «Lagrer …» | Endringen er på vei (appen venter et øyeblikk etter siste endring, så lagres den). |
-| «Lagret her – sendes når du er på nett» | Du er uten nett. Endringene ligger trygt på denne enheten og sendes av seg selv når nettet er tilbake. |
+| «Lagret for alle» | Familiens delte plass har bekreftet alle endringene fra denne enheten (også dem som lå i kø fra før appen ble lastet på nytt). Alle med familielenken ser dem. |
+| «Lagrer …» | En endring er på vei: appen venter et øyeblikk etter siste endring (og til et drag er sluppet), eller plassen har ikke bekreftet den ennå. |
+| «Lagret her – sendes når du er på nett» | Du er uten nett, og minst én endring ligger i kø på denne enheten (også etter at appen er lastet på nytt uten nett). Den sendes av seg selv når nettet er tilbake. |
+| «Ikke lagret – velg Hent endringene eller Lagre over» | Forslaget ble endret (eller slettet) et annet sted mens du endret det her. Endringene dine i det forslaget lagres ikke før du velger i meldingen over planen. Lukker du appen før det, er de borte (på PC spør nettleseren først). |
 | «Kobler til …» | Appen starter forbindelsen til den delte plassen. |
 | «Ikke koblet til familiens plass – lagres her» | Forbindelsen feilet (f.eks. første oppstart uten nett, eller Anonymous er slått av). Appen prøver igjen. |
 | «Ikke lagret – prøver igjen» | Den delte plassen avviste en lagring (f.eks. regler som ikke er publisert). Endringen er ikke borte; appen prøver igjen. |
 | «Kun på denne enheten (familiens plass kan ikke nås nå)» | Firebase kunne ikke lastes i det hele tatt (f.eks. blokkert av nettleseren). Appen virker som vanlig og lagrer forslagene på denne enheten; den prøver igjen hvert 15. sekund og når enheten kommer på nett, og legger da forslagene herfra inn i familiens plass. |
+| «Kun på denne enheten (familielenken er ikke hel)» | Enheten har ingen familieplass, og lenken den ble åpnet med var kuttet av. Forslagene lagres på enheten til hele familielenken åpnes; da flyttes de inn i plassen. |
 | «Kun på denne enheten (ingen delt plass satt opp)» | Appen kjører uten Firebase-oppsett (`firebaseConfig` er `null`): forslagene lagres bare i denne nettleseren. |
 | «Kunne ikke lagre på denne enheten (lite plass?)» | Nettleseren har ikke plass. Lagre forslaget som fil (Mer → Lagre som fil). |
 
@@ -76,29 +90,50 @@ På smale skjermer viser statusen en kort tekst («Lagret», «Lagret her», «K
 
 Endrer to personer det samme forslaget samtidig, viser appen ««X» ble endret av Pappa for 2 min siden.» med «Hent
 endringene» (ta deres utgave) og «Lagre over» (behold din). Lagret noen uten nett over en nyere utgave, legger appen
-den overskrevne utgaven under **Mer → Tidligere versjoner** og sier fra.
+den overskrevne utgaven under **Mer → Tidligere versjoner** og sier fra (på enheten som laget den, hvis appen er åpen
+der når den sene lagringen kommer). Sletting og «Hent tilbake» endrer bare om forslaget ligger i Papirkurven, aldri
+innholdet: slettet noen uten nett et forslag en annen har endret i mellomtiden, ligger den nyeste utgaven i
+Papirkurven, og den som endret det, får beskjed med «Hent tilbake».
 
 ## Hva som lagres
 
 Bare dette, under `families/<familie-id>/…` (passer med reglene i `firestore.rules`):
 
-- `proposals/<forslag-id>`: navnet, selve forslaget (som JSON-tekst), navnet den som laget og sist endret skrev inn
-  («Mamma»), tidspunktene, og om det ligger i Papirkurven (`deletedAt`).
-- `proposals/<forslag-id>/revisions/<id>`: inntil 20 tidligere versjoner (høyst én per fem minutter med endringer).
+- `proposals/<forslag-id>` med feltene
+  - `name`: forslagets navn;
+  - `project`: selve forslaget som JSON-tekst (et prosjekt med bare dette forslaget). Det har også med **tomta**
+    (`site`): hyttas posisjon (`originLatLon`, breddegrad og lengdegrad), tidssonen, nordretningen, gulv- og
+    vannhøyden, trærne og grunnarbeidene – de samme opplysningene som ligger i selve appen alle kan laste ned;
+  - `schemaVersion`: hvilken utgave av dataformatet forslaget er lagret i;
+  - `createdAt` / `createdBy` og `updatedAt` / `updatedBy`: når det ble laget og sist endret, og navnet personen
+    skrev inn («Mamma»);
+  - `deletedAt`: når det ble lagt i Papirkurven (ellers tomt);
+  - `lineage`: tidspunktene (`updatedAt`) til utgavene denne bygger på – slik ser appen at en lagring eller sletting
+    uten nett ble gjort fra en eldre utgave;
+  - `lastRevisionAt` og `revisions`: når den nyeste tidligere versjonen ble tatt, og id-ene til de tidligere
+    versjonene.
+- `proposals/<forslag-id>/revisions/<id>`: inntil 20 tidligere versjoner (høyst én per fem minutter med endringer), med
+  `name`, `project`, `schemaVersion`, `savedAt` og `savedBy`.
 
-Ingen e-post, ingen enhetsnavn, ingen nettleserinfo, ingen posisjon. Slettede forslag ligger i Papirkurven i 30 dager
-og slettes så for godt (med sine tidligere versjoner) neste gang en enhet åpner appen.
+Ellers bare tidspunkter og id-er (tilfeldige tegn). Ingen e-post, ingen enhetsnavn, ingen nettleserinfo og ingen
+posisjon for den som bruker appen. Innloggingen er anonym og laster ingen Google-skript eller innloggingsvinduer (bare
+Firebase sine to adresser for innlogging og database). Slettede forslag ligger i Papirkurven i 30 dager og slettes så
+for godt (med sine tidligere versjoner) neste gang en enhet åpner appen.
 
 ## Tester og utvikling
 
 Tester (Vitest og Playwright) bruker aldri den ekte delte plassen: under testkjøring og nettleserautomatisering kjører
 appen i «Kun på denne enheten»-modus. For å prøve den delte plassen fra en automatisert nettleser kan
 `localStorage['hytte-planlegger:family-mode'] = 'shared'` settes (eller `VITE_FAMILY_STORE=shared` ved bygging); bruk da
-en egen familie-id som begynner med `e2e-` og slett den etterpå.
+en egen familie-id som begynner med `e2e-` og slett den etterpå. Prøvene mot den ekte plassen ligger klare:
+`E2E_FIRESTORE=1 npx playwright test e2e/family-firestore.spec.ts e2e/phone-family-firestore.spec.ts
+e2e/family-offline.spec.ts` lager egne `e2e-`-familier og sletter dem etterpå (uten variabelen hoppes de over).
 
-`npm run dev` i en vanlig nettleser bruker den samme delte plassen som nettsiden (samme konfigurasjon). Vil du prøve
-noe uten å røre familiens forslag: sett `localStorage['hytte-planlegger:family-mode'] = 'local'` i nettleserens konsoll
-(eller start med `VITE_FAMILY_STORE=local npm run dev`), og fjern den igjen etterpå.
+`npm run dev` i en vanlig nettleser bruker det samme Firebase-prosjektet som nettsiden, men `localhost` har sin egen
+lagring i nettleseren: uten lenke lager den sin egen, nye familie-id. For å komme til familiens plass må du åpne
+`http://localhost:5173/#f=<familie-id>` (familielenken med localhost foran). Vil du prøve noe uten å røre familiens
+forslag: sett `localStorage['hytte-planlegger:family-mode'] = 'local'` i nettleserens konsoll (eller start med
+`VITE_FAMILY_STORE=local npm run dev`), og fjern den igjen etterpå.
 
 ## Hva om vi ikke vil ha dette?
 

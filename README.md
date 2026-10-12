@@ -38,12 +38,14 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   seg til terrassekanten og veggene; et bygg som står kan roteres med «Roter 90°») · Møbler · Mål (trykk på to punkter) ·
   Angre / Gjør om. Angre i en toast angrer bare den handlingen toasten gjelder.
 - **Møbler** åpner møbelbiblioteket (venstre kolonne, på telefon et ark nedenfra): søk eller bla i kategoriene, trykk
-  på et møbel for å sette det i det valgte rommet (ellers midt i planen), mot nærmeste ledige vegg – eller dra det inn
-  i planen eller 3D-visningen (på telefon: hold fingeren på det først). Det valgte møbelet har et rotasjonshåndtak
-  (trykk: 90°, dra: 15°-trinn), viser plassbehovet foran seg, og Egenskaper har Størrelse, Bredde/Dybde (der møbelet kan
-  strekkes), Farge, «Roter 90°», «Dupliser» og «Slett». Møbler som står i en vegg, oppå hverandre eller i slaget til en
-  dør blir røde og gir en advarsel; toalett og dusj vil stå i et våtrom. «Plassbehov for møbler» under Vis viser
-  plassbehovet for alle. Møbler mot en vegg som flyttes, følger med veggen.
+  på et møbel for å sette det i det valgte rommet (ellers i et rom midt i den delen av planen du ser), mot nærmeste
+  ledige vegg – eller dra det inn i planen eller 3D-visningen (på telefon: hold fingeren på det først). Det valgte
+  møbelet har et rotasjonshåndtak (trykk: 90°, dra: 15°-trinn; på telefon først når du har zoomet inn, ellers «Roter» i
+  menyen ved møbelet), viser plassbehovet foran seg, og Egenskaper har Størrelse, Bredde/Dybde (der møbelet kan
+  strekkes), Farge, «Roter 90°», «Dupliser» (kopien havner på nærmeste ledige plass ved siden av) og «Slett». Møbler som
+  står i en vegg, oppå hverandre eller i slaget til en dør blir røde og gir en advarsel; en stol kan skyves et stykke inn
+  under et bord; toalett og dusj vil stå i et våtrom. «Plassbehov for møbler» under Vis viser plassbehovet for alle.
+  Møbler mot en vegg som flyttes, følger med veggen; et nytt bygg tar bare med seg møblene som står i det.
 - **Egenskaper** (øverst til høyre, på telefon som et ark nedenfra) viser målene og lar deg skrive dem inn: «2,4»,
   «2,40» og «2.40» virker, −/+ endrer 10 cm. Dybde og bredde på et rom flytter veggen på den siden.
 - **Vis hva som er nytt** (på som standard i planen): nye deler er oransje, og det som er flyttet eller fjernet fra
@@ -60,14 +62,19 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
 - **Forslag-menyen** (øverst) viser Forslag D først og så familiens forslag med «sist endret av …». «+ Nytt forslag»
   lager en kopi av forslaget på skjermen. Hver enhet blir spurt én gang «Hva heter du?».
 - **Lagring er automatisk.** Statusen øverst sier «Lagret for alle», «Lagrer …», «Lagret her – sendes når du er på
-  nett» (uten nett) eller «Kun på denne enheten …» (uten delt plass). Endrer to samme forslag samtidig, får den ene
-  valget «Hent endringene» / «Lagre over».
+  nett» (uten nett, også etter at appen er lastet på nytt) eller «Kun på denne enheten …» (uten delt plass). Endrer to
+  samme forslag samtidig, får den ene valget «Hent endringene» / «Lagre over», og statusen sier «Ikke lagret – velg
+  Hent endringene eller Lagre over» til du har valgt.
 - **Slett** spør to ganger; forslaget ligger 30 dager i **Papirkurv** (under Mer og i Forslag-menyen) og kan hentes
-  tilbake. **Tidligere versjoner** (Mer) har inntil 20 automatiske versjoner per forslag. Mer har også «Lagre som fil»,
+  tilbake. En sletting gjort uten nett tar aldri med seg endringer andre har gjort i mellomtiden: den som endret,
+  får beskjed og kan trykke «Hent tilbake». **Tidligere versjoner** (Mer) har inntil 20 automatiske versjoner per forslag. Mer har også «Lagre som fil»,
   «Åpne fil» og «Eksporter JSON».
 - **Uten nett** starter appen fra mellomlageret (service worker), og endringene sendes når nettet er tilbake. På
   iPhone: legg appen på Hjem-skjermen mens familielenken er åpen (kortet «Legg planleggeren på Hjem-skjermen» forklarer
-  hvordan). Når en ny versjon av appen er publisert, kommer «Ny versjon av appen er klar. [Oppdater]».
+  hvordan). Når en ny versjon av appen er publisert, kommer «Ny versjon av appen er klar. [Oppdater]»; har du appen
+  åpen i flere faner, lastes bare den du trykket i på nytt, de andre sier fra.
+- **Åpne bare familielenken.** En lenke som er kuttet av, starter ikke en ny plass (appen sier fra). Åpner du lenken
+  til en annen plass enn den enheten brukte, tilbyr appen å hente forslagene du laget i den forrige.
 
 ## Kom i gang
 
@@ -127,8 +134,12 @@ npm run dev        # http://localhost:5173
   menyen, fester et vedskjul til fløya, flytter det 0,5 m ved startzoom og velger «Bod (ny)» på navnet;
   `e2e/proposals.spec.ts` sletter og henter tilbake et forslag (to bekreftelser, Papirkurv), åpner en gammel `#d=`-lenke
   og flytter en gammel autolagring inn i forslagene; `e2e/offline.spec.ts` (prosjektet `pwa`) bygger appen, serverer
-  den under `/hytte-planlegger/` som på GitHub Pages og laster den på nytt uten nett. Skjermbildene i
-  `e2e/screenshots/`
+  den under `/hytte-planlegger/` som på GitHub Pages, laster den på nytt uten nett og sjekker at «Oppdater» i én fane
+  bare laster den fanen på nytt. Fikserunden etter 2b la til drag-forhåndsvisningen ved pekeren, Ctrl+D, «Ta tilbake»
+  ett spøkelse om gangen og en stol under bordet (PC), trykk og knip ved rotasjonshåndtaket, biblioteket tre ganger
+  etter Slett, et vedskjul midt på terrassen og dørhåndtak ved startzoom (iPhone), og en familielenke som er kuttet av
+  og bytte av familieplass (forslagene). Prøvene mot den ekte Firestore kjøres bare med `E2E_FIRESTORE=1` (se
+  [docs/firebase-oppsett.md](docs/firebase-oppsett.md)); ellers hoppes de over. Skjermbildene i `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
   `e2e/playwright-report/` og `e2e/test-results/` (ikke i git).
 - Typesjekk av testoppsettet: `npx tsc --noEmit -p e2e/tsconfig.json`.
