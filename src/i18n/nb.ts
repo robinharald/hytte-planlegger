@@ -847,6 +847,8 @@ export const nb = {
     resizeBlockEdge: 'Endres under bygningsdelen',
     /** deleteDeckVertex on a deck with three corners. */
     deckMinVertices: 'Terrassen må ha minst tre hjørner.',
+    /** deleteDeckVertex when the outline without the corner would cross itself. */
+    deckVertexCrosses: 'Hjørnet kan ikke fjernes – terrassen ville krysse seg selv.',
     /** A drag or a nudge that would make a building, deck or wall too small or turn it inside out. */
     tooSmall: 'Så langt går det ikke – da blir det for lite.',
     /** duplicateBlock: name of the copy. */

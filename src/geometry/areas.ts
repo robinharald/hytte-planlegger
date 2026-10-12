@@ -41,6 +41,15 @@
  *       ≤ 0.6, i.e. the 5 × 5 cells around it); it contributes the exact area of the region inside it. The strip is
  *       thereby resolved to the grid: it reaches 0.375–0.625 m (0.5 m on average) beyond the 1.9 m line.
  *    area = measurable existing + measurable new, from the region partitioned by the parts' `inner` polygons.
+ *  - Old wall strips (`ghostWallBands`): where an existing block edge was moved or shortened (an edge ghost in
+ *    `Variant.ghosts`), the strip between the old axis line and the old inner face (inner wall thickness, on the old
+ *    block's side) is NEW, ahead of every part — the old wall is gone, and today's BRA never counted under it. So BRA
+ *    existing stays at today's value when an old edge moves out (west gable x 0 → −1: 103.51), the same way BYA
+ *    counts the old cladding strip outside the axis as new (the integrator's decision: BYA existing 102.18 → 101.47).
+ *    A junction shift may shrink an EXISTING partner block (blk-main's north edge +1 moves blk-bod's south edge, so
+ *    the bod's existing part loses 1 m: its BRA / axis existing go down and that floor counts with blk-main's new
+ *    remainder); the lost wall stubs are recorded as edge ghosts by geometry/edit.ts. Room areaExisting/areaNew
+ *    (derive.ts) still split at the parts' inner polygons.
  *  - bra.total / existing / new = sums over levels (so the loft counts only its measurable part).
  * Axis (aksemål): union of the axis polygons; existing/new by the parts' polygons clipped to their block's axis.
  * Rooms: one row per derived room (room records and unnamed faces; name '' when there is no record — the UI shows
@@ -528,8 +537,36 @@ function gridMeasurer(region: MP, level: Level, undersideAt: AreaInput['undersid
   return (mp) => areaInCells(mp, (i, j) => isOn(counted, i, j));
 }
 
+const EDGE_GHOST_ID = /^(.*)\/([^/]+)\/ghost(?:\/\d+)?$/;
+
+/**
+ * Bands where moved / shortened old exterior walls stood (header, "Old wall strips"): per `Variant.ghosts` entry of a
+ * block, the ghost line widened to the inside of the old block by the block's inner wall thickness (thickness −
+ * outerOffset). Flagged new: they go first in the BRA partition.
+ */
+export function ghostWallBands(variant: Pick<Variant, 'ghosts'>, blocks: DerivedBlock[]): PartRegion[] {
+  const out: PartRegion[] = [];
+  for (const g of variant.ghosts ?? []) {
+    const m = EDGE_GHOST_ID.exec(g.id);
+    const db = m ? blocks.find((b) => b.block.id === m[1]) : undefined;
+    if (!db) continue;
+    const t = db.block.wall.thickness - db.block.wall.outerOffset;
+    const dx = g.b[0] - g.a[0];
+    const dy = g.b[1] - g.a[1];
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-9 || t <= 0) continue;
+    // The ghost runs like its edge did; the old block lay on the left of a CCW edge.
+    const side = signedArea(db.block.polygon.map((v) => v.p)) >= 0 ? 1 : -1;
+    const nx = (-dy / len) * t * side;
+    const ny = (dx / len) * t * side;
+    const ring: Vec2[] = [g.a, g.b, [g.b[0] + nx, g.b[1] + ny], [g.a[0] + nx, g.a[1] + ny]];
+    out.push({ polygon: signedArea(ring) >= 0 ? ring : [...ring].reverse(), isNew: true });
+  }
+  return out;
+}
+
 function computeBra(input: Omit<AreaInput, 'decks' | 'terrainZ'>): AreaSummary['bra'] {
-  const innerParts = blockPartRegions(input.blocks, 'inner');
+  const innerParts = [...ghostWallBands(input.variant, input.blocks), ...blockPartRegions(input.blocks, 'inner')];
   const perLevel: AreaSummary['bra']['perLevel'] = [];
   const sum: AreaSplit = { total: 0, existing: 0, new: 0 };
   for (const level of input.variant.levels) {

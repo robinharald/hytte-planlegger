@@ -27,6 +27,7 @@ import {
   applyMoveWallEndpoint,
   applyPlaceUnit,
   applyRestoreWall,
+  applyRotateBlock,
   applySetOpeningProps,
   applySplitWall,
   blockHasExistingArea,
@@ -232,6 +233,43 @@ describe('reconcileRooms / reviveRooms', () => {
     expect(derive(after).rooms.filter((r) => r.room).map((r) => r.room?.id).sort()).toEqual(['room-1', 'room-2']);
   });
 
+  it('a divider moved exactly onto an anchor: the anchor goes to the label point (on the boundary is not inside)', () => {
+    const v = produce(base(), (d) => {
+      d.walls[0].kind = 'divider';
+      d.walls[0].thickness = 0;
+    });
+    // x 3 → 1.5: the divider ends on room-1's anchor (1.5, 2).
+    const { next } = edit(v, (d, ctx) => applyMoveWall(d, ctx, 'w-1', [-1.5, 0]));
+    const rec = reconcileRooms(derive(v), next, derive(next));
+    expect(rec.changed).toBe(true);
+    expect(rec.rooms.find((r) => r.id === 'room-1')?.anchor[0]).toBeLessThan(1.5 - 0.01);
+    const after = produce(next, (d) => {
+      d.rooms = rec.rooms as typeof d.rooms;
+    });
+    const named = derive(after).rooms.filter((r) => r.room);
+    expect(named.map((r) => r.room?.id).sort()).toEqual(['room-1', 'room-2']);
+    expect(named.find((r) => r.room?.id === 'room-1')?.bbox.max[0]).toBeLessThanOrEqual(1.5 + 1e-9);
+    expect(derive(after).warnings.map((w) => w.kind)).not.toContain('room-anchor-lost');
+  });
+
+  it('carried rooms are matched by their previous polygon carried the same way (moveBlock reports them)', () => {
+    const v = produce(base(), (d) => {
+      d.blocks[0].isNew = true;
+    });
+    const carried = new Map<string, (p: Vec2) => Vec2>();
+    const ctx: EditContext = { ...ctxOf(v), carried };
+    const next = produce(v, (d) => {
+      applyMoveBlock(d, ctx, 'blk-1', [4, 0]);
+    });
+    expect([...carried.keys()].sort()).toEqual(['room-1', 'room-2']);
+    // Without the transforms the old room-2 polygon (x 3 … 6) overlaps the moved room-1 face (x 4 … 7): a swap.
+    const rec = reconcileRooms(derive(v), next, derive(next), { carried });
+    expect(rec.changed).toBe(false);
+    expect(rec.merges).toEqual([]);
+    const named = derive(next).rooms.filter((r) => r.room);
+    expect(named.find((r) => r.room?.id === 'room-1')?.bbox.min[0]).toBeGreaterThan(3.9);
+  });
+
   it('roomResizeTargets prefers stored walls; roomResizeMove gives the wall move', () => {
     const d = derive(base());
     const t = roomResizeTargets(d, 'room-1', 'w');
@@ -304,6 +342,41 @@ describe('blocks', () => {
       [2.5, 4],
       [5.5, 4],
     ]);
+  });
+
+  it('rotateBlock: a quarter turn on the grid; +90 then −90, or four +90, give the same footprint; refusals', () => {
+    for (const t of UNIT_TEMPLATES) {
+      for (const at of [
+        [20, 20],
+        [20.05, 20.35],
+        [-3.3, 7.45],
+      ] as Vec2[]) {
+        const { next: placed, result } = edit(base(), (d, ctx) => applyPlaceUnit(d, ctx, t.id, at, 0));
+        const id = result?.blockId as string;
+        let v = placed;
+        const turn = (deg: 90 | -90) => {
+          const r = edit(v, (d, ctx) => applyRotateBlock(d, ctx, id, deg));
+          expect(r.result).toBe(true);
+          v = r.next;
+          // Every turn lands on the 0.1 m grid (an off-grid footprint is snapped on the first turn).
+          for (const p of v.blocks.find((b) => b.id === id)?.polygon ?? []) for (const c of p.p) expect(Math.abs(c * 10 - Math.round(c * 10))).toBeLessThan(1e-6);
+        };
+        turn(90);
+        const ref = v.blocks.find((b) => b.id === id)?.polygon;
+        const anchor = v.rooms.find((r) => r.id === result?.roomId)?.anchor;
+        turn(-90);
+        turn(90);
+        expect(v.blocks.find((b) => b.id === id)?.polygon).toEqual(ref);
+        for (let k = 0; k < 4; k++) turn(90);
+        expect(v.blocks.find((b) => b.id === id)?.polygon).toEqual(ref);
+        expect(v.rooms.find((r) => r.id === result?.roomId)?.anchor).toEqual(anchor);
+      }
+    }
+    expect(edit(base(), (d, ctx) => applyRotateBlock(d, ctx, 'blk-1', 90)).result).toBe('existing');
+    const drawn = produce(base(), (d) => {
+      d.blocks[0].isNew = true;
+    });
+    expect(edit(drawn, (d, ctx) => applyRotateBlock(d, ctx, 'blk-1', 90)).result).toBe('no-template');
   });
 
   it('placeUnit: every template, front edge 0, rotations', () => {

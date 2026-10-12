@@ -4,6 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { DerivedVariant } from '../model/derived';
+import { treesOf } from '../geometry/derive';
+import { pointInPolygon } from '../geometry/polygon';
 import { createForslagD } from '../model/seed/forslagD';
 import type { Opening, Variant, Vec2 } from '../model/types';
 import * as A from './editActions';
@@ -68,6 +70,7 @@ describe('the locked base proposal (Forslag D)', () => {
       () => A.moveBlockEdge(store, 'blk-wing', 'v-wing-se', [1, 0]),
       () => A.moveBlockVertex(store, 'blk-main', 'v-main-ne', [17, 6.5]),
       () => A.moveBlock(store, 'blk-wing', [1, 0]),
+      () => A.rotateBlock(store, 'blk-wing', 90),
       () => A.placeUnit(store, 'vedskjul', [14, 9], 0),
       () => A.deleteBlock(store, 'blk-wing'),
       () => A.setBlockProps(store, 'blk-wing', { name: 'X' }),
@@ -401,15 +404,21 @@ describe('block edits (§3.4, §3.5)', () => {
     // North edge moved north 0.3: the door rides with it but keeps x = 7.01 (offset 8.99 → 9.99 from the new NE corner).
     close(openingCentre(store, 'door-mellom-vf'), [7.01, 6.5]);
     expect(opening(store, 'door-mellom-vf')?.offset).toBeCloseTo(9.99, 9);
-    expect(opening(store, 'door-mellom-vf')?.status).toBe('existing');
+    // It moved with the edge's line: new, with its ghost at the old place (§1.2, fix round after 2a).
+    expect(opening(store, 'door-mellom-vf')?.status).toBe('new');
+    close(openingCentre(store, 'door-mellom-vf/ghost'), [7.01, 6.2]);
     // South edge stretched: its openings keep their plan positions.
     close(openingCentre(store, 'win-ext-s1'), [13.2, 0]);
     // The bod wing (junction with the north edge) and the wing (east edge) followed.
     expect(V(store).blocks.find((b) => b.id === 'blk-bod')?.polygon[0].p).toEqual([5, 6.5]);
     expect(V(store).blocks.find((b) => b.id === 'blk-wing')?.polygon[0].p).toEqual([17, -2]);
     // Only the main north edge has existing pieces that moved (the east edge is the new extension; the bod wing's
-    // south edge has no wall of its own — the main house owns that junction).
-    expect(V(store).ghosts).toEqual([{ id: 'blk-main/v-main-ne/ghost', a: [12, 6.2], b: [0, 6.2] }]);
+    // south edge has no wall of its own — the main house owns that junction); the bod's side walls lost 0.3 m.
+    expect(V(store).ghosts).toEqual([
+      { id: 'blk-main/v-main-ne/ghost', a: [12, 6.2], b: [0, 6.2] },
+      { id: 'blk-bod/v-bod-se/ghost', a: [9, 6.2], b: [9, 6.5] },
+      { id: 'blk-bod/v-bod-nw/ghost', a: [5, 6.5], b: [5, 6.2] },
+    ]);
     expect(namedRooms(store)).toHaveLength(27);
   });
 
@@ -772,7 +781,9 @@ describe('transactions and nudges (§3.5)', () => {
     expect(A.nudge(store, { kind: 'room', id: 'room-stue' }, 0.1, 0)).toBe(false);
     expect(store.temporal.getState().pastStates).toHaveLength(7);
     expect(V(store).outdoor.hotTubs[0].centre).toEqual([21.8, -3.2]);
-    expect(store.getState().project.site.trees[0].position).toEqual([-3.9, 4]);
+    // Trees are the proposal's own (copy-on-write): the site keeps today's position.
+    expect(V(store).trees?.[0].position).toEqual([-3.9, 4]);
+    expect(store.getState().project.site.trees[0].position).toEqual([-4, 4]);
   });
 
   it('a drag is one undo step; transactionBase is the pointer-down project', () => {
@@ -846,6 +857,68 @@ describe('robustness on the seed', () => {
     }
     expect(problems).toEqual([]);
   }, 60000);
+
+  it('every existing wall end dragged 0.36 m, then "Ta tilbake": walls and openings exactly as before, all rooms named', () => {
+    const store = proposal();
+    const v0 = V(store);
+    const J = (x: unknown) => JSON.stringify(x);
+    const problems: string[] = [];
+    let cases = 0;
+    for (const w of v0.walls) {
+      if (w.status !== 'existing' || KNOWN.has(w.id) || w.id === 'lw-landing') continue;
+      for (const end of ['a', 'b'] as const) {
+        for (const d of [
+          [0, 0.36],
+          [-0.36, 0],
+        ] as Vec2[]) {
+          store.getState().replaceVariant(v0.id, v0);
+          if (!A.moveWallEndpoint(store, w.id, end, [w[end][0] + d[0], w[end][1] + d[1]])) continue;
+          if (!wall(store, `${w.id}/ghost`)) continue;
+          cases++;
+          store.setState({ toasts: [] });
+          A.restoreGhost(store, `${w.id}/ghost`);
+          const ok = J(V(store).walls) === J(v0.walls) && J(V(store).openings) === J(v0.openings) && namedRooms(store).length === 27;
+          if (!ok || store.getState().toasts.length > 0) problems.push(`${w.id}.${end} ${J(d)}`);
+        }
+      }
+    }
+    expect(cases).toBeGreaterThan(40);
+    expect(problems).toEqual([]);
+  }, 180000);
+
+  it('every block edge moved ±0.4 / ±1 m: "Ta tilbake" on its first ghost, or the move back, leaves today\'s cabin exactly', () => {
+    const store = proposal();
+    const v0 = V(store);
+    const J = (x: unknown) => JSON.stringify(x);
+    const same = () => J(V(store).blocks) === J(v0.blocks) && J(V(store).walls) === J(v0.walls) && J(V(store).openings) === J(v0.openings) && V(store).ghosts === undefined;
+    const centres0 = new Map(v0.openings.map((o) => [o.id, openingCentre(store, o.id)]));
+    const problems: string[] = [];
+    for (const b of v0.blocks) {
+      for (const vx of b.polygon) {
+        for (const k of [0.4, -0.4, 1, -1]) {
+          store.getState().replaceVariant(v0.id, v0);
+          if (!A.moveBlockEdge(store, b.id, vx.id, [k, k])) continue;
+          const first = V(store).ghosts?.[0]?.id;
+          // Every existing opening that changed place is new with a ghost.
+          for (const o of V(store).openings) {
+            if (o.status !== 'existing' || v0.openings.find((x) => x.id === o.id)?.status !== 'existing') continue;
+            const before = centres0.get(o.id);
+            const now = openingCentre(store, o.id);
+            if (before && now && Math.hypot(before[0] - now[0], before[1] - now[1]) > 0.001) problems.push(`${b.id}/${vx.id} ${k}: ${o.id} moved but is still existing`);
+          }
+          if (first) {
+            A.restoreGhost(store, first);
+            if (!same()) problems.push(`${b.id}/${vx.id} ${k}: Ta tilbake on ${first}`);
+          }
+          store.getState().replaceVariant(v0.id, v0);
+          A.moveBlockEdge(store, b.id, vx.id, [k, k]);
+          A.moveBlockEdge(store, b.id, vx.id, [-k, -k]);
+          if (V(store).ghosts !== undefined || V(store).walls.some((w) => w.status === 'removed' && w.id.includes('/ghost'))) problems.push(`${b.id}/${vx.id} ${k}: not healed on the way back`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  }, 120000);
 });
 
 describe('snapPoint for the placement tools', () => {
@@ -921,5 +994,320 @@ describe('other actions', () => {
     expect(bound.moveWall('w-gang-n', [0, 0.2])).toBe(true);
     expect(wall(store, 'w-gang-n')?.a).toEqual([16, 3.6]);
     expect(typeof bound.beginDrag).toBe('function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round after phase 2a (the editor reviewer's findings)
+// ---------------------------------------------------------------------------
+
+const SEED = createForslagD().variants[0];
+const SEED_TREES = createForslagD().site.trees.map((t) => t.id);
+const pointIn = (p: Vec2, poly: Vec2[]) => pointInPolygon(p, poly);
+const roomWarnings = (s: Store) => kinds(s).filter((k) => k === 'room-anchor-lost' || k === 'room-unnamed');
+const ghostIds = (s: Store) => (V(s).ghosts ?? []).map((g) => g.id).sort();
+
+describe('fix round: a divider moved onto a room anchor (reconcileRooms)', () => {
+  it.each<[string, Vec2]>([
+    ['dv-pass-n', [0, -0.6]],
+    ['dv-stue-n', [0, 0.6]],
+    ['dv-kjk-e', [-1.4, 0]],
+    ['dv-kjk-e', [2, 0]],
+    ['dv-leseskrok', [0, -1]],
+  ])('%s moved by %j keeps every room on its own face', (id, delta) => {
+    const store = proposal();
+    expect(A.moveWall(store, id, delta)).toBe(true);
+    expect(namedRooms(store)).toHaveLength(27);
+    expect(roomWarnings(store)).toEqual([]);
+    expect(store.getState().toasts).toHaveLength(0);
+    // Every anchor is strictly inside its own face (more than 1 cm from its boundary).
+    for (const r of namedRooms(store)) {
+      const ring = r.polygon;
+      const d = Math.min(
+        ...ring.map((p, i) => {
+          const q = ring[(i + 1) % ring.length];
+          const t = Math.max(0, Math.min(1, ((r.room!.anchor[0] - p[0]) * (q[0] - p[0]) + (r.room!.anchor[1] - p[1]) * (q[1] - p[1])) / ((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2)));
+          return Math.hypot(r.room!.anchor[0] - (p[0] + t * (q[0] - p[0])), r.room!.anchor[1] - (p[1] + t * (q[1] - p[1])));
+        }),
+      );
+      expect(d).toBeGreaterThan(0.01);
+    }
+  });
+
+  it("blk-main's south edge moved (0, −1) carries dv-leseskrok onto Leseskrok's anchor; Leseskrok keeps the glass bump", () => {
+    const store = proposal();
+    expect(A.moveBlockEdge(store, 'blk-main', 'v-main-sw', [0, -1])).toBe(true);
+    expect(wall(store, 'dv-leseskrok')).toMatchObject({ a: [5, -1], b: [9, -1] });
+    expect(namedRooms(store)).toHaveLength(27);
+    expect(roomWarnings(store)).toEqual([]);
+    const lese = roomByRecord(store, 'room-leseskrok');
+    expect(lese?.bbox.max[1]).toBeLessThanOrEqual(-1 + 1e-6);
+    expect(lese?.area).toBeLessThan(4);
+  });
+});
+
+describe('fix round: moveBlock carries the room names', () => {
+  it.each<[Vec2]>([[[3, 0]], [[2, 2]], [[0.5, 0]]])('moveBlock(blk-wing, %j) keeps all 27 rooms on their translated faces, no toasts', (delta) => {
+    const store = proposal();
+    const wingRooms = new Set(['room-gang', 'room-sov-ny', 'room-pantry', 'room-wc', 'room-hovedbad', 'room-badstue']);
+    expect(A.moveBlock(store, 'blk-wing', delta)).toBe(true);
+    expect(namedRooms(store)).toHaveLength(27);
+    expect(roomWarnings(store)).toEqual([]);
+    expect(store.getState().toasts).toHaveLength(0);
+    for (const r0 of SEED.rooms) {
+      const at: Vec2 = wingRooms.has(r0.id) ? [r0.anchor[0] + delta[0], r0.anchor[1] + delta[1]] : r0.anchor;
+      const face = roomByRecord(store, r0.id);
+      expect(face, r0.id).toBeDefined();
+      // The face of each record is the one its seed anchor (translated with the wing) lies in.
+      const inside = D(store).rooms.find((f) => f.storeyId === face?.storeyId && f.polygon.length >= 3 && pointIn(at, f.polygon));
+      expect(inside?.id, r0.id).toBe(face?.id);
+    }
+  });
+});
+
+describe('fix round: status bookkeeping of block-edge edits', () => {
+  it('the west gable 0 → −1: the three windows on it become new with ghosts at their old places', () => {
+    const store = proposal();
+    const ids = ['win-104-w', 'win-hems-w1', 'win-hems-w2'];
+    const old = ids.map((id) => openingCentre(store, id));
+    expect(A.moveBlockEdge(store, 'blk-main', 'v-main-nw', [-1, 0])).toBe(true);
+    ids.forEach((id, i) => {
+      expect(opening(store, id)?.status, id).toBe('new');
+      expect(opening(store, `${id}/ghost`)?.status, id).toBe('removed');
+      close(openingCentre(store, `${id}/ghost`), old[i] as Vec2);
+      close(openingCentre(store, id), [-1, (old[i] as Vec2)[1]]);
+      expect(D(store).walls.flatMap((w) => w.openings).find((o) => o.id === `${id}/ghost`)?.isGhost).toBe(true);
+    });
+    expect(namedRooms(store)).toHaveLength(27);
+    expect(kinds(store)).toEqual([]);
+    // Moving the gable back heals everything (the windows are existing again, no ghosts left).
+    expect(A.moveBlockEdge(store, 'blk-main', 'v-main-nw', [1, 0])).toBe(true);
+    ids.forEach((id) => expect(opening(store, id)?.status).toBe('existing'));
+    expect(V(store).openings.some((o) => o.id.includes('/ghost'))).toBe(false);
+    expect(V(store).walls.some((w) => w.id.includes('/ghost'))).toBe(false);
+    expect(V(store).ghosts).toBeUndefined();
+  });
+
+  it('"Ta tilbake" on a window ghost at the old gable line brings the gable back with its windows', () => {
+    const store = proposal();
+    const start = V(store);
+    A.moveBlockEdge(store, 'blk-main', 'v-main-nw', [-1, 0]);
+    expect(opening(store, 'win-104-w/ghost')?.host).toEqual({ kind: 'wall', wallId: 'blk-main/v-main-nw/ghost' });
+    expect(A.restoreGhost(store, 'win-104-w/ghost')).toBe(true);
+    expect(V(store).blocks).toEqual(start.blocks);
+    expect(V(store).openings).toEqual(start.openings);
+    expect(V(store).walls).toEqual(start.walls);
+    expect(V(store).ghosts).toBeUndefined();
+  });
+
+  it("the north edge +1: carried and clamped openings become new with ghosts; the bod's stubs are ghosted; Ta tilbake restores all", () => {
+    const store = proposal();
+    const start = V(store);
+    const carried = ['win-kjk-n', 'door-mellom-vf', 'win-bad-n'];
+    const old = new Map([...carried, 'door-green-e'].map((id) => [id, openingCentre(store, id)]));
+    close(old.get('door-green-e'), [9, 6.89]);
+    expect(A.moveBlockEdge(store, 'blk-main', 'v-main-ne', [0, 1])).toBe(true);
+    for (const id of [...carried, 'door-green-e']) {
+      expect(opening(store, id)?.status, id).toBe('new');
+      close(openingCentre(store, `${id}/ghost`), old.get(id) as Vec2);
+    }
+    close(openingCentre(store, 'door-green-e'), [9, 7.655]);
+    // The bod's west and east walls lost 1 m at their south ends: both stubs are ghosts.
+    const stubs = (V(store).ghosts ?? []).filter((g) => g.id.startsWith('blk-bod/'));
+    expect(stubs.map((g) => [g.a, g.b])).toEqual(
+      expect.arrayContaining([
+        [
+          [5, 7.2],
+          [5, 6.2],
+        ],
+        [
+          [9, 6.2],
+          [9, 7.2],
+        ],
+      ]),
+    );
+    expect(ghostIds(store)).toContain('blk-main/v-main-ne/ghost');
+    // (roof-no-meet: the bod's roof against the grown main roof — a known issue of roof.ts, not of the bookkeeping.)
+    expect(kinds(store).filter((k) => k !== 'roof-no-meet')).toEqual([]);
+    // "Ta tilbake" on the edge ghost: the edge, its partner and every touched opening are back.
+    expect(A.restoreGhost(store, 'blk-main/v-main-ne/ghost')).toBe(true);
+    expect(opening(store, 'door-green-e')).toMatchObject({ status: 'existing', offset: 0.69 });
+    for (const id of carried) expect(opening(store, id)?.status, id).toBe('existing');
+    expect(V(store).ghosts).toBeUndefined();
+    expect(V(store).openings).toEqual(start.openings);
+    expect(V(store).walls).toEqual(start.walls);
+    expect(V(store).blocks).toEqual(start.blocks);
+  });
+
+  it('a clamp on a shortened edge is bookkept too; "Ta tilbake" on the stub ghost lengthens the edge again', () => {
+    const store = proposal();
+    const start = V(store);
+    expect(A.moveBlockEdge(store, 'blk-main', 'v-main-ne', [0, 1])).toBe(true);
+    const east = (V(store).ghosts ?? []).find((g) => g.id.startsWith('blk-bod/v-bod-se/'));
+    expect(east).toBeDefined();
+    expect(A.restoreGhost(store, east?.id as string)).toBe(true);
+    expect(V(store).blocks).toEqual(start.blocks);
+    expect(opening(store, 'door-green-e')).toMatchObject({ status: 'existing', offset: 0.69 });
+    expect(V(store).ghosts).toBeUndefined();
+  });
+
+  it('a block edge that trims an existing wall under an existing door: the clamped door is bookkept, Ta tilbake restores it', () => {
+    const store = proposal();
+    const start = V(store);
+    const old = openingCentre(store, 'd-do');
+    // The bod's west edge 0.4 m in: w-mellom-boder (y 7.62) is trimmed at x 5.4 and d-do (x 5.235 … 6.045) is clamped.
+    expect(A.moveBlockEdge(store, 'blk-bod', 'v-bod-nw', [0.4, 0])).toBe(true);
+    expect(wall(store, 'w-mellom-boder')?.a).toEqual([5.4, 7.62]);
+    expect(opening(store, 'd-do')?.status).toBe('new');
+    close(openingCentre(store, 'd-do/ghost'), old as Vec2);
+    expect(A.restoreGhost(store, V(store).ghosts?.find((g) => g.id.startsWith('blk-bod/v-bod-nw/'))?.id as string)).toBe(true);
+    expect(V(store).openings).toEqual(start.openings);
+    expect(V(store).walls).toEqual(start.walls);
+  });
+
+  it('the west gable 0 → −1 keeps BRA existing (the strip where the old wall stood is new, like BYA)', () => {
+    const store = proposal();
+    const before = D(store).areas;
+    expect(before.bra.existing).toBeCloseTo(103.51, 2);
+    A.moveBlockEdge(store, 'blk-main', 'v-main-nw', [-1, 0]);
+    const after = D(store).areas;
+    expect(Math.abs(after.bra.existing - before.bra.existing)).toBeLessThan(0.05);
+    expect(after.bra.total - before.bra.total).toBeGreaterThan(0);
+    // BYA as decided at the integration: only the old cladding strip turns new.
+    expect(before.bya.existing - after.bya.existing).toBeCloseTo(0.11 * 6.42, 6);
+  });
+});
+
+describe('fix round: "Ta tilbake" after an endpoint drag', () => {
+  it('moveWallEndpoint(w-vf-korr, b, [9, 4.6]) then restoreGhost puts the walls the drag changed back too', () => {
+    const store = proposal();
+    const seedWall = (id: string) => SEED.walls.find((w) => w.id === id);
+    expect(A.moveWallEndpoint(store, 'w-vf-korr', 'b', [9, 4.6])).toBe(true);
+    expect(wall(store, 'dv-kjk-w')?.b).toEqual([9, 4.6]);
+    store.setState({ toasts: [] });
+    expect(A.restoreGhost(store, 'w-vf-korr/ghost')).toBe(true);
+    for (const id of ['w-vf-korr', 'dv-kjk-w', 'w-vf-kjk']) expect(wall(store, id), id).toEqual(seedWall(id));
+    expect(roomByRecord(store, 'room-vindfang')).toBeDefined();
+    expect(roomByRecord(store, 'room-kjokken')).toBeDefined();
+    expect(namedRooms(store)).toHaveLength(27);
+    expect(kinds(store)).not.toContain('wall-dangling');
+    expect(store.getState().toasts).toHaveLength(0);
+    expect(V(store).walls.some((w) => w.id.endsWith('/ghost'))).toBe(false);
+  });
+
+  it('a move followed by an endpoint drag is undone completely as well', () => {
+    const store = proposal();
+    expect(A.moveWall(store, 'w-vf-korr', [0, 0.3])).toBe(true);
+    expect(A.moveWallEndpoint(store, 'w-vf-korr', 'b', [9, 4.9])).toBe(true);
+    store.setState({ toasts: [] });
+    expect(A.restoreGhost(store, 'w-vf-korr/ghost')).toBe(true);
+    for (const id of ['w-vf-korr', 'dv-kjk-w', 'w-vf-kjk']) expect(wall(store, id), id).toEqual(SEED.walls.find((w) => w.id === id));
+    expect(namedRooms(store)).toHaveLength(27);
+    expect(kinds(store)).not.toContain('wall-dangling');
+    expect(store.getState().toasts).toHaveLength(0);
+  });
+});
+
+describe('fix round: trees belong to the proposal', () => {
+  it('tree edits in a copy never change the site or Forslag D (copy-on-write into the variant)', () => {
+    const store = proposal();
+    const siteJson = JSON.stringify(store.getState().project.site);
+    const baseJson = JSON.stringify(store.getState().project.variants.find((v) => v.id === 'forslag-d'));
+    const same = () => {
+      expect(JSON.stringify(store.getState().project.site)).toBe(siteJson);
+      expect(JSON.stringify(store.getState().project.variants.find((v) => v.id === 'forslag-d'))).toBe(baseJson);
+    };
+    const trees = () => D(store).site.trees.map((t) => t.tree);
+    expect(A.moveTree(store, 'tree-1', [-2, 7])).toBe(true);
+    same();
+    expect(V(store).trees?.find((t) => t.id === 'tree-1')?.position).toEqual([-2, 7]);
+    expect(trees().find((t) => t.id === 'tree-1')?.position).toEqual([-2, 7]);
+    expect(A.nudge(store, { kind: 'tree', id: 'tree-1' }, 0.1, 0)).toBe(true);
+    same();
+    const s = A.beginDrag(store, { kind: 'tree', id: 'tree-1' }, [-1.9, 7]);
+    A.updateDrag(store, s, [0.5, 7]);
+    A.endDrag(store, s);
+    same();
+    expect(trees().find((t) => t.id === 'tree-1')?.position).toEqual([0.5, 7]);
+    const id = A.addTree(store, [0, 20]) as string;
+    expect(id).toBeTruthy();
+    same();
+    expect(A.deleteTree(store, 'tree-2')).toBe(true);
+    same();
+    expect(trees().map((t) => t.id)).toEqual([...SEED_TREES.filter((t) => t !== 'tree-2'), id]);
+    // Forslag D (and every proposal without its own trees) still shows the site's trees.
+    store.getState().setActiveVariant('forslag-d');
+    expect(trees().map((t) => t.id)).toEqual(SEED_TREES);
+    expect(trees().find((t) => t.id === 'tree-1')?.position).toEqual([-4, 4]);
+  });
+
+  it("treesOf: the variant's own trees, else the site's", () => {
+    const p = createForslagD();
+    expect(treesOf(p, p.variants[0])).toBe(p.site.trees);
+    const own = { ...p.variants[0], trees: [] };
+    expect(treesOf(p, own)).toBe(own.trees);
+  });
+});
+
+describe('fix round: deck corner, nameFace, rotateBlock', () => {
+  it('"Fjern hjørne" that would make the outline cross itself is refused with a toast', () => {
+    const store = proposal();
+    const before = V(store);
+    expect(A.deleteDeckVertex(store, 'deck-terrasse-v1')).toBe(false);
+    expect(V(store)).toBe(before);
+    expect(toastTexts(store)).toEqual([EDIT_STRINGS.deckVertexCrosses]);
+    expect(EDIT_STRINGS.deckVertexCrosses).toBe('Hjørnet kan ikke fjernes – terrassen ville krysse seg selv.');
+  });
+
+  it("nameFace returns the derived room's id (the UI selects it; the face id is gone)", () => {
+    const store = proposal();
+    A.addWall(store, [19.2, 3.4], [19.2, 6.2]);
+    const face = D(store).rooms.find((r) => !r.room);
+    const id = A.nameFace(store, face?.id as string, 'Kontor', { type: 'annet' });
+    expect(id).not.toBeNull();
+    expect(D(store).rooms.some((r) => r.id === face?.id)).toBe(false);
+    const derived = D(store).rooms.find((r) => r.id === id);
+    expect(derived?.room?.name).toBe('Kontor');
+    expect(V(store).rooms.some((r) => r.id === derived?.room?.id)).toBe(true);
+    expect(A.nameFace(store, 'face-nope', 'X')).toBeNull();
+  });
+
+  it('rotateBlock turns a placed Vedskjul about its centre on the grid, with its front opening, room and furniture', () => {
+    const store = proposal();
+    const id = A.placeUnit(store, 'vedskjul', [14, 11.35], 0) as string;
+    const f = A.addFurniture(store, 'kubbe', [14.5, 11.35]) as string;
+    const before = V(store).blocks.find((b) => b.id === id);
+    expect(A.rotateBlock(store, id, 90)).toBe(true);
+    const b = V(store).blocks.find((x) => x.id === id);
+    const pts = b?.polygon.map((v) => v.p) ?? [];
+    // 2 × 1.5 turned: 1.5 × 2 around (14, 11.35), snapped to the 10 cm grid.
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(1.5, 9);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(2, 9);
+    for (const p of pts) for (const c of p) expect(Math.abs(c * 10 - Math.round(c * 10))).toBeLessThan(1e-6);
+    expect(b?.polygon.map((v) => v.id)).toEqual(before?.polygon.map((v) => v.id));
+    expect(b?.roof.slopeTo).toBe('W');
+    // Front edge 0 now faces east (its outward normal turned from −y to +x).
+    const [a0, b0] = [pts[0], pts[1]];
+    expect(Math.abs(a0[0] - b0[0])).toBeLessThan(1e-9);
+    expect(Math.max(a0[0], b0[0])).toBeCloseTo(Math.max(...xs), 9);
+    const room = V(store).rooms.find((r) => r.name === 'Vedskjul');
+    expect(roomByRecord(store, room?.id as string)).toBeDefined();
+    const fur = V(store).furniture.find((x) => x.id === f);
+    expect(fur?.rotationDeg).toBe(90);
+    expect(D(store).furniture.find((x) => x.id === f)?.roomId).toBe(room?.id);
+    expect(D(store).walls.flatMap((w) => w.openings).some((o) => o.id === V(store).openings.find((x) => x.host.kind === 'blockEdge' && x.host.blockId === id)?.id)).toBe(true);
+    expect(namedRooms(store)).toHaveLength(28);
+    // −90 brings it back to the same footprint.
+    expect(A.rotateBlock(store, id, -90)).toBe(true);
+    expect(V(store).blocks.find((x) => x.id === id)?.polygon).toEqual(before?.polygon);
+    // Refused: blocks of today's cabin (toast), blocks without a template, the locked Forslag D.
+    expect(A.rotateBlock(store, 'blk-main', 90)).toBe(false);
+    expect(toastTexts(store)).toContain(EDIT_STRINGS.existingBlockMove);
+    expect(A.rotateBlock(store, 'blk-wing', 90)).toBe(false);
+    const locked = createAppStore(createForslagD());
+    expect(A.rotateBlock(locked, 'blk-wing', 90)).toBe(false);
+    expect(locked.getState().toasts.map((t) => t.text)).toEqual([EDIT_STRINGS.locked]);
   });
 });

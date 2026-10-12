@@ -2,7 +2,9 @@
  * deriveVariant — docs/architecture.md "Derivation pipeline", steps 1–9. Pure: the stored Variant + Site + terrain
  * asset in, the DerivedVariant every renderer reads out. Memoised on the (variant, site, terrain) object identities,
  * and assembled from three stages memoised on the sub-collections they read (docs/phase2-plan.md §2, "memo split"):
- *  - building (site, terrain, levels, blocks, walls, openings, rooms, structure): steps 1–5, 7, 8 without BYA;
+ *  - building (site, terrain, levels, blocks, walls, openings, rooms, structure, ghosts): steps 1–5, 7, 8 without BYA
+ *    and trees (BRA reads the edge ghosts: the strip where a moved old wall stood counts as new, see areas.ts);
+ *  - trees (building, `treesOf(project, variant)` = the variant's own trees, else the site's): placed on the terrain;
  *  - outdoor (building, outdoor.decks, outdoor.hotTubs): step 6 (decks trimmed by the building), BYA, bounds;
  *  - furniture (building, furniture): step 9.
  * The assembled DerivedVariant reuses the stage results, so an edit of the furniture or of the outdoor collections
@@ -43,7 +45,7 @@
  *     outline, maxZ = lowestFloorZ − 0.1), applied by EVERY terrain query here (blocks' groundZ, deck skirts, steps,
  *     hot tubs, trees, deck BYA) and by the renderers (`terrainZAt(…, derived.groundWorks)`).
  *  8. Areas (`computeBuildingAreas` in the building stage, `computeBya` in the outdoor stage), foundations (outer
- *     outline, top = lowest floor, bottom = groundZ − 0.3), site trees (terrain baseZ) and water (waterLevel −
+ *     outline, top = lowest floor, bottom = groundZ − 0.3), the variant's trees (treesOf, terrain baseZ) and water (waterLevel −
  *     floorElevation), dimensions, bounds (outer outlines + stored deck outlines), wall unions per storey and status,
  *     `area-limit`.
  *  9. Furniture — placeholder until phase 2b: footprint = the size rectangle rotated by rotationDeg about the
@@ -75,7 +77,7 @@ import type {
   DerivedWall,
   ModelWarning,
 } from '../model/derived';
-import type { FloorMaterial, FurnitureItem, GroundWork, Id, Level, Room, RoomType, Site, TerrainAsset, Variant, Vec2 } from '../model/types';
+import type { FloorMaterial, FurnitureItem, GroundWork, Id, Level, Project, Room, RoomType, Site, TerrainAsset, Tree, Variant, Vec2 } from '../model/types';
 import { blockPartRegions, computeBuildingAreas, computeBya, partitionRough, splitAreaByParts } from './areas';
 import type { PartRegion } from './areas';
 import { locateLevel } from './levels';
@@ -703,9 +705,9 @@ function withFallbacks<T>(fn: () => T): { result: T; fallbacks: string[] } {
 
 /**
  * Building stage: everything that depends only on `site`, the terrain and the variant's levels, blocks, walls,
- * openings, rooms and structure — blocks, roofs, walls and openings, rooms, floors, structure, foundations,
- * dimensions, wall unions, ground works, trees, BRA / axis / room areas and their warnings. (It reads no other
- * variant field, which is what makes the memo key correct.)
+ * openings, rooms, structure and edge ghosts — blocks, roofs, walls and openings, rooms, floors, structure,
+ * foundations, dimensions, wall unions, ground works, BRA / axis / room areas and their warnings. (It reads no other
+ * variant field, which is what makes the memo key correct; trees are placed per variant in computeVariant.)
  */
 interface BuildingStage {
   levels: Level[];
@@ -747,9 +749,8 @@ function buildingStage(variant: Variant, site: Site, terrain: TerrainAsset | nul
     const buildingAreas = stage('areas', () => computeBuildingAreas({ variant, blocks, rooms, undersideAt, roofs }), emptyBuildingAreas);
     const blockWarnings = stage('block checks', () => deriveBlockWarnings(blocks), () => []);
 
-    const derivedSite: DerivedVariant['site'] = {
-      trees: site.trees.map((tree) => ({ tree, baseZ: terrainZ(tree.position[0], tree.position[1]) })),
-    };
+    // Trees belong to the variant (treesOf) and are placed per variant in computeVariant.
+    const derivedSite: DerivedVariant['site'] = { trees: [] };
     if (site.waterLevel !== undefined) derivedSite.waterZ = site.waterLevel - site.floorElevation;
 
     const out: Omit<BuildingStage, 'fallbacks'> = {
@@ -875,21 +876,37 @@ class IdentityMemo<T> {
   }
 }
 
+/**
+ * The trees of a variant: its own (`Variant.trees`, written on the first tree edit of a proposal) or else the
+ * site's. Every reader of trees goes through this (derive → `derived.site.trees` for the plan and 3D, the editor).
+ */
+export function treesOf(project: Pick<Project, 'site'>, variant: Pick<Variant, 'trees'>): Tree[] {
+  return variant.trees ?? project.site.trees;
+}
+
 /** Key for a null terrain in the identity memos. */
 const NO_TERRAIN = {};
+/** Key for a variant without edge ghosts (BRA reads them: the strip where a moved old wall stood is new). */
+const NO_GHOSTS = {};
 const buildingMemo = new IdentityMemo<BuildingStage>();
 const outdoorMemo = new IdentityMemo<OutdoorStage>();
 const furnitureMemo = new IdentityMemo<FurnitureStage>();
+const siteMemo = new IdentityMemo<DerivedVariant['site']>();
 const variantMemo = new IdentityMemo<DerivedVariant>();
 
 function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
   const terrainKey: object = terrain ?? NO_TERRAIN;
   const building = buildingMemo.get(
-    [site, terrainKey, variant.levels, variant.blocks, variant.walls, variant.openings, variant.rooms, variant.structure],
+    [site, terrainKey, variant.levels, variant.blocks, variant.walls, variant.openings, variant.rooms, variant.structure, variant.ghosts ?? NO_GHOSTS],
     () => buildingStage(variant, site, terrain),
   );
   const outdoor = outdoorMemo.get([building, variant.outdoor.decks, variant.outdoor.hotTubs], () => outdoorStage(variant, site, terrain, building));
   const furniture = furnitureMemo.get([building, variant.furniture], () => furnitureStage(variant.furniture, building));
+  const trees = treesOf({ site }, variant);
+  const derivedSite = siteMemo.get([building, trees], () => ({
+    ...building.site,
+    trees: trees.map((tree) => ({ tree, baseZ: building.terrainZ(tree.position[0], tree.position[1]) })),
+  }));
 
   const areas: AreaSummary = { bya: outdoor.bya, ...building.buildingAreas };
   const warnings: ModelWarning[] = [...building.warnings, ...outdoor.warnings, ...furniture.warnings];
@@ -919,7 +936,7 @@ function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | nu
     ghosts: (variant.ghosts ?? []).map((g) => ({ id: g.id, a: [g.a[0], g.a[1]], b: [g.b[0], g.b[1]] })),
     foundations: building.foundations,
     dimensions: building.dimensions,
-    site: building.site,
+    site: derivedSite,
     groundWorks: building.groundWorks,
     bounds: outdoor.bounds,
     areas,

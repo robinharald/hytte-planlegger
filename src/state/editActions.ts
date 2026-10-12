@@ -11,7 +11,9 @@
  *     model (merges toast "«A» og «B» er nå ett rom («A»)." with [Angre]), and stores the result with
  *     `replaceVariant` — one undo step (drags and nudges: one per gesture / run);
  *  3. returns the new id for creations, true / false (changed or not) otherwise; null when refused.
- * Deletes toast "Slettet." with [Angre]. Trees live on the site (`updateSite`), with the same lock rule.
+ * Deletes toast "Slettet." with [Angre]. Trees belong to the proposal: `addTree` / `moveTree` / `deleteTree` (and
+ * tree drags / nudges) copy the site's trees into `Variant.trees` on the first tree edit (copy-on-write) and edit
+ * that copy; the site and Forslag D never change (`treesOf(project, variant)` reads them).
  *
  * Drag protocol (plan2d → actions): `beginDrag(store, selection, pointer, handle?, opts?)` starts a transaction from
  * the current project and returns a `DragSession` (null when nothing is draggable: rooms, railings, structure,
@@ -23,19 +25,24 @@
  * and drags it, one undo step). Kinds: wall (perpendicular move with line snapping; a wall with two free ends
  * moves freely), wallEndpoint, blockEdge, blockVertex, block, opening (re-hosted onto another wall / edge within the
  * snap radius, min 0.25 m, of the pointer), openingResize, deckVertex, deckEdge, deck, steps (along their edge),
- * hotTub (touches deck edges), tree, furniture (back to wall).
+ * hotTub (touches deck edges), tree, furniture (back to wall). Opening and outdoor drags (opening, openingResize,
+ * deck*, steps, hotTub, tree, furniture) cannot change a room face: their frames skip the room reconciliation and
+ * its derive (the plan's render derives the stored result once).
  * `snapPoint(store, p, opts)` serves the placement tools (Vegg / Mål with `from`, Dør/vindu → the host under the
  * point, Nytt bygg → the snapped unit centre with its footprint as `ghost`, Møbler → grid).
  *
  * Where the plan is silent: `insertDeckVertex` takes (edgeId, p) or (deckId, edgeId, p) (the two UI sides use
  * both); `resizeRoom` returns the refusal ('block-edge' → "Endres under bygningsdelen", also as a toast); `nudge` of a
- * wall moves it across itself like a drag; trees nudge / drag on the site; `restoreGhost` also brings back Room
- * records deleted earlier in this session (found in the undo history) whose anchor lies in a face that is unnamed
- * after the restore; `moveBlock` / a whole-block drag of a block with existing area is refused like `deleteBlock`.
+ * wall moves it across itself like a drag; `restoreGhost` also brings back Room records deleted earlier in this
+ * session (found in the undo history) whose anchor lies in a face that is unnamed after the restore, and for a wall
+ * that is not just its ghost translated (an endpoint drag) it first drags each end back with the endpoint cascades;
+ * `moveBlock` / a whole-block drag of a block with existing area is refused like `deleteBlock`; `rotateBlock(store,
+ * id, 90 | −90)` turns a placed unit (template blocks only); `nameFace` returns the derived room id to select;
+ * `deleteDeckVertex` toasts EDIT_STRINGS.deckVertexCrosses when the outline would cross itself.
  */
 import { produce } from 'immer';
 import { useMemo } from 'react';
-import { deriveVariant } from '../geometry/derive';
+import { deriveVariant, treesOf } from '../geometry/derive';
 import {
   applyAddFurniture,
   applyAddOpening,
@@ -60,8 +67,10 @@ import {
   applyMoveWallEndpoint,
   applyNameFace,
   applyPlaceUnit,
+  applyRestoreEdgeGhost,
   applyRestoreOpening,
   applyRestoreWall,
+  applyRotateBlock,
   applySetBlockProps,
   applySetBlockSize,
   applySetDeckProps,
@@ -83,13 +92,13 @@ import {
   roomResizeMove,
   wallEndsFree,
 } from '../geometry/edit';
-import type { BlockPatch, DeckPatch, EditContext, OpeningPatch, RoomMerge, RoomPatch, WallPatch } from '../geometry/edit';
+import type { BlockPatch, DeckPatch, EditContext, OpeningPatch, PlanTransform, RoomMerge, RoomPatch, WallPatch } from '../geometry/edit';
 import { levelAt } from '../geometry/levels';
 import { buildSnapContext, chipsAcross, gridStep, rayToWall, roundTo, snap, snapCircle, snapFootprint, snapLineOffset, snapPolygon } from '../geometry/snap';
 import type { DimensionChip, SnapContext, SnapIndicator, SnapResult } from '../geometry/snap';
 import { distancePointSegment } from '../geometry/polygon';
 import type { DerivedVariant } from '../model/derived';
-import type { FurnitureItem, Id, OpeningHost, OpeningType, Project, Room, RoomType, Site, Variant, Vec2 } from '../model/types';
+import type { FurnitureItem, Id, OpeningHost, OpeningType, Project, Room, RoomType, Site, Tree, Variant, Vec2, Wall } from '../model/types';
 import { unitFootprint, unitTemplate } from '../model/unitTemplates';
 import { appStore } from './appStore';
 import { EDIT_STRINGS } from './editStrings';
@@ -165,8 +174,18 @@ interface RunOpts {
   /** Drags: the pointer-down variant and its derived model. */
   base?: Variant;
   baseDerived?: DerivedVariant;
+  /**
+   * Apply the recipe to this variant (and context) instead of the base — an intermediate state computed by earlier
+   * steps of the same action (restoreGhost's endpoint cascade); the rooms are still reconciled against the base.
+   */
+  from?: { variant: Variant; derived: DerivedVariant };
   /** Toast room merges right away (default true; drags toast on endDrag). */
   toastMerges?: boolean;
+  /**
+   * Reconcile the rooms (default true). Off for edits that cannot change a room face (openings, the deck, steps, hot
+   * tubs, trees, furniture): no derive of the result and no matching inside the action.
+   */
+  reconcile?: boolean;
   /** Deleted Room records that may come back into unnamed faces (restoreGhost). */
   revive?: () => Room[];
 }
@@ -185,18 +204,20 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
   const base = opts.base ?? current;
   const derived = opts.baseDerived ?? deriveOf(site, base);
   if (!derived) return null;
+  const from = opts.from ?? { variant: base, derived };
+  const carried = new Map<Id, PlanTransform>();
   let result: R | undefined;
-  const next = produce(base, (draft) => {
-    result = recipe(draft as Variant, { base, derived });
+  const next = produce(from.variant, (draft) => {
+    result = recipe(draft as Variant, { base: from.variant, derived: from.derived, carried });
     // Anything back on its ghost is existing again (geometry/edit.ts healGhosts).
     healGhosts(draft as Variant);
   });
   let final = next;
   let merges: RoomMerge[] = [];
-  if (next !== base) {
+  if (next !== base && opts.reconcile !== false) {
     const nextDerived = deriveOf(site, next);
     if (nextDerived) {
-      const rec = reconcileRooms(derived, next, nextDerived);
+      const rec = reconcileRooms(derived, next, nextDerived, { carried });
       merges = rec.merges;
       if (rec.changed) {
         final = produce(next, (d) => {
@@ -219,11 +240,13 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
   return { result: result as R, merges, variant: final };
 }
 
-/** A site edit (trees) with the lock and read-only rules. */
-function runSite(store: EditStore, recipe: (site: Site) => void, opts: { transaction?: string } = {}): boolean {
-  if (!editable(store)) return false;
-  store.getState().updateSite(recipe, opts);
-  return true;
+/**
+ * The trees of the variant being edited, copied from the site on the first tree edit of a proposal (copy-on-write,
+ * `Variant.trees`): a proposal's trees are its own, the site (and Forslag D) never change.
+ */
+function ownTrees(draft: Variant, site: Site): Tree[] {
+  if (!draft.trees) draft.trees = site.trees.map((t) => ({ ...t, position: copy(t.position) }));
+  return draft.trees;
 }
 
 /** Current derived model of the active variant. */
@@ -291,52 +314,91 @@ function roomsFromHistory(store: EditStore): Room[] {
 /**
  * "Ta tilbake" on a ghost (a removed wall / opening id or a `Variant.ghosts` id): see geometry/edit.ts. A moved wall
  * is first moved back with the wall cascades; a block edge is moved back onto its ghost line. Rooms deleted by a merge
- * come back from the undo history when their face reappears.
+ * come back from the undo history when their face reappears. An opening ghost that stands on a removed wall (a moved
+ * or deleted wall's ghost, a moved block edge's old place) cannot come back alone: its wall / edge is restored with it.
  */
 export function restoreGhost(store: EditStore, id: Id): boolean {
   const s = store.getState();
   const v = selectActiveVariant(s);
   const ref = ghostRef(v, id);
   if (!ref) return false;
+  if (ref.type === 'opening') {
+    const g = v.openings.find((o) => o.id === id);
+    const hostId = g?.host.kind === 'wall' ? g.host.wallId : null;
+    if (hostId && hostId !== id && v.walls.some((w) => w.id === hostId && w.status === 'removed')) return restoreGhost(store, hostId);
+  }
+  let parallelSame = false;
+  let from: RunOpts['from'];
+  // Opening ghosts parked on removed walls (the ghost being restored, or the ghosts of walls a cascade touched): restored
+  // when their host goes (the endpoint cascade back may already have healed the wall itself).
+  const parked = new Map<Id, Id>();
+  for (const o of v.openings) {
+    if (o.status !== 'removed' || o.host.kind !== 'wall' || !o.id.endsWith('/ghost')) continue;
+    const hostId = o.host.wallId;
+    if (v.walls.some((w) => w.id === hostId && w.status === 'removed')) parked.set(o.id, hostId);
+  }
+  if (ref.type === 'wall' && !isLocked(v) && !s.ui.readOnly) {
+    const g = v.walls.find((w) => w.id === id);
+    const live = ref.original ? v.walls.find((w) => w.id === ref.original && w.status !== 'removed') : undefined;
+    if (g && live) {
+      const ud = unit(sub(live.b, live.a));
+      const ug = unit(sub(g.b, g.a));
+      parallelSame = Math.abs(dot(ud, ug) - 1) < 1e-6 && Math.abs(dist(live.a, live.b) - dist(g.a, g.b)) < 1e-6;
+      // Not just translated (an endpoint drag, or a move and an endpoint drag): drag each end back to the ghost's
+      // end with the endpoint cascades (coincident ends, T-junctions), one end after the other.
+      if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g);
+    }
+  }
   const r = run(
     store,
     (d, ctx) => {
       if (ref.type === 'wall') {
-        const g = ctx.base.walls.find((w) => w.id === id);
-        const live = ref.original ? ctx.base.walls.find((w) => w.id === ref.original) : undefined;
-        if (g && live && live.status !== 'removed') {
-          const ud = unit(sub(live.b, live.a));
-          const ug = unit(sub(g.b, g.a));
-          const parallelSame = Math.abs(dot(ud, ug) - 1) < 1e-6 && Math.abs(dist(live.a, live.b) - dist(g.a, g.b)) < 1e-6;
-          if (parallelSame) applyMoveWall(d, ctx, live.id, sub(g.a, live.a));
+        if (parallelSame && ref.original) {
+          const g = ctx.base.walls.find((w) => w.id === id);
+          const live = ctx.base.walls.find((w) => w.id === ref.original);
+          if (g && live) applyMoveWall(d, ctx, live.id, sub(g.a, live.a));
         }
+        const had = d.walls.some((w) => w.id === id && w.status === 'removed');
         const ok = applyRestoreWall(d, id);
         healGhosts(d);
-        return ok;
+        // Openings the cascade moved on the walls it touched (their ghosts sat on those walls' ghosts): back too.
+        for (const [oid, hostId] of parked) if (!d.walls.some((w) => w.id === hostId)) applyRestoreOpening(d, oid);
+        healGhosts(d);
+        // The endpoint cascade may already have healed the ghost (the wall is back on it).
+        return ok || (!had && from !== undefined);
       }
       if (ref.type === 'opening') {
         const ok = applyRestoreOpening(d, id);
         healGhosts(d);
         return ok;
       }
-      const block = ctx.base.blocks.find((b) => b.id === ref.blockId);
-      const i = block ? block.polygon.findIndex((x) => x.id === ref.edgeId) : -1;
-      if (block && i >= 0) {
-        const a = block.polygon[i].p;
-        const b = block.polygon[(i + 1) % block.polygon.length].p;
-        const n = leftNormal(unit(sub(b, a)));
-        const shift = dot(sub(ref.a, a), n);
-        if (Math.abs(shift) > 1e-9 && applyMoveBlockEdge(d, ctx, ref.blockId, ref.edgeId, scale(n, shift))) {
-          if (d.ghosts?.some((g) => g.id === id)) d.ghosts = d.ghosts.filter((g) => g.id !== id);
-          return true;
-        }
-      }
-      if (d.ghosts) d.ghosts = d.ghosts.filter((g) => g.id !== id);
-      return true;
+      return applyRestoreEdgeGhost(d, ctx, id);
     },
-    { revive: () => roomsFromHistory(store) },
+    { revive: () => roomsFromHistory(store), from },
   );
   return changed(r);
+}
+
+/**
+ * The variant with the ends of `wallId` dragged back to the ends of its ghost `g` (applyMoveWallEndpoint with its
+ * cascades, each end from the state after the other one), and its derived model; undefined when nothing moved.
+ */
+function endpointsBack(site: Site, v: Variant, wallId: Id, g: Wall): RunOpts['from'] {
+  let cur = v;
+  let curDerived = deriveOf(site, cur);
+  for (const end of ['a', 'b'] as const) {
+    const w = cur.walls.find((x) => x.id === wallId);
+    if (!w || !curDerived || dist(w[end], g[end]) < 1e-9) continue;
+    const ctx: EditContext = { base: cur, derived: curDerived };
+    const next = produce(cur, (d) => {
+      applyMoveWallEndpoint(d as Variant, ctx, wallId, end, g[end]);
+      healGhosts(d as Variant);
+    });
+    if (next === cur) continue;
+    cur = next;
+    curDerived = deriveOf(site, cur);
+  }
+  return cur !== v && curDerived ? { variant: cur, derived: curDerived } : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +423,27 @@ export function moveBlock(store: EditStore, blockId: Id, delta: Vec2, opts: { tr
     return false;
   }
   return changed(run(store, (d, ctx) => applyMoveBlock(d, ctx, blockId, delta), opts), (x) => x === true);
+}
+
+/**
+ * Turn a placed unit (a block with a template) a quarter turn about its centre: 90 = counter-clockwise, −90 =
+ * clockwise; snapped to the 0.1 m grid; its walls, openings, rooms and furniture turn with it (geometry/edit.ts
+ * applyRotateBlock). Refused with the toast for a block with existing area (like moveBlock); false for a drawn block
+ * without a template and (with the locked toast) on Forslag D. (270 is taken as −90; other angles do nothing.)
+ */
+export function rotateBlock(store: EditStore, blockId: Id, deg: 90 | -90): boolean {
+  const q = ((Math.round(deg / 90) % 4) + 4) % 4;
+  if (q !== 1 && q !== 3) return false;
+  const v = editable(store);
+  if (!v) return false;
+  const block = v.blocks.find((b) => b.id === blockId);
+  if (!block) return false;
+  if (blockHasExistingArea(block)) {
+    store.getState().showToast({ text: EDIT_STRINGS.existingBlockMove });
+    return false;
+  }
+  if (!block.template) return false;
+  return changed(run(store, (d, ctx) => applyRotateBlock(d, ctx, blockId, q === 1 ? 90 : -90)), (x) => x === true);
 }
 
 /** Place a unit from a template, centred on `at`, turned by `rotation90` quarter turns. Returns the new block id. */
@@ -425,9 +508,23 @@ export function deleteOpening(store: EditStore, openingId: Id): boolean {
 // Rooms
 // ---------------------------------------------------------------------------
 
-/** Name an unnamed face (a derived room id `face-…`). Returns the new Room id. */
+/**
+ * Name an unnamed face (a derived room id `face-…`). Returns the id of the DERIVED room that now shows the name —
+ * what the UI selects (`{ kind: 'room', id }`) after "Gi navn" (the old `face-…` id is gone). A named face's derived
+ * id is its Room record's id, so this is the new Room id whenever the record attached to its face (it does: its
+ * anchor is the face's label point); it is looked up in the derived result to be sure. Null when refused or the face
+ * is unknown / already named.
+ */
 export function nameFace(store: EditStore, faceId: Id, name: string, opts: { type?: RoomType; levelId?: Id } = {}): Id | null {
-  return run(store, (d, ctx) => applyNameFace(d, ctx.derived, faceId, name, opts))?.result ?? null;
+  const r = run(store, (d, ctx) => applyNameFace(d, ctx.derived, faceId, name, opts));
+  const roomId = r?.result ?? null;
+  if (!r || !roomId) return null;
+  const derived = deriveOf(store.getState().project.site, r.variant);
+  const record = r.variant.rooms.find((x) => x.id === roomId);
+  const room =
+    derived?.rooms.find((x) => x.room?.id === roomId) ??
+    (record ? derived?.rooms.find((x) => x.levelId === record.levelId && dist(record.anchor, x.labelPoint) < 1e-9) : undefined);
+  return room?.id ?? roomId;
 }
 
 export function setRoomProps(store: EditStore, roomId: Id, patch: RoomPatch): boolean {
@@ -518,7 +615,10 @@ export function insertDeckVertex(store: EditStore, first: Id, second?: Id | Vec2
   );
 }
 
-/** "Fjern hjørne" (min 3 corners; toast when refused). */
+/**
+ * "Fjern hjørne": refused with a toast when the deck has three corners (EDIT_STRINGS.deckMinVertices) or when the
+ * outline without the corner would cross itself (EDIT_STRINGS.deckVertexCrosses).
+ */
 export function deleteDeckVertex(store: EditStore, vertexId: Id): boolean {
   const v = editable(store);
   if (!v) return false;
@@ -528,7 +628,12 @@ export function deleteDeckVertex(store: EditStore, vertexId: Id): boolean {
     store.getState().showToast({ text: EDIT_STRINGS.deckMinVertices });
     return false;
   }
-  const ok = changed(run(store, (d) => applyDeleteDeckVertex(d, deck.id, vertexId)));
+  const r = run(store, (d) => applyDeleteDeckVertex(d, deck.id, vertexId));
+  if (r?.result === 'self-intersecting') {
+    store.getState().showToast({ text: EDIT_STRINGS.deckVertexCrosses });
+    return false;
+  }
+  const ok = changed(r, (x) => x === true);
   if (ok) deletedToast(store);
   return ok;
 }
@@ -604,34 +709,55 @@ export function deleteHotTub(store: EditStore, hotTubId: Id): boolean {
   return ok;
 }
 
-/** A birch at p (on the site, shared by every proposal of the project). Returns its id. */
+/** A birch at p in the active proposal (its own trees, see `ownTrees`). Returns its id. */
 export function addTree(store: EditStore, p: Vec2, height = 6): Id | null {
   const id = `tree-${Math.random().toString(36).slice(2, 10)}`;
-  return runSite(store, (site) => {
-    site.trees.push({ id, position: copy(p), height, kind: 'bjork' });
-  })
-    ? id
-    : null;
+  const site = store.getState().project.site;
+  const r = run(
+    store,
+    (d) => {
+      ownTrees(d, site).push({ id, position: copy(p), height, kind: 'bjork' });
+      return true;
+    },
+    { reconcile: false },
+  );
+  return changed(r) ? id : null;
 }
 
 export function moveTree(store: EditStore, treeId: Id, p: Vec2, opts: { transaction?: string } = {}): boolean {
   const s = store.getState();
-  if (!s.project.site.trees.some((t) => t.id === treeId)) return false;
-  return runSite(
-    store,
-    (site) => {
-      const t = site.trees.find((x) => x.id === treeId);
-      if (t) t.position = copy(p);
-    },
-    opts,
+  if (!treesOf(s.project, selectActiveVariant(s)).some((t) => t.id === treeId)) return false;
+  return changed(
+    run(
+      store,
+      (d) => {
+        const t0 = treesOf(s.project, d).find((x) => x.id === treeId);
+        if (!t0 || dist(t0.position, p) < 1e-9) return false;
+        const t = ownTrees(d, s.project.site).find((x) => x.id === treeId);
+        if (t) t.position = copy(p);
+        return true;
+      },
+      { ...opts, reconcile: false },
+    ),
   );
 }
 
 export function deleteTree(store: EditStore, treeId: Id): boolean {
-  if (!store.getState().project.site.trees.some((t) => t.id === treeId)) return false;
-  const ok = runSite(store, (site) => {
-    site.trees = site.trees.filter((t) => t.id !== treeId);
-  });
+  const s = store.getState();
+  if (!treesOf(s.project, selectActiveVariant(s)).some((t) => t.id === treeId)) return false;
+  const ok = changed(
+    run(
+      store,
+      (d) => {
+        const trees = ownTrees(d, s.project.site);
+        const i = trees.findIndex((t) => t.id === treeId);
+        if (i < 0) return false;
+        trees.splice(i, 1);
+        return true;
+      },
+      { reconcile: false },
+    ),
+  );
   if (ok) deletedToast(store);
   return ok;
 }
@@ -841,7 +967,7 @@ export function nudge(store: EditStore, selection: Selection, dx: number, dy: nu
       return t ? moveHotTub(store, t.id, add(t.centre, d), opts) : false;
     }
     case 'tree': {
-      const t = s.project.site.trees.find((x) => x.id === selection.id);
+      const t = treesOf(s.project, v).find((x) => x.id === selection.id);
       return t ? moveTree(store, t.id, add(t.position, d), opts) : false;
     }
     case 'furniture': {
@@ -1094,6 +1220,9 @@ export function beginDrag(
   };
 }
 
+/** Drag kinds that cannot change a room face (updateDrag skips reconcileRooms for them). */
+const NO_ROOM_DRAGS: ReadonlySet<DragKind> = new Set<DragKind>(['opening', 'openingResize', 'deckVertex', 'deckEdge', 'deck', 'steps', 'hotTub', 'tree', 'furniture']);
+
 function variantOf(r: RunResult<unknown> | null, session: DragSession): Variant {
   return r?.variant ?? session.baseVariant;
 }
@@ -1106,7 +1235,8 @@ export function updateDrag(store: EditStore, session: DragSession | null, pointe
   const delta = sub(pointer, session.start);
   const ctx = session.snapCtx;
   const base = session.baseVariant;
-  const runOpts: RunOpts = { base, baseDerived: session.baseDerived, toastMerges: false };
+  // Openings and outdoor things never change a room face: no room reconciliation (and no derive) per frame.
+  const runOpts: RunOpts = { base, baseDerived: session.baseDerived, toastMerges: false, reconcile: !NO_ROOM_DRAGS.has(session.kind) };
   const apply = <R>(recipe: (draft: Variant, c: EditContext) => R): RunResult<R> | null => {
     const r = run(store, recipe, runOpts);
     if (r) session.merges = r.merges;
@@ -1249,13 +1379,15 @@ export function updateDrag(store: EditStore, session: DragSession | null, pointe
       return { indicators: sres.indicators, chips: [], ghost: [circleRing(t.centre, t.diameter / 2)] };
     }
     case 'tree': {
-      const t = session.base.site.trees.find((x) => x.id === session.targetId);
+      const t = treesOf(session.base, base).find((x) => x.id === session.targetId);
       if (!t) return EMPTY_FEEDBACK;
       const step = gridStep(fine);
       const p: Vec2 = [roundTo(t.position[0] + delta[0], step), roundTo(t.position[1] + delta[1], step)];
-      runSite(store, (site) => {
-        const x = site.trees.find((tr) => tr.id === t.id);
+      apply((dr) => {
+        if (dist(t.position, p) < 1e-9) return false;
+        const x = ownTrees(dr, session.base.site).find((tr) => tr.id === t.id);
         if (x) x.position = p;
+        return true;
       });
       return { indicators: [], chips: [], ghost: [circleRing(t.position, 0.5)] };
     }
@@ -1513,6 +1645,7 @@ const ACTIONS = {
   moveBlockEdge,
   moveBlockVertex,
   moveBlock,
+  rotateBlock,
   placeUnit,
   deleteBlock,
   setBlockProps,

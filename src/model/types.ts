@@ -135,6 +135,12 @@ export interface Variant {
    * ("Fjernet") in the plan while "Vis hva som er nytt" is on, never in 3D. Undefined = none.
    */
   ghosts?: VariantGhost[];
+  /**
+   * The proposal's own trees, copied from `Site.trees` on its first tree edit (copy-on-write) so that editing a tree
+   * in one proposal never changes another one or Forslag D. Undefined = the site's trees. Read through
+   * `treesOf(project, variant)` (geometry/derive.ts). Optional, no schema bump: older documents have none.
+   */
+  trees?: Tree[];
 }
 
 export interface VariantMeta {
