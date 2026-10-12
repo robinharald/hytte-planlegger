@@ -368,7 +368,7 @@ describe('handles', () => {
   const radius = (svg: SVGSVGElement, key: string) => Number(svg.querySelector(`[data-handle="${key}"] circle`)!.getAttribute('r'));
   const width = (svg: SVGSVGElement, sel: string) => Number(svg.querySelector(sel)!.getAttribute('stroke-width'));
 
-  it('are 7 px with 12 px corridors, 14 px on a coarse pointer with corridors of 24 px but at most 0.25 m', () => {
+  it('are 7 px with 12 px corridors, 14 px on a coarse pointer with corridors of 0.25 m within 10–24 px', () => {
     const actions = mockActions();
     const fine = render(baseProps({ editable: true, editActions: actions, selection: WALL_SEL }));
     expect(radius(fine, 'we:a')).toBe(7);
@@ -391,6 +391,14 @@ describe('handles', () => {
     expect(rootMatrix(coarse)[0]).toBeGreaterThan(96);
     expect(width(coarse, '[data-wall-corridor="w-bad-s"]')).toBe(24);
     expect(width(coarse, '[data-opening-corridor="d-bad"]')).toBe(24);
+    // Zoomed out below 40 px/m (second fix round): never under 10 px, so a finger can still hit a wall or a door.
+    act(() => {
+      for (let i = 0; i < 4; i++) coarse.dispatchEvent(new WheelEvent('wheel', { deltaY: 500, clientX: 500, clientY: 350, bubbles: true, cancelable: true }));
+    });
+    expect(rootMatrix(coarse)[0]).toBeLessThan(40);
+    expect(width(coarse, '[data-wall-corridor="w-bad-s"]')).toBe(10);
+    expect(width(coarse, '[data-opening-corridor="d-bad"]')).toBe(10);
+    expect(coarse.getAttribute('data-hit-band')).toBe('10');
   });
 
   it('follow the (pointer: coarse) media query', () => {

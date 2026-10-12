@@ -6,10 +6,11 @@
  *   per label (ScreenText) so it reads correctly and keeps its pixel size.
  * - Pan by dragging, wheel zoom around the cursor, two-finger pinch; `touch-action: none` (usePanZoom.ts).
  * - Layers bottom → top: grid, decks/hot tubs/trees, block hit areas, floors, room hit areas, furniture (with
- *   clearances when `showClearances`), other storeys' walls (faint), walls (union, opening cuts clipped out) + wall
- *   hit areas and corridors, dividers, block-edge ghosts (dashed, with "highlight new" only, like removed walls and
- *   openings), openings, structure, railings/steps, selection outline (room/block), roof plan (optional), room
- *   labels, dimension lines; screen-space north arrow (in the viewport corner that covers the least of the drawing,
+ *   clearances when `showClearances`), other storeys' walls (faint), room-label hit areas, walls (union, opening
+ *   cuts clipped out) + wall hit areas and corridors, dividers, block-edge ghosts (dashed, with "highlight new" only,
+ *   like removed walls and openings), openings, structure, railings/steps, selection outline (room/block), roof
+ *   plan (optional), room label text, dimension lines; screen-space north arrow (in the viewport corner that covers
+ *   the least of the drawing,
  *   clear of the scale bar and the legend), scale bar, the "Hytta i dag / Nytt / Fjernet" legend (with "highlight
  *   new"), and on top the editing overlay (layers/EditOverlay.tsx: handles, snap feedback, tool previews, temporary
  *   dimensions).
@@ -26,8 +27,12 @@
  *   line text of the active tool. On the locked base proposal a drag that starts on the selection calls `onLocked`
  *   (else the refusing `editActions.beginDrag`) instead of panning. `viewportInsets` keeps the selection out from
  *   under the toolbar / bottom sheet by panning minimally when the selection or the insets change.
- * - Touch: the invisible wall / opening hit bands are at most 0.25 m wide in plan metres (editModel.ts `hitBandPx`)
- *   and each drawn room label is a hit area of its room (LabelLayer), so a tap inside a room selects the room.
+ * - Touch: the invisible wall / opening / ghost hit bands are 0.25 m wide in plan metres, but 10–24 px on screen
+ *   (editModel.ts `hitBandPx`, shown as `data-hit-band` on the svg), and each drawn room label is a hit area of its
+ *   room BELOW them (LabelLayer.tsx `LabelHitLayer`): a tap within ±5 px of a wall, door or ghost selects it, a tap
+ *   on a room's name elsewhere selects the room. With "Vis hva som er nytt" the labels keep clear of the ghosts.
+ *   A tap on the room of a placed unit selects the unit first, the room on the next tap (editModel.ts
+ *   `tapSelection`).
  * - Furniture library drags (no HTML5 drag-and-drop): the library tracks its own pointer and calls the handle's
  *   `furnitureDragOver(catalogId, clientX, clientY)` while moving (a drop marker) and `dropFurniture(…)` on release,
  *   which calls `onDropFurniture(catalogId, planPoint)` when the point is over the plan. `visibleCenter()` gives the
@@ -38,8 +43,11 @@
  *   point at the viewport centre fixed.
  * - Performance: every layer is memoised on data that does not change while panning, so a pan only rewrites
  *   the root transform (the grid re-renders only when the visible rect crosses a 5 m boundary); zooming also
- *   re-renders the scale-dependent layers (labels, dimensions, structure, furniture). The editing overlay is in
- *   screen space and re-renders with the view (it holds a handful of elements).
+ *   re-renders the scale-dependent layers (labels, dimensions, structure, furniture). The layers' data
+ *   (storeyData.ts `planLayerData`) shares every unchanged part with the previous model's (useShared.ts, stable.ts),
+ *   so a drag, which derives a new model per frame, re-renders only the layers (and in the wall and opening layers
+ *   only the items) whose geometry changed. The editing overlay is in screen space, memoised on its own state, and
+ *   re-renders with the view and the drag feedback (it holds a handful of elements).
  * - In jsdom (no layout) the viewport falls back to 1000 × 700 px so tests see a deterministic zoom.
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react';
@@ -53,7 +61,8 @@ import type { TempDimension } from './layers/EditOverlay';
 import { FloorLayer } from './layers/FloorLayer';
 import { FurnitureLayer } from './layers/FurnitureLayer';
 import { GridLayer } from './layers/GridLayer';
-import { LabelLayer } from './layers/LabelLayer';
+import { LabelHitLayer, LabelLayer } from './layers/LabelLayer';
+import type { PlacedLabel } from './layers/LabelLayer';
 import { Legend } from './layers/Legend';
 import { OpeningLayer } from './layers/OpeningLayer';
 import { OtherStoreyLayer } from './layers/OtherStoreyLayer';
@@ -71,11 +80,14 @@ import { chipText, mid } from './editFeedback';
 import { handlesFor, hitBandPx, openingCornerDimension, pointerSizes, selectionBounds, wallsById } from './editModel';
 import type { PlanHandle } from './editModel';
 import type { PlanEditActions, PlanOverlay, PlanSelection, PlanTool, PlanToolOptions, SelectionBarAnchor } from './editTypes';
-import { storeyData } from './storeyData';
+import { labelFonts, layoutRoomLabels } from './labelLayout';
+import { planLayerData } from './storeyData';
+import { labelDensity } from './svg';
 import { planStrings } from './strings';
 import { FAINT_OPACITY, FONT, PAPER } from './style';
 import { useCoarsePointer } from './useCoarsePointer';
 import { useElementSize } from './useElementSize';
+import { useShared } from './useShared';
 import { usePanZoom } from './usePanZoom';
 import { cancelFrame, effectiveTool, nextFrame, usePlanEditing } from './usePlanEditing';
 import type { PanZoomBridge } from './usePlanEditing';
@@ -161,6 +173,7 @@ const DECK_HATCH_MIN_SCALE = 30;
 const GRID_SNAP_M = 5;
 
 const NO_HANDLES: PlanHandle[] = [];
+const NO_LABELS: readonly PlacedLabel[] = [];
 const NO_OPTIONS: PlanToolOptions = {};
 
 function anchorKey(a: SelectionBarAnchor | null): string {
@@ -204,7 +217,9 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   const onDropFurniture = useCallback((id: string, p: Vec2) => cb.current.onDropFurniture?.(id, p), []);
   const onLocked = useCallback(() => cb.current.onLocked?.(), []);
 
-  const data = useMemo(() => storeyData(derived, planStorey), [derived, planStorey]);
+  // What the layers draw, sharing every unchanged part with the previous model's (useShared.ts): a drag derives a new
+  // model per frame, but only the layers whose part changed re-render.
+  const data = useShared(useMemo(() => planLayerData(derived, planStorey), [derived, planStorey]));
   const storeyId = data.ctx?.storeyId ?? planStorey;
   const handlesOn = editable && effectiveTool(tool, editable) === 'select';
 
@@ -241,7 +256,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   useLayoutEffect(() => {
     bridge.current = { getView, cancelGesture, getHandles: () => handlesRef.current };
   }, [getView, cancelGesture]);
-  // Touch: wall / opening hit bands at most 0.25 m wide in plan metres (taps inside rooms select the room).
+  // Touch: wall / opening / ghost hit bands 0.25 m wide in plan metres, 10–24 px on screen (editModel.ts `hitBandPx`).
   const band = hitBandPx(coarse, scale);
 
   /** The view the last fit produced; while it is still current the user has not panned or zoomed. */
@@ -409,6 +424,18 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     [derived, highlightWalls, panel],
   );
 
+  // Room labels, laid out once for the hit areas (below the walls) and the text (on top); with "Vis hva som er nytt"
+  // they keep clear of the ghosts too.
+  const density = labelDensity(scale);
+  const { labelObstacles, ghostObstacles } = data;
+  const obstacles = useMemo(() => (highlightNew && ghostObstacles.length > 0 ? [...labelObstacles, ...ghostObstacles] : labelObstacles), [highlightNew, labelObstacles, ghostObstacles]);
+  const labels = useShared(
+    useMemo(
+      () => (showLabels && density !== 'none' ? layoutRoomLabels(data.rooms, density, scale, labelFonts(scale), obstacles) : NO_LABELS),
+      [showLabels, density, data.rooms, scale, obstacles],
+    ),
+  );
+
   const vis = snapRectOut(visiblePlanRect(view, w, h), GRID_SNAP_M);
   const [gx0, gy0, gx1, gy1] = [vis.min[0], vis.min[1], vis.max[0], vis.max[1]];
   const gridRect = useMemo(() => ({ min: [gx0, gy0] as Vec2, max: [gx1, gy1] as Vec2 }), [gx0, gy0, gx1, gy1]);
@@ -440,6 +467,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
         data-plan-editable={editable ? 'true' : 'false'}
         data-plan-dragging={dragging ? 'true' : undefined}
         data-scale={Math.round(view.s * 100) / 100}
+        data-hit-band={band}
         aria-label={planStrings.planTitle}
         width="100%"
         height="100%"
@@ -452,29 +480,30 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           {showGrid && <GridLayer rect={gridRect} scale={view.s} />}
           <g opacity={outdoorActive ? undefined : FAINT_OPACITY}>
             <OutdoorLayer
-              decks={derived.outdoor.decks}
-              hotTubs={derived.outdoor.hotTubs}
-              trees={derived.site.trees}
+              decks={data.decks}
+              hotTubs={data.hotTubs}
+              trees={data.trees}
               selection={selection}
               hatch={view.s >= DECK_HATCH_MIN_SCALE}
               selectable={outdoorActive}
             />
           </g>
-          <BlockLayer blocks={derived.blocks} />
+          <BlockLayer blocks={data.blocks} />
           <FloorLayer floors={data.floors} highlightNew={highlightNew} />
           <RoomLayer rooms={data.rooms} selection={selection} />
           <FurnitureLayer items={data.furniture} selection={selection} scale={view.s} showClearances={showClearances} />
           <OtherStoreyLayer unions={data.otherUnions} />
-          <WallLayer unions={data.unions} pieces={data.pieces} dividers={data.dividers} cuts={data.cuts} bounds={bounds} highlightNew={highlightNew} selection={selection} corridorPx={band} />
-          <GhostLayer ghosts={derived.ghosts} highlightNew={highlightNew} selection={selection} corridorPx={band} />
+          <LabelHitLayer labels={labels} scale={scale} />
+          <WallLayer unions={data.unions} pieces={data.pieces} dividers={data.dividers} cuts={data.cuts} bounds={data.bounds} highlightNew={highlightNew} selection={selection} corridorPx={band} />
+          <GhostLayer ghosts={data.ghosts} highlightNew={highlightNew} selection={selection} corridorPx={band} />
           <OpeningLayer openings={data.openings} highlightNew={highlightNew} selection={selection} corridorPx={band} />
           <StructureLayer elements={data.structure} selection={selection} scale={view.s} stairModes={data.stairModes} />
           <g opacity={outdoorActive ? undefined : FAINT_OPACITY}>
-            <RailingLayer railings={derived.outdoor.railings} steps={derived.outdoor.steps} selection={selection} selectable={outdoorActive} corridorPx={sizes.corridor} />
+            <RailingLayer railings={data.railings} steps={data.steps} selection={selection} selectable={outdoorActive} corridorPx={sizes.corridor} />
           </g>
-          <SelectionLayer rooms={data.rooms} blocks={derived.blocks} selection={selection} />
-          {showRoofPlan && <RoofPlanLayer roofs={derived.roofs} />}
-          {showLabels && <LabelLayer rooms={data.rooms} scale={view.s} highlightNew={highlightNew} obstacles={data.labelObstacles} />}
+          <SelectionLayer rooms={data.rooms} blocks={data.blocks} selection={selection} />
+          {showRoofPlan && <RoofPlanLayer roofs={data.roofs} />}
+          <LabelLayer labels={labels} scale={scale} highlightNew={highlightNew} />
           {showDims && <DimensionLayer dimensions={data.dimensions} scale={view.s} />}
         </g>
         <NorthArrow bearing={site.planNorthBearing} cx={north[0]} cy={north[1]} />

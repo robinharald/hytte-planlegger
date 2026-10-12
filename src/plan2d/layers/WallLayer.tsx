@@ -44,6 +44,29 @@ function hitAttrs(w: DerivedWall): SelAttrs {
   return selAttrs(s.kind, s.id, s.levelId);
 }
 
+/** The invisible corridor along one piece (memoised per piece: a drag re-renders only the pieces that changed). */
+const WallCorridor = memo(function WallCorridor({ w, corridorPx }: { w: DerivedWall; corridorPx: number }) {
+  return <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="transparent" strokeWidth={corridorPx} pointerEvents="stroke" data-wall-corridor={w.id} {...NSS} {...hitAttrs(w)} />;
+});
+
+/** The footprint hit area of one piece, filled in the accent colour when selected (memoised per piece). */
+const WallHit = memo(function WallHit({ w, sel, ghostSel }: { w: DerivedWall; sel: boolean; ghostSel: boolean }) {
+  return (
+    <path
+      d={polygonPath(w.footprint)}
+      fill={sel ? ACCENT : 'none'}
+      fillOpacity={sel ? 0.3 : undefined}
+      stroke={sel || ghostSel ? ACCENT : 'none'}
+      strokeWidth={STROKE.selected}
+      strokeDasharray={ghostSel ? '4 3' : undefined}
+      pointerEvents="fill"
+      data-wall-id={w.id}
+      {...NSS}
+      {...hitAttrs(w)}
+    />
+  );
+});
+
 export const WallLayer = memo(function WallLayer({ unions, pieces, dividers, cuts, bounds, highlightNew, selection, corridorPx = 12 }: WallLayerProps) {
   const clipId = domId('wall-cut', useId());
   const hittable = pieces.filter((w) => !w.isGhost || highlightNew);
@@ -77,29 +100,13 @@ export const WallLayer = memo(function WallLayer({ unions, pieces, dividers, cut
       </g>
       <g data-layer="wall-corridors">
         {hittable.map((w) => (
-          <line key={w.id} x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="transparent" strokeWidth={corridorPx} pointerEvents="stroke" data-wall-corridor={w.id} {...NSS} {...hitAttrs(w)} />
+          <WallCorridor key={w.id} w={w} corridorPx={corridorPx} />
         ))}
       </g>
       <g data-layer="wall-hits">
-        {hittable.map((w) => {
-          const ghostSel = w.isGhost && isSelected(selection, 'ghost', ghostIdOfWall(w));
-          const sel = !w.isGhost && isWallHighlighted(selection, w);
-          return (
-            <path
-              key={w.id}
-              d={polygonPath(w.footprint)}
-              fill={sel ? ACCENT : 'none'}
-              fillOpacity={sel ? 0.3 : undefined}
-              stroke={sel || ghostSel ? ACCENT : 'none'}
-              strokeWidth={STROKE.selected}
-              strokeDasharray={ghostSel ? '4 3' : undefined}
-              pointerEvents="fill"
-              data-wall-id={w.id}
-              {...NSS}
-              {...hitAttrs(w)}
-            />
-          );
-        })}
+        {hittable.map((w) => (
+          <WallHit key={w.id} w={w} sel={!w.isGhost && isWallHighlighted(selection, w)} ghostSel={w.isGhost && isSelected(selection, 'ghost', ghostIdOfWall(w))} />
+        ))}
       </g>
       <g data-layer="dividers">
         {dividers.map((w) => {

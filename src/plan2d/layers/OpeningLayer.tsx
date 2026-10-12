@@ -114,47 +114,63 @@ function OpeningSymbol(props: { wall: DerivedWall; o: DerivedOpening; ink: strin
   }
 }
 
+interface OpeningItemProps {
+  wall: DerivedWall;
+  o: DerivedOpening;
+  highlightNew: boolean;
+  /** Selected (as the opening, or as its ghost when removed). */
+  selected: boolean;
+  corridorPx: number;
+}
+
+/** One opening: its symbol (or ghost), hit footprint and corridor. Memoised per item, so a drag that moves one door
+ * re-renders only that door (the layer's data keeps unchanged openings' identities, stable.ts). */
+const OpeningItem = memo(function OpeningItem({ wall, o, highlightNew, selected: sel, corridorPx }: OpeningItemProps) {
+  const removed = o.status === 'removed';
+  const ink = o.isNew && highlightNew ? COLORS.openingNew : COLORS.opening;
+  const hit = o.footprint.length >= 3 ? polygonPath(o.footprint) : '';
+  const f = openingFrame(wall, o);
+  const attrs = removed ? selAttrs('ghost', o.id) : selAttrs('opening', o.id, o.opening.levelId ?? wall.levelId);
+  return (
+    <g data-opening-id={o.id} data-opening-type={o.type} data-opening-status={o.status} {...attrs}>
+      <g pointerEvents="none">
+        {removed
+          ? hit && <path d={hit} fill={COLORS.wallRemoved} fillOpacity={REMOVED_FILL_OPACITY} stroke={COLORS.wallRemoved} strokeWidth={STROKE.wall} strokeDasharray="3 2" {...NSS} />
+          : <OpeningSymbol wall={wall} o={o} ink={ink} />}
+      </g>
+      {hit && (
+        <path
+          d={hit}
+          fill={sel && !removed ? ACCENT : 'none'}
+          fillOpacity={sel && !removed ? 0.3 : undefined}
+          stroke={sel ? ACCENT : 'none'}
+          strokeWidth={STROKE.selected}
+          strokeDasharray={sel && removed ? '3 3' : undefined}
+          pointerEvents="fill"
+          {...NSS}
+        />
+      )}
+      <path
+        d={`M${f.start[0]} ${f.start[1]}L${f.end[0]} ${f.end[1]}`}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={corridorPx}
+        pointerEvents="stroke"
+        data-opening-corridor={o.id}
+        {...NSS}
+      />
+    </g>
+  );
+});
+
 export const OpeningLayer = memo(function OpeningLayer({ openings, highlightNew, selection, corridorPx = 12 }: OpeningLayerProps) {
   return (
     <g data-layer="openings">
       {openings.map(({ wall, opening: o }) => {
         const removed = o.status === 'removed';
         if (removed && !highlightNew) return null;
-        const sel = removed ? isSelected(selection, 'ghost', o.id) : isSelected(selection, 'opening', o.id);
-        const ink = o.isNew && highlightNew ? COLORS.openingNew : COLORS.opening;
-        const hit = o.footprint.length >= 3 ? polygonPath(o.footprint) : '';
-        const f = openingFrame(wall, o);
-        const attrs = removed ? selAttrs('ghost', o.id) : selAttrs('opening', o.id, o.opening.levelId ?? wall.levelId);
-        return (
-          <g key={o.id} data-opening-id={o.id} data-opening-type={o.type} data-opening-status={o.status} {...attrs}>
-            <g pointerEvents="none">
-              {removed
-                ? hit && <path d={hit} fill={COLORS.wallRemoved} fillOpacity={REMOVED_FILL_OPACITY} stroke={COLORS.wallRemoved} strokeWidth={STROKE.wall} strokeDasharray="3 2" {...NSS} />
-                : <OpeningSymbol wall={wall} o={o} ink={ink} />}
-            </g>
-            {hit && (
-              <path
-                d={hit}
-                fill={sel && !removed ? ACCENT : 'none'}
-                fillOpacity={sel && !removed ? 0.3 : undefined}
-                stroke={sel ? ACCENT : 'none'}
-                strokeWidth={STROKE.selected}
-                strokeDasharray={sel && removed ? '3 3' : undefined}
-                pointerEvents="fill"
-                {...NSS}
-              />
-            )}
-            <path
-              d={`M${f.start[0]} ${f.start[1]}L${f.end[0]} ${f.end[1]}`}
-              fill="none"
-              stroke="transparent"
-              strokeWidth={corridorPx}
-              pointerEvents="stroke"
-              data-opening-corridor={o.id}
-              {...NSS}
-            />
-          </g>
-        );
+        const selected = removed ? isSelected(selection, 'ghost', o.id) : isSelected(selection, 'opening', o.id);
+        return <OpeningItem key={o.id} wall={wall} o={o} highlightNew={highlightNew} selected={selected} corridorPx={corridorPx} />;
       })}
     </g>
   );

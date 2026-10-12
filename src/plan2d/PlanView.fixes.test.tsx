@@ -223,10 +223,17 @@ describe('small selected things and their handles', () => {
       for (let i = 0; i < 2; i++) svg.dispatchEvent(new WheelEvent('wheel', { deltaY: -500, clientX: 500, clientY: 350, bubbles: true, cancelable: true }));
     });
 
-  it('a door narrower than 3 handle diameters on screen has no end handles and moves from its middle', () => {
+  it('a door shorter on screen than one handle diameter has no end handles and moves from its middle', () => {
     const actions = mockActions();
     const svg = render(baseProps({ editable: true, editActions: actions, selection: DOOR_SEL }));
-    expect(0.8 * rootMatrix(svg)[0]).toBeLessThan(42);
+    // Second fix round: from one diameter (14 px) the handles are there (they sit outside the jambs); zoomed out
+    // below it they are left out.
+    expect(0.8 * rootMatrix(svg)[0]).toBeGreaterThan(14);
+    expect(svg.querySelectorAll('[data-handle]')).toHaveLength(2);
+    act(() => {
+      for (let i = 0; i < 3; i++) svg.dispatchEvent(new WheelEvent('wheel', { deltaY: 500, clientX: 500, clientY: 350, bubbles: true, cancelable: true }));
+    });
+    expect(0.8 * rootMatrix(svg)[0]).toBeLessThan(14);
     expect(svg.querySelector('[data-handle]')).toBeNull();
     const at = scr(svg, [7, 4.2]);
     act(() => {
@@ -292,18 +299,24 @@ describe('small selected things and their handles', () => {
 });
 
 describe('taps on room labels', () => {
-  it('each drawn label is a hit area of its room, above the walls and openings', () => {
+  it('each drawn label is a hit area of its room, above the rooms but below the walls, openings and ghosts', () => {
     const onSelect = vi.fn();
     const svg = render(baseProps({ onSelect, coarsePointer: true }));
     const hit = svg.querySelector('[data-room-label-hit="rom-bad"]')!;
     expect(hit).not.toBeNull();
     expect(hit.getAttribute('pointer-events')).toBe('fill');
     expect(hit.getAttribute('data-sel-kind')).toBe('room');
-    // Drawn after (on top of) the wall and opening hit areas.
-    const walls = svg.querySelector('[data-layer="walls"]')!;
-    const openings = svg.querySelector('[data-layer="openings"]')!;
-    expect(walls.compareDocumentPosition(hit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(openings.compareDocumentPosition(hit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Second fix round: drawn after the rooms and before (under) the wall, ghost and opening hit areas, so a wall's
+    // or a door's hit band wins next to a label; the text itself is drawn on top and takes no pointer events.
+    const rooms = svg.querySelector('[data-layer="rooms"]')!;
+    expect(rooms.compareDocumentPosition(hit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const layer of ['walls', 'ghosts', 'openings']) {
+      const el = svg.querySelector(`[data-layer="${layer}"]`);
+      if (el) expect(el.compareDocumentPosition(hit) & Node.DOCUMENT_POSITION_PRECEDING, layer).toBeTruthy();
+    }
+    const text = svg.querySelector('[data-room-label="rom-bad"]')!;
+    expect(svg.querySelector('[data-layer="openings"]')!.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(text.querySelector('[pointer-events="fill"]')).toBeNull();
     const at = scr(svg, [8.5, 4.5]);
     act(() => {
       pointer(hit, 'pointerdown', at, { pointerType: 'touch' });

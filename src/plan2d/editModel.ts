@@ -19,18 +19,25 @@
  *  - Unit ghosts use model/unitTemplates.ts (the footprint `placeUnit` builds: centred on `at`, quarter turns CCW);
  *    an unknown template id gets a 3 × 3 m ghost.
  *
- * Small things at small zooms (UX review of phase 2a):
- *  - Handles never hide what they belong to: with the screen scale given, `handlesFor` leaves out the end / corner /
- *    edge handles of an object shorter on screen than HANDLE_MIN_DIAMETERS handle diameters (an opening's width, a
- *    stored wall's or an exterior piece's edge length, the smaller side of a block's bounding box), and draws the end
- *    handles of walls and openings just OUTSIDE their ends (`anchor` = the end / jamb they act on; the plan maps the
- *    pointer by anchor − p, so a drag acts as if the end itself was grabbed). Decks keep their handles.
+ * Small things at small zooms (UX review of phase 2a, second fix round):
+ *  - Handles never hide what they belong to: with the screen scale given, the end handles of walls and openings sit
+ *    just OUTSIDE their ends (`anchor` = the end / jamb they act on; the plan maps the pointer by anchor − p, so a
+ *    drag acts as if the end itself was grabbed), so they are left out only when the two would run into each other:
+ *    a length under END_HANDLE_MIN_DIAMETERS handle diameter on screen (`endHandlesShown`). Corner and edge handles
+ *    drawn ON the object (a block's vertices and edge midpoints, an exterior piece's two corners) still need
+ *    HANDLE_MIN_DIAMETERS diameters (the smaller side of the block's box, the piece's edge length;
+ *    `cornerHandlesShown`). Decks keep their handles.
  *  - `pressTarget` decides what a press on the selection grabs: a press inside the object's own body
  *    (`pressInBody`: an opening's footprint, a stored wall's footprint between its ends, an exterior piece away from
  *    its end vertices, a block's axis polygon away from its outline by one handle radius) moves the object even when
  *    it lands on a handle; handles win only outside the body.
- *  - Touch: the wall / opening hit band (`hitBandPx`) is at most TOUCH_BAND_MAX_M wide in plan metres, so a tap well
- *    inside a room selects the room when zoomed out; zoomed in it is the 24 px band again.
+ *  - Touch: the wall / opening hit band (`hitBandPx`) is TOUCH_BAND_MAX_M wide in plan metres, but never narrower than
+ *    TOUCH_BAND_MIN_PX (a finger must be able to hit a wall at the starting zoom) nor wider than 24 px. The plan draws
+ *    the room-label hit areas BELOW the walls, openings and ghosts, so inside that band the wall wins and elsewhere a
+ *    tap on a room's name selects the room.
+ *  - Placed units (`tapSelection`): a tap on the room of a block made from a template that holds one room selects the
+ *    block first (Roter 90° · Slett, body drag), the next tap the room; without it the unit could only be reselected
+ *    through Egenskaper → "Velg bygningsdelen".
  *  - Dør/vindu: `freeOpeningOffset` moves a new opening that would overlap an existing one on the same wall piece (along
  *    the wall and in height, like the 'opening-overlap' warning) to the nearest free centre on the 10 cm grid (1 cm
  *    with Alt) within the piece; with no free place it keeps the tapped centre (the warning shows the overlap).
@@ -79,19 +86,29 @@ export function dragThresholdPx(pointerType: string): number {
   return pointerType === 'touch' ? DRAG_THRESHOLD_TOUCH_PX : DRAG_THRESHOLD_PX;
 }
 
-/** Touch: the wall / opening hit band is at most this wide (plan metres) when zoomed out. */
+/** Touch: the wall / opening hit band is this wide (plan metres) between its pixel floor and ceiling. */
 export const TOUCH_BAND_MAX_M = 0.25;
-/** End / corner / edge handles are left out on objects shorter on screen than this many handle diameters. */
+/**
+ * Touch: … but never narrower than this on screen (px, ±5 px around the line), so a finger can select a wall, a door
+ * or a ghost at the phone's starting zoom (11,6 px/m). 10 rather than 12: at 11,6 px/m all of «Bod (ny)» lies within
+ * 5,5 px of a wall line, so with ±6 px its name could no longer be tapped (touchTaps.test.tsx).
+ */
+export const TOUCH_BAND_MIN_PX = 10;
+/** Corner / edge handles drawn ON an object are left out while it is shorter on screen than this many handle diameters. */
 export const HANDLE_MIN_DIAMETERS = 3;
+/** End handles (just outside a wall's ends / an opening's jambs) are left out below this many diameters of length. */
+export const END_HANDLE_MIN_DIAMETERS = 1;
 
 /**
- * Width (screen px) of the invisible wall / opening hit bands at `scale` px/m: 12 px with a fine pointer; on a coarse
- * pointer 24 px, but never wider than TOUCH_BAND_MAX_M in plan metres (zoomed out, 24 px would be metres wide and
- * catch every tap inside a room). Rounded to 0.1 px so the layers only re-render when it changes visibly.
+ * Width (screen px) of the invisible wall / opening / ghost hit bands at `scale` px/m: 12 px with a fine pointer; on a
+ * coarse pointer TOUCH_BAND_MAX_M in plan metres clamped to [TOUCH_BAND_MIN_PX, 24 px] (zoomed out, 24 px would be
+ * metres wide and catch every tap inside a room; 0,25 m alone is ±1,4 px at the phone's starting zoom). Rounded to
+ * 0.1 px so the layers only re-render when it changes visibly. The plan shows it as `data-hit-band` on its svg.
  */
 export function hitBandPx(coarse: boolean, scale: number): number {
   if (!coarse) return CORRIDOR_PX;
-  const band = Number.isFinite(scale) && scale > 0 ? Math.min(CORRIDOR_COARSE_PX, TOUCH_BAND_MAX_M * scale) : CORRIDOR_COARSE_PX;
+  if (!(Number.isFinite(scale) && scale > 0)) return CORRIDOR_COARSE_PX;
+  const band = Math.min(CORRIDOR_COARSE_PX, Math.max(TOUCH_BAND_MIN_PX, TOUCH_BAND_MAX_M * scale));
   return Math.round(band * 10) / 10;
 }
 
@@ -289,9 +306,22 @@ export interface HandleScreen {
   handleR: number;
 }
 
-/** Is a length (m) too short on screen for handles at its ends (fewer than HANDLE_MIN_DIAMETERS diameters)? */
-function tooSmall(lengthM: number, screen: HandleScreen | undefined): boolean {
-  return !!screen && screen.scale > 0 && lengthM * screen.scale < HANDLE_MIN_DIAMETERS * 2 * screen.handleR;
+/**
+ * Are the END handles of a wall or an opening `lengthM` long drawn at this screen? They sit one handle radius outside
+ * the ends, so they never cover the object; they are left out only when its length on screen is under
+ * END_HANDLE_MIN_DIAMETERS handle diameter (the two would run into each other). Without a screen: always.
+ */
+export function endHandlesShown(lengthM: number, screen?: HandleScreen): boolean {
+  return !screen || !(screen.scale > 0) || lengthM * screen.scale >= END_HANDLE_MIN_DIAMETERS * 2 * screen.handleR;
+}
+
+/**
+ * Are the CORNER / edge handles drawn on an object of size `sizeM` (a block's smaller side, an exterior piece's edge
+ * length) shown at this screen? They sit on the object, so it needs HANDLE_MIN_DIAMETERS handle diameters. Without a
+ * screen: always.
+ */
+export function cornerHandlesShown(sizeM: number, screen?: HandleScreen): boolean {
+  return !screen || !(screen.scale > 0) || sizeM * screen.scale >= HANDLE_MIN_DIAMETERS * 2 * screen.handleR;
 }
 
 /** The smaller side (m) of a polygon's bounding box. */
@@ -311,20 +341,20 @@ function endHandle(end: Vec2, outward: Vec2, screen: HandleScreen | undefined): 
 
 /**
  * Drag handles of the selection, bottom to top (vertices last, so they win where handles overlap). With `screen`
- * (the plan always passes it), the handles of objects too small on screen are left out and wall / opening end
- * handles sit just outside the ends (see the header).
+ * (the plan always passes it), wall / opening end handles sit just outside the ends and are left out only below
+ * `endHandlesShown`; corner and edge handles below `cornerHandlesShown` (see the header).
  */
 export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'outdoor'>, sel: PlanSelection | null, screen?: HandleScreen): PlanHandle[] {
   if (!sel) return [];
   switch (sel.kind) {
     case 'block': {
       const b = derived.blocks.find((x) => x.block.id === sel.id);
-      return b && !tooSmall(minSide(b.block.polygon.map((v) => v.p)), screen) ? blockHandles(b, sel) : [];
+      return b && cornerHandlesShown(minSide(b.block.polygon.map((v) => v.p)), screen) ? blockHandles(b, sel) : [];
     }
     case 'blockEdge':
     case 'blockVertex': {
       const b = findBlockOfVertex(derived.blocks, sel.id);
-      return b && !tooSmall(minSide(b.block.polygon.map((v) => v.p)), screen) ? blockHandles(b, sel) : [];
+      return b && cornerHandlesShown(minSide(b.block.polygon.map((v) => v.p)), screen) ? blockHandles(b, sel) : [];
     }
     case 'wall': {
       const w = derived.walls.find((x) => x.id === sel.id) ?? derived.walls.find((x) => x.source.kind === 'wall' && x.source.wallId === sel.id);
@@ -335,13 +365,13 @@ export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'o
         const i = poly.findIndex((v) => v.id === src.edgeId);
         if (i < 0) return [];
         const ends = [poly[i], poly[(i + 1) % poly.length]];
-        if (tooSmall(dist(ends[0].p, ends[1].p), screen)) return [];
+        if (!cornerHandlesShown(dist(ends[0].p, ends[1].p), screen)) return [];
         return ends.map((v) => {
           const s: PlanSelection = { kind: 'blockVertex', id: v.id };
           return { key: `bv:${v.id}`, shape: 'vertex' as const, p: v.p, drag: s, tap: s, active: false, title: editStrings.handleVertex };
         });
       }
-      if (tooSmall(dist(w.a, w.b), screen)) return [];
+      if (!endHandlesShown(dist(w.a, w.b), screen)) return [];
       const u = unit(w.a, w.b) ?? [1, 0];
       const target: PlanSelection = { kind: 'wall', id: src.wallId };
       return (['a', 'b'] as const).map((end) => ({
@@ -359,7 +389,7 @@ export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'o
       const hit = findOpening(derived, sel.id);
       if (!hit || hit.opening.isGhost) return [];
       const { wall, opening } = hit;
-      if (tooSmall(opening.width, screen)) return [];
+      if (!endHandlesShown(opening.width, screen)) return [];
       const u = unit(wall.a, wall.b) ?? [1, 0];
       const target: PlanSelection = { kind: 'opening', id: opening.id };
       return (['start', 'end'] as const).map((end) => ({
@@ -417,6 +447,22 @@ export function bodyDragTarget(derived: Pick<DerivedVariant, 'walls'>, sel: Plan
     default:
       return null;
   }
+}
+
+/**
+ * Tool Velg (editable): what a tap on `tapped` (the element under the pointer) selects. A placed unit — a block made
+ * from a template (Nytt bygg) that holds exactly one room — is selected as a whole first, so its mini-bar offers
+ * Roter 90° and Slett and a drag moves it; a tap on its room while the unit is selected selects the room (and the
+ * next one the unit again). Anything else: `tapped` itself.
+ */
+export function tapSelection(derived: Pick<DerivedVariant, 'rooms' | 'blocks'>, current: PlanSelection | null, tapped: PlanSelection | null): PlanSelection | null {
+  if (!tapped || tapped.kind !== 'room') return tapped;
+  const room = derived.rooms.find((r) => r.id === tapped.id && (tapped.levelId === undefined || r.levelId === tapped.levelId));
+  const blockId = room?.blockId;
+  if (!blockId) return tapped;
+  const block = derived.blocks.find((b) => b.block.id === blockId);
+  if (!block?.block.template || derived.rooms.filter((r) => r.blockId === blockId).length !== 1) return tapped;
+  return current?.kind === 'block' && current.id === blockId ? tapped : { kind: 'block', id: blockId };
 }
 
 function nearWall(w: DerivedWall, p: Vec2, tolM: number): boolean {

@@ -21,7 +21,8 @@
  *    which inserts and drags in one undo step (the session's `selection` is the new vertex, selected right away);
  *    without such a session it falls back to `insertDeckVertex` and a drag of the new vertex (two undo steps), and
  *    when that action returns no id the drag waits for the next derived model and takes the vertex id that is new there;
- *  - any other press pans; a tap selects (handles: their `tap` selection).
+ *  - any other press pans; a tap selects (handles: their `tap` selection; a tap on the room of a placed unit selects
+ *    the unit first and its room on the next tap, editModel.ts `tapSelection`).
  * Placement tools tap, never drag (a drag pans), and need `editable` (Mål works on the locked base too):
  *  - Vegg: the 1st tap sets the start, the 2nd calls `addWall(start, end, levelAt(midpoint))`, selects the new wall
  *    and waits for the next start (the tool stays until Esc / Velg); a zero-length wall (< 1 cm) is ignored;
@@ -60,6 +61,7 @@ import {
   pressTarget,
   quarterTurns,
   snapRadiusM,
+  tapSelection,
   unitFootprint,
   unitSize,
   wallAt,
@@ -472,7 +474,7 @@ export function usePlanEditing(params: PlanEditingParams) {
   };
 
   const onTap = (info: PointerInfo) => {
-    const { editable, actions, toolOptions, derived, storeyId, pieces, onSelect, onToolChange, onDropFurniture } = p.current;
+    const { editable, actions, toolOptions, derived, storeyId, pieces, selection, onSelect, onToolChange, onDropFurniture } = p.current;
     const cur = currentTool();
     switch (cur.tool) {
       case 'wall': {
@@ -545,7 +547,9 @@ export function usePlanEditing(params: PlanEditingParams) {
           }
           return;
         }
-        onSelect(selectionFromTarget(info.target));
+        // A placed unit is selected as a whole first, its room on the next tap (editModel.ts `tapSelection`).
+        const tapped = selectionFromTarget(info.target);
+        onSelect(editable ? tapSelection(derived, selection, tapped) : tapped);
       }
     }
   };
@@ -595,16 +599,12 @@ export function usePlanEditing(params: PlanEditingParams) {
   const hover = toolState.hover;
   const unitGhost = useMemo(() => (tool === 'unit' && template && hover ? unitFootprint(template, hover, rotation) : null), [tool, template, hover, rotation]);
 
-  const overlay: EditOverlayState = {
-    tool,
-    dragging: drag.on,
-    feedback: drag.on ? drag.feedback : toolState.feedback,
-    hover,
-    wallStart: toolState.wallStart,
-    measure: toolState.measure,
-    openingHover: toolState.openingHover,
-    unitGhost,
-    dropPreview,
-  };
+  // One object per change, so the (memoised) overlay re-renders only when its own state changes.
+  const feedback = drag.on ? drag.feedback : toolState.feedback;
+  const { wallStart, measure, openingHover } = toolState;
+  const overlay = useMemo(
+    (): EditOverlayState => ({ tool, dragging: drag.on, feedback, hover, wallStart, measure, openingHover, unitGhost, dropPreview }),
+    [tool, drag.on, feedback, hover, wallStart, measure, openingHover, unitGhost, dropPreview],
+  );
   return { controller, onTap, overlay, cancel, setDropPreview, busy };
 }

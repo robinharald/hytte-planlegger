@@ -9,12 +9,17 @@ import { polygonPath } from '../svg';
 
 const ORDER: Record<DerivedFloor['kind'], number> = { slab: 0, room: 1, threshold: 2, ceiling: 3 };
 
+/** One floor (memoised per floor: a drag re-renders only the floors that changed). */
+const Floor = memo(function Floor({ f, highlightNew }: { f: DerivedFloor; highlightNew: boolean }) {
+  return <path d={polygonPath(f.polygon, f.holes)} fill={floorFill(f.material, f.isNew, highlightNew)} fillRule="evenodd" data-floor-kind={f.kind} data-floor-id={f.id} />;
+});
+
 export const FloorLayer = memo(function FloorLayer({ floors, highlightNew = false }: { floors: DerivedFloor[]; highlightNew?: boolean }) {
   const sorted = [...floors].sort((a, b) => ORDER[a.kind] - ORDER[b.kind]);
   return (
     <g data-layer="floors" pointerEvents="none">
       {sorted.map((f) => (
-        <path key={f.id} d={polygonPath(f.polygon, f.holes)} fill={floorFill(f.material, f.isNew, highlightNew)} fillRule="evenodd" data-floor-kind={f.kind} data-floor-id={f.id} />
+        <Floor key={f.id} f={f} highlightNew={highlightNew} />
       ))}
     </g>
   );

@@ -14,6 +14,7 @@ import {
   openingCornerDimension,
   pointerSizes,
   selectionBounds,
+  tapSelection,
   unitFootprint,
   unitSize,
   wallAt,
@@ -245,5 +246,25 @@ describe('openingCornerDimension ("Avstand fra hjørne")', () => {
 
   it('is null for an unknown opening', () => {
     expect(openingCornerDimension(d, 'nope')).toBeNull();
+  });
+});
+
+describe('tapSelection (second fix round: a placed unit could only be reselected through Egenskaper)', () => {
+  const unitD = { ...d, blocks: d.blocks.map((b) => (b.block.id === 'blk-b' ? { ...b, block: { ...b.block, template: 'bod' } } : b)) };
+  const ROOM = { kind: 'room' as const, id: 'rom-soverom', levelId: 'main' };
+
+  it('a tap on the room of a unit made from a template selects the unit, the next tap the room, then the unit again', () => {
+    expect(tapSelection(unitD, null, ROOM)).toEqual({ kind: 'block', id: 'blk-b' });
+    expect(tapSelection(unitD, { kind: 'wall', id: 'w-bad-s' }, ROOM)).toEqual({ kind: 'block', id: 'blk-b' });
+    expect(tapSelection(unitD, { kind: 'block', id: 'blk-b' }, ROOM)).toBe(ROOM);
+    expect(tapSelection(unitD, ROOM, ROOM)).toEqual({ kind: 'block', id: 'blk-b' });
+  });
+
+  it('rooms of blocks without a template, of units holding several rooms, and everything else: as tapped', () => {
+    expect(tapSelection(d, null, ROOM)).toBe(ROOM);
+    const twoRooms = { ...unitD, rooms: unitD.rooms.map((r) => (r.id === 'rom-bad' ? { ...r, blockId: 'blk-b' } : r)) };
+    expect(tapSelection(twoRooms, null, ROOM)).toBe(ROOM);
+    expect(tapSelection(unitD, null, { kind: 'wall', id: 'w-bad-s' })).toEqual({ kind: 'wall', id: 'w-bad-s' });
+    expect(tapSelection(unitD, null, null)).toBeNull();
   });
 });

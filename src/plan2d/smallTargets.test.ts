@@ -11,7 +11,7 @@ import type { Vec2 } from '../model/types';
 import * as A from '../state/editActions';
 import { createAppStore } from '../state/store';
 import { deriveForState } from '../state/useDerived';
-import { CORRIDOR_COARSE_PX, CORRIDOR_PX, HANDLE_RADIUS_COARSE_PX, HANDLE_RADIUS_PX, findOpening, handlesFor, pressTarget } from './editModel';
+import { CORRIDOR_COARSE_PX, CORRIDOR_PX, HANDLE_RADIUS_COARSE_PX, HANDLE_RADIUS_PX, cornerHandlesShown, endHandlesShown, findOpening, handlesFor, pressTarget } from './editModel';
 import type { PlanHandle } from './editModel';
 import type { PlanSelection } from './editTypes';
 
@@ -114,5 +114,42 @@ describe('zoomed in, the handles are back', () => {
     const c = openingCentre(seed, 'door-mellom-vf');
     const inside: Vec2 = [start.p[0] + (c[0] - start.p[0]) * 0.1, start.p[1] + (c[1] - start.p[1]) * 0.1];
     expect(pressTarget(seed, DOOR, start, false, inside, 0.1, 0.05)).toEqual({ kind: 'body', target: DOOR });
+  });
+});
+
+describe('second fix round: end handles appear at the usual zooms (they sit outside the ends)', () => {
+  const MOUSE = { scale: 23.5, handleR: HANDLE_RADIUS_PX };
+
+  it('endHandlesShown / cornerHandlesShown: one handle diameter for end handles, three for corner handles', () => {
+    expect(endHandlesShown(0.91, MOUSE)).toBe(true);
+    expect(endHandlesShown(0.5, MOUSE)).toBe(false);
+    expect(endHandlesShown(0.3, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX })).toBe(false);
+    expect(endHandlesShown(0.3)).toBe(true);
+    expect(cornerHandlesShown(2, MOUSE)).toBe(true);
+    expect(cornerHandlesShown(1.5, MOUSE)).toBe(false);
+    expect(cornerHandlesShown(1.5, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX })).toBe(false);
+    expect(cornerHandlesShown(1.5, { scale: 60, handleR: HANDLE_RADIUS_PX })).toBe(true);
+  });
+
+  it('laptop (23,5 px/m): door-mellom-vf (0,91 m) has its end handles; a press in its middle still moves it', () => {
+    expect(handlesFor(seed, DOOR, MOUSE).map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
+    expect(press(seed, DOOR, openingCentre(seed, 'door-mellom-vf'), 23.5, false)).toEqual({ kind: 'body', target: DOOR });
+    const end = handlesFor(seed, DOOR, MOUSE)[1];
+    const onHandle = press(seed, DOOR, end.p, 23.5, false);
+    expect(onHandle?.kind === 'handle' && onHandle.handle.handle).toBe('end');
+    // Walls too: w-104-103 (1,96 m) on the laptop, w-gang-n (4,8 m) on the phone.
+    expect(handlesFor(seed, { kind: 'wall', id: 'w-104-103' }, MOUSE).map((h) => h.key)).toEqual(['we:a', 'we:b']);
+    expect(handlesFor(seed, { kind: 'wall', id: 'w-gang-n' }, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX })).toHaveLength(2);
+  });
+
+  it('a 0,3 m window at 11,6 px/m shows none (mouse or touch); its middle moves it', () => {
+    const store = seedStore();
+    expect(A.setOpeningProps(store, 'win-bad-n', { width: 0.3 })).toBe(true);
+    const d = deriveForState(store.getState());
+    const sel: PlanSelection = { kind: 'opening', id: 'win-bad-n' };
+    expect(findOpening(d, 'win-bad-n')!.opening.width).toBeCloseTo(0.3, 9);
+    expect(handlesFor(d, sel, { scale: 11.6, handleR: HANDLE_RADIUS_PX })).toEqual([]);
+    expect(handlesFor(d, sel, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX })).toEqual([]);
+    expect(press(d, sel, openingCentre(d, 'win-bad-n'), 11.6, true)).toEqual({ kind: 'body', target: sel });
   });
 });

@@ -16,12 +16,19 @@
  *    visibility.ts; the footprints of stairs, chimneys and posts on the storey are label obstacles.
  *  - Furniture is drawn on the storey of its level (`DerivedFurniture.levelId`); items on a level that does not
  *    exist are drawn on the storey with the main floor (like the outdoor elements).
+ *  - Ghosts ("Fjernet": removed walls and openings of the storey, moved block edges on every storey) are label
+ *    obstacles while "Vis hva som er nytt" shows them (`ghostObstacles`), so a merged room's name never covers the
+ *    removed wall it could be restored from (fix round 2 after phase 2a).
+ *  - `planLayerData` adds what the layers take straight from the derived model (blocks, ghosts, outdoor, roofs,
+ *    bounds); PlanView shares the whole object with the previous frame's (stable.ts), so a drag re-renders only the
+ *    layers whose part changed.
  */
-import type { DerivedDimension, DerivedFloor, DerivedFurniture, DerivedOpening, DerivedRoom, DerivedStructure, DerivedVariant, DerivedWall } from '../model/derived';
+import type { DerivedBlock, DerivedDimension, DerivedFloor, DerivedFurniture, DerivedOpening, DerivedRoof, DerivedRoom, DerivedStructure, DerivedVariant, DerivedWall } from '../model/derived';
 import type { ElementStatus, Id, Vec2 } from '../model/types';
 import type { StairMode } from './drawing';
 import { stairModeOnStorey, storeyContext, structureOnStorey } from './visibility';
 import type { StoreyContext } from './visibility';
+import type { Rect } from './viewport';
 
 export interface PlacedOpening {
   wall: DerivedWall;
@@ -148,5 +155,70 @@ export function storeyData(derived: DerivedVariant, planStorey: string): StoreyD
     dimensions: derived.dimensions.filter((d) => d.levelId === undefined || levelIds.includes(d.levelId)),
     furniture: derived.furniture.filter((f) => (known.has(f.levelId) ? levelIds.includes(f.levelId) : outdoorActive)),
     outdoorActive,
+  };
+}
+
+/** Half width (m) of the strip a block-edge ghost line keeps room labels off. */
+const GHOST_LINE_HALF_M = 0.05;
+
+/** Thin quad around a segment (a block-edge ghost as a label obstacle). */
+function segmentQuad(a: Vec2, b: Vec2, half: number): Vec2[] | null {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const l = Math.hypot(dx, dy);
+  if (l < 1e-9) return null;
+  const n: Vec2 = [(-dy / l) * half, (dx / l) * half];
+  return [
+    [a[0] + n[0], a[1] + n[1]],
+    [b[0] + n[0], b[1] + n[1]],
+    [b[0] - n[0], b[1] - n[1]],
+    [a[0] - n[0], a[1] - n[1]],
+  ];
+}
+
+/**
+ * Label obstacles for the ghosts drawn on this storey: the footprints of its removed walls and removed openings, and
+ * a thin strip along every moved block edge's old line.
+ */
+export function ghostObstacles(derived: Pick<DerivedVariant, 'ghosts'>, data: Pick<StoreyData, 'pieces' | 'openings'>): Vec2[][] {
+  const out: Vec2[][] = [];
+  for (const w of data.pieces) if (w.isGhost && w.footprint.length >= 3) out.push(w.footprint);
+  for (const { opening } of data.openings) if (opening.status === 'removed' && opening.footprint.length >= 3) out.push(opening.footprint);
+  for (const g of derived.ghosts) {
+    const q = segmentQuad(g.a, g.b, GHOST_LINE_HALF_M);
+    if (q) out.push(q);
+  }
+  return out;
+}
+
+/** Everything the plan's layers draw for one storey (see the header). */
+export interface PlanLayerData extends StoreyData {
+  blocks: DerivedBlock[];
+  ghosts: DerivedVariant['ghosts'];
+  decks: DerivedVariant['outdoor']['decks'];
+  hotTubs: DerivedVariant['outdoor']['hotTubs'];
+  railings: DerivedVariant['outdoor']['railings'];
+  steps: DerivedVariant['outdoor']['steps'];
+  trees: DerivedVariant['site']['trees'];
+  roofs: DerivedRoof[];
+  bounds: Rect;
+  /** Label obstacles of the ghosts (`ghostObstacles`); used while "Vis hva som er nytt" is on. */
+  ghostObstacles: Vec2[][];
+}
+
+export function planLayerData(derived: DerivedVariant, planStorey: string): PlanLayerData {
+  const data = storeyData(derived, planStorey);
+  return {
+    ...data,
+    blocks: derived.blocks,
+    ghosts: derived.ghosts,
+    decks: derived.outdoor.decks,
+    hotTubs: derived.outdoor.hotTubs,
+    railings: derived.outdoor.railings,
+    steps: derived.outdoor.steps,
+    trees: derived.site.trees,
+    roofs: derived.roofs,
+    bounds: derived.bounds,
+    ghostObstacles: ghostObstacles(derived, data),
   };
 }

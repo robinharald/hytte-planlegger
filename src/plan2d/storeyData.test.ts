@@ -3,7 +3,7 @@ import { area, isCCW, pointInPolygon } from '../geometry/polygon';
 import type { DerivedStructure, DerivedVariant } from '../model/derived';
 import type { Level, Vec2 } from '../model/types';
 import { createPlanFixture } from './fixture';
-import { openingLevelId, storeyData, structureFootprint } from './storeyData';
+import { ghostObstacles, openingLevelId, planLayerData, storeyData, structureFootprint } from './storeyData';
 import { sweptAngle } from './svg';
 import { crossesCut, stairModeOnStorey, storeyContext, structureOnStorey, zRangeOf } from './visibility';
 
@@ -213,5 +213,34 @@ describe('structure visibility', () => {
     const toMain = { ...stair, element: { ...stair.element, toLevelId: 'main' } } as typeof stair;
     expect(stairModeOnStorey(toMain, loft)).toBeNull();
     expect(structureOnStorey(toMain, loft)).toBe(false);
+  });
+});
+
+describe('ghostObstacles and planLayerData (second fix round: room names covered ghosts)', () => {
+  const d = createPlanFixture();
+
+  it('removed walls and openings of the storey and every block-edge ghost keep room labels clear', () => {
+    const withGhost: DerivedVariant = { ...d, ghosts: [{ id: 'g-1', a: [0, 2], b: [0, 5] }] };
+    const data = storeyData(withGhost, 'ground');
+    const obstacles = ghostObstacles(withGhost, data);
+    const removedWall = data.pieces.find((w) => w.isGhost)!;
+    const removedOpening = data.openings.find((o) => o.opening.status === 'removed')!;
+    expect(obstacles).toContain(removedWall.footprint);
+    expect(obstacles).toContain(removedOpening.opening.footprint);
+    expect(obstacles).toHaveLength(3);
+    // The edge ghost as a thin strip around its line.
+    const strip = obstacles[2];
+    expect(pointInPolygon([0.02, 3], strip)).toBe(true);
+    expect(pointInPolygon([0.2, 3], strip)).toBe(false);
+  });
+
+  it('planLayerData adds the derived-level parts the layers draw', () => {
+    const data = planLayerData(d, 'ground');
+    expect(data.blocks).toBe(d.blocks);
+    expect(data.decks).toBe(d.outdoor.decks);
+    expect(data.trees).toBe(d.site.trees);
+    expect(data.bounds).toBe(d.bounds);
+    expect(data.rooms).toEqual(storeyData(d, 'ground').rooms);
+    expect(data.ghostObstacles).toEqual(ghostObstacles(d, data));
   });
 });

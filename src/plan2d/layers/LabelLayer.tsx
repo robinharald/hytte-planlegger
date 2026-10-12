@@ -2,70 +2,99 @@
  * Room labels: name, `b × d m` and `m²` (comma decimals via ui/format.ts). Density by the current px/m (svg.ts
  * `labelDensity`): ≥ 20 full label, 8–20 name only (small font below 12), < 8 none. Rooms of type 'apning' get
  * the name only. Faces without a Room record show "Uten navn" (italic, muted) with dims and area.
- * Labels are fitted to their rooms and to each other (labelLayout.ts `layoutRoomLabels`: the actual text
- * rectangle must lie inside the room, clear of stairs, chimney and posts; the anchor moves off the label point
- * when needed; details are compacted to "name / m²", then dropped, then the name is wrapped, else no label until
- * the user zooms in), so labels never cross a wall or overlap each other.
+ * Labels are fitted to their rooms and to each other (labelLayout.ts `layoutRoomLabels`, run once per frame by
+ * PlanView and passed to both layers here: the actual text rectangle must lie inside the room, clear of stairs,
+ * chimney, posts and — with "Vis hva som er nytt" — the ghosts; the anchor moves off the label point when needed;
+ * details are compacted to "name / m²", then dropped, then the name is wrapped, else no label until the user zooms
+ * in), so labels never cross a wall or overlap each other.
  * Text is laid out in screen pixels through ScreenText, so it stays the same size at any zoom.
- * Each drawn label's text box is a hit area of its room (`data-room-label-hit`, selection { kind: 'room', id, levelId }),
- * above the walls and openings: a tap on a room's name selects the room even inside a wall's or door's hit band
- * (phones, zoomed out). Everything else in the layer takes no pointer events.
+ *
+ * Two layers (fix round 2 after phase 2a):
+ *  - `LabelHitLayer`: each drawn label's text box is a hit area of its room (`data-room-label-hit`, selection
+ *    { kind: 'room', id, levelId }). PlanView draws it BELOW the walls, openings and ghosts: a tap on a room's name
+ *    selects the room (phones, zoomed out, where most of a small room is wall band), but within a wall's, door's or
+ *    ghost's hit band (editModel.ts `hitBandPx`) that element wins, so walls and ghosts stay selectable next to a
+ *    label.
+ *  - `LabelLayer`: the text itself, on top of everything, taking no pointer events.
  */
 import { memo } from 'react';
 import type { DerivedRoom } from '../../model/derived';
-import type { Vec2 } from '../../model/types';
-import { labelFonts, layoutRoomLabels } from '../labelLayout';
+import type { PlacedRoomLabel } from '../labelLayout';
 import { selAttrs } from '../selection';
-import { labelDensity } from '../svg';
 import { COLORS, PAPER } from '../style';
 import { ScreenText } from './ScreenText';
 
+export type PlacedLabel = PlacedRoomLabel<DerivedRoom>;
+
 export interface LabelLayerProps {
-  rooms: DerivedRoom[];
+  /** The fitted labels (labelLayout.ts `layoutRoomLabels` for the storey's rooms at `scale`). */
+  labels: readonly PlacedLabel[];
   scale: number;
   highlightNew: boolean;
-  /** Footprints the labels keep clear of (storeyData.ts `labelObstacles`). */
-  obstacles?: Vec2[][];
 }
 
-const NO_OBSTACLES: Vec2[][] = [];
+const labelKey = (r: DerivedRoom) => `${r.levelId}/${r.id}`;
 
-export const LabelLayer = memo(function LabelLayer({ rooms, scale, highlightNew, obstacles = NO_OBSTACLES }: LabelLayerProps) {
-  const density = labelDensity(scale);
+/** One label's hit area (memoised per label: PlanView keeps unchanged labels' identities between frames). */
+const LabelHit = memo(function LabelHit({ placed: { room: r, label, at }, scale }: { placed: PlacedLabel; scale: number }) {
+  return (
+    <ScreenText x={at[0]} y={at[1]} scale={scale}>
+      <rect x={-label.w / 2} y={-label.h / 2} width={label.w} height={label.h} fill="none" pointerEvents="fill" data-room-label-hit={r.id} {...selAttrs('room', r.id, r.levelId)} />
+    </ScreenText>
+  );
+});
+
+/** Invisible hit areas of the drawn labels (see the header). */
+export const LabelHitLayer = memo(function LabelHitLayer({ labels, scale }: { labels: readonly PlacedLabel[]; scale: number }) {
+  return (
+    <g data-layer="label-hits" pointerEvents="none">
+      {labels.map((l) => (
+        <LabelHit key={labelKey(l.room)} placed={l} scale={scale} />
+      ))}
+    </g>
+  );
+});
+
+/** One label's text (memoised per label). */
+const LabelText = memo(function LabelText({ placed: { room: r, label, at }, scale, highlightNew }: { placed: PlacedLabel; scale: number; highlightNew: boolean }) {
+  const { lines, nameLines, font, ys } = label;
+  const unnamed = !r.room;
+  const nameColour = unnamed ? COLORS.labelMuted : r.isNew && highlightNew ? COLORS.labelNew : COLORS.labelName;
+  return (
+    <ScreenText x={at[0]} y={at[1]} scale={scale} data-room-label={r.id} data-label-kind={label.kind}>
+      {lines.map((text, i) => {
+        const isName = i < nameLines;
+        return (
+          <text
+            key={i}
+            x={0}
+            y={ys[i]}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={isName ? font.name : font.detail}
+            fontWeight={isName ? 600 : 400}
+            fontStyle={unnamed && isName ? 'italic' : undefined}
+            fill={isName ? nameColour : COLORS.labelMuted}
+            stroke={PAPER}
+            strokeWidth={3}
+            strokeLinejoin="round"
+            paintOrder="stroke"
+          >
+            {text}
+          </text>
+        );
+      })}
+    </ScreenText>
+  );
+});
+
+/** The label text, on top of the plan (no pointer events). */
+export const LabelLayer = memo(function LabelLayer({ labels, scale, highlightNew }: LabelLayerProps) {
   return (
     <g data-layer="labels" pointerEvents="none">
-      {density !== 'none' &&
-        layoutRoomLabels(rooms, density, scale, labelFonts(scale), obstacles).map(({ room: r, label: { lines, nameLines, kind, font, ys, w, h }, at }) => {
-          const unnamed = !r.room;
-          const nameColour = unnamed ? COLORS.labelMuted : r.isNew && highlightNew ? COLORS.labelNew : COLORS.labelName;
-          return (
-            <ScreenText key={`${r.levelId}/${r.id}`} x={at[0]} y={at[1]} scale={scale} data-room-label={r.id} data-label-kind={kind}>
-              <rect x={-w / 2} y={-h / 2} width={w} height={h} fill="none" pointerEvents="fill" data-room-label-hit={r.id} {...selAttrs('room', r.id, r.levelId)} />
-              {lines.map((text, i) => {
-                const isName = i < nameLines;
-                return (
-                  <text
-                    key={i}
-                    x={0}
-                    y={ys[i]}
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fontSize={isName ? font.name : font.detail}
-                    fontWeight={isName ? 600 : 400}
-                    fontStyle={unnamed && isName ? 'italic' : undefined}
-                    fill={isName ? nameColour : COLORS.labelMuted}
-                    stroke={PAPER}
-                    strokeWidth={3}
-                    strokeLinejoin="round"
-                    paintOrder="stroke"
-                  >
-                    {text}
-                  </text>
-                );
-              })}
-            </ScreenText>
-          );
-        })}
+      {labels.map((l) => (
+        <LabelText key={labelKey(l.room)} placed={l} scale={scale} highlightNew={highlightNew} />
+      ))}
     </g>
   );
 });
