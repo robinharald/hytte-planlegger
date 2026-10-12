@@ -27,7 +27,13 @@
  * snap radius, min 0.25 m, of the pointer), openingResize, deckVertex, deckEdge, deck, steps (along their edge),
  * hotTub (touches deck edges), tree, furniture (back to wall). Opening and outdoor drags (opening, openingResize,
  * deck*, steps, hotTub, tree, furniture) cannot change a room face: their frames skip the room reconciliation and
- * its derive (the plan's render derives the stored result once).
+ * its derive (the plan's render derives the stored result once). Drag preview (polish round, phase 2b):
+ * `previewDrag(session, pointer, modifiers)` (no store; bound the same way) is the cheap part of a frame — the same snap
+ * and overlay as updateDrag (chips from the nominal geometry) plus `target`, the dragged element's outline at the
+ * snapped pointer — without a store change or a derive (≈ 0.02–0.06 ms on the seed against ≈ 55 ms for a wall / edge /
+ * unit updateDrag); the plan calls it every frame and updateDrag at most every T ms, and once more before endDrag.
+ * Unit and block moves reach contact targets as far as the pointer's drag threshold (`DragModifiers.dragThresholdM`,
+ * default 10 / 24 of the snap radius = 5 px / 10 px), so a phone can attach a unit (geometry/snap.ts snapPolygon).
  * `snapPoint(store, p, opts)` serves the placement tools (Vegg / Mål with `from`, Dør/vindu → the host under the
  * point, Nytt bygg → the snapped unit centre with its footprint as `ghost`, Møbler → grid).
  *
@@ -36,7 +42,10 @@
  * wall moves it across itself like a drag; `restoreGhost` also brings back Room records deleted earlier in this
  * session (found in the undo history) whose anchor lies in a face that is unnamed after the restore, and for a wall
  * that is not just its ghost translated (an endpoint drag) it first drags each end back with the endpoint cascades
- * (leaving alone the existing walls the forward step did not touch: no ghost); after a wall restore it also drags back
+ * (leaving alone the existing walls the forward step did not touch: no ghost); a translated wall is moved back the
+ * same way (`keep`: the untouched existing walls, the walls no step since the first touch changed — from the undo
+ * history, `unchangedSince` — and new walls on its end whose line misses the ghost's end, `keepOnMoveBack`), so a
+ * move that ended on a neighbour's corner does not drag that neighbour back with it; after a wall restore it also drags back
  * the ends of neighbours the forward step left just beside the wall's line (`neighbourEnds`: their ghost end is on the
  * restored ghost, their live end within 5 cm of the moved wall or on the line it was moved to);
  * `moveBlock` / a whole-block drag of a block with existing area is refused like `deleteBlock`; `rotateBlock(store,
@@ -97,11 +106,13 @@ import {
   wallEndsFree,
 } from '../geometry/edit';
 import type { BlockPatch, DeckPatch, EditContext, OpeningPatch, PlanTransform, RoomMerge, RoomPatch, WallPatch } from '../geometry/edit';
+import { backEdge } from '../geometry/furnitureDerive';
 import { levelAt } from '../geometry/levels';
 import { buildSnapContext, chipsAcross, gridStep, rayToWall, roundTo, snap, snapCircle, snapFootprint, snapLineOffset, snapPolygon } from '../geometry/snap';
 import type { DimensionChip, SnapContext, SnapIndicator, SnapResult } from '../geometry/snap';
 import { distancePointSegment } from '../geometry/polygon';
 import type { DerivedVariant } from '../model/derived';
+import { catalogItem, clampSize, placementSize } from '../furniture/catalog';
 import type { FurnitureItem, Id, OpeningHost, OpeningType, Project, Room, RoomType, Site, Tree, Variant, Vec2, Wall } from '../model/types';
 import { unitFootprint, unitTemplate } from '../model/unitTemplates';
 import { appStore } from './appStore';
@@ -228,6 +239,8 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
           d.rooms = rec.rooms as Room[];
         });
       }
+      // Furniture backed onto a wall face that moved goes with it (§4, `followWallFaces`).
+      final = followWallFaces(base, derived, final, nextDerived);
       if (opts.revive) {
         const fd = deriveOf(site, final);
         const back = fd ? reviveRooms(final, fd, opts.revive()) : [];
@@ -334,6 +347,8 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
   let parallelSame = false;
   let from: RunOpts['from'];
   let neighbours: NeighbourEnd[] = [];
+  // Walls no step since the wall was first touched has changed (the undo history): the way back leaves them alone.
+  let still: ReadonlySet<Id> = new Set();
   // Opening ghosts parked on removed walls (the ghost being restored, or the ghosts of walls a cascade touched): restored
   // when their host goes (the endpoint cascade back may already have healed the wall itself).
   const parked = new Map<Id, Id>();
@@ -351,7 +366,8 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       parallelSame = Math.abs(dot(ud, ug) - 1) < 1e-6 && Math.abs(dist(live.a, live.b) - dist(g.a, g.b)) < 1e-6;
       // Not just translated (an endpoint drag, or a move and an endpoint drag): drag each end back to the ghost's
       // end with the endpoint cascades (coincident ends, T-junctions), one end after the other.
-      if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g);
+      still = unchangedSince(store, v, id);
+      if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g, still);
       neighbours = neighbourEnds(v, live, g);
     }
   }
@@ -362,7 +378,9 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
         if (parallelSame && ref.original) {
           const g = ctx.base.walls.find((w) => w.id === id);
           const live = ctx.base.walls.find((w) => w.id === ref.original);
-          if (g && live) applyMoveWall(d, ctx, live.id, sub(g.a, live.a));
+          // Like endpointsBack: the walls the forward step did not touch stay (polish round 2b: a move that snapped the
+          // wall's end onto a neighbour's corner dragged that neighbour along on the way back).
+          if (g && live) applyMoveWall(d, ctx, live.id, sub(g.a, live.a), { keep: new Set([...keepOnMoveBack(ctx.base, live, g), ...still]) });
         }
         const had = d.walls.some((w) => w.id === id && w.status === 'removed');
         const ok = applyRestoreWall(d, id);
@@ -440,6 +458,56 @@ function untouched(v: Variant): Set<Id> {
   return new Set(v.walls.filter((w) => w.status === 'existing' && !ghosts.has(`${w.id}/ghost`)).map((w) => w.id));
 }
 
+/** Wall ends closer than this (m) coincide (geometry/edit.ts COINCIDE). */
+const COINCIDE_M = 0.01;
+/** How near (m) a coincident wall's line must pass the ghost's end to be one the forward step may have carried. */
+const CARRIED_LINE = 0.01;
+
+/**
+ * The walls moving `live` back onto its ghost `g` must leave alone (polish round, phase 2b): the untouched existing
+ * walls, and NEW walls with an end on one of live's ends whose line does not pass the ghost's matching end — a follower
+ * of the forward step kept its direction, so its line still runs through where the end was; one whose line does not
+ * was not carried there (the move ended on its corner: w-peis-n −0.7 onto dv-stue-n at (9, 2.2)).
+ */
+function keepOnMoveBack(v: Variant, live: Wall, g: Wall): Set<Id> {
+  const keep = untouched(v);
+  for (const w of v.walls) {
+    if (w.id === live.id || w.status !== 'new') continue;
+    for (const end of ['a', 'b'] as const) {
+      const e = (['a', 'b'] as const).find((le) => dist(w[end], live[le]) <= COINCIDE_M);
+      if (!e) continue;
+      const other = end === 'a' ? w.b : w.a;
+      const d = sub(w[end], other);
+      const l = Math.hypot(d[0], d[1]);
+      const off = l < 1e-12 ? dist(g[e], other) : Math.abs(d[0] * (g[e][1] - other[1]) - d[1] * (g[e][0] - other[0])) / l;
+      if (off > CARRIED_LINE) keep.add(w.id);
+    }
+  }
+  return keep;
+}
+
+/**
+ * Walls whose ends are the same now as in the latest undo-history state from before the ghost `ghostId` existed:
+ * neither the step that first touched the wall nor any later one changed them, so the way back must not either (a new
+ * divider such as dv-stue-n whose corner the moved w-peis-n landed on). Empty when the history does not reach back.
+ */
+function unchangedSince(store: EditStore, v: Variant, ghostId: Id): Set<Id> {
+  const past = store.getState().history().past;
+  for (let i = past.length - 1; i >= 0; i--) {
+    const pv = past[i].variants.find((x) => x.id === v.id);
+    if (!pv) break;
+    if (pv.walls.some((w) => w.id === ghostId)) continue;
+    const before = new Map(pv.walls.map((w) => [w.id, w]));
+    const out = new Set<Id>();
+    for (const w of v.walls) {
+      const w0 = before.get(w.id);
+      if (w0 && w0.status === w.status && dist(w0.a, w.a) < 1e-9 && dist(w0.b, w.b) < 1e-9) out.add(w.id);
+    }
+    return out;
+  }
+  return new Set();
+}
+
 /** Drag each neighbour end (that is not back yet) to its ghost end with the endpoint cascades, then heal. */
 function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[]): void {
   for (const n of neighbours) {
@@ -457,14 +525,14 @@ function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[])
  * The variant with the ends of `wallId` dragged back to the ends of its ghost `g` (applyMoveWallEndpoint with its
  * cascades, each end from the state after the other one), and its derived model; undefined when nothing moved.
  */
-function endpointsBack(site: Site, v: Variant, wallId: Id, g: Wall): RunOpts['from'] {
+function endpointsBack(site: Site, v: Variant, wallId: Id, g: Wall, still: ReadonlySet<Id> = new Set()): RunOpts['from'] {
   let cur = v;
   let curDerived = deriveOf(site, cur);
   for (const end of ['a', 'b'] as const) {
     const w = cur.walls.find((x) => x.id === wallId);
     if (!w || !curDerived || dist(w[end], g[end]) < 1e-9) continue;
     const ctx: EditContext = { base: cur, derived: curDerived };
-    const keep = untouched(cur);
+    const keep = new Set([...untouched(cur), ...still]);
     const next = produce(cur, (d) => {
       applyMoveWallEndpoint(d as Variant, ctx, wallId, end, g[end], { keep });
       healGhosts(d as Variant);
@@ -502,8 +570,9 @@ export function moveBlock(store: EditStore, blockId: Id, delta: Vec2, opts: { tr
 
 /**
  * Turn a placed unit (a block with a template) a quarter turn about its centre: 90 = counter-clockwise, −90 =
- * clockwise; snapped to the 0.1 m grid; its walls, openings, rooms and furniture turn with it (geometry/edit.ts
- * applyRotateBlock). Refused with the toast for a block with existing area (like moveBlock); false for a drawn block
+ * clockwise; snapped to the 0.1 m grid (one off the grid keeps its centre and offset: +90 / −90 give it back
+ * exactly; one against a wall or deck edge keeps that contact); its walls, openings, rooms and furniture turn with it
+ * (geometry/edit.ts applyRotateBlock). Refused with the toast for a block with existing area (like moveBlock); false for a drawn block
  * without a template and (with the locked toast) on Forslag D. (270 is taken as −90; other angles do nothing.)
  */
 export function rotateBlock(store: EditStore, blockId: Id, deg: 90 | -90): boolean {
@@ -850,10 +919,52 @@ export function setVariantNotes(store: EditStore, notes: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Furniture (phase 2b refines the bodies)
+// Furniture (docs/phase2-plan.md §4; derived by geometry/furnitureDerive.ts)
 // ---------------------------------------------------------------------------
 
-/** Place an item (size from `opts.size`, else the 1 × 1 × 1 m fallback until the catalogue exists). Returns its id. */
+/** Furniture edits never change a room face: no room reconciliation (and no derive of the result) in the action. */
+const FURNITURE_RUN: RunOpts = { reconcile: false };
+
+const normDeg = (deg: number): number => ((deg % 360) + 360) % 360;
+
+/** The storey an item is on (its stored level's storey), else the first storey. */
+function storeyOfItem(derived: DerivedVariant, levelId: Id): Id {
+  return derived.levels.find((l) => l.id === levelId)?.storeyId ?? derived.storeys[0]?.id ?? '';
+}
+
+/**
+ * Move an item to `p` inside a recipe: the position, and the level of the floor under it on the item's storey
+ * (`levelAt`; a bed dragged from Korridor (øvre) into Soverom 1 goes to 'lower'). The furniture drag uses it too.
+ * False when unchanged or unknown.
+ */
+export function applyFurnitureMove(draft: Variant, derived: DerivedVariant, furnitureId: Id, p: Vec2): boolean {
+  const f = draft.furniture.find((x) => x.id === furnitureId);
+  if (!f || dist(f.position, p) < 1e-9) return false;
+  f.position = copy(p);
+  const levelId = levelAt(derived, storeyOfItem(derived, f.levelId), p);
+  if (levelId !== f.levelId) f.levelId = levelId;
+  return true;
+}
+
+/** New size of an item keeping its back edge (local +y) in place: the centre moves by half the depth change. */
+function resizeKeepingBack(f: FurnitureItem, size: FurnitureItem['size']): boolean {
+  const old = f.size;
+  if (old && Math.abs(old.w - size.w) < 1e-9 && Math.abs(old.d - size.d) < 1e-9 && Math.abs(old.h - size.h) < 1e-9) return false;
+  const shift = ((old?.d ?? size.d) - size.d) / 2;
+  if (Math.abs(shift) > 1e-12) {
+    const t = (f.rotationDeg * Math.PI) / 180;
+    f.position = [f.position[0] - shift * Math.sin(t), f.position[1] + shift * Math.cos(t)];
+  }
+  f.size = { w: size.w, d: size.d, h: size.h };
+  return true;
+}
+
+/**
+ * Place an item. Size: `opts.size`, else the catalogue preset `opts.sizeVariant` (else the entry's default preset;
+ * written into the item, so later catalogue changes never resize it). An unknown catalogue id gets 1 × 1 × 1 m and
+ * derives as a plain box with 'furniture-unknown'. Level: `opts.levelId`, else the floor under `position` on the plan
+ * storey (`levelAt`). Returns the new id (null when refused: read-only, or the locked Forslag D with its toast).
+ */
 export function addFurniture(
   store: EditStore,
   catalogId: string,
@@ -861,104 +972,223 @@ export function addFurniture(
   opts: { levelId?: Id; size?: FurnitureItem['size']; rotationDeg?: number; sizeVariant?: string; colour?: string } = {},
 ): Id | null {
   const storeyId = store.getState().ui.planStorey;
+  const preset = placementSize(catalogId, opts.sizeVariant);
   return (
-    run(store, (d, ctx) =>
-      applyAddFurniture(d, {
-        catalogId,
-        position,
-        levelId: opts.levelId ?? levelAt(ctx.derived, storeyId, position),
-        size: opts.size,
-        rotationDeg: opts.rotationDeg,
-        sizeVariant: opts.sizeVariant,
-        colour: opts.colour,
-      }),
+    run(
+      store,
+      (d, ctx) =>
+        applyAddFurniture(d, {
+          catalogId,
+          position,
+          levelId: opts.levelId ?? levelAt(ctx.derived, storeyId, position),
+          size: opts.size ?? preset?.size,
+          rotationDeg: normDeg(opts.rotationDeg ?? 0),
+          sizeVariant: opts.sizeVariant ?? preset?.sizeVariant,
+          colour: opts.colour,
+        }),
+      FURNITURE_RUN,
     )?.result ?? null
   );
 }
 
+/** Move an item's centre to `p` (its level follows the floor under it, see `applyFurnitureMove`). */
 export function moveFurniture(store: EditStore, furnitureId: Id, p: Vec2, opts: { transaction?: string } = {}): boolean {
+  return changed(run(store, (d, ctx) => applyFurnitureMove(d, ctx.derived, furnitureId, p), { ...FURNITURE_RUN, ...opts }));
+}
+
+/** Turn an item about its centre by `degrees` (counter-clockwise; default a quarter turn), kept in [0, 360). */
+export function rotateFurniture(store: EditStore, furnitureId: Id, degrees = 90): boolean {
   return changed(
     run(
       store,
       (d) => {
         const f = d.furniture.find((x) => x.id === furnitureId);
-        if (!f || dist(f.position, p) < 1e-9) return false;
-        f.position = copy(p);
+        if (!f || !Number.isFinite(degrees) || normDeg(degrees) === 0) return false;
+        f.rotationDeg = normDeg(f.rotationDeg + degrees);
         return true;
       },
-      opts,
+      FURNITURE_RUN,
     ),
   );
 }
 
-export function rotateFurniture(store: EditStore, furnitureId: Id, degrees = 90): boolean {
-  return changed(
-    run(store, (d) => {
-      const f = d.furniture.find((x) => x.id === furnitureId);
-      if (!f || degrees % 360 === 0) return false;
-      f.rotationDeg = (((f.rotationDeg + degrees) % 360) + 360) % 360;
-      return true;
-    }),
-  );
-}
-
 export interface FurniturePatch {
+  /** Bredde / Dybde (/ height): stretchable dimensions are clamped into the catalogue's ranges. */
   size?: FurnitureItem['size'];
   /** null removes the colour. */
   colour?: string | null;
+  /** A preset key: the item takes the preset's size (unless `size` is given too). */
   sizeVariant?: string;
+  /** Another catalogue entry: the item takes its default preset (unless `size` / `sizeVariant` say otherwise). */
   catalogId?: string;
   levelId?: Id;
 }
 
+/**
+ * Egenskaper for an item. Size changes keep the item's back edge where it is (a cabinet stays against its wall when
+ * its depth changes; the width grows about the centre). False when nothing changed (no undo step).
+ */
 export function setFurnitureProps(store: EditStore, furnitureId: Id, patch: FurniturePatch): boolean {
   return changed(
-    run(store, (d) => {
-      const f = d.furniture.find((x) => x.id === furnitureId);
-      if (!f) return false;
-      if (patch.size) f.size = { ...patch.size };
-      if (patch.colour !== undefined) {
-        if (patch.colour === null) delete f.colour;
-        else f.colour = patch.colour;
-      }
-      if (patch.sizeVariant !== undefined) f.sizeVariant = patch.sizeVariant;
-      if (patch.catalogId !== undefined) f.catalogId = patch.catalogId;
-      if (patch.levelId !== undefined) f.levelId = patch.levelId;
-      return true;
-    }),
+    run(
+      store,
+      (d) => {
+        const f = d.furniture.find((x) => x.id === furnitureId);
+        if (!f) return false;
+        let did = false;
+        if (patch.catalogId !== undefined && patch.catalogId !== f.catalogId) {
+          f.catalogId = patch.catalogId;
+          did = true;
+          const preset = patch.size ? null : placementSize(patch.catalogId, patch.sizeVariant);
+          if (preset) {
+            resizeKeepingBack(f, preset.size);
+            f.sizeVariant = preset.sizeVariant;
+          } else if (!patch.size && patch.sizeVariant === undefined) delete f.sizeVariant;
+        }
+        if (patch.sizeVariant !== undefined && patch.sizeVariant !== f.sizeVariant) {
+          f.sizeVariant = patch.sizeVariant;
+          did = true;
+          const preset = patch.size ? null : placementSize(f.catalogId, patch.sizeVariant);
+          if (preset) resizeKeepingBack(f, preset.size);
+        }
+        if (patch.size) {
+          const wanted = clampSize(catalogItem(f.catalogId), patch.size, f.size ?? patch.size);
+          if (resizeKeepingBack(f, wanted)) did = true;
+        }
+        if (patch.colour !== undefined) {
+          if (patch.colour === null) {
+            if (f.colour !== undefined) {
+              delete f.colour;
+              did = true;
+            }
+          } else if (patch.colour !== f.colour) {
+            f.colour = patch.colour;
+            did = true;
+          }
+        }
+        if (patch.levelId !== undefined && patch.levelId !== f.levelId) {
+          f.levelId = patch.levelId;
+          did = true;
+        }
+        return did;
+      },
+      FURNITURE_RUN,
+    ),
   );
 }
 
-/** Copy an item 0.3 m east and south; returns the copy's id. */
+/** Copy an item 0.3 m east and 0.3 m south (same size, turn, colour and level); returns the copy's id. */
 export function duplicateFurniture(store: EditStore, furnitureId: Id): Id | null {
   return (
-    run(store, (d) => {
-      const f = d.furniture.find((x) => x.id === furnitureId);
-      if (!f) return null;
-      return applyAddFurniture(d, {
-        catalogId: f.catalogId,
-        position: [f.position[0] + 0.3, f.position[1] - 0.3],
-        levelId: f.levelId,
-        size: { ...f.size },
-        rotationDeg: f.rotationDeg,
-        sizeVariant: f.sizeVariant,
-        colour: f.colour,
-      });
-    })?.result ?? null
+    run(
+      store,
+      (d) => {
+        const f = d.furniture.find((x) => x.id === furnitureId);
+        if (!f) return null;
+        return applyAddFurniture(d, {
+          catalogId: f.catalogId,
+          position: [f.position[0] + 0.3, f.position[1] - 0.3],
+          levelId: f.levelId,
+          size: { ...f.size },
+          rotationDeg: f.rotationDeg,
+          sizeVariant: f.sizeVariant,
+          colour: f.colour,
+        });
+      },
+      FURNITURE_RUN,
+    )?.result ?? null
   );
 }
 
 export function deleteFurniture(store: EditStore, furnitureId: Id): boolean {
   const ok = changed(
-    run(store, (d) => {
-      const i = d.furniture.findIndex((x) => x.id === furnitureId);
-      if (i < 0) return false;
-      d.furniture.splice(i, 1);
-      return true;
-    }),
+    run(
+      store,
+      (d) => {
+        const i = d.furniture.findIndex((x) => x.id === furnitureId);
+        if (i < 0) return false;
+        d.furniture.splice(i, 1);
+        return true;
+      },
+      FURNITURE_RUN,
+    ),
   );
   if (ok) deletedToast(store);
   return ok;
+}
+
+/** How near (m) an item's back edge must be to a wall face to move with it, and the overlap it needs along the face. */
+const FACE_REACH = 0.01;
+
+/** One identity per physical wall line: a stored wall, or a block edge (all its pieces lie on one line). */
+function faceKey(w: DerivedVariant['walls'][number]): string | null {
+  if (w.isGhost || w.isDivider || w.footprint.length < 3) return null;
+  return w.source.kind === 'wall' ? `w:${w.source.wallId}` : `e:${w.source.blockId}/${w.source.edgeId}`;
+}
+
+/**
+ * §4 "items following a moved wall face": every item the recipe left alone (same position and turn) whose back edge
+ * lies on a face of a wall (≤ 1 cm, overlapping it along the wall by ≥ 1 cm, the item on the room side) moves with that
+ * face when the wall's line moves across itself or its thickness changes — stored walls and block edges alike, in the
+ * same step (`run` applies it to every reconciled edit, comparing the action's base with its result: wall and edge
+ * moves, Bredde / Dybde of rooms, "Ta tilbake" — which so brings the furniture back too). Walls that turned are left
+ * alone, and an item never moves onto another level's floor. Pure; returns `after` when nothing moves.
+ */
+export function followWallFaces(before: Variant, beforeDerived: DerivedVariant, after: Variant, afterDerived: DerivedVariant): Variant {
+  if (after.furniture.length === 0) return after;
+  const old = new Map(before.furniture.map((f) => [f.id, f]));
+  const still = after.furniture.filter((f) => {
+    const b = old.get(f.id);
+    return b !== undefined && dist(b.position, f.position) < 1e-9 && b.rotationDeg === f.rotationDeg;
+  });
+  if (still.length === 0) return after;
+  const nextByKey = new Map<string, DerivedVariant['walls'][number]>();
+  for (const w of afterDerived.walls) {
+    const k = faceKey(w);
+    if (k && !nextByKey.has(k)) nextByKey.set(k, w);
+  }
+  const levelOf = new Map(beforeDerived.furniture.map((df) => [df.id, df.levelId]));
+  const moves = new Map<Id, Vec2>();
+  for (const w of beforeDerived.walls) {
+    const k = faceKey(w);
+    const nw = k ? nextByKey.get(k) : undefined;
+    if (!nw) continue;
+    const len = dist(w.a, w.b);
+    if (len < 1e-9 || dist(nw.a, nw.b) < 1e-9) continue;
+    const u = unit(sub(w.b, w.a));
+    const nu = unit(sub(nw.b, nw.a));
+    if (Math.abs(u[0] * nu[1] - u[1] * nu[0]) > 1e-6 || dot(u, nu) < 0) continue;
+    const n = leftNormal(u);
+    const shift = dot(sub(nw.a, w.a), n);
+    for (const side of [1, -1] as const) {
+      const off = side > 0 ? w.faceLeft : -w.faceRight;
+      const delta = shift + (side > 0 ? nw.faceLeft : -nw.faceRight) - off;
+      if (Math.abs(delta) < 1e-9) continue;
+      for (const f of still) {
+        if (moves.has(f.id) || !w.levelIds.includes(levelOf.get(f.id) ?? f.levelId)) continue;
+        const [p, q] = backEdge(f);
+        if (Math.abs(dot(sub(p, w.a), n) - off) > FACE_REACH || Math.abs(dot(sub(q, w.a), n) - off) > FACE_REACH) continue;
+        if (side * (dot(sub(f.position, w.a), n) - off) <= 0) continue;
+        const tp = dot(sub(p, w.a), u);
+        const tq = dot(sub(q, w.a), u);
+        if (Math.min(Math.max(tp, tq), len) - Math.max(Math.min(tp, tq), 0) < FACE_REACH) continue;
+        // Never onto another floor (a lower-level bathroom's toilet stays when the edge moves past the floor zone).
+        const level = levelOf.get(f.id) ?? f.levelId;
+        const to = add(f.position, scale(n, delta));
+        if (levelAt(afterDerived, storeyOfItem(afterDerived, f.levelId), to) !== level) continue;
+        moves.set(f.id, scale(n, delta));
+      }
+    }
+  }
+  if (moves.size === 0) return after;
+  // Rounded to the micrometre, so a wall moved there and back puts its furniture back on the same numbers.
+  const um = (v: number) => Math.round(v * 1e6) / 1e6;
+  return produce(after, (d) => {
+    for (const f of d.furniture) {
+      const m = moves.get(f.id);
+      if (m) f.position = [um(f.position[0] + m[0]), um(f.position[1] + m[1])];
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,6 +1319,11 @@ export interface DragModifiers {
   /** Snap radius in plan metres at the current zoom (12 px, 24 px coarse). */
   snapRadiusM?: number;
   coarse?: boolean;
+  /**
+   * The pointer's drag threshold in plan metres at the current zoom (5 px mouse / 10 px touch): unit and block moves
+   * reach contact targets that far (geometry/snap.ts `snapPolygon` `contactReach`). Default: 10 / 24 of the snap radius.
+   */
+  dragThresholdM?: number;
 }
 
 export interface DragFeedback {
@@ -1217,12 +1452,12 @@ function edgeTarget(derived: DerivedVariant, blockId: Id, edgeId: Id): DragTarge
  * never pulls a short drag back to where it started, nor adds or takes back much of it (fix round 2 after phase 2a).
  */
 function dragSnapContext(variant: Variant, derived: DerivedVariant, storeyId: Id, target: DragTarget, handle: DragHandle | undefined): SnapContext {
-  const origin = ((): { point?: Vec2; polygon?: Vec2[] } | undefined => {
+  const origin = ((): { point?: Vec2; polygon?: Vec2[]; levelId?: Id } | undefined => {
     switch (target.kind) {
       case 'wall':
       case 'wallEndpoint': {
         const w = variant.walls.find((x) => x.id === target.targetId);
-        return w ? { point: copy(target.kind === 'wallEndpoint' && handle === 'b' ? w.b : w.a) } : undefined;
+        return w ? { point: copy(target.kind === 'wallEndpoint' && handle === 'b' ? w.b : w.a), levelId: w.levelId } : undefined;
       }
       case 'blockVertex': {
         const v = variant.blocks.find((b) => b.id === target.ownerId)?.polygon.find((x) => x.id === target.targetId);
@@ -1347,27 +1582,92 @@ function variantOf(r: RunResult<unknown> | null, session: DragSession): Variant 
   return r?.variant ?? session.baseVariant;
 }
 
-/** Apply the drag for the pointer position (from the base) and return the feedback to draw. */
-export function updateDrag(store: EditStore, session: DragSession | null, pointer: Vec2, modifiers: DragModifiers = {}): DragFeedback {
-  if (!session || session.done) return EMPTY_FEEDBACK;
+/**
+ * The pointer's drag threshold (5 px mouse, 10 px touch) as a fraction of the snap radius (12 / 24 px), both from
+ * plan2d/editModel.ts: the default of `DragModifiers.dragThresholdM`.
+ */
+const DRAG_THRESHOLD_PER_SNAP_RADIUS = 10 / 24;
+
+/**
+ * One drag frame, computed from the base without touching the store (polish round, phase 2b; shared by updateDrag and
+ * previewDrag): the snap's overlay, the dragged element's target outline at the snapped pointer, and the edit.
+ */
+interface DragPlan {
+  /** Indicators, chips and the base outline, from the snap alone. */
+  feedback: DragFeedback;
+  /** The dragged element where this frame puts it (nominally: before the cascades), rings or 2-point segments. */
+  target: Vec2[][];
+  /** The edit, applied from the base by updateDrag. */
+  recipe: (draft: Variant, c: EditContext) => unknown;
+  /** updateDrag: the chips from the applied result instead, where a cascade may put the element off its nominal place. */
+  resultChips?: (v: Variant) => DimensionChip[];
+}
+
+/** previewDrag's answer: the overlay of the frame (as updateDrag returns it) plus the dragged element's target outline. */
+export interface DragPreview extends DragFeedback {
+  /** The dragged element at the snapped pointer (rings; 2-point rings are segments), to draw until the next updateDrag. */
+  target: Vec2[][];
+}
+
+export const EMPTY_PREVIEW: DragPreview = { indicators: [], chips: [], ghost: [], target: [] };
+
+/** Intersection of the lines p1 + t·d1 and p2 + s·d2, or null when they are parallel. */
+function intersectLines(p1: Vec2, d1: Vec2, p2: Vec2, d2: Vec2): Vec2 | null {
+  const den = d1[0] * d2[1] - d1[1] * d2[0];
+  if (Math.abs(den) < 1e-12) return null;
+  const t = ((p2[0] - p1[0]) * d2[1] - (p2[1] - p1[1]) * d2[0]) / den;
+  return [p1[0] + d1[0] * t, p1[1] + d1[1] * t];
+}
+
+/** A rectangle-keeping block's polygon with vertex i moved to p (both adjacent edges shift), else the vertex alone. */
+function vertexMoved(points: Vec2[], i: number, p: Vec2, keepRect: boolean): Vec2[] {
+  const n = points.length;
+  if (!keepRect) return points.map((q, k) => (k === i ? copy(p) : copy(q)));
+  const v = points[i];
+  const d = sub(p, v);
+  const prev = (i - 1 + n) % n;
+  const sign = signedAreaOf(points) >= 0 ? 1 : -1;
+  const out = (k: number): Vec2 => {
+    const u = unit(sub(points[(k + 1) % n], points[k]));
+    return [u[1] * sign, -u[0] * sign];
+  };
+  const shift = new Map<number, Vec2>([
+    [prev, scale(out(prev), dot(d, out(prev)))],
+    [i, scale(out(i), dot(d, out(i)))],
+  ]);
+  return points.map((q, k) => {
+    const sp = shift.get((k - 1 + n) % n);
+    const sn = shift.get(k);
+    if (!sp && !sn) return copy(q);
+    const x = intersectLines(add(q, sp ?? [0, 0]), sub(q, points[(k - 1 + n) % n]), add(q, sn ?? [0, 0]), sub(points[(k + 1) % n], q));
+    return x ?? add(add(q, sp ?? [0, 0]), sn ?? [0, 0]);
+  });
+}
+
+/** Chips of a moved block edge a → b: from its inner face, at the middle, to the nearest wall inside the block. */
+function edgeChips(session: DragSession, ctx: SnapContext, blockId: Id, inner: number, sign: number, a: Vec2, b: Vec2): DimensionChip[] {
+  const pieces = new Set(
+    session.baseDerived.walls.filter((w) => w.source.kind === 'blockEdge' && w.source.blockId === blockId && w.source.edgeId === session.targetId).map((w) => w.id),
+  );
+  // Inside (left of a CCW edge): from the inner face to the nearest wall.
+  const nIn = scale(leftNormal(unit(sub(b, a))), sign);
+  const from = add(scale(add(a, b), 0.5), scale(nIn, inner));
+  const hit = rayToWall(ctx, from, nIn, { exclude: pieces });
+  return hit ? [{ a: from, b: hit.hit, length: hit.t }] : [];
+}
+
+/** The frame of a drag for the pointer (see DragPlan), or null when the dragged element is gone. */
+function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers): DragPlan | null {
   const radius = modifiers.snapRadiusM ?? session.radius;
   const fine = modifiers.alt === true;
   const delta = sub(pointer, session.start);
   const ctx = session.snapCtx;
   const base = session.baseVariant;
-  // Openings and outdoor things never change a room face: no room reconciliation (and no derive) per frame.
-  const runOpts: RunOpts = { base, baseDerived: session.baseDerived, toastMerges: false, reconcile: !NO_ROOM_DRAGS.has(session.kind) };
-  const apply = <R>(recipe: (draft: Variant, c: EditContext) => R): RunResult<R> | null => {
-    const r = run(store, recipe, runOpts);
-    if (r) session.merges = r.merges;
-    return r;
-  };
-
   switch (session.kind) {
     case 'wall': {
       const w = base.walls.find((x) => x.id === session.targetId);
       const dw = session.baseDerived.walls.find((x) => x.id === session.targetId);
-      if (!w) return EMPTY_FEEDBACK;
+      if (!w) return null;
       let d: Vec2;
       let indicators: SnapIndicator[] = [];
       if (wallEndsFree({ base, derived: session.baseDerived }, w.id)) {
@@ -1380,153 +1680,222 @@ export function updateDrag(store: EditStore, session: DragSession | null, pointe
         d = scale(nL, sres.offset);
         indicators = sres.indicators;
       }
-      const r = apply((dr, c) => applyMoveWall(dr, c, w.id, d));
-      const nw = variantOf(r, session).walls.find((x) => x.id === w.id) ?? w;
-      const chips = chipsAcross(ctx, nw.a, nw.b, dw?.faceLeft ?? w.thickness / 2, dw?.faceRight ?? w.thickness / 2, { exclude: new Set([w.id]) });
-      return { indicators, chips, ghost: [[copy(w.a), copy(w.b)]] };
+      const fl = dw?.faceLeft ?? w.thickness / 2;
+      const fr = dw?.faceRight ?? w.thickness / 2;
+      const exclude = new Set([w.id]);
+      const na = add(w.a, d);
+      const nb = add(w.b, d);
+      return {
+        feedback: { indicators, chips: chipsAcross(ctx, na, nb, fl, fr, { exclude }), ghost: [[copy(w.a), copy(w.b)]] },
+        target: [[na, nb]],
+        recipe: (dr, c) => applyMoveWall(dr, c, w.id, d),
+        resultChips: (v) => {
+          const nw = v.walls.find((x) => x.id === w.id) ?? w;
+          return chipsAcross(ctx, nw.a, nw.b, fl, fr, { exclude });
+        },
+      };
     }
     case 'wallEndpoint': {
       const w = base.walls.find((x) => x.id === session.targetId);
       const end = session.handle === 'b' ? 'b' : 'a';
-      if (!w) return EMPTY_FEEDBACK;
+      if (!w) return null;
       const fixed = end === 'a' ? w.b : w.a;
       const sres = snap(ctx, add(w[end], delta), { radius, fine, from: fixed });
-      const r = apply((dr, c) => applyMoveWallEndpoint(dr, c, w.id, end, sres.point));
-      const nw = variantOf(r, session).walls.find((x) => x.id === w.id) ?? w;
-      const moved = nw[end];
-      return { indicators: sres.indicators, chips: [{ a: copy(fixed), b: copy(moved), length: dist(fixed, moved) }], ghost: [[copy(w.a), copy(w.b)]] };
+      const chipTo = (moved: Vec2): DimensionChip[] => [{ a: copy(fixed), b: copy(moved), length: dist(fixed, moved) }];
+      return {
+        feedback: { indicators: sres.indicators, chips: chipTo(sres.point), ghost: [[copy(w.a), copy(w.b)]] },
+        target: [end === 'a' ? [copy(sres.point), copy(fixed)] : [copy(fixed), copy(sres.point)]],
+        recipe: (dr, c) => applyMoveWallEndpoint(dr, c, w.id, end, sres.point),
+        resultChips: (v) => chipTo((v.walls.find((x) => x.id === w.id) ?? w)[end]),
+      };
     }
     case 'blockEdge': {
       const block = base.blocks.find((b) => b.id === session.ownerId);
       const i = block ? block.polygon.findIndex((x) => x.id === session.targetId) : -1;
-      if (!block || i < 0) return EMPTY_FEEDBACK;
+      if (!block || i < 0) return null;
       const a = block.polygon[i].p;
       const b = block.polygon[(i + 1) % block.polygon.length].p;
       const nL = leftNormal(unit(sub(b, a)));
       const sres = snapLineOffset(ctx, a, b, dot(delta, nL), { radius, fine, axisOnly: true });
-      const r = apply((dr, c) => applyMoveBlockEdge(dr, c, block.id, session.targetId, scale(nL, sres.offset)));
-      const nb = variantOf(r, session).blocks.find((x) => x.id === block.id);
-      const j = nb ? nb.polygon.findIndex((x) => x.id === session.targetId) : -1;
-      const chips: DimensionChip[] = [];
-      if (nb && j >= 0) {
-        const na = nb.polygon[j].p;
-        const nbp = nb.polygon[(j + 1) % nb.polygon.length].p;
-        const pieces = new Set(
-          session.baseDerived.walls.filter((w) => w.source.kind === 'blockEdge' && w.source.blockId === block.id && w.source.edgeId === session.targetId).map((w) => w.id),
-        );
-        // Inside (left of a CCW edge): from the inner face to the nearest wall.
-        const inner = block.wall.thickness - block.wall.outerOffset;
-        const sign = signedAreaOf(block.polygon.map((x) => x.p)) >= 0 ? 1 : -1;
-        const nIn = scale(leftNormal(unit(sub(nbp, na))), sign);
-        const from = add(scale(add(na, nbp), 0.5), scale(nIn, inner));
-        const hit = rayToWall(ctx, from, nIn, { exclude: pieces });
-        if (hit) chips.push({ a: from, b: hit.hit, length: hit.t });
-      }
-      return { indicators: sres.indicators, chips, ghost: [[copy(a), copy(b)]] };
+      const shift = scale(nL, sres.offset);
+      const inner = block.wall.thickness - block.wall.outerOffset;
+      const sign = signedAreaOf(block.polygon.map((x) => x.p)) >= 0 ? 1 : -1;
+      const [na, nb] = [add(a, shift), add(b, shift)];
+      return {
+        feedback: { indicators: sres.indicators, chips: edgeChips(session, ctx, block.id, inner, sign, na, nb), ghost: [[copy(a), copy(b)]] },
+        target: [[na, nb]],
+        recipe: (dr, c) => applyMoveBlockEdge(dr, c, block.id, session.targetId, shift),
+        resultChips: (v) => {
+          const moved = v.blocks.find((x) => x.id === block.id);
+          const j = moved ? moved.polygon.findIndex((x) => x.id === session.targetId) : -1;
+          if (!moved || j < 0) return [];
+          return edgeChips(session, ctx, block.id, inner, sign, moved.polygon[j].p, moved.polygon[(j + 1) % moved.polygon.length].p);
+        },
+      };
     }
     case 'blockVertex': {
       const block = base.blocks.find((b) => b.id === session.ownerId);
-      const v = block?.polygon.find((x) => x.id === session.targetId);
-      if (!block || !v) return EMPTY_FEEDBACK;
+      const i = block ? block.polygon.findIndex((x) => x.id === session.targetId) : -1;
+      if (!block || i < 0) return null;
+      const v = block.polygon[i];
       const sres = snap(ctx, add(v.p, delta), { radius, fine });
-      apply((dr, c) => applyMoveBlockVertex(dr, c, block.id, v.id, sres.point));
-      return { indicators: sres.indicators, chips: [], ghost: [block.polygon.map((x) => copy(x.p))] };
+      const pts = block.polygon.map((x) => x.p);
+      // Gable / mono blocks keep their rectangle (geometry/edit.ts keepsRectangle): both adjacent edges move.
+      return {
+        feedback: { indicators: sres.indicators, chips: [], ghost: [pts.map(copy)] },
+        target: [vertexMoved(pts, i, sres.point, block.roof.type !== 'flat')],
+        recipe: (dr, c) => applyMoveBlockVertex(dr, c, block.id, v.id, sres.point),
+      };
     }
     case 'block': {
       const block = base.blocks.find((b) => b.id === session.ownerId);
-      if (!block) return EMPTY_FEEDBACK;
+      if (!block) return null;
       const poly = block.polygon.map((x) => add(x.p, delta));
-      const sres = snapPolygon(ctx, poly, { radius, fine });
+      // Contact targets (a block edge it would touch, a deck edge it would stand on) reach the drag threshold too: a
+      // shorter drag is a tap, so a phone could not attach a unit otherwise (polish round 2b).
+      const contactReach = modifiers.dragThresholdM ?? radius * DRAG_THRESHOLD_PER_SNAP_RADIUS;
+      const sres = snapPolygon(ctx, poly, { radius, fine, contactReach });
       const d = add(delta, sres.delta);
-      apply((dr, c) => applyMoveBlock(dr, c, block.id, d));
-      return { indicators: sres.indicators, chips: [], ghost: [block.polygon.map((x) => copy(x.p))] };
+      return {
+        feedback: { indicators: sres.indicators, chips: [], ghost: [block.polygon.map((x) => copy(x.p))] },
+        target: [block.polygon.map((x) => add(x.p, d))],
+        recipe: (dr, c) => applyMoveBlock(dr, c, block.id, d),
+      };
     }
     case 'opening':
-      return dragOpening(session, delta, radius, fine, apply);
+      return openingPlan(session, delta, radius, fine);
     case 'openingResize':
-      return resizeOpening(session, pointer, fine, apply);
+      return resizePlan(session, pointer, fine);
     case 'deckVertex': {
       const deck = base.outdoor.decks.find((d) => d.id === session.ownerId);
-      const v = deck?.polygon.find((x) => x.id === session.targetId);
-      if (!deck || !v) return EMPTY_FEEDBACK;
+      const i = deck ? deck.polygon.findIndex((x) => x.id === session.targetId) : -1;
+      if (!deck || i < 0) return null;
+      const v = deck.polygon[i];
       const sres = snap(ctx, add(v.p, delta), { radius, fine });
-      apply((dr) => applyMoveDeckVertex(dr, deck.id, v.id, sres.point));
-      return { indicators: sres.indicators, chips: sres.chips, ghost: [deck.polygon.map((x) => copy(x.p))] };
+      return {
+        feedback: { indicators: sres.indicators, chips: sres.chips, ghost: [deck.polygon.map((x) => copy(x.p))] },
+        target: [deck.polygon.map((x, k) => (k === i ? copy(sres.point) : copy(x.p)))],
+        recipe: (dr) => applyMoveDeckVertex(dr, deck.id, v.id, sres.point),
+      };
     }
     case 'deckEdge': {
       const deck = base.outdoor.decks.find((d) => d.id === session.ownerId);
       const i = deck ? deck.polygon.findIndex((x) => x.id === session.targetId) : -1;
-      if (!deck || i < 0) return EMPTY_FEEDBACK;
+      if (!deck || i < 0) return null;
       const a = deck.polygon[i].p;
       const b = deck.polygon[(i + 1) % deck.polygon.length].p;
       const nL = leftNormal(unit(sub(b, a)));
       const sres = snapLineOffset(ctx, a, b, dot(delta, nL), { radius, fine, axisOnly: true });
-      apply((dr) => applyMoveDeckEdge(dr, deck.id, session.targetId, scale(nL, sres.offset)));
-      return { indicators: sres.indicators, chips: [], ghost: [[copy(a), copy(b)]] };
+      const shift = scale(nL, sres.offset);
+      return {
+        feedback: { indicators: sres.indicators, chips: [], ghost: [[copy(a), copy(b)]] },
+        target: [[add(a, shift), add(b, shift)]],
+        recipe: (dr) => applyMoveDeckEdge(dr, deck.id, session.targetId, shift),
+      };
     }
     case 'deck': {
       const deck = base.outdoor.decks.find((d) => d.id === session.targetId);
-      if (!deck) return EMPTY_FEEDBACK;
+      if (!deck) return null;
       const sres = snapPolygon(ctx, deck.polygon.map((x) => add(x.p, delta)), { radius, fine });
       const d = add(delta, sres.delta);
-      apply((dr) => applyMoveDeck(dr, deck.id, d));
-      return { indicators: sres.indicators, chips: [], ghost: [deck.polygon.map((x) => copy(x.p))] };
+      return {
+        feedback: { indicators: sres.indicators, chips: [], ghost: [deck.polygon.map((x) => copy(x.p))] },
+        target: [deck.polygon.map((x) => add(x.p, d))],
+        recipe: (dr) => applyMoveDeck(dr, deck.id, d),
+      };
     }
     case 'steps': {
       const deck = base.outdoor.decks.find((d) => d.id === session.ownerId);
       const st = deck?.steps.find((x) => x.id === session.targetId);
       const i = deck && st ? deck.polygon.findIndex((x) => x.id === st.edgeId) : -1;
-      if (!deck || !st || i < 0) return EMPTY_FEEDBACK;
+      if (!deck || !st || i < 0) return null;
       const a = deck.polygon[i].p;
       const b = deck.polygon[(i + 1) % deck.polygon.length].p;
       const u = unit(sub(b, a));
       const offset = roundTo(st.offset + dot(delta, u), gridStep(fine));
-      apply((dr) => applyMoveSteps(dr, st.id, offset));
       const c0 = add(a, scale(u, st.offset - st.width / 2));
       const c1 = add(a, scale(u, st.offset + st.width / 2));
-      return { indicators: [], chips: [], ghost: [[c0, c1]] };
+      return {
+        feedback: { indicators: [], chips: [], ghost: [[c0, c1]] },
+        target: [[add(a, scale(u, offset - st.width / 2)), add(a, scale(u, offset + st.width / 2))]],
+        recipe: (dr) => applyMoveSteps(dr, st.id, offset),
+      };
     }
     case 'hotTub': {
       const t = base.outdoor.hotTubs.find((x) => x.id === session.targetId);
-      if (!t) return EMPTY_FEEDBACK;
+      if (!t) return null;
       const sres = snapCircle(ctx, add(t.centre, delta), t.diameter / 2, { radius, fine });
-      apply((dr) => {
-        const x = dr.outdoor.hotTubs.find((h) => h.id === t.id);
-        if (!x) return false;
-        x.centre = copy(sres.point);
-        return true;
-      });
-      return { indicators: sres.indicators, chips: [], ghost: [circleRing(t.centre, t.diameter / 2)] };
+      return {
+        feedback: { indicators: sres.indicators, chips: [], ghost: [circleRing(t.centre, t.diameter / 2)] },
+        target: [circleRing(sres.point, t.diameter / 2)],
+        recipe: (dr) => {
+          const x = dr.outdoor.hotTubs.find((h) => h.id === t.id);
+          if (!x) return false;
+          x.centre = copy(sres.point);
+          return true;
+        },
+      };
     }
     case 'tree': {
       const t = treesOf(session.base, base).find((x) => x.id === session.targetId);
-      if (!t) return EMPTY_FEEDBACK;
+      if (!t) return null;
       const step = gridStep(fine);
       const p: Vec2 = [roundTo(t.position[0] + delta[0], step), roundTo(t.position[1] + delta[1], step)];
-      apply((dr) => {
-        if (dist(t.position, p) < 1e-9) return false;
-        const x = ownTrees(dr, session.base.site).find((tr) => tr.id === t.id);
-        if (x) x.position = p;
-        return true;
-      });
-      return { indicators: [], chips: [], ghost: [circleRing(t.position, 0.5)] };
+      return {
+        feedback: { indicators: [], chips: [], ghost: [circleRing(t.position, 0.5)] },
+        target: [circleRing(p, 0.5)],
+        recipe: (dr) => {
+          if (dist(t.position, p) < 1e-9) return false;
+          const x = ownTrees(dr, session.base.site).find((tr) => tr.id === t.id);
+          if (x) x.position = p;
+          return true;
+        },
+      };
     }
     case 'furniture': {
       const f = base.furniture.find((x) => x.id === session.targetId);
       const df = session.baseDerived.furniture.find((x) => x.id === session.targetId);
-      if (!f) return EMPTY_FEEDBACK;
+      if (!f) return null;
       const fp = (df?.footprint ?? []).map((q) => add(q, delta));
       const sres = snapFootprint(ctx, fp, { radius, excludeIds: new Set([f.id]) });
       const p = add(add(f.position, delta), sres.delta);
-      apply((dr) => {
-        const x = dr.furniture.find((it) => it.id === f.id);
-        if (!x) return false;
-        x.position = p;
-        return true;
-      });
-      return { indicators: sres.indicators, chips: [], ghost: df ? [df.footprint.map(copy)] : [] };
+      return {
+        feedback: { indicators: sres.indicators, chips: [], ghost: df ? [df.footprint.map(copy)] : [] },
+        target: df ? [df.footprint.map((q) => add(add(q, delta), sres.delta))] : [],
+        // The stored level follows the floor under the item (Korridor (øvre) → Soverom 1 goes to 'lower'); the base
+        // derive is right for it, since a furniture drag changes no floor.
+        recipe: (dr) => applyFurnitureMove(dr, session.baseDerived, f.id, p),
+      };
     }
   }
+}
+
+/**
+ * Apply the drag for the pointer position (from the base) and return the feedback to draw. The plan calls it at most
+ * every few frames and `previewDrag` in between (the drag-preview contract of the polish round), and always once more
+ * before `endDrag`.
+ */
+export function updateDrag(store: EditStore, session: DragSession | null, pointer: Vec2, modifiers: DragModifiers = {}): DragFeedback {
+  if (!session || session.done) return EMPTY_FEEDBACK;
+  const plan = dragPlan(session, pointer, modifiers);
+  if (!plan) return EMPTY_FEEDBACK;
+  // Openings and outdoor things never change a room face: no room reconciliation (and no derive) per frame.
+  const runOpts: RunOpts = { base: session.baseVariant, baseDerived: session.baseDerived, toastMerges: false, reconcile: !NO_ROOM_DRAGS.has(session.kind) };
+  const r = run(store, plan.recipe, runOpts);
+  if (r) session.merges = r.merges;
+  return { ...plan.feedback, chips: plan.resultChips ? plan.resultChips(variantOf(r, session)) : plan.feedback.chips };
+}
+
+/**
+ * The cheap part of `updateDrag` for every animation frame (drag-preview contract, polish round 2b): the same snap and
+ * overlay (`indicators`, `chips`, `ghost` — the chips from the nominal geometry, before the cascades updateDrag
+ * applies) plus `target`, the dragged element's outline at the snapped pointer. No store change, no derive (well under
+ * 2 ms on the seed). Null / ended sessions give EMPTY_PREVIEW. Bound as `previewDrag(session, pointer, modifiers)`.
+ */
+export function previewDrag(session: DragSession | null, pointer: Vec2, modifiers: DragModifiers = {}): DragPreview {
+  if (!session || session.done) return EMPTY_PREVIEW;
+  const plan = dragPlan(session, pointer, modifiers);
+  return plan ? { ...plan.feedback, target: plan.target } : EMPTY_PREVIEW;
 }
 
 const signedAreaOf = (poly: Vec2[]): number => {
@@ -1589,17 +1958,12 @@ function hostPieceIds(derived: DerivedVariant, host: OpeningHost): Set<Id> {
   );
 }
 
-function dragOpening(
-  session: DragSession,
-  delta: Vec2,
-  radius: number,
-  fine: boolean,
-  apply: <R>(recipe: (draft: Variant, c: EditContext) => R) => RunResult<R> | null,
-): DragFeedback {
+/** An opening dragged along its host, or re-hosted onto another wall / edge near the pointer (see the header). */
+function openingPlan(session: DragSession, delta: Vec2, radius: number, fine: boolean): DragPlan | null {
   const base = session.baseVariant;
   const o = base.openings.find((x) => x.id === session.targetId);
   const line = o ? hostLine(base, o.host) : null;
-  if (!o || !line) return EMPTY_FEEDBACK;
+  if (!o || !line) return null;
   const derivedOpening = session.baseDerived.walls.flatMap((w) => w.openings).find((x) => x.id === o.id);
   const centre0 = add(line.a, scale(unit(sub(line.b, line.a)), o.offset));
   const centre = add(centre0, delta);
@@ -1621,23 +1985,33 @@ function dragOpening(
     }
   }
   offset = roundTo(offset, step);
-  const r = apply((dr, c) => applyMoveOpening(dr, c, o.id, offset, host));
-  const no = variantOf(r, session).openings.find((x) => x.id === o.id) ?? o;
-  const dw = session.baseDerived.walls.find((w) => hostPieceIds(session.baseDerived, no.host).has(w.id));
-  const chips = openingChips(session.snapCtx, a, b, no.offset, no.width, hostPieceIds(session.baseDerived, no.host), dw?.faceLeft ?? 0);
-  return { indicators: [], chips, ghost: derivedOpening && derivedOpening.footprint.length >= 3 ? [derivedOpening.footprint.map(copy)] : [] };
+  // Nominally: within the piece of the host under the new centre (applyMoveOpening clamps the same way).
+  const [lo, hi] = pieceRange({ base, derived: session.baseDerived }, host, offset) ?? [0, dist(a, b)];
+  const nominal = hi - lo >= o.width ? Math.min(hi - o.width / 2, Math.max(lo + o.width / 2, offset)) : (lo + hi) / 2;
+  const chipsAt = (h: OpeningHost, at: number): DimensionChip[] => {
+    const ids = hostPieceIds(session.baseDerived, h);
+    const dw = session.baseDerived.walls.find((w) => ids.has(w.id));
+    const hl = hostLine(base, h);
+    return hl ? openingChips(session.snapCtx, hl.a, hl.b, at, o.width, ids, dw?.faceLeft ?? 0) : [];
+  };
+  const u = unit(sub(b, a));
+  return {
+    feedback: { indicators: [], chips: chipsAt(host, nominal), ghost: derivedOpening && derivedOpening.footprint.length >= 3 ? [derivedOpening.footprint.map(copy)] : [] },
+    target: [[add(a, scale(u, nominal - o.width / 2)), add(a, scale(u, nominal + o.width / 2))]],
+    recipe: (dr, c) => applyMoveOpening(dr, c, o.id, offset, host),
+    resultChips: (v) => {
+      const no = v.openings.find((x) => x.id === o.id) ?? o;
+      return chipsAt(no.host, no.offset);
+    },
+  };
 }
 
-function resizeOpening(
-  session: DragSession,
-  pointer: Vec2,
-  fine: boolean,
-  apply: <R>(recipe: (draft: Variant, c: EditContext) => R) => RunResult<R> | null,
-): DragFeedback {
+/** An opening's jamb dragged ('start' / 'end' handle): the other jamb stays, the width changes (min 0.3 m). */
+function resizePlan(session: DragSession, pointer: Vec2, fine: boolean): DragPlan | null {
   const base = session.baseVariant;
   const o = base.openings.find((x) => x.id === session.targetId);
   const line = o ? hostLine(base, o.host) : null;
-  if (!o || !line) return EMPTY_FEEDBACK;
+  if (!o || !line) return null;
   const u = unit(sub(line.b, line.a));
   const startSide = session.handle === 'start';
   const fixed = startSide ? o.offset + o.width / 2 : o.offset - o.width / 2;
@@ -1646,19 +2020,22 @@ function resizeOpening(
   s = startSide ? Math.min(s, fixed - MIN_OPENING_WIDTH) : Math.max(s, fixed + MIN_OPENING_WIDTH);
   s = Math.min(hi, Math.max(lo, s));
   const width = Math.abs(fixed - s);
-  if (width < MIN_OPENING_WIDTH - 1e-9) return EMPTY_FEEDBACK;
+  if (width < MIN_OPENING_WIDTH - 1e-9) return null;
   const centre = (fixed + s) / 2;
-  apply((dr) => {
-    applySetOpeningProps(dr, o.id, { width });
-    const x = dr.openings.find((it) => it.id === o.id);
-    if (x) x.offset = centre;
-    return true;
-  });
   const j0 = add(line.a, scale(u, o.offset - o.width / 2));
   const j1 = add(line.a, scale(u, o.offset + o.width / 2));
   const n0 = add(line.a, scale(u, centre - width / 2));
   const n1 = add(line.a, scale(u, centre + width / 2));
-  return { indicators: [], chips: [{ a: n0, b: n1, length: width }], ghost: [[j0, j1]] };
+  return {
+    feedback: { indicators: [], chips: [{ a: n0, b: n1, length: width }], ghost: [[j0, j1]] },
+    target: [[n0, n1]],
+    recipe: (dr) => {
+      applySetOpeningProps(dr, o.id, { width });
+      const x = dr.openings.find((it) => it.id === o.id);
+      if (x) x.offset = centre;
+      return true;
+    },
+  };
 }
 
 /** Commit the drag (one undo step) and toast room merges. */
@@ -1806,6 +2183,8 @@ const ACTIONS = {
   nudge,
   beginDrag,
   updateDrag,
+  // Needs no store (drag-preview contract): bound as previewDrag(session, pointer, modifiers) like the others.
+  previewDrag: (_store: EditStore, session: DragSession | null, pointer: Vec2, modifiers?: DragModifiers): DragPreview => previewDrag(session, pointer, modifiers),
   endDrag,
   cancelDrag,
   snapPoint,

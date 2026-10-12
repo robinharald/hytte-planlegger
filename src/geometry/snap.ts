@@ -23,14 +23,19 @@
  * the dragged point, or the moved polygon), and then
  *  - `snap` (wall ends, block / deck vertices, a free wall): no point target at the start or coincident with it
  *    (a neighbour's end that met the dragged end), point targets reach at most LINE_SNAP_MAX_M too, Alt turns point
- *    targets off as well, and no target (point, intersection, line, ortho guide) may take back more than half of
- *    the drag (measured along the drag);
+ *    targets off as well, and the snapped point's DISPLACEMENT from the pointer (point, intersection, line, ortho
+ *    guide alike; polish round 2b) reaches at most LINE_SNAP_MAX_M and, along the drag, takes back at most half of
+ *    it and adds at most SNAP_ADD_FRACTION of it; wall and wall-end drags (`origin.levelId`) get no extensions or
+ *    perpendiculars of walls on another level;
  *  - `snapPolygon`, `snapFootprint`, `snapCircle` (unit / block / deck moves, furniture, the hot tub): per direction
  *    of a target (the normal of a polygon edge or deck edge), a target reaches at most LINE_SNAP_MAX_M, is no target
  *    when it would put the edge back on its own starting line, never takes back more than half of the drag along
  *    that direction and never adds more than SNAP_ADD_FRACTION of it; an axis direction the drag has moved less than
- *    START_HOLD_M stays at its start (no grid jump, no sideways snap; not with Alt).
- * Unit placement (no drag) gets the LINE_SNAP_MAX_M reach only.
+ *    START_HOLD_M stays at its start (no grid jump, no sideways snap; not with Alt). `snapPolygon` contact targets
+ *    (a block edge faced from outside, a deck edge lain along from inside) reach `max(LINE_SNAP_MAX_M, contactReach)`
+ *    (the pointer's drag threshold in metres) and push an edge that entered a block back out (polish round 2b).
+ * Unit placement (`snapPolygon` without a drag) reaches the whole pointer radius (polish round 2b; it was cut to
+ * LINE_SNAP_MAX_M in the second fix round, which made attaching a unit on a phone a 3 px target).
  *
  * Other snaps
  *  - `snapLineOffset`: a line dragged across itself (wall move, block / deck edge move): its perpendicular position
@@ -87,6 +92,10 @@ export interface SnapLineTarget {
   kind: SnapLineKind;
   /** Stored wall id, `${blockId}/${edgeId}`, `${deckId}/${edgeId}`. */
   id: Id;
+  /** Stored walls: the wall's level (a drag offers no extension or perpendicular of a wall on another level). */
+  levelId?: Id;
+  /** Block axis edges and deck edges: the outward normal of their outline (contact snaps of moved polygons). */
+  n?: Vec2;
 }
 
 /** A wall face line; `n` points away from the wall body (into the room). */
@@ -108,6 +117,8 @@ export interface SnapOrigin {
   point?: Vec2;
   /** Start of the moved polygon (`snapPolygon`, `snapFootprint`: the same vertices in the same order). */
   polygon?: Vec2[];
+  /** The dragged wall's level (wall and wall-end drags): extensions and perpendiculars of walls on other levels are left out. */
+  levelId?: Id;
 }
 
 export interface SnapContext {
@@ -225,7 +236,13 @@ function axisOf(u: Vec2): 0 | 1 | null {
 export function buildSnapContext(derived: DerivedVariant, opts: SnapContextOptions): SnapContext {
   const exclude = new Set(opts.exclude ?? []);
   const ctx: SnapContext = { storeyId: opts.storeyId, points: [], lines: [], axisLines: [], faces: [], walls: [], furniture: [] };
-  if (opts.origin) ctx.origin = { ...(opts.origin.point ? { point: opts.origin.point } : {}), ...(opts.origin.polygon ? { polygon: opts.origin.polygon } : {}) };
+  if (opts.origin) {
+    ctx.origin = {
+      ...(opts.origin.point ? { point: opts.origin.point } : {}),
+      ...(opts.origin.polygon ? { polygon: opts.origin.polygon } : {}),
+      ...(opts.origin.levelId !== undefined ? { levelId: opts.origin.levelId } : {}),
+    };
+  }
   const storeyOfLevel = new Map(derived.levels.map((l) => [l.id, l.storeyId]));
 
   for (const w of derived.walls) {
@@ -235,7 +252,7 @@ export function buildSnapContext(derived: DerivedVariant, opts: SnapContextOptio
     if (w.source.kind === 'wall') {
       const id = w.source.wallId;
       ctx.points.push({ p: w.a, kind: 'endpoint', id }, { p: w.b, kind: 'endpoint', id }, { p: mid(w.a, w.b), kind: 'midpoint', id });
-      ctx.lines.push({ a: w.a, b: w.b, kind: 'wall', id });
+      ctx.lines.push({ a: w.a, b: w.b, kind: 'wall', id, levelId: w.levelId });
     }
     if (!w.isDivider && w.footprint.length >= 3) {
       ctx.walls.push({ id: w.id, polygon: w.footprint });
@@ -255,7 +272,7 @@ export function buildSnapContext(derived: DerivedVariant, opts: SnapContextOptio
     for (const e of db.edges) {
       const id = `${blockId}/${e.edgeId}`;
       if (exclude.has(id)) continue;
-      const line: SnapLineTarget = { a: e.a, b: e.b, kind: 'blockEdge', id };
+      const line: SnapLineTarget = { a: e.a, b: e.b, kind: 'blockEdge', id, n: e.outward };
       ctx.lines.push(line);
       ctx.axisLines.push(line);
       ctx.points.push({ p: mid(e.a, e.b), kind: 'midpoint', id });
@@ -265,10 +282,12 @@ export function buildSnapContext(derived: DerivedVariant, opts: SnapContextOptio
   for (const deck of derived.outdoor.decks) {
     if (exclude.has(deck.id)) continue;
     const n = deck.polygon.length;
+    const flip = signedAreaOf(deck.polygon) < 0 ? -1 : 1;
     for (let i = 0; i < n; i++) {
       const id = deck.vertexIds[i];
       if (!exclude.has(id)) ctx.points.push({ p: deck.polygon[i], kind: 'deckVertex', id });
-      const line: SnapLineTarget = { a: deck.polygon[i], b: deck.polygon[(i + 1) % n], kind: 'deckEdge', id: `${deck.id}/${id}` };
+      const [da, dbb] = [deck.polygon[i], deck.polygon[(i + 1) % n]];
+      const line: SnapLineTarget = { a: da, b: dbb, kind: 'deckEdge', id: `${deck.id}/${id}`, n: scale(outwardOf(da, dbb), flip) };
       if (exclude.has(line.id)) continue;
       ctx.lines.push(line);
       ctx.axisLines.push(line);
@@ -302,6 +321,9 @@ function lineCandidates(ctx: SnapContext, p: Vec2, opts: SnapOptions): LineCand[
   const out: LineCand[] = [];
   // Target lines reach at most LINE_SNAP_MAX_M; the ortho guides through `from` keep the full radius.
   const r = Math.min(opts.radius, LINE_SNAP_MAX_M);
+  // A wall or wall-end drag: no guides (extensions, perpendiculars) from walls on another level (polish round 2b: a
+  // lower-floor diagonal 4 m away pulled a main-floor wall end past the finger).
+  const level = ctx.origin?.levelId;
   if (opts.lines !== false && opts.fine !== true) {
     for (const t of ctx.lines) {
       const d = sub(t.b, t.a);
@@ -310,11 +332,13 @@ function lineCandidates(ctx: SnapContext, p: Vec2, opts: SnapOptions): LineCand[
       const u = scale(d, 1 / L);
       const s = dot(sub(p, t.a), u);
       const off = Math.abs(cross(u, sub(p, t.a)));
+      const guides = level === undefined || t.levelId === undefined || t.levelId === level;
       if (s >= -TINY && s <= L + TINY) {
         if (off <= r) out.push({ o: t.a, u, kind: 'line', d: off, anchor: s < L / 2 ? t.a : t.b });
-      } else if (off <= r && (s < 0 ? -s : s - L) <= EXTENSION_REACH) {
+      } else if (guides && off <= r && (s < 0 ? -s : s - L) <= EXTENSION_REACH) {
         out.push({ o: t.a, u, kind: 'extension', d: off, anchor: s < 0 ? t.a : t.b });
       }
+      if (!guides) continue;
       // Perpendiculars through both ends.
       for (const end of [t.a, t.b]) {
         const along = dot(sub(p, end), u);
@@ -338,15 +362,22 @@ function lineCandidates(ctx: SnapContext, p: Vec2, opts: SnapOptions): LineCand[
 const projectOnLine = (p: Vec2, o: Vec2, u: Vec2): Vec2 => add(o, scale(u, dot(sub(p, o), u)));
 
 /**
- * Drags: does a snapped point q keep at least half of the drag from `origin` to the pointer p (measured along the
- * drag)? Always true without an origin or before the pointer has moved.
+ * Drags: may a snapped point q stand in for the pointer p? Its displacement q − p (polish round 2b: measured on the
+ * displacement, so an intersection of two guides cannot pull the point farther than one guide could) reaches at most
+ * `reach`, and along the drag from `origin` it takes back at most half of the drag and adds at most
+ * SNAP_ADD_FRACTION of it. Always true without an origin; before the pointer has moved only the reach applies.
  */
-function dragKeeps(origin: Vec2 | undefined, p: Vec2): (q: Vec2) => boolean {
+function dragKeeps(origin: Vec2 | undefined, p: Vec2, reach: number): (q: Vec2) => boolean {
   if (!origin) return () => true;
   const drag = sub(p, origin);
-  const l2 = dot(drag, drag);
-  if (l2 < TINY) return () => true;
-  return (q) => dot(sub(q, origin), drag) >= l2 / 2 - 1e-12;
+  const L = len(drag);
+  return (q) => {
+    const d = sub(q, p);
+    if (len(d) > reach + 1e-9) return false;
+    if (L < TINY) return true;
+    const t = dot(d, drag) / L;
+    return t >= -L / 2 - 1e-12 && t <= SNAP_ADD_FRACTION * L + 1e-12;
+  };
 }
 
 function lengthChip(from: Vec2 | undefined, point: Vec2): DimensionChip[] {
@@ -364,7 +395,7 @@ export function snap(ctx: SnapContext, p: Vec2, opts: SnapOptions): SnapResult {
   const chipsFor = (point: Vec2) => (opts.from ? lengthChip(opts.from, point) : chipsAt(ctx, point));
   // A drag (the context knows where the dragged point started): see the header.
   const origin = ctx.origin?.point;
-  const keeps = dragKeeps(origin, p);
+  const keeps = dragKeeps(origin, p, Math.min(r, LINE_SNAP_MAX_M));
 
   if (opts.points !== false && !(origin && opts.fine === true)) {
     // Nearest; on a tie the first listed (wall ends, then block vertices, midpoints, deck vertices).
@@ -411,13 +442,16 @@ export function snap(ctx: SnapContext, p: Vec2, opts: SnapOptions): SnapResult {
 
   // The nearest candidate line whose point does not take back too much of a drag.
   for (const c of [...cands].sort((x, y) => x.d - y.d)) {
-    let point = projectOnLine(p, c.o, c.u);
+    const onLine = projectOnLine(p, c.o, c.u);
+    let point = onLine;
     if (opts.grid !== false) {
       const ax = axisOf(c.u);
       const step = gridStep(opts.fine);
       if (ax === 0) point = [roundTo(point[0], step), point[1]];
       else if (ax === 1) point = [point[0], roundTo(point[1], step)];
     }
+    // (In a drag, the grid along the line must not carry the point past the reach either: then the line alone.)
+    if (!keeps(point)) point = onLine;
     if (!keeps(point)) continue;
     const indicators: SnapIndicator[] = [{ kind: c.kind, a: c.anchor, b: point }];
     return { point, kind: 'line', indicators, chips: chipsFor(point) };
@@ -516,23 +550,29 @@ interface DirSnap {
   g: number;
   /** Guide drawn when used; null for a hold (the direction stays where the drag started). */
   guide: [Vec2, Vec2] | null;
+  /** A contact snap's own reach when larger than the common one (`snapPolygon` `contactReach`). */
+  reach?: number;
+  /**
+   * The moved edge has passed into the block whose facing edge this is: the snap pushes it back out against that
+   * edge (up to the reach, but never back past the start), and goes before the other snaps in its direction.
+   */
+  pushOut?: boolean;
 }
 
 /**
- * The directional snaps a move may use: within `min(radius, LINE_SNAP_MAX_M)`, and with a drag (`drag` = the
- * translation from the start, see the header) none that puts an edge back on its own starting line, takes back more
- * than half of the drag along its direction or adds more than SNAP_ADD_FRACTION of it. Then, unless `fine`, a hold
- * for every axis the drag has moved less than START_HOLD_M along; holds come first and push out the snaps parallel
- * to them.
+ * The directional snaps a move may use: within `reach` (a contact snap: its own when larger), and with a drag (`drag`
+ * = the translation from the start, see the header) none that puts an edge back on its own starting line, takes back
+ * more than half of the drag along its direction (unless it pushes the edge back out of a block it entered) or adds
+ * more than SNAP_ADD_FRACTION of it. Then, unless `fine`, a hold for every axis the drag has moved less than
+ * START_HOLD_M along; holds come first and push out the snaps parallel to them.
  */
-function dragSnaps(snaps: DirSnap[], radius: number, drag: Vec2 | null, fine: boolean | undefined): DirSnap[] {
-  const reach = Math.min(radius, LINE_SNAP_MAX_M);
+function dragSnaps(snaps: DirSnap[], reach: number, drag: Vec2 | null, fine: boolean | undefined): DirSnap[] {
   const ok = snaps.filter((s) => {
-    if (Math.abs(s.g) > reach) return false;
+    if (Math.abs(s.g) > Math.max(reach, s.reach ?? 0) + 1e-12) return false;
     if (!drag) return true;
     const along = dot(drag, s.n);
     if (Math.abs(s.g + along) <= COLLINEAR_EPS) return false;
-    if (s.g * along < 0) return Math.abs(s.g) <= Math.abs(along) / 2 + 1e-12;
+    if (s.g * along < 0) return Math.abs(s.g) <= Math.abs(along) / 2 + 1e-12 || (s.pushOut === true && Math.abs(s.g) < Math.abs(along) - COLLINEAR_EPS);
     return Math.abs(s.g) <= SNAP_ADD_FRACTION * Math.abs(along) + 1e-12;
   });
   if (!drag || fine === true) return ok;
@@ -551,7 +591,8 @@ function dragSnaps(snaps: DirSnap[], radius: number, drag: Vec2 | null, fine: bo
  * when `gridRef` is given. `snaps` are already filtered (`dragSnaps`).
  */
 function combine(snaps: DirSnap[], gridRef: Vec2 | null, fine: boolean | undefined): { delta: Vec2; indicators: SnapIndicator[] } {
-  const ok = [...snaps].sort((x, y) => (x.guide === null ? 0 : 1) - (y.guide === null ? 0 : 1) || Math.abs(x.g) - Math.abs(y.g));
+  const rank = (s: DirSnap) => (s.guide === null ? 0 : s.pushOut ? 1 : 2);
+  const ok = [...snaps].sort((x, y) => rank(x) - rank(y) || Math.abs(x.g) - Math.abs(y.g));
   const first = ok[0];
   const second = first ? ok.find((s) => !parallel(s.n, first.n)) : undefined;
   const indicators: SnapIndicator[] = [];
@@ -626,13 +667,22 @@ function polygonDrag(ctx: SnapContext, poly: Vec2[]): Vec2 | null {
  * Snap a polygon moved as a whole, axis to axis: each edge to parallel block axis edges / deck edges overlapping it
  * along the line (both directions combined, grid for the rest; reach and drag rules: the header). Returns the
  * translation to add.
+ *
+ * Polish round (phase 2b), so a unit can be attached on a phone:
+ *  - without a drag (the "Nytt bygg" ghost) the targets reach the whole pointer radius (12 / 24 px), not 0.25 m;
+ *  - in a drag, CONTACT targets — a block edge the moved edge faces from outside (they would touch) and a deck edge
+ *    the moved edge lies along from inside (standing on the edge) — reach `max(0.25 m, contactReach)`: the caller
+ *    passes the pointer's drag threshold in metres, as a shorter drag is a tap. The drag rules hold, except that an
+ *    edge that passed INTO a block (it overlaps it) is pushed back out against the facing edge up to that reach, never
+ *    back past the start; such a snap goes before the others in its direction.
  */
 export function snapPolygon(
   ctx: SnapContext,
   poly: Vec2[],
-  opts: { radius: number; fine?: boolean; grid?: boolean; excludeIds?: ReadonlySet<Id> },
+  opts: { radius: number; fine?: boolean; grid?: boolean; excludeIds?: ReadonlySet<Id>; contactReach?: number },
 ): { delta: Vec2; indicators: SnapIndicator[] } {
   if (poly.length < 3) return { delta: [0, 0], indicators: [] };
+  const drag = polygonDrag(ctx, poly);
   const snaps: DirSnap[] = [];
   for (const e of edgesOf(poly)) {
     for (const t of ctx.axisLines) {
@@ -640,10 +690,18 @@ export function snapPolygon(
       if (!parallel(sub(e.b, e.a), sub(t.b, t.a))) continue;
       if (!overlapAlong(e.a, e.b, t.a, t.b, opts.radius)) continue;
       const g = dot(sub(t.a, e.a), e.n);
-      snaps.push({ n: e.n, g, guide: [t.a, t.b] });
+      const s: DirSnap = { n: e.n, g, guide: [t.a, t.b] };
+      // A contact: the edges really overlap along the line (not only within the radius) and would touch.
+      const facing = t.n !== undefined && dot(t.n, e.n) < 0;
+      const contact =
+        t.n !== undefined && parallel(t.n, e.n) && (t.kind === 'blockEdge' ? facing : !facing) && overlapAlong(e.a, e.b, t.a, t.b, -COLLINEAR_EPS);
+      if (contact && opts.contactReach !== undefined) s.reach = opts.contactReach;
+      if (contact && t.kind === 'blockEdge' && g < -COLLINEAR_EPS) s.pushOut = true;
+      snaps.push(s);
     }
   }
-  return combine(dragSnaps(snaps, opts.radius, polygonDrag(ctx, poly), opts.fine), opts.grid === false ? null : poly[0], opts.fine);
+  const reach = drag ? Math.min(opts.radius, LINE_SNAP_MAX_M) : opts.radius;
+  return combine(dragSnaps(snaps, reach, drag, opts.fine), opts.grid === false ? null : poly[0], opts.fine);
 }
 
 /**
@@ -672,7 +730,7 @@ export function snapFootprint(
       }
     }
   }
-  return combine(dragSnaps(snaps, opts.radius, polygonDrag(ctx, poly), false), null, false);
+  return combine(dragSnaps(snaps, Math.min(opts.radius, LINE_SNAP_MAX_M), polygonDrag(ctx, poly), false), null, false);
 }
 
 /** Hot tub: the rim touches deck edges from the inside (up to two edges), else the grid (reach and drag rules: the header). */
@@ -698,7 +756,7 @@ export function snapCircle(
     snaps.push({ n, g, guide: [t.a, t.b] });
   }
   const start = ctx.origin?.point;
-  const res = combine(dragSnaps(snaps, opts.radius, start ? sub(centre, start) : null, opts.fine), opts.grid === false ? null : centre, opts.fine);
+  const res = combine(dragSnaps(snaps, Math.min(opts.radius, LINE_SNAP_MAX_M), start ? sub(centre, start) : null, opts.fine), opts.grid === false ? null : centre, opts.fine);
   return { point: add(centre, res.delta), indicators: res.indicators };
 }
 

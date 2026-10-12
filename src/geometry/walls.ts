@@ -24,6 +24,9 @@
  *    parts), isNew = true when the block has explicit parts (phase 2: the remainder is new work), else block.isNew
  *    (`implicitIsNew`). Clipped parts / zones / remainders that fall apart give one entry per polygon
  *    (same id); holes of clipped polygons are dropped (outer ring only).
+ *  - Exterior pieces take isNew from the part they lie in, except on an edge whose line an edit moved (an edge ghost
+ *    in `Variant.ghosts` off the edge's line): those pieces are new wherever they lie (`movedEdgeKeys`), so an edge of
+ *    today's cabin moved inward into its existing part is not "Hytta i dag".
  *  - Mitres at block vertices meet the adjacent edge's face lines. A "free" end (next to a removed segment or a
  *    removed adjacent edge) that meets another block's free piece end at the same point (≤ 1 mm, not parallel) is
  *    mitred against that wall like a block corner (inside face with inside face), so junction corners such as glass
@@ -858,6 +861,33 @@ function ringBreaks(e: EdgeGeom, rings: Vec2[][]): number[] {
   return out;
 }
 
+/** Edge ghost ids `${blockId}/${edgeId}/ghost`, `/ghost/2` … (the same pattern as geometry/edit.ts parseEdgeGhostId). */
+const EDGE_GHOST_ID = /^(.*)\/([^/]+)\/ghost(?:\/\d+)?$/;
+/** An edge ghost farther than this (m) from its edge's line records a move of that edge. */
+const GHOST_OFF_LINE = 0.001;
+
+/**
+ * Block edges (`${blockId}\u0000${edgeId}`) whose line is not today's (polish round, phase 2b): the edge carries an
+ * edge ghost (`Variant.ghosts`) off its current line, i.e. the old line of an existing edge an edit moved. Their pieces
+ * are new wherever they lie — an edge of today's cabin moved INWARD lies inside the explicit existing part, but it is
+ * a newly built wall next to the "Fjernet" ghost of the one it replaces (geometry/edit.ts `notToday` uses the same
+ * test). Stub and junction ghosts lie on the edge's own line and change nothing.
+ */
+function movedEdgeKeys(variant: Variant): Set<string> {
+  const out = new Set<string>();
+  for (const g of variant.ghosts ?? []) {
+    const m = EDGE_GHOST_ID.exec(g.id);
+    if (!m) continue;
+    const block = variant.blocks.find((b) => b.id === m[1]);
+    const i = block ? block.polygon.findIndex((v) => v.id === m[2]) : -1;
+    if (!block || i < 0) continue;
+    const a = block.polygon[i].p;
+    const b = block.polygon[(i + 1) % block.polygon.length].p;
+    if (lineDistance(g.a, a, b) > GHOST_OFF_LINE || lineDistance(g.b, a, b) > GHOST_OFF_LINE) out.add(`${m[1]}\u0000${m[2]}`);
+  }
+  return out;
+}
+
 function edgeLayout(
   db: DerivedBlock,
   index: number,
@@ -865,6 +895,7 @@ function edgeLayout(
   junctions: EdgeJunction[],
   levels: Levels,
   blocksById: Map<Id, DerivedBlock>,
+  moved = false,
 ): EdgeLayout {
   const sign = signedArea(db.axis) < 0 ? -1 : 1;
   const nIn = scale(leftNormal(geom.u), sign);
@@ -896,7 +927,7 @@ function edgeLayout(
       const other = blocksById.get(j.otherBlockId);
       if (other) baseZ = Math.min(baseZ, floorAt(other, sub(mid, scale(nIn, NUDGE)), levels));
     }
-    const spec: PieceSpec = { s0, s1, partId: part.id, isNew: part.isNew, zoneId: zone ? zone.zoneId : null, levelId, baseZ };
+    const spec: PieceSpec = { s0, s1, partId: part.id, isNew: moved || part.isNew, zoneId: zone ? zone.zoneId : null, levelId, baseZ };
     const prev = layout.pieces[layout.pieces.length - 1];
     if (prev !== undefined && Math.abs(prev.s1 - s0) < 1e-9 && sameSpec(prev, spec)) prev.s1 = s1;
     else layout.pieces.push(spec);
@@ -978,8 +1009,16 @@ interface BlockLayout {
   sign: number;
 }
 
-function blockLayout(db: DerivedBlock, junctions: EdgeJunction[][], levels: Levels, blocksById: Map<Id, DerivedBlock>): BlockLayout {
-  const layouts = blockEdges(db.block).map((g, i) => edgeLayout(db, i, g, junctions[i] ?? [], levels, blocksById));
+function blockLayout(
+  db: DerivedBlock,
+  junctions: EdgeJunction[][],
+  levels: Levels,
+  blocksById: Map<Id, DerivedBlock>,
+  movedEdges: ReadonlySet<string> = new Set(),
+): BlockLayout {
+  const layouts = blockEdges(db.block).map((g, i) =>
+    edgeLayout(db, i, g, junctions[i] ?? [], levels, blocksById, movedEdges.has(`${db.block.id}\u0000${db.block.polygon[i].id}`)),
+  );
   const { thickness, outerOffset } = db.block.wall;
   const fIn = thickness - outerOffset;
   // Inside is the left side of a CCW block.
@@ -1485,7 +1524,8 @@ export function deriveWallPieces(
   const usedIds = new Set<Id>();
   const edgeHosts = new Map<string, EdgeHost>();
   const walls: DerivedWall[] = [];
-  const layouts = blocks.map((db) => blockLayout(db, junctions.get(db.block.id) ?? [], ctx.levels, blocksById));
+  const movedEdges = movedEdgeKeys(variant);
+  const layouts = blocks.map((db) => blockLayout(db, junctions.get(db.block.id) ?? [], ctx.levels, blocksById, movedEdges));
   const ends = layouts.flatMap(freeEnds);
   for (const bl of layouts) {
     for (const host of exteriorWalls(bl, ends, ctx, usedIds)) {

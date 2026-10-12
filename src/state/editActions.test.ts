@@ -29,7 +29,14 @@ const wall = (s: Store, id: string) => V(s).walls.find((w) => w.id === id);
 const opening = (s: Store, id: string) => V(s).openings.find((o) => o.id === id);
 const namedRooms = (s: Store) => D(s).rooms.filter((r) => r.room);
 const roomByRecord = (s: Store, id: string) => D(s).rooms.find((r) => r.room?.id === id);
-const kinds = (s: Store) => D(s).warnings.map((w) => w.kind);
+/**
+ * Warning kinds about the building. The seed is furnished (revision 6): walls moved into furniture, or a bathroom merged
+ * into a bedroom, give furniture warnings by design (their own tests: geometry/furnitureDerive.test.ts).
+ */
+const kinds = (s: Store) =>
+  D(s)
+    .warnings.filter((w) => !w.kind.startsWith('furniture-') && !(w.kind === 'door-blocked' && D(s).furniture.some((f) => f.id === w.by)))
+    .map((w) => w.kind);
 const toastTexts = (s: Store) => s.getState().toasts.map((t) => t.text);
 
 /** Plan position of an opening's centre (from the derived model). */

@@ -354,12 +354,26 @@ describe('blocks', () => {
         const { next: placed, result } = edit(base(), (d, ctx) => applyPlaceUnit(d, ctx, t.id, at, 0));
         const id = result?.blockId as string;
         let v = placed;
+        const pts = () => (v.blocks.find((b) => b.id === id)?.polygon ?? []).map((p) => p.p);
+        const onGrid = () => pts().every((p) => p.every((c) => Math.abs(c * 10 - Math.round(c * 10)) < 1e-6));
+        const centre = () => {
+          const xs = pts().map((p) => p[0]);
+          const ys = pts().map((p) => p[1]);
+          return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+        };
+        const startOnGrid = onGrid();
         const turn = (deg: 90 | -90) => {
+          const c0 = centre();
           const r = edit(v, (d, ctx) => applyRotateBlock(d, ctx, id, deg));
           expect(r.result).toBe(true);
           v = r.next;
-          // Every turn lands on the 0.1 m grid (an off-grid footprint is snapped on the first turn).
-          for (const p of v.blocks.find((b) => b.id === id)?.polygon ?? []) for (const c of p.p) expect(Math.abs(c * 10 - Math.round(c * 10))).toBeLessThan(1e-6);
+          // A footprint on the 0.1 m grid lands on the grid; one off it (polish round 2b) turns about its own centre and
+          // keeps its offset from the grid (snapping it moved it 5 cm per turn).
+          if (startOnGrid) expect(onGrid()).toBe(true);
+          else {
+            expect(centre()[0]).toBeCloseTo(c0[0], 9);
+            expect(centre()[1]).toBeCloseTo(c0[1], 9);
+          }
         };
         turn(90);
         const ref = v.blocks.find((b) => b.id === id)?.polygon;

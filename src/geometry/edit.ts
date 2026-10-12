@@ -21,7 +21,9 @@
  *    same block are an earlier edit's growth and get none. Parts are never changed: an explicit existing part polygon
  *    stays, the implicit remainder is new. An existing block WITHOUT explicit parts (a stored copy of the glass bump
  *    from before seed revision 5) gets its pre-edit outline as the existing part `${blockId}-today` the first time an
- *    edit changes its outline (copy-on-write, `todayPart`), so it follows the same rules. A junction shift may
+ *    edit changes its outline (copy-on-write, `todayPart`; an edge that already has a move ghost runs on the ghost's
+ *    line there, so growth from before revision 5 is not kept as today's), so it follows the same rules. Every piece
+ *    of an edge with a move ghost is new, also inside an existing part (walls.ts `movedEdgeKeys`). A junction shift may
  *    therefore shrink an EXISTING partner block (blk-main's north edge +1 takes 1 m of blk-bod, existing part
  *    included): allowed; its lost wall stubs are ghosted, and its lost floor counts with the growing block's new
  *    remainder (areas.ts). An edge whose line stays but whose existing pieces a junction without a wall of its own
@@ -38,7 +40,9 @@
  *    the edge at their plan position (where they heal against live openings that are back too). Ghosts still on the
  *    edge keep their plan position (no clamp). When a later edit makes the host (edge or stored wall) LONGER again, an
  *    opening that the shorter host had pressed against its end (or left in the middle of a host too short for it)
- *    goes back to its ghost's offset if it fits there and heals (`pullBackOpenings`); one the user moved stays.
+ *    goes back to its ghost's offset if it fits there and heals (`pullBackOpenings`); one the user moved stays. Polish
+ *    round (2b): a return in several steps keeps it pressed against that end until its place fits, and a stored wall
+ *    back on today's line takes back an opening within 0.15 m of its ghost (a wall turned there and back).
  *  - Healing: whenever an element is back on its ghost (a wall with the same geometry as `${id}/ghost`, an opening with
  *    the same host, offset and size, a block edge whose segment covers its ghost line) the ghost is dropped and the
  *    status goes back to 'existing' (`healGhosts`). So 16 → 18 → 16 or a nudge back and forth leaves nothing behind.
@@ -55,7 +59,10 @@
  * coincident walls that reach a storey the moved wall does not (a lower partition never drags a wall that runs on
  * through the loft). P with a non-parallel support (> 5°) is anchored: it slides along the support line (the support
  * with the least clamping wins, ties: the most perpendicular), clamped to the support's extent; coincident walls are
- * not stretched. A free node (no support) moves as a node: every coincident wall keeps its direction and ends on the
+ * not stretched. A wall MOVE whose end even the best support cannot follow (clamped short of the moved line) moves
+ * that end as a free node instead when a non-parallel coincident wall can carry it, so the wall keeps its direction
+ * (w-103-korr dragged south: w-103-102 is extended, the collinear w-vf-korr stays; before, the end stayed pinned and
+ * the wall tilted). A free node (no support) moves as a node: every coincident wall keeps its direction and ends on the
  * moved line; the moved wall ends at the outermost of those points, so with several coincident walls of different
  * directions the others meet it as T-junctions instead of the node falling apart (parallel coincident walls follow
  * the node; without non-parallel ones the node moves with the wall). A wall attached at both ends therefore cannot
@@ -81,7 +88,8 @@
  * polygon (with their openings), room anchors, furniture and structure inside it; it is refused for a block with
  * existing area (like `deleteBlock`): today's cabin is changed through its walls and edges instead. `applyRotateBlock`
  * turns a block with a template a quarter turn about a centre that maps the 0.1 m grid onto itself (so +90 then −90
- * gives the same footprint back), carrying the same things (furniture turned too) plus the roof's ridge axis / slope
+ * gives the same footprint back; a free unit OFF the grid turns about its own bounding-box centre with no snap, so it
+ * keeps its offset from the grid and does not drift 5 cm per turn: `centreTurn`), carrying the same things (furniture turned too) plus the roof's ridge axis / slope
  * side; a unit standing against another block or a deck edge (an edge of its axis polygon on that line) turns about
  * its bounding-box centre and is shifted back onto that line (and onto a second, non-parallel one in a corner), so it
  * keeps the contact and its middle along the line (`contactTurn`; no grid snap). Both report the rooms they carried
@@ -203,6 +211,15 @@ const clean = (v: number): number => {
   return r === 0 ? 0 : r;
 };
 const copy = (p: Vec2): Vec2 => [clean(p[0]), clean(p[1])];
+/**
+ * An opening offset re-computed from its plan position: cleaned like a coordinate, but within 10 nm of a tenth of a
+ * millimetre it is that value — a wall stretched or turned there and back gives today's offset again exactly (the
+ * nanometre rounding of the step there left 0.529999999; polish round 2b).
+ */
+const cleanOffset = (v: number): number => {
+  const r = Math.round(v * 1e4) / 1e4;
+  return Math.abs(v - r) < 1e-8 ? (r === 0 ? 0 : r) : clean(v);
+};
 /** a + b, cleaned (stored coordinates). */
 const addc = (a: Vec2, b: Vec2): Vec2 => copy(add(a, b));
 const sinAngle = (u: Vec2, v: Vec2): number => Math.abs(cross(unit(u), unit(v)));
@@ -548,7 +565,8 @@ function addEdgeGhosts(draft: Variant, ctx: EditContext, blockId: Id, edgeId: Id
 
 /**
  * Record the existing ranges a SHORTENED block edge lost (its line did not move; e.g. the bod's side walls when a
- * junction shift moves its end edge) as `Variant.ghosts`.
+ * junction shift moves its end edge) as `Variant.ghosts` — not on an edge whose line an earlier edit moved (`notToday`
+ * with the edge id: that line is not today's).
  */
 function addStubGhosts(draft: Variant, ctx: EditContext, e: ChangedEdge): EdgeGhostRange[] {
   const L0 = dist(e.oa, e.ob);
@@ -565,7 +583,7 @@ function addStubGhosts(draft: Variant, ctx: EditContext, e: ChangedEdge): EdgeGh
       if (s1 - s0 <= SAME) continue;
       const p = pointAlong(e.oa, e.ob, s0);
       const q = pointAlong(e.oa, e.ob, s1);
-      if (!notToday(ctx, e.blockId, p, q)) out.push({ ghost: edgeGhostFor(draft, e.blockId, e.edgeId, p, q), s0, s1 });
+      if (!notToday(ctx, e.blockId, p, q, e.edgeId)) out.push({ ghost: edgeGhostFor(draft, e.blockId, e.edgeId, p, q), s0, s1 });
     }
   }
   return out;
@@ -604,7 +622,9 @@ function subtractRanges(from: [number, number][], minus: [number, number][]): [n
  * 'open' junction, or one where the partner keeps the wall) that was not shared before. E.g. the glass bump grown
  * 0.5 m east opens 9..9.5 of the main block's south wall: `blk-main/v-main-sw/ghost` [9, 0]–[9.5, 0]. Stretches along
  * an edge of the partner's part of today's cabin (`todayOutlines`) get none: today there was no wall of this block
- * there (the glass bump shrunk and then grown back to x 5 re-opens 5..5.5, which was open today). Called after the new
+ * there (the glass bump shrunk and then grown back to x 5 re-opens 5..5.5, which was open today), and none on an edge
+ * whose line an earlier edit moved (`notToday` with the edge id, polish round 2b: main south +0.3, then glass east
+ * +0.5 left a stray ghost on the moved line whose "Ta tilbake" moved today's wall). Called after the new
  * polygons are in the draft. (healGhosts keeps such a ghost while the junction covers it; restoring it moves the
  * partner's edge back, see applyRestoreEdgeGhost.)
  */
@@ -639,7 +659,7 @@ function addJunctionGhosts(draft: Variant, ctx: EditContext, changed: ChangedEdg
           if (s1 - s0 <= SAME) continue;
           const p = pointAlong(oa, ob, s0);
           const q = pointAlong(oa, ob, s1);
-          if (!notToday(ctx, b0.id, p, q)) edgeGhostFor(draft, b0.id, edgeId, p, q);
+          if (!notToday(ctx, b0.id, p, q, edgeId)) edgeGhostFor(draft, b0.id, edgeId, p, q);
         }
       }
     }
@@ -671,10 +691,29 @@ function collinearRanges(a: Vec2, b: Vec2, poly: Vec2[]): [number, number][] {
  * Copy-on-write of today's outline (§3.4): an existing block WITHOUT explicit parts (a stored copy of Forslag D before
  * seed revision 5 gave the glass bump `part-glass-old`) gets its pre-edit polygon as an explicit existing part the
  * first time an edit changes its outline, so — like every other block of today's cabin — what the edit adds is the new
- * implicit remainder and the old outline stays today's.
+ * implicit remainder and the old outline stays today's. Today's outline is built from today's LINES (polish round,
+ * phase 2b): an edge that already carries an edge ghost of an earlier move (a copy whose glass bump was grown under
+ * revision 4: ghost at x 9, edge at 9.5) runs on its ghost's line, each corner being the intersection of the two
+ * adjacent lines; so the earlier growth is new from that edit on (falls back to the plain outline if that polygon is
+ * not valid).
  */
-function todayPart(block: Block): Block['parts'][number] {
-  return { id: `${block.id}-today`, name: nb.status.existing, polygon: block.polygon.map((v) => copy(v.p)), isNew: false };
+function todayPart(block: Block, ghosts: readonly VariantGhost[] | undefined): Block['parts'][number] {
+  const pts = block.polygon.map((v) => v.p);
+  const n = pts.length;
+  const lines = pts.map((a, i) => {
+    const b = pts[(i + 1) % n];
+    const g = (ghosts ?? []).find((x) => {
+      const ref = parseEdgeGhostId(x.id);
+      return ref?.blockId === block.id && ref.edgeId === block.polygon[i].id && (lineDistance(x.a, a, b) > SAME || lineDistance(x.b, a, b) > SAME);
+    });
+    return g && dist(g.a, g.b) > TINY ? { o: g.a, d: sub(g.b, g.a) } : { o: a, d: sub(b, a) };
+  });
+  const today = pts.map((p, i) => {
+    const prev = lines[(i - 1 + n) % n];
+    return copy(lineIntersection(prev.o, prev.d, lines[i].o, lines[i].d) ?? p);
+  });
+  const polygon = validBlockPolygon(pts, today) ? today : pts.map(copy);
+  return { id: `${block.id}-today`, name: nb.status.existing, polygon, isNew: false };
 }
 
 /**
@@ -754,7 +793,7 @@ function keepWallOpenings(draft: Variant, wallId: Id, oldA: Vec2, oldB: Vec2, bo
   for (const o of [...draft.openings]) {
     if (o.host.kind !== 'wall' || o.host.wallId !== wallId) continue;
     const centre = pointAlong(oldA, oldB, o.offset);
-    const offset = clean(clampOffset(along(wall.a, wall.b, centre), o.width, 0, L));
+    const offset = cleanOffset(clampOffset(along(wall.a, wall.b, centre), o.width, 0, L));
     if (bookkeep && o.status === 'existing' && dist(pointAlong(wall.a, wall.b, offset), centre) > SAME) {
       const host = ghost ?? wall;
       pushOpeningGhost(draft, o, { kind: 'wall', wallId: host.id }, clean(along(host.a, host.b, centre)));
@@ -934,17 +973,26 @@ function supportsAt(ctx: EditContext, p: Vec2, storeys: readonly Id[], except: R
 
 /**
  * Supports and followers of a wall end: supports as `supportsAt`, plus the coincident walls that reach a storey the
- * wall does not (a partition must not drag a wall that runs on through the loft); the other coincident walls follow.
+ * wall does not (a partition must not drag a wall that runs on through the loft; listed in `through` as well); the
+ * other coincident walls follow.
  */
-function endClass(ctx: EditContext, wall: Wall, p: Vec2, except: ReadonlySet<Id>): { supports: Support[]; followers: { wall: Wall; end: 'a' | 'b' }[] } {
+function endClass(
+  ctx: EditContext,
+  wall: Wall,
+  p: Vec2,
+  except: ReadonlySet<Id>,
+): { supports: Support[]; followers: { wall: Wall; end: 'a' | 'b' }[]; through: { wall: Wall; end: 'a' | 'b' }[] } {
   const storeys = wallStoreys(ctx, wall);
   const supports = supportsAt(ctx, p, storeys, except);
   const followers: { wall: Wall; end: 'a' | 'b' }[] = [];
+  const through: { wall: Wall; end: 'a' | 'b' }[] = [];
   for (const c of coincidentAt(ctx, p, storeys, except)) {
-    if (wallStoreys(ctx, c.wall).some((s) => !storeys.includes(s))) supports.push({ a: c.wall.a, b: c.wall.b });
-    else followers.push(c);
+    if (wallStoreys(ctx, c.wall).some((s) => !storeys.includes(s))) {
+      supports.push({ a: c.wall.a, b: c.wall.b });
+      through.push(c);
+    } else followers.push(c);
   }
-  return { supports, followers };
+  return { supports, followers, through };
 }
 
 /** Walls of the storeys with an end within 1 cm of p: { wall, end }. */
@@ -957,8 +1005,11 @@ function coincidentAt(ctx: EditContext, p: Vec2, storeys: readonly Id[], except:
   return out;
 }
 
-/** Anchored endpoint on the moved line (origin o, direction d): the best non-parallel support, or null when free. */
-function anchorOnLine(supports: Support[], o: Vec2, d: Vec2): Vec2 | null {
+/**
+ * Anchored endpoint on the moved line (origin o, direction d): the best non-parallel support, or null when free.
+ * `err` = how far the anchor is from the moved line (> 0 when even the best support ends short of it: clamped).
+ */
+function anchorOnLine(supports: Support[], o: Vec2, d: Vec2): { p: Vec2; err: number } | null {
   let best: { p: Vec2; err: number; sin: number } | null = null;
   for (const s of supports) {
     const sd = sub(s.b, s.a);
@@ -970,7 +1021,7 @@ function anchorOnLine(supports: Support[], o: Vec2, d: Vec2): Vec2 | null {
     const err = dist(x, c);
     if (!best || err < best.err - 1e-9 || (Math.abs(err - best.err) <= 1e-9 && sin > best.sin)) best = { p: c, err, sin };
   }
-  return best ? best.p : null;
+  return best ? { p: best.p, err: best.err } : null;
 }
 
 /** Anchored endpoint for an endpoint drag: the pointer projected on the best non-parallel support, or null when free. */
@@ -990,17 +1041,38 @@ interface WallChange {
   b?: Vec2;
 }
 
-/** A host (stored wall or block edge) that an edit made longer, with its line before the edit. */
-interface LongerHost {
+/** A host (stored wall or block edge) that an edit changed, with its line before the edit (for pullBackOpenings). */
+interface ChangedHost {
   host: OpeningHost;
   oldA: Vec2;
   oldB: Vec2;
 }
 
-/** The stored wall `id` (line oldA → oldB before the edit) as a LongerHost when the draft made it longer. */
-function longerWall(draft: Variant, id: Id, oldA: Vec2, oldB: Vec2): LongerHost[] {
+/** The stored wall `id` (line oldA → oldB before the edit) as a ChangedHost when the draft changed its line. */
+function changedWall(draft: Variant, id: Id, oldA: Vec2, oldB: Vec2): ChangedHost[] {
   const w = draft.walls.find((x) => x.id === id);
-  return w && dist(w.a, w.b) > dist(oldA, oldB) + SAME ? [{ host: { kind: 'wall', wallId: id }, oldA, oldB }] : [];
+  return w && (!samePoint(w.a, oldA, TINY) || !samePoint(w.b, oldB, TINY)) ? [{ host: { kind: 'wall', wallId: id }, oldA, oldB }] : [];
+}
+
+/** An opening this close (m, along its host) to its ghost when its stored wall is back on today's line goes back to it. */
+const DRIFT_BACK = 0.15;
+
+/**
+ * Offset along the host line of an opening ghost: its own offset when it is on the host; else, when it stands on a
+ * removed wall on the host's line that belongs to the host — the wall's own ghost (a wall that was only shortened) or
+ * the host wall of a stub ghost of the same block edge —, the projection of its centre; else null.
+ */
+function ghostOffsetOn(v: Variant, g: Opening, host: OpeningHost, line: { a: Vec2; b: Vec2 }): number | null {
+  if (sameHost(g.host, host)) return g.offset;
+  if (g.host.kind !== 'wall') return null;
+  const wallId = g.host.wallId;
+  const ref = parseEdgeGhostId(wallId);
+  const own =
+    host.kind === 'wall' ? wallId === ghostIdOf(host.wallId) : ref !== null && ref.blockId === host.blockId && ref.edgeId === host.edgeId;
+  if (!own) return null;
+  const w = v.walls.find((x) => x.id === wallId && x.status === 'removed');
+  if (!w || lineDistance(w.a, line.a, line.b) > SAME || lineDistance(w.b, line.a, line.b) > SAME) return null;
+  return along(line.a, line.b, pointAlong(w.a, w.b, g.offset));
 }
 
 /** Height range [sill, head] of an opening (absolute, from its level; a full-height one reaches up indefinitely). */
@@ -1019,43 +1091,64 @@ function openingZ(v: Variant, o: Opening): [number, number] {
  *    the middle of a host too short for it (a clamp, not the user's own move), and the ghost's place fits on the host
  *    now without overlapping another opening there,
  *  - nothing else of the opening changed (it heals there).
+ * Polish round (phase 2b):
+ *  - a return in several steps: when the ghost's place does not fit yet, an opening that was pressed against the end
+ *    on its ghost's side stays pressed against that end as it moves out (as near its ghost as fits), so the next
+ *    lengthening finds it pressed again and the last one puts it back (blk-bod's south edge −0.5, then +0.25 twice:
+ *    door-green-e at 0.69 again). One the user moved off the end stays where it is;
+ *  - a stored wall back on today's line (existing again: an end moved out and back turned it there and back) takes
+ *    back an opening within DRIFT_BACK of its ghost whose ghost place fits: keeping its plan position on the turned
+ *    wall and back left it 1–12 cm off (d-104 on w-104-diag after w-103-korr's end a out and back).
  * Returns true when an opening moved (healGhosts has then run again).
  */
-function pullBackOpenings(draft: Variant, ctx: EditContext, longer: LongerHost[]): boolean {
+function pullBackOpenings(draft: Variant, ctx: EditContext, changedHosts: ChangedHost[]): boolean {
   const ghostOf = new Set(draft.openings.filter((x) => x.status === 'removed').map((x) => x.id));
-  const candidate = (o: Opening) => o.status === 'new' && ghostOf.has(ghostIdOf(o.id)) && longer.some((h) => sameHost(o.host, h.host));
+  const candidate = (o: Opening) => o.status === 'new' && ghostOf.has(ghostIdOf(o.id)) && changedHosts.some((h) => sameHost(o.host, h.host));
   if (!draft.openings.some(candidate)) return false;
   healGhosts(draft);
   let moved = false;
-  for (const { host, oldA, oldB } of longer) {
+  for (const { host, oldA, oldB } of changedHosts) {
     const line = hostLine(draft, host);
     if (!line || line.length < TINY) continue;
     const L0 = dist(oldA, oldB);
+    const grew = line.length > L0 + SAME;
+    const today = host.kind === 'wall' && line.wall?.status === 'existing';
+    if (!grew && !today) continue;
     const onHost = draft.openings.filter((o) => o.status !== 'removed' && sameHost(o.host, host));
     for (const o of onHost) {
       if (o.status !== 'new') continue;
       const g = draft.openings.find((x) => x.id === ghostIdOf(o.id) && x.status === 'removed');
-      if (!g || !sameHost(g.host, host) || Math.abs(g.offset - o.offset) <= SAME) continue;
+      // The ghost's place along the host: on the host itself, or on the host wall of a stub ghost of this edge (on its
+      // line beyond the end; it comes back onto the edge when the stub heals).
+      const gOff = g ? ghostOffsetOn(draft, g, host, line) : null;
+      if (!g || gOff === null || Math.abs(gOff - o.offset) <= SAME) continue;
       const half = o.width / 2;
-      if (g.offset - half < -SAME || g.offset + half > line.length + SAME) continue;
-      // A clamp: before this edit the opening was pressed against an end of the host and its ghost lay beyond that end.
-      const before = ctx.base.openings.find((x) => x.id === o.id);
-      if (!before || !sameHost(before.host, host)) continue;
-      const sOld = along(oldA, oldB, pointAlong(line.a, line.b, g.offset));
-      const sLive = before.offset;
-      const atStart = Math.abs(sLive - half) <= SAME && sOld - half < -SAME;
-      const atEnd = Math.abs(sLive + half - L0) <= SAME && sOld + half > L0 + SAME;
-      // (Too wide for the shortened host: clampOffset left it in the middle.)
-      const centred = o.width > L0 + SAME && Math.abs(sLive - L0 / 2) <= SAME && (sOld - half < -SAME || sOld + half > L0 + SAME);
-      if (!atStart && !atEnd && !centred) continue;
+      const fits = gOff - half >= -SAME && gOff + half <= line.length + SAME;
+      let target: number | null = today && fits && sameHost(g.host, host) && Math.abs(gOff - o.offset) <= DRIFT_BACK ? gOff : null;
+      if (target === null && grew) {
+        // A clamp: before this edit the opening was pressed against an end of the host and its ghost lay beyond that end.
+        const before = ctx.base.openings.find((x) => x.id === o.id);
+        if (!before || !sameHost(before.host, host)) continue;
+        const sOld = along(oldA, oldB, pointAlong(line.a, line.b, gOff));
+        const sLive = before.offset;
+        const atStart = Math.abs(sLive - half) <= SAME && sOld - half < -SAME;
+        const atEnd = Math.abs(sLive + half - L0) <= SAME && sOld + half > L0 + SAME;
+        // (Too wide for the shortened host: clampOffset left it in the middle.)
+        const centred = o.width > L0 + SAME && Math.abs(sLive - L0 / 2) <= SAME && (sOld - half < -SAME || sOld + half > L0 + SAME);
+        if (fits && (atStart || atEnd || centred)) target = gOff;
+        // Not back yet (a return in several steps): pressed against the end on its ghost's side of the longer host.
+        else if (!fits && line.length >= o.width - SAME && (atStart || atEnd || centred)) target = clean(gOff < half ? half : line.length - half);
+      }
+      if (target === null || Math.abs(target - o.offset) <= SAME) continue;
+      const t = target;
       const zo = openingZ(draft, o);
       const blocked = onHost.some((x) => {
-        if (x === o || Math.min(g.offset + half, x.offset + x.width / 2) - Math.max(g.offset - half, x.offset - x.width / 2) <= SAME) return false;
+        if (x === o || Math.min(t + half, x.offset + x.width / 2) - Math.max(t - half, x.offset - x.width / 2) <= SAME) return false;
         const zx = openingZ(draft, x);
         return Math.min(zo[1], zx[1]) - Math.max(zo[0], zx[0]) > SAME;
       });
-      if (blocked || !sameOpeningGeometry({ ...plain(o), offset: g.offset }, g)) continue;
-      o.offset = g.offset;
+      if (blocked || !sameOpeningGeometry({ ...plain(o), host: plain(g.host), offset: g.offset }, g)) continue;
+      o.offset = t;
       moved = true;
     }
   }
@@ -1066,10 +1159,10 @@ function pullBackOpenings(draft: Variant, ctx: EditContext, longer: LongerHost[]
 /**
  * Apply endpoint changes of other walls (touch, set, keep their openings' plan positions with the bookkeeping of
  * keepWallOpenings: an existing opening the change moves — a clamp, or a wall that turned — is new with a ghost).
- * Returns the walls it made longer (for pullBackOpenings).
+ * Returns the walls it changed (for pullBackOpenings).
  */
-function applyWallChanges(draft: Variant, ctx: EditContext, changes: Map<Id, WallChange>, bookkeep = true): LongerHost[] {
-  const longer: LongerHost[] = [];
+function applyWallChanges(draft: Variant, ctx: EditContext, changes: Map<Id, WallChange>, bookkeep = true): ChangedHost[] {
+  const changedHosts: ChangedHost[] = [];
   for (const [id, ch] of changes) {
     const w0 = ctx.base.walls.find((w) => w.id === id);
     const w = draft.walls.find((x) => x.id === id);
@@ -1082,9 +1175,9 @@ function applyWallChanges(draft: Variant, ctx: EditContext, changes: Map<Id, Wal
     w.a = copy(a);
     w.b = copy(b);
     keepWallOpenings(draft, id, w0.a, w0.b, bookkeep);
-    longer.push(...longerWall(draft, id, w0.a, w0.b));
+    changedHosts.push(...changedWall(draft, id, w0.a, w0.b));
   }
-  return longer;
+  return changedHosts;
 }
 
 /** T-junction walls ending on the interior of segment (a, b): their end follows the new line (na, nb). */
@@ -1116,31 +1209,55 @@ export function wallEndsFree(ctx: EditContext, wallId: Id): boolean {
   return (['a', 'b'] as const).every((end) => supportsAt(ctx, w[end], storeys, self).length === 0 && coincidentAt(ctx, w[end], storeys, self).length === 0);
 }
 
-/** Move a stored wall by `delta` with its cascades (header: "Wall move"). False when nothing changed. */
-export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delta: Vec2): boolean {
+/**
+ * Move a stored wall by `delta` with its cascades (header: "Wall move"). False when nothing changed. `opts.keep`: walls
+ * the move must leave alone (no support, follower or T-junction): "Ta tilbake" moving a wall back keeps the walls the
+ * forward step did not touch, even where the forward step left the wall's end on theirs.
+ */
+export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delta: Vec2, opts: { keep?: ReadonlySet<Id> } = {}): boolean {
   const w0 = ctx.base.walls.find((w) => w.id === wallId);
   if (!w0 || w0.status === 'removed' || len(delta) < TINY) return false;
   const storeys = wallStoreys(ctx, w0);
-  const self = new Set([wallId]);
+  const self = new Set([wallId, ...(opts.keep ?? [])]);
   const dir = sub(w0.b, w0.a);
   const o = addc(w0.a, delta);
   const changes = new Map<Id, WallChange>();
   const ends: Record<'a' | 'b', Vec2> = { a: addc(w0.a, delta), b: addc(w0.b, delta) };
-  for (const end of ['a', 'b'] as const) {
+  const plans = (['a', 'b'] as const).map((end) => {
     const p = w0[end];
-    const { supports, followers } = endClass(ctx, w0, p, self);
+    const { supports, followers, through } = endClass(ctx, w0, p, self);
+    // A coincident wall's point on the moved line (a non-parallel one keeps its direction; null for a parallel one).
+    const onMoved = (c: { wall: Wall; end: 'a' | 'b' }): Vec2 | null => {
+      const other = c.end === 'a' ? c.wall.b : c.wall.a;
+      return isParallel(sub(c.wall.b, c.wall.a), dir) ? null : lineIntersection(other, sub(p, other), o, dir);
+    };
+    // … and whether that point extends it beyond this end (so it still covers the old corner: nothing there comes loose).
+    const extended = (c: { wall: Wall; end: 'a' | 'b' }): boolean => {
+      const x = onMoved(c);
+      return x !== null && dot(sub(x, p), sub(p, c.end === 'a' ? c.wall.b : c.wall.a)) > TINY;
+    };
     const anchored = anchorOnLine(supports, o, dir);
-    if (anchored) {
-      ends[end] = copy(anchored);
+    const clamped = anchored !== null && anchored.err > COINCIDE;
+    return { end, p, followers, through, onMoved, extended, anchored, clamped, carriers: [...followers, ...through].some(extended) };
+  });
+  // A support that ends short of the moved line (clamped, e.g. the floor step and w-103-102 under w-103-korr's east end
+  // when the wall moves south) would pin that end and turn the wall. When a non-parallel coincident wall can carry the
+  // corner by getting LONGER (w-103-102, even though it runs on to the loft), the end moves as a node with the
+  // coincident walls and the wall keeps its direction; a parallel one (w-vf-korr continuing the wall) stays and meets
+  // the carried wall as a T-junction (polish round, phase 2b). Only when no end stays clamped (else the wall would turn
+  // anyway) and never by shortening a wall (w-wing-w east: w-sauna-n would leave the wing's edge): as before then.
+  const carry = plans.some((pl) => pl.clamped) && plans.every((pl) => !pl.clamped || pl.carriers);
+  for (const { end, p, followers, through, onMoved, extended, anchored, clamped } of plans) {
+    const carriedCorner = carry && clamped;
+    if (anchored && !carriedCorner) {
+      ends[end] = copy(anchored.p);
       continue;
     }
+    const movers = carriedCorner ? [...followers, ...through.filter(extended)] : followers;
+    const xs = movers.map(onMoved);
     // A free node: every non-parallel follower keeps its direction and ends on the moved line; the moved wall ends
     // at the outermost of those points, so the others meet it as T-junctions and the node never falls apart.
     const outward = unit(sub(p, end === 'a' ? w0.b : w0.a));
-    const xs = followers.map((c) => {
-      const other = c.end === 'a' ? c.wall.b : c.wall.a;
-      return isParallel(sub(c.wall.b, c.wall.a), dir) ? null : lineIntersection(other, sub(p, other), o, dir);
-    });
     let node = addc(p, delta);
     let best = -Infinity;
     for (const x of xs) {
@@ -1152,7 +1269,8 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
       }
     }
     ends[end] = node;
-    followers.forEach((c, i) => {
+    movers.forEach((c, i) => {
+      if (carriedCorner && xs[i] === null) return;
       const ch = changes.get(c.wall.id) ?? {};
       ch[c.end] = copy(xs[i] ?? node);
       changes.set(c.wall.id, ch);
@@ -1160,13 +1278,13 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
   }
   if (dist(ends.a, ends.b) < MIN_WALL_LENGTH) return false;
   if (samePoint(ends.a, w0.a, TINY) && samePoint(ends.b, w0.b, TINY)) return false;
-  tJunctionChanges(ctx, w0.a, w0.b, ends.a, ends.b, storeys, new Set([wallId, ...changes.keys()]), changes);
+  tJunctionChanges(ctx, w0.a, w0.b, ends.a, ends.b, storeys, new Set([...self, ...changes.keys()]), changes);
   touchWallForMove(draft, wallId);
   const w = draft.walls.find((x) => x.id === wallId);
   if (!w) return false;
   w.a = copy(ends.a);
   w.b = copy(ends.b);
-  pullBackOpenings(draft, ctx, [...longerWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
+  pullBackOpenings(draft, ctx, [...changedWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
   return true;
 }
 
@@ -1202,7 +1320,7 @@ export function applyMoveWallEndpoint(draft: Variant, ctx: EditContext, wallId: 
   w.a = copy(na);
   w.b = copy(nb);
   keepWallOpenings(draft, wallId, w0.a, w0.b, true);
-  pullBackOpenings(draft, ctx, [...longerWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
+  pullBackOpenings(draft, ctx, [...changedWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
   return true;
 }
 
@@ -1756,7 +1874,7 @@ function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec
   for (const blockId of new Set(changed.map((e) => e.blockId))) {
     const b0 = ctx.base.blocks.find((b) => b.id === blockId);
     const b = draft.blocks.find((x) => x.id === blockId);
-    if (b0 && b && !b0.isNew && b0.parts.length === 0) b.parts = [todayPart(b0)];
+    if (b0 && b && !b0.isNew && b0.parts.length === 0) b.parts = [todayPart(b0, ctx.base.ghosts)];
   }
 
   for (const e of changed) {
@@ -1794,9 +1912,7 @@ function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec
       changes.set(w.id, ch);
     }
   }
-  const longer: LongerHost[] = changed
-    .filter((e) => dist(e.na, e.nb) > dist(e.oa, e.ob) + SAME)
-    .map((e) => ({ host: { kind: 'blockEdge', blockId: e.blockId, edgeId: e.edgeId }, oldA: e.oa, oldB: e.ob }));
+  const changedHosts: ChangedHost[] = changed.map((e) => ({ host: { kind: 'blockEdge', blockId: e.blockId, edgeId: e.edgeId }, oldA: e.oa, oldB: e.ob }));
   for (const [id, c] of carried) {
     const w0 = ctx.base.walls.find((w) => w.id === id);
     const w = draft.walls.find((x) => x.id === id);
@@ -1806,9 +1922,9 @@ function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec
     w.a = copy(c.a);
     w.b = copy(c.b);
     if (!c.translated) keepWallOpenings(draft, id, w0.a, w0.b, true);
-    longer.push(...longerWall(draft, id, w0.a, w0.b));
+    changedHosts.push(...changedWall(draft, id, w0.a, w0.b));
   }
-  longer.push(...applyWallChanges(draft, ctx, changes, true));
+  changedHosts.push(...applyWallChanges(draft, ctx, changes, true));
 
   // Floor zones follow the block's vertices and moved edges; then the polygons.
   for (const [blockId, nw] of polys) {
@@ -1834,7 +1950,7 @@ function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec
   addJunctionGhosts(draft, ctx, changed);
   if (draft.ghosts?.length === 0) delete draft.ghosts;
   healGhosts(draft);
-  pullBackOpenings(draft, ctx, longer);
+  pullBackOpenings(draft, ctx, changedHosts);
   return true;
 }
 
@@ -2011,6 +2127,21 @@ function gridTurn(axis: Vec2[], turns: 1 | -1): (p: Vec2) => Vec2 {
   };
 }
 
+/** Every vertex on the 0.1 m grid (within 1 µm). */
+const onGrid = (pts: Vec2[]): boolean => pts.every((p) => Math.abs(p[0] - roundGrid(p[0])) < 1e-6 && Math.abs(p[1] - roundGrid(p[1])) < 1e-6);
+
+/**
+ * A free unit OFF the 0.1 m grid (polish round, phase 2b; e.g. a Vedskjul centred on (13, 9): y 8.25..9.75): the
+ * quarter turn about its bounding-box centre, without a grid snap. The centre stays and the footprint keeps its own
+ * offset from the grid, so +90 then −90 (or four turns) give exactly the same footprint back; snapping it to the grid
+ * moved it 5 cm per turn.
+ */
+function centreTurn(axis: Vec2[], turns: 1 | -1): (p: Vec2) => Vec2 {
+  const box = bbox(axis);
+  const turn = quarterTurn([(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2], turns);
+  return (p: Vec2): Vec2 => copy(turn(p));
+}
+
 /** A line a unit stands against: the outward normal of its touching edge and that line's offset along it. */
 interface Contact {
   n: Vec2;
@@ -2065,7 +2196,9 @@ function contactTurn(axis: Vec2[], turns: 1 | -1, contacts: Contact[]): (p: Vec2
 
 /**
  * Turn a whole block with a template (a placed unit) a quarter turn (`deg` 90 = counter-clockwise) about its centre
- * (`quarterTurnCentre`), snapped to the 0.1 m grid, carrying what `moveBlock` carries (parts, zones, stored walls
+ * (`quarterTurnCentre`), snapped to the 0.1 m grid — a unit against a wall or deck edge keeps that contact
+ * (`contactTurn`), a free unit off the grid turns about its own centre without a snap (`centreTurn`) —, carrying what
+ * `moveBlock` carries (parts, zones, stored walls
  * with their openings, room anchors, furniture — turned with it —, structure); openings on its edges turn with their
  * edges; the roof's ridge axis / slope side and its manual extensions turn too. Returns 'existing' (refused) for a
  * block with existing area, 'no-template' for a drawn block, false when nothing turned.
@@ -2079,7 +2212,7 @@ export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, 
   const turns = deg === 90 ? 1 : -1;
   const axis = b0.polygon.map((v) => v.p);
   const contacts = contactsOf(ctx, b0);
-  const T = contacts.length > 0 ? contactTurn(axis, turns, contacts) : gridTurn(axis, turns);
+  const T = contacts.length > 0 ? contactTurn(axis, turns, contacts) : onGrid(axis) ? gridTurn(axis, turns) : centreTurn(axis, turns);
   const storeys = blockStoreys(ctx.base, b0);
   b.polygon.forEach((v) => (v.p = T(v.p)));
   for (const p of b.parts) p.polygon = p.polygon.map(T);

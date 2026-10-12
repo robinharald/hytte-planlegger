@@ -277,10 +277,15 @@ describe('drags carry their start (second fix round: snapping still fought short
     expect(snapPolygon(withOrigin({ polygon: far }), moved(far, [-0.4, 0]), { radius: 0.3 }).delta[0]).toBeCloseTo(-0.1, 9);
   });
 
-  it('snapPolygon: targets reach at most 0,25 m (placement too); an axis moved less than 5 cm stays put', () => {
+  it('snapPolygon: in a drag targets reach at most 0,25 m, placement the whole radius; an axis moved less than 5 cm stays put', () => {
+    // Placement (no drag, polish round 2b): the "Nytt bygg" ghost reaches the pointer radius again.
     const unit = rect(6.3, 0.05, 8.3, 1.55);
-    expect(snapPolygon(ctx, unit, { radius: 1 }).delta[0]).toBeCloseTo(0, 9);
+    expect(snapPolygon(ctx, unit, { radius: 1 }).delta[0]).toBeCloseTo(-0.3, 9);
+    expect(snapPolygon(ctx, unit, { radius: 0.2 }).delta[0]).toBeCloseTo(0, 9);
     expect(snapPolygon(ctx, rect(6.2, 0.05, 8.2, 1.55), { radius: 1 }).delta[0]).toBeCloseTo(-0.2, 9);
+    // A drag 0.7 m west ending 0,3 m from the block's east edge: beyond 0,25 m, no snap.
+    const from = rect(7, 0.05, 9, 1.55);
+    expect(snapPolygon(withOrigin({ polygon: from }), moved(from, [-0.7, 0]), { radius: 1 }).delta[0]).toBeCloseTo(0, 9);
     // A 1 m drag west with 3 cm of wobble in y: y goes back to its start (off the grid), x to the grid.
     const start = rect(10.03, 10.07, 12.03, 11.57);
     const d = snapPolygon(withOrigin({ polygon: start }), moved(start, [-1.04, 0.03]), { radius: 0.3 }).delta;
