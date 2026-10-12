@@ -15,6 +15,7 @@
  *  - On phones (`variant="sheet"`) the sheet closes after a placement (back to Velg), so the new item shows with its
  *    mini-bar; the plan keeps the selection above the sheet while it is open (BottomSheet → `viewportInsets`).
  *  - A polite live region says what was placed ("Seng 150 er satt inn i Soverom 1.").
+ *  - The intro under the search box starts «Trykk på et rom først, eller …» (final fix round).
  *
  * Test ids: `furniture-search`, `furniture-category-<id>`, `furniture-item-<catalogId>`, `furniture-drag-chip`.
  */
@@ -249,7 +250,9 @@ export function FurnitureLibrary(props: FurnitureLibraryProps) {
           </button>
         )}
       </div>
-      <p className="flib-intro muted">{sheet ? S.introTouch : S.intro}</p>
+      <p className="flib-intro muted" data-testid="furniture-intro">
+        {sheet ? nb.library.introTouch : nb.library.intro}
+      </p>
       <div className="flib-list" ref={listRef}>
         {groups.length === 0 && <p className="flib-empty muted">{S.noMatch(query.trim())}</p>}
         {groups.map((g) => {

@@ -10,6 +10,9 @@
  *    selection is out of view. Only the 3D view (no plan on screen) uses the bottom-centre fallback.
  *  - Shown on phones while something resolvable is selected, not while read-only and not while the Egenskaper
  *    sheet is open (the sheet already covers that).
+ *  - Only with Velg (final fix round): while another tool is active (Nytt bygg, Vegg, Dør/vindu, Mål, Møbler with or
+ *    without an armed item) the bar is not shown, so a tap meant to place something never lands on its Slett (before:
+ *    move a door, then Nytt bygg → Vedskjul, and the tap on the deck deleted the door).
  *  - Egenskaper opens the bottom sheet; Roter for furniture and placed "Nytt bygg" units (commands.ts `canRotate`);
  *    Slett only for what can be deleted. On the locked base proposal Roter / Slett show the refusal toast.
  *  - The room of a placed single-room unit (a Vedskjul's room, commands.ts `unitOfRoom`) also gets the unit's
@@ -33,6 +36,8 @@ export function SelectionMiniBar() {
   const selection = useAppStore((s) => s.ui.selection);
   const readOnly = useAppStore((s) => s.ui.readOnly);
   const planShown = useAppStore((s) => s.ui.activeView !== '3d');
+  // An armed library item is the Møbler tool too (toolOptions.furnitureItem is read only with it, and outlives it).
+  const placing = useAppStore((s) => s.ui.tool !== 'select');
   const anchor = useSelectionAnchor();
   const sheetOpen = usePropertiesSheet();
   const sheetInset = useSheetInset();
@@ -50,7 +55,7 @@ export function SelectionMiniBar() {
     if (width > 0 && height > 0 && (width !== size.width || height !== size.height)) setSize({ width, height });
   }, [resolved, anchor, size.width, size.height]);
 
-  if (!resolved || readOnly || sheetOpen) return null;
+  if (!resolved || readOnly || sheetOpen || placing) return null;
   // The plan is on screen but reports no anchor: a drag is in progress or the selection is out of view.
   if (planShown && !anchor) return null;
 

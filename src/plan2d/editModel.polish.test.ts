@@ -1,7 +1,7 @@
 /**
  * editModel.ts, editor polish (phase 2b, plan side; the second review's leftovers on the real seed):
  *  - the 5 px touch threshold for presses on the selection (10 px elsewhere, 5 px with a mouse);
- *  - opening end handles on touch from half a handle diameter (door-mellom-vf at 23 px/m);
+ *  - opening end handles on touch: at most 0,3 m in radius, not drawn below ~33 px/m (final fix round);
  *  - a second tap on a selected opening over a ghost selects the ghost (zoomed in, the ghost is wholly under it);
  *  - the label box format the plan writes on its label hit areas.
  */
@@ -14,7 +14,8 @@ import {
   DRAG_THRESHOLD_TOUCH_SELECTED_PX,
   HANDLE_RADIUS_COARSE_PX,
   HANDLE_RADIUS_PX,
-  OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH,
+  OPENING_END_HANDLE_MAX_M_TOUCH,
+  OPENING_END_HANDLE_MIN_TOUCH_PX,
   bandLines,
   cycleFurnitureRoom,
   cycleOpeningGhost,
@@ -24,6 +25,7 @@ import {
   formatLabelBox,
   handlesFor,
   labelTap,
+  openingEndHandleRadiusPx,
   openingEndHandlesShown,
   parseLabelBox,
   wallsById,
@@ -55,43 +57,54 @@ describe('drag thresholds', () => {
   });
 });
 
-describe('opening end handles on touch: at any zoom', () => {
-  it('door-mellom-vf (0,91 m) at 23 px/m on touch has its end handles (before: from 31 px/m)', () => {
-    expect(OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH).toBe(0);
-    const handles = handlesFor(d, DOOR, TOUCH(23));
-    expect(handles.map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
-    // They sit one handle radius outside the jambs and act on them.
-    const { wall, opening } = findOpening(d, 'door-mellom-vf')!;
+describe('opening end handles on touch: at most 0,3 m, hidden where they would cover more (final fix round)', () => {
+  const along = (p: Vec2) => {
+    const { wall } = findOpening(d, 'door-mellom-vf')!;
     const l = Math.hypot(wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]);
-    const u: Vec2 = [(wall.b[0] - wall.a[0]) / l, (wall.b[1] - wall.a[1]) / l];
-    const jamb: Vec2 = [wall.a[0] + u[0] * (opening.offset - opening.width / 2), wall.a[1] + u[1] * (opening.offset - opening.width / 2)];
-    expect(handles[0].anchor![0]).toBeCloseTo(jamb[0], 9);
-    expect(handles[0].anchor![1]).toBeCloseTo(jamb[1], 9);
-    expect(Math.hypot(handles[0].p[0] - jamb[0], handles[0].p[1] - jamb[1]) * 23).toBeCloseTo(HANDLE_RADIUS_COARSE_PX, 6);
+    return ((p[0] - wall.a[0]) * (wall.b[0] - wall.a[0]) + (p[1] - wall.a[1]) * (wall.b[1] - wall.a[1])) / l;
+  };
+
+  it("not drawn at the phone's starting zoom (11,6 px/m: 14 px would be a 1,2 m circle) nor at 23 or 33 px/m", () => {
+    expect(OPENING_END_HANDLE_MAX_M_TOUCH).toBe(0.3);
+    expect(OPENING_END_HANDLE_MIN_TOUCH_PX).toBe(10);
+    for (const s of [11.56, 23, 33]) {
+      expect(handlesFor(d, DOOR, TOUCH(s)), `${s} px/m`).toEqual([]);
+      expect(openingEndHandleRadiusPx(TOUCH(s))).toBeNull();
+      expect(openingEndHandlesShown(0.91, TOUCH(s))).toBe(false);
+    }
+    // An explicit `coarse` wins over the radius.
+    expect(openingEndHandlesShown(0.91, { scale: 9, handleR: HANDLE_RADIUS_PX, coarse: true })).toBe(false);
+    expect(openingEndHandlesShown(0.91, { scale: 23, handleR: HANDLE_RADIUS_COARSE_PX, coarse: false })).toBe(false);
+    // Without a screen: always.
+    expect(openingEndHandlesShown(0.91)).toBe(true);
   });
 
-  it('at the phone\'s starting zoom too (fix round after 2b), outside the jambs; walls and the mouse keep one diameter', () => {
-    // 0,91 m × 11,56 px/m = 10,5 px: before, under half a diameter (14 px), no handles at all.
-    const handles = handlesFor(d, DOOR, TOUCH(11.56));
-    expect(handles.map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
-    // Each sits one handle radius beyond its jamb, away from the door: neither covers the opening.
-    const { wall, opening } = findOpening(d, 'door-mellom-vf')!;
-    const l = Math.hypot(wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]);
-    const u: Vec2 = [(wall.b[0] - wall.a[0]) / l, (wall.b[1] - wall.a[1]) / l];
-    const along = (p: Vec2) => (p[0] - wall.a[0]) * u[0] + (p[1] - wall.a[1]) * u[1];
-    expect((opening.offset - opening.width / 2 - along(handles[0].p)) * 11.56).toBeCloseTo(HANDLE_RADIUS_COARSE_PX, 6);
-    expect((along(handles[1].p) - opening.offset - opening.width / 2) * 11.56).toBeCloseTo(HANDLE_RADIUS_COARSE_PX, 6);
-    expect(openingEndHandlesShown(0.91, TOUCH(15.4))).toBe(true);
-    expect(openingEndHandlesShown(0.91, TOUCH(15.3))).toBe(true);
-    expect(openingEndHandlesShown(0.3, TOUCH(2))).toBe(true);
-    // An explicit `coarse` wins over the radius.
-    expect(openingEndHandlesShown(0.91, { scale: 23, handleR: HANDLE_RADIUS_COARSE_PX, coarse: false })).toBe(false);
-    expect(openingEndHandlesShown(0.91, { scale: 9, handleR: HANDLE_RADIUS_PX, coarse: true })).toBe(true);
-    // Mouse: one diameter (14 px) as before; walls on touch: one diameter (28 px).
+  it('from ~33 px/m: drawn with a radius of at most 0,3 m, one radius outside the jambs; full 14 px from ~47 px/m', () => {
+    const { opening } = findOpening(d, 'door-mellom-vf')!;
+    for (const s of [34, 40, 46, 60, 138]) {
+      const handles = handlesFor(d, DOOR, TOUCH(s));
+      expect(handles.map((h) => h.key), `${s} px/m`).toEqual(['oe:start', 'oe:end']);
+      const r = handles[0].r ?? HANDLE_RADIUS_COARSE_PX;
+      expect(r).toBeCloseTo(Math.min(HANDLE_RADIUS_COARSE_PX, 0.3 * s), 9);
+      expect(r / s).toBeLessThanOrEqual(OPENING_END_HANDLE_MAX_M_TOUCH + 1e-9);
+      expect(r).toBeGreaterThanOrEqual(OPENING_END_HANDLE_MIN_TOUCH_PX);
+      expect(openingEndHandleRadiusPx(TOUCH(s))).toBeCloseTo(r, 9);
+      // Each sits one (capped) radius beyond its jamb, away from the door, and acts on the jamb.
+      expect((opening.offset - opening.width / 2 - along(handles[0].p)) * s).toBeCloseTo(r, 6);
+      expect((along(handles[1].p) - opening.offset - opening.width / 2) * s).toBeCloseTo(r, 6);
+      expect(along(handles[0].anchor!)).toBeCloseTo(opening.offset - opening.width / 2, 9);
+    }
+    // At full size the handle carries no radius of its own (the overlay's default).
+    expect(handlesFor(d, DOOR, TOUCH(60))[0].r).toBeUndefined();
+    expect(handlesFor(d, DOOR, TOUCH(46))[0].r).toBeCloseTo(13.8, 9);
+  });
+
+  it('the mouse keeps one diameter (14 px) at any zoom and its 7 px; walls on touch keep one diameter (28 px)', () => {
     expect(handlesFor(d, DOOR, MOUSE(23.5)).map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
+    expect(handlesFor(d, DOOR, MOUSE(23.5))[0].r).toBeUndefined();
+    expect(openingEndHandleRadiusPx(MOUSE(11.56))).toBe(HANDLE_RADIUS_PX);
     expect(openingEndHandlesShown(0.91, MOUSE(15))).toBe(false);
     expect(endHandlesShown(0.91, TOUCH(23))).toBe(false);
-    expect(openingEndHandlesShown(0.91)).toBe(true);
   });
 });
 

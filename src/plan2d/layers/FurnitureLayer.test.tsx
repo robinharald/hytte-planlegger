@@ -3,14 +3,14 @@
  * The plan's furniture layer (FurnitureLayer.tsx): symbols per catalogue id, the footprint as the only hit area,
  * selection / collision outlines, clearances on request, names only when selected (or unknown), appliance codes, the
  * drop ghost, and the rotate handle (tap = 90°, drag = towards the pointer in 15° steps; the plan's tracker only
- * counts its pointer, a pinch drops it; its hit area is the drawn circle, capped at 0.3 m on touch; a press on
- * something else under it goes through to the plan).
+ * counts its pointer, a pinch drops it; its hit area is the drawn circle, capped at 0.3 m on touch; final fix round:
+ * a press on it always turns the item, and it stands on a side clear of other items and walls).
  */
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DerivedFurniture } from '../../model/derived';
+import type { DerivedFurniture, DerivedWall } from '../../model/derived';
 import { catalogItem } from '../../furniture/catalog';
 import type { Vec2 } from '../../model/types';
 import { rectFootprint } from '../furniturePlacement';
@@ -150,12 +150,12 @@ describe('FurnitureRotateHandle', () => {
   const toClient = (p: Vec2): [number, number] => [p[0] * 40, 400 - p[1] * 40];
   const clientToPlan = (x: number, y: number): Vec2 => [x / 40, (400 - y) / 40];
 
-  function drawHandle(onRotate = vi.fn(), parentDown = vi.fn(), opts: { scale?: number; handleR?: number; coarse?: boolean; others?: DerivedFurniture[] } = {}) {
+  function drawHandle(onRotate = vi.fn(), parentDown = vi.fn(), opts: { scale?: number; handleR?: number; coarse?: boolean; others?: DerivedFurniture[]; items?: DerivedFurniture[] } = {}) {
     act(() =>
       root.render(
         <svg onPointerDown={parentDown}>
           {opts.others && <FurnitureLayer items={opts.others} selection={null} scale={opts.scale ?? 40} showClearances={false} />}
-          <FurnitureRotateHandle item={BED} scale={opts.scale ?? 40} handleR={opts.handleR ?? 7} coarse={opts.coarse} clientToPlan={clientToPlan} onRotate={onRotate} title="Roter" />
+          <FurnitureRotateHandle item={BED} scale={opts.scale ?? 40} handleR={opts.handleR ?? 7} coarse={opts.coarse} items={opts.items} clientToPlan={clientToPlan} onRotate={onRotate} title="Roter" />
         </svg>,
       ),
     );
@@ -242,54 +242,94 @@ describe('FurnitureRotateHandle', () => {
     }
   });
 
-  it('a press on another item under the handle goes through to the plan as a press on that item (no turn)', () => {
-    const rug = item('f-rug', 'kommode', [2, 2.6 - 13 / 40], { w: 0.8, d: 0.45, h: 0.8 });
+  it('a press on the drawn circle always turns the item, whatever lies under it (final fix round: no pass-through)', () => {
+    const other = item('f-other', 'kommode', [2, 2.6 - 13 / 40], { w: 0.8, d: 0.45, h: 0.8 });
     const onRotate = vi.fn();
     const parentDown = vi.fn();
-    const { handle } = drawHandle(onRotate, parentDown, { others: [rug] });
-    const other = container.querySelector('[data-furniture-id="f-rug"] path')!;
+    // The other item is drawn under the handle, but not given to it (so the handle stays on the front, over it).
+    const { handle } = drawHandle(onRotate, parentDown, { others: [other] });
+    const under = container.querySelector('[data-furniture-id="f-other"] path')!;
+    const room = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    room.setAttribute('data-room-label-hit', 'rom-1');
     const real = document.elementFromPoint;
-    // What the browser would hit with the handle out of the way: the other item.
-    const seen: string[] = [];
-    document.elementFromPoint = () => {
-      seen.push(handle.querySelector('circle')!.style.pointerEvents);
-      return other;
-    };
-    try {
-      const at = toClient([2, 2 - 13 / 40]);
-      pointer(handle, 'pointerdown', at);
-      pointer(handle, 'pointerup', at);
-    } finally {
-      document.elementFromPoint = real;
-    }
-    expect(seen).toEqual(['none']); // the handle took no pointer events for the look-up …
-    expect(handle.querySelector('circle')!.style.pointerEvents).toBe(''); // … and does again
-    const off = handOffOf(parentDown);
-    expect(off).toEqual({ kind: 'pass', target: other });
-    expect(onRotate).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-rotate-preview]')).toBeNull();
-  });
-
-  it('a press over the floor or empty paper keeps the press (the handle turns the item)', () => {
-    const onRotate = vi.fn();
-    const parentDown = vi.fn();
-    const { handle } = drawHandle(onRotate, parentDown);
-    const floor = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    floor.setAttribute('data-sel-kind', 'room');
-    floor.setAttribute('data-sel-id', 'rom-1');
-    const real = document.elementFromPoint;
-    for (const under of [floor, null]) {
-      document.elementFromPoint = () => under;
+    for (const what of [under, room, null]) {
+      document.elementFromPoint = () => what;
       try {
         const at = toClient([2, 2 - 13 / 40]);
         pointer(handle, 'pointerdown', at);
+        expect(handOffOf(parentDown)?.kind).toBe('held');
         pointer(handle, 'pointerup', at);
       } finally {
         document.elementFromPoint = real;
       }
-      expect(handOffOf(parentDown)?.kind).toBe('held');
     }
-    expect(onRotate).toHaveBeenCalledTimes(2);
+    expect(onRotate).toHaveBeenCalledTimes(3);
+    expect(onRotate).toHaveBeenLastCalledWith('f-bed', 90);
+  });
+
+  it('stands on the first side clear of other items and walls (front, back, left, right), else beside a rug only, else the front', () => {
+    // BED: 1.5 × 2 m at (2, 3), front to the south (−y); a 7 px handle at 40 px/m stands 13 px beyond each edge.
+    const box = (id: string, at: Vec2, flat = false) => item(id, flat ? 'teppe' : 'kommode', at, { w: 0.6, d: 0.6, h: flat ? 0.01 : 0.8 });
+    const front = box('f-front', [2, 2 - 13 / 40]);
+    const back = box('f-back', [2, 4 + 13 / 40]);
+    const left = box('f-left', [1.25 - 13 / 40, 3]);
+    const right = box('f-right', [2.75 + 13 / 40, 3]);
+    /** The side the drawn handle stands on (degrees from the front); on touch a 14 px handle, 12 px at 40 px/m. */
+    const sideOf = (items: DerivedFurniture[], walls: DerivedWall[], coarse: boolean) => {
+      act(() =>
+        root.render(
+          <svg>
+            <FurnitureRotateHandle item={BED} scale={40} handleR={coarse ? 14 : 7} coarse={coarse} items={[BED, ...items]} walls={walls} clientToPlan={clientToPlan} onRotate={vi.fn()} />
+          </svg>,
+        ),
+      );
+      return Number(container.querySelector('[data-rotate-side]')!.getAttribute('data-rotate-side'));
+    };
+    const side = (items: DerivedFurniture[], walls: DerivedWall[] = []) => sideOf(items, walls, false);
+    expect(side([])).toBe(0);
+    expect(side([front])).toBe(180);
+    expect(side([front, back])).toBe(-90);
+    expect(side([front, back, left])).toBe(90);
+    expect(side([front, back, left, right])).toBe(0);
+    // A wall in front (its footprint): the back.
+    const wall = { id: 'w', isGhost: false, footprint: [[0, 1.5], [4, 1.5], [4, 1.7], [0, 1.7]] } as unknown as DerivedWall;
+    expect(side([], [wall])).toBe(180);
+    expect(side([], [{ ...wall, isGhost: true }])).toBe(0);
+    // A wall the bed's front stands against, with free floor beyond it (the circle clear of it): the stem would run
+    // through the wall into the next room, so the back (integration: a kommode in Soverom got its handle in Gang).
+    const thin = { id: 'w2', isGhost: false, footprint: [[0, 1.88], [4, 1.88], [4, 2], [0, 2]] } as unknown as DerivedWall;
+    expect(side([], [thin])).toBe(180);
+    // A rug is better than a table, free floor better than a rug.
+    const rugFront = box('f-rug', [2, 2 - 13 / 40], true);
+    expect(side([rugFront])).toBe(180);
+    expect(side([rugFront, back, left, right])).toBe(0);
+    expect(side([front, back, box('f-rug-l', [1.25 - 13 / 40, 3], true), right])).toBe(-90);
+    // On touch an edge facing up on the screen (+y: the bed's back here) comes after the free ones and a rug — the
+    // phone's mini-bar floats right above the selection — but before a covered one.
+    const touch = (items: DerivedFurniture[]) => sideOf(items, [], true);
+    expect(touch([front])).toBe(-90);
+    expect(touch([front, left, right])).toBe(180);
+    expect(touch([front, box('f-rug-l', [1.25 - 13 / 40, 3], true), right])).toBe(-90);
+    expect(touch([])).toBe(0);
+  });
+
+  it('drawn on the back when something stands in front; a drag turns the back towards the pointer', () => {
+    const front = item('f-front', 'kommode', [2, 2 - 13 / 40], { w: 0.6, d: 0.6, h: 0.8 });
+    const { handle, onRotate } = drawHandle(vi.fn(), vi.fn(), { items: [BED, front] });
+    const circle = handle.querySelector('circle')!;
+    expect(Number(circle.getAttribute('cx'))).toBeCloseTo(2, 6);
+    expect(Number(circle.getAttribute('cy'))).toBeCloseTo(4 + 13 / 40, 6);
+    expect(container.querySelector('[data-rotate-side]')!.getAttribute('data-rotate-side')).toBe('180');
+    // A tap: 90°, as from the front.
+    const at = toClient([2, 4 + 13 / 40]);
+    pointer(handle, 'pointerdown', at);
+    pointer(handle, 'pointerup', at);
+    expect(onRotate).toHaveBeenLastCalledWith('f-bed', 90);
+    // Dragged east of the centre: the back (now north) turns east, so the front faces west: rotation −90.
+    pointer(handle, 'pointerdown', at);
+    pointer(handle, 'pointermove', toClient([3.5, 3.1]));
+    pointer(handle, 'pointerup', toClient([3.5, 3.1]));
+    expect(onRotate).toHaveBeenLastCalledWith('f-bed', -90);
   });
 
   it('a drag turns the front towards the pointer in 15° steps, previewed, applied once on release', () => {

@@ -310,9 +310,10 @@ export const nb = {
     searchPlaceholder: 'Søk etter møbler',
     searchClear: 'Tøm søket',
     noMatch: (q: string) => `Ingen møbler passer «${q}».`,
-    /** Under the search box. */
-    intro: 'Trykk på et møbel for å sette det inn, eller dra det inn i planen.',
-    introTouch: 'Trykk på et møbel for å sette det inn. Hold fingeren på det for å dra det inn i planen.',
+    /** Under the search box: a tap places in the selected room, so the user can pick the room first. */
+    intro: 'Trykk på et rom først, eller ha rommet midt i planen. Trykk så på et møbel for å sette det inn, eller dra det inn i planen.',
+    introTouch:
+      'Trykk på et rom først, eller ha rommet midt i planen. Trykk så på et møbel for å sette det inn, eller hold fingeren på det for å dra det inn i planen.',
     /** Category header: number of items. */
     count: (n: number) => (n === 1 ? '1 møbel' : `${n} møbler`),
     /** Item size in the list ("90 × 200 cm"). */

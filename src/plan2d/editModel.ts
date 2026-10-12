@@ -48,9 +48,12 @@
  *    6 first chosen, so a 0,5 m nudge works at the starting zoom); pans and taps elsewhere keep 10 px. usePanZoom.ts
  *    applies it to every press the plan claims; usePlanEditing.ts still turns a claimed touch "tap" that moved more
  *    than that into the drag it was.
- *  - Opening end handles on touch appear at any zoom (`openingEndHandlesShown`; fix round after 2b, before: from half
- *    a handle diameter of width): they sit outside the jambs, so they never cover the door; walls and the mouse keep
- *    one diameter.
+ *  - Opening end handles on touch (`openingEndHandleRadiusPx`, final fix round): at most OPENING_END_HANDLE_MAX_M_TOUCH
+ *    (0,3 m) in radius in plan metres, and not drawn below the zoom where that leaves less than
+ *    OPENING_END_HANDLE_MIN_TOUCH_PX (10 px, i.e. under ~33 px/m; Bredde in Egenskaper covers that zoom). Before, they
+ *    were 14 px at any zoom: at the phone's starting zoom 1,2 m circles that caught every tap within ~2 m of a
+ *    selected door and turned pans into resizes. They sit one (capped) radius outside the jambs; the handle carries
+ *    that radius (`PlanHandle.r`) for the overlay to draw. Walls and the mouse keep one diameter.
  *  - Room labels on narrow rooms (`labelTap`): a tap whose DOM target is a wall, opening or ghost band but that lies
  *    inside a drawn room label selects the label's room, unless it is within LABEL_TAP_CORE_PX of the element's line
  *    (or on its drawn body). The core is 4,5 px, not 3: at the phone's starting zoom the ±4 px taps beside w-gang-n,
@@ -128,11 +131,11 @@ export const HANDLE_MIN_DIAMETERS = 3;
 /** End handles (just outside a wall's ends / an opening's jambs) are left out below this many diameters of length. */
 export const END_HANDLE_MIN_DIAMETERS = 1;
 /**
- * … but an opening's end handles on touch at any width (fix round after 2b: they sit outside the jambs, so even two
- * 28 px handles beside a 10 px door never cover it; before, from half a diameter, a door had none at the phone's
- * starting zoom).
+ * An opening's end handles on touch are at most this big (radius, plan metres; like the furniture rotate handle) …
  */
-export const OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH = 0;
+export const OPENING_END_HANDLE_MAX_M_TOUCH = 0.3;
+/** … and not drawn where that leaves a radius under this (px): below ~33 px/m (Bredde in Egenskaper instead). */
+export const OPENING_END_HANDLE_MIN_TOUCH_PX = 10;
 /**
  * A tap inside a drawn room label beats the wall / opening / ghost hit band under it, except within this distance
  * (screen px) of the element's line (`labelTap`), so walls stay tappable ±4 px from their line everywhere.
@@ -303,6 +306,8 @@ export interface PlanHandle {
   /** The selected vertex / edge itself. */
   active: boolean;
   title: string;
+  /** Drawn radius (px) when it is not the pointer's handle radius: touch end handles of openings (capped in metres). */
+  r?: number;
 }
 
 function blockHandles(b: DerivedBlock, sel: PlanSelection): PlanHandle[] {
@@ -358,16 +363,26 @@ export function endHandlesShown(lengthM: number, screen?: HandleScreen): boolean
 }
 
 /**
+ * Radius (px) of an opening's END handles at this screen: `handleR` with the mouse; on touch at most
+ * OPENING_END_HANDLE_MAX_M_TOUCH in plan metres, and null (not drawn) when that is under OPENING_END_HANDLE_MIN_TOUCH_PX.
+ */
+export function openingEndHandleRadiusPx(screen: HandleScreen): number | null {
+  const coarse = screen.coarse ?? screen.handleR >= HANDLE_RADIUS_COARSE_PX;
+  if (!coarse || !(screen.scale > 0)) return screen.handleR;
+  const r = Math.min(screen.handleR, OPENING_END_HANDLE_MAX_M_TOUCH * screen.scale);
+  return r >= OPENING_END_HANDLE_MIN_TOUCH_PX ? r : null;
+}
+
+/**
  * Are the END handles of an opening `widthM` wide drawn at this screen? As `endHandlesShown` with the mouse; on touch
- * from OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH (0: at any zoom): the 28 px handles sit one radius outside the jambs
- * (`endHandle`), so they never cover the opening, and door-mellom-vf has them at the phone's starting zoom (11,6 px/m).
- * Without a screen: always.
+ * whenever `openingEndHandleRadiusPx` gives a radius (they sit one radius outside the jambs, `endHandle`, so they never
+ * cover the opening; at the phone's starting zoom of 11,6 px/m they are not drawn). Without a screen: always.
  */
 export function openingEndHandlesShown(widthM: number, screen?: HandleScreen): boolean {
   if (!screen || !(screen.scale > 0)) return true;
   const coarse = screen.coarse ?? screen.handleR >= HANDLE_RADIUS_COARSE_PX;
-  const diameters = coarse ? OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH : END_HANDLE_MIN_DIAMETERS;
-  return widthM * screen.scale >= diameters * 2 * screen.handleR;
+  if (coarse) return openingEndHandleRadiusPx(screen) !== null;
+  return widthM * screen.scale >= END_HANDLE_MIN_DIAMETERS * 2 * screen.handleR;
 }
 
 /**
@@ -387,11 +402,11 @@ function minSide(points: readonly Vec2[]): number {
 
 /**
  * End handles of a segment s→e (wall ends 'a' / 'b', opening jambs 'start' / 'end'): with a screen, drawn one handle
- * radius beyond the end (outside the object), acting on the end itself (`anchor`).
+ * radius (`r` px, default the screen's) beyond the end (outside the object), acting on the end itself (`anchor`).
  */
-function endHandle(end: Vec2, outward: Vec2, screen: HandleScreen | undefined): { p: Vec2; anchor?: Vec2 } {
+function endHandle(end: Vec2, outward: Vec2, screen: HandleScreen | undefined, r = screen?.handleR ?? 0): { p: Vec2; anchor?: Vec2 } {
   if (!screen || !(screen.scale > 0)) return { p: end };
-  return { p: add(end, outward, screen.handleR / screen.scale), anchor: end };
+  return { p: add(end, outward, r / screen.scale), anchor: end };
 }
 
 /**
@@ -447,15 +462,17 @@ export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'o
       if (!openingEndHandlesShown(opening.width, screen)) return [];
       const u = unit(wall.a, wall.b) ?? [1, 0];
       const target: PlanSelection = { kind: 'opening', id: opening.id };
+      const r = screen && screen.scale > 0 ? (openingEndHandleRadiusPx(screen) ?? screen.handleR) : undefined;
       return (['start', 'end'] as const).map((end) => ({
         key: `oe:${end}`,
         shape: 'end' as const,
-        ...endHandle(add(wall.a, u, opening.offset + (end === 'start' ? -1 : 1) * (opening.width / 2)), end === 'start' ? [-u[0], -u[1]] : u, screen),
+        ...endHandle(add(wall.a, u, opening.offset + (end === 'start' ? -1 : 1) * (opening.width / 2)), end === 'start' ? [-u[0], -u[1]] : u, screen, r),
         drag: target,
         handle: end,
         tap: null,
         active: false,
         title: editStrings.handleOpeningEnd,
+        ...(r !== undefined && screen && r !== screen.handleR ? { r } : {}),
       }));
     }
     case 'deck': {

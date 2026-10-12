@@ -139,7 +139,7 @@ function Cross({ p, size = 6 }: { p: Vec2; size?: number }) {
 
 function Handle({ h, view, sizes }: { h: PlanHandle; view: View; sizes: PointerSizes }) {
   const p = planToScreen(view, h.p);
-  const r = sizes.handleR;
+  const r = h.r ?? sizes.handleR;
   const common = { 'data-handle': h.key, 'data-handle-shape': h.shape, style: { cursor: 'grab' } };
   if (h.shape === 'edge' && h.a && h.b) {
     const a = planToScreen(view, h.a);

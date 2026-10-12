@@ -44,8 +44,8 @@ export interface PlacerEnv {
   /** The edit API's addFurniture: the new id, or null when refused. */
   addFurniture: (catalogId: string, position: Vec2, opts: AddFurnitureOpts) => unknown;
   select: (sel: Selection | null) => void;
-  /** The middle of the shown plan (and its storey), or null. */
-  planCentre: () => { centre: Vec2; storeyId?: Id | null } | null;
+  /** The middle of the shown plan (and its storey) for placing `catalogId` there, or null. */
+  planCentre: (catalogId: string) => { centre: Vec2; storeyId?: Id | null } | null;
 }
 
 export interface Placed {
@@ -99,7 +99,7 @@ export function placeFurniture(env: PlacerEnv, catalogId: string, how: PlaceHow)
     if (!placement.levelId && how.levelId) placement = { ...placement, levelId: how.levelId };
   } else {
     room = roomForSelection(derived, env.selection, env.storeyId);
-    const plan = room ? null : env.planCentre();
+    const plan = room ? null : env.planCentre(catalogId);
     const storeyId = room?.storeyId ?? plan?.storeyId ?? env.storeyId;
     const at = room ? room.labelPoint : (plan?.centre ?? boundsCentre(derived));
     placement = tapPlacement(derived, storeyId, spec, at, room);

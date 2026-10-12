@@ -45,12 +45,16 @@
  *   and the shown plan answers the library's "visible plan centre" question with the middle of the part of the plan
  *   the user can see (the svg box cut to the window, less `viewportInsets`: the area the reveal uses), when that lies
  *   in a room of the storey; else the middle of the last room used here (the room of the last selected item or the last
- *   selected room), else the building's middle (`placementCentre`). While the Møbler tool has no item armed
+ *   selected room), else the building's middle (`placementCentre`). Final fix round: while the Møbler tool is active
+ *   the insets are the ones from BEFORE the library opened (`insetsBeforeLibrary`), so on the phone the room is the one
+ *   the user was looking at, not what peeks out above the library sheet (before: the strip was rarely in a room and
+ *   most items went to Kjøkken); on a PC (no insets) it is the current visible middle. When the tapped item
+ *   (the request's `catalogId`) has no free spot in that room, the rooms nearest the centre are tried before an overlap is
+ *   allowed. While the Møbler tool has no item armed
  *   (`toolOptions.furnitureItem`) the plan behaves as Velg, so placed items can be selected, dragged and turned with
- *   the library open. The selected item gets a rotate handle on its front edge (FurnitureLayer.tsx
+ *   the library open. The selected item gets a rotate handle on a free edge (FurnitureLayer.tsx
  *   `FurnitureRotateHandle`, `editActions.rotateFurniture`; on touch only from the zoom where it covers at most
- *   0.3 m); a press it keeps still reaches the gesture tracker (a second finger makes a pinch), one on something else
- *   goes through to the plan.
+ *   0.3 m); a press on it always turns the item and still reaches the gesture tracker (a second finger makes a pinch).
  * - View: fitted to `derived.bounds`, grown by the dimension lines when they are shown, plus a 1.5 m margin —
  *   on mount, when the viewport is first measured and when the variant changes (not on every edit); a
  *   container resize refits while the user has not panned or zoomed since the last fit, else keeps the plan
@@ -78,7 +82,9 @@ import type { FurnitureGhost } from './layers/FurnitureLayer';
 import { collidingFurnitureIds, furnitureLabelObstacles, labelsOverFurniture, layoutLabelsClearOfFurniture } from './layers/furnitureLayerModel';
 import { FURNITURE_DRAG_EVENT, FURNITURE_DROP_EVENT, PLAN_CENTRE_EVENT, furnitureDragDetail, furnitureDropDetail } from './furnitureDrop';
 import type { PlanCentreDetail } from './furnitureDrop';
-import { catalogPlacementSpec, dropPlacement, roomAt } from './furniturePlacement';
+import { catalogPlacementSpec, dropPlacement, roomAt, tapPlacement } from './furniturePlacement';
+import type { PlacementSpec } from './furniturePlacement';
+import { distancePointSegment, pointInPolygon } from '../geometry/polygon';
 
 import { GridLayer } from './layers/GridLayer';
 import { LabelHitLayer, LabelLayer } from './layers/LabelLayer';
@@ -226,12 +232,39 @@ interface UsedRoom {
   levelId: Id;
 }
 
+/** Rooms nearest the visible centre a library tap tries when the first room has no free spot (`placementCentre`). */
+const NEAREST_ROOMS_TRIED = 6;
+
 /**
- * Where a library tap with nothing selected places (see the header): `at` when it lies in a room of the storey; else
- * the middle (label point) of the last room used, when it is still there on this storey; else the middle of the
- * storey's rooms (the building), or the room nearest to it when that falls in none.
+ * Where a library tap with nothing selected places (see the header): `centreRoomPoint`; when the tapped item (`spec`)
+ * has no free spot in that room, the label point of the nearest room to `at` (of the NEAREST_ROOMS_TRIED nearest) where
+ * it has one; else `centreRoomPoint` (the item shows its overlap).
  */
-function placementCentre(derived: DerivedVariant, storeyId: Id, at: Vec2, last: UsedRoom | null): Vec2 {
+function placementCentre(derived: DerivedVariant, storeyId: Id, at: Vec2, last: UsedRoom | null, spec?: PlacementSpec | null): Vec2 {
+  const first = centreRoomPoint(derived, storeyId, at, last);
+  if (!spec || tapPlacement(derived, storeyId, spec, first).free) return first;
+  const own = roomAt(derived, storeyId, first);
+  const away = (r: DerivedVariant['rooms'][number]) =>
+    pointInPolygon(at, r.polygon) ? 0 : Math.min(...r.polygon.map((q, i) => distancePointSegment(at, q, r.polygon[(i + 1) % r.polygon.length])));
+  const near = derived.rooms
+    .filter((r) => r.storeyId === storeyId && r.polygon.length >= 3 && !(own && r.id === own.id && r.levelId === own.levelId))
+    .map((r) => ({ r, d: away(r) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, NEAREST_ROOMS_TRIED);
+  for (const { r } of near) {
+    const there = roomAt(derived, storeyId, r.labelPoint);
+    if (there?.id !== r.id || there.levelId !== r.levelId) continue;
+    if (tapPlacement(derived, storeyId, spec, r.labelPoint).free) return r.labelPoint;
+  }
+  return first;
+}
+
+/**
+ * The room point for `placementCentre`: `at` when it lies in a room of the storey; else the middle (label point) of the
+ * last room used, when it is still there on this storey; else the middle of the storey's rooms (the building), or the
+ * room nearest to it when that falls in none.
+ */
+function centreRoomPoint(derived: DerivedVariant, storeyId: Id, at: Vec2, last: UsedRoom | null): Vec2 {
   if (roomAt(derived, storeyId, at)) return at;
   const rooms = derived.rooms.filter((r) => r.storeyId === storeyId && r.polygon.length >= 3);
   const used = last ? rooms.find((r) => r.id === last.id && r.levelId === last.levelId) : undefined;
@@ -396,6 +429,12 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   useLayoutEffect(() => {
     handOff.current = { derived, storeyId, editable, coarse };
   });
+  // The plan's insets before the Møbler tool (the library sheet) came: a library tap's room is chosen in the view the
+  // user had then (see the header). Updated while another tool is active, so it keeps the last value from before.
+  const insetsBeforeLibrary = useRef<ViewportInsets | undefined>(props.viewportInsets);
+  useLayoutEffect(() => {
+    if (tool !== 'furniture') insetsBeforeLibrary.current = props.viewportInsets;
+  });
   // The last room used (the room of a selected item, or a selected room): a library tap's fallback.
   const usedRoom = useRef<UsedRoom | null>(null);
   useLayoutEffect(() => {
@@ -444,9 +483,11 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
       const r = svg.getBoundingClientRect();
       // The middle of what the user sees (not under the bottom sheet or off the screen), in a room (see the header).
       const box = { left: r.left, top: r.top, width: r.width || w, height: r.height || h };
-      const seen = screenToPlan(getView(), uncoveredCentre(box, { w: window.innerWidth, h: window.innerHeight }, cb.current.viewportInsets));
+      const insets = cb.current.tool === 'furniture' ? insetsBeforeLibrary.current : cb.current.viewportInsets;
+      const seen = screenToPlan(getView(), uncoveredCentre(box, { w: window.innerWidth, h: window.innerHeight }, insets));
       const cur = handOff.current;
-      detail.centre = placementCentre(cur.derived, cur.storeyId, seen, usedRoom.current);
+      const pick = typeof detail.catalogId === 'string' && detail.catalogId ? detail.catalogId : null;
+      detail.centre = placementCentre(cur.derived, cur.storeyId, seen, usedRoom.current, pick ? catalogPlacementSpec(pick) : null);
       detail.storeyId = cur.storeyId;
       detail.scale = getView().s;
     };
@@ -668,7 +709,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           {showRoofPlan && <RoofPlanLayer roofs={data.roofs} />}
           <LabelLayer labels={labels} scale={scale} highlightNew={highlightNew} />
           {showDims && <DimensionLayer dimensions={data.dimensions} scale={view.s} />}
-          {rotateItem && <FurnitureRotateHandle item={rotateItem} scale={view.s} handleR={sizes.handleR} coarse={coarse} items={data.furniture} clientToPlan={clientToPlan} onRotate={onRotateFurniture} title={planStrings.edit.rotateHandle} />}
+          {rotateItem && <FurnitureRotateHandle item={rotateItem} scale={view.s} handleR={sizes.handleR} coarse={coarse} items={data.furniture} walls={data.pieces} clientToPlan={clientToPlan} onRotate={onRotateFurniture} title={planStrings.edit.rotateHandle} />}
         </g>
         <NorthArrow bearing={site.planNorthBearing} cx={north[0]} cy={north[1]} />
         <ScaleBar scale={view.s} x={scaleBarAt[0]} y={scaleBarAt[1]} />

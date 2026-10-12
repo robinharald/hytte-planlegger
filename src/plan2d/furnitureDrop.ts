@@ -10,7 +10,7 @@
  *    the point into a plan point, calls its `onDropFurniture(catalogId, planPoint)` and preventDefault().
  *  - PLAN_CENTRE_EVENT, sent to the document by the library's tap: a SHOWN plan writes the plan point at the middle of
  *    its view, its storey and its zoom into the event's detail (`requestPlanCentre`), for "else the visible plan
- *    centre".
+ *    centre". The tap names the item (`catalogId`), so a full room can give way to a room with space for it.
  */
 import type { Vec2 } from '../model/types';
 import { FURNITURE_DROP_EVENT, dispatchFurnitureDrop, furnitureDropDetail } from '../view3d/dropEvent';
@@ -28,6 +28,8 @@ export interface FurnitureDragDetail {
 }
 
 export interface PlanCentreDetail {
+  /** The library item the centre is asked for (set by the asker; absent: any item, e.g. only the zoom is wanted). */
+  catalogId?: string;
   centre: Vec2 | null;
   storeyId: string | null;
   /** px per metre. */
@@ -54,9 +56,12 @@ export function dispatchFurnitureDrag(catalogId: string | null, clientX: number,
   return !target.dispatchEvent(event);
 }
 
-/** Ask the shown plan for the plan point at the middle of its view (null when no plan answers). */
-export function requestPlanCentre(doc: Document = document): PlanCentreDetail | null {
-  const detail: PlanCentreDetail = { centre: null, storeyId: null, scale: null };
+/**
+ * Ask the shown plan for the plan point at the middle of its view (null when no plan answers); `catalogId`: the item
+ * that will be placed there (the plan then picks a room with a free spot for it, PlanView `placementCentre`).
+ */
+export function requestPlanCentre(doc: Document = document, catalogId?: string): PlanCentreDetail | null {
+  const detail: PlanCentreDetail = { centre: null, storeyId: null, scale: null, ...(catalogId ? { catalogId } : {}) };
   doc.dispatchEvent(new CustomEvent<PlanCentreDetail>(PLAN_CENTRE_EVENT, { detail }));
   return detail.centre ? detail : null;
 }

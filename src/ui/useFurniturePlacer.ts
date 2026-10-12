@@ -24,8 +24,8 @@ function appEnv(addFurniture: PlacerEnv['addFurniture']): PlacerEnv {
     selection: s.ui.selection,
     addFurniture,
     select: (sel) => appStore.getState().select(sel),
-    planCentre: () => {
-      const c = requestPlanCentre();
+    planCentre: (catalogId) => {
+      const c = requestPlanCentre(document, catalogId);
       return c?.centre ? { centre: c.centre, storeyId: c.storeyId } : null;
     },
   };

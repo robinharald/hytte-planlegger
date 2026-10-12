@@ -52,9 +52,9 @@ function openingCentre(d: DerivedVariant, id: string): Vec2 {
 const DOOR: PlanSelection = { kind: 'opening', id: 'door-mellom-vf' };
 
 describe('a press on a small selected thing moves it', () => {
-  it('iPhone (11,6 px/m): the centre of door-mellom-vf (0,91 m) starts a move, not a resize; its end handles sit outside it', () => {
-    // Fix round after 2b: on touch the end handles show at any zoom, one radius beyond the jambs.
-    expect(handlesFor(seed, DOOR, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX }).map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
+  it('iPhone (11,6 px/m): the centre of door-mellom-vf (0,91 m) starts a move, not a resize; it has no end handles', () => {
+    // Final fix round: on touch the end handles are at most 0,3 m, so at the starting zoom they are not drawn.
+    expect(handlesFor(seed, DOOR, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX })).toEqual([]);
     expect(press(seed, DOOR, openingCentre(seed, 'door-mellom-vf'), 11.6, true)).toEqual({ kind: 'body', target: DOOR });
   });
 
@@ -143,15 +143,16 @@ describe('second fix round: end handles appear at the usual zooms (they sit outs
     expect(handlesFor(seed, { kind: 'wall', id: 'w-gang-n' }, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX })).toHaveLength(2);
   });
 
-  it('a 0,3 m window at 11,6 px/m shows none with the mouse, two outside it on touch; its middle moves it', () => {
+  it('a 0,3 m window at 11,6 px/m shows none with the mouse nor on touch (two outside it from ~33 px/m); its middle moves it', () => {
     const store = seedStore();
     expect(A.setOpeningProps(store, 'win-bad-n', { width: 0.3 })).toBe(true);
     const d = deriveForState(store.getState());
     const sel: PlanSelection = { kind: 'opening', id: 'win-bad-n' };
     expect(findOpening(d, 'win-bad-n')!.opening.width).toBeCloseTo(0.3, 9);
     expect(handlesFor(d, sel, { scale: 11.6, handleR: HANDLE_RADIUS_PX })).toEqual([]);
-    // Fix round after 2b: on touch the end handles show at any zoom (outside the jambs, so the middle still moves it).
-    expect(handlesFor(d, sel, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX }).map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
+    // Final fix round: on touch the end handles are at most 0,3 m: none at 11,6 px/m, two outside the jambs at 40 px/m.
+    expect(handlesFor(d, sel, { scale: 11.6, handleR: HANDLE_RADIUS_COARSE_PX })).toEqual([]);
+    expect(handlesFor(d, sel, { scale: 40, handleR: HANDLE_RADIUS_COARSE_PX }).map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
     expect(press(d, sel, openingCentre(d, 'win-bad-n'), 11.6, true)).toEqual({ kind: 'body', target: sel });
   });
 });

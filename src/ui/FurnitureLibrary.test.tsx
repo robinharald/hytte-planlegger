@@ -111,6 +111,13 @@ describe('list', () => {
 });
 
 describe('tap to place', () => {
+  it('the intro says to tap a room first (final fix round), in the column and in the phone sheet', () => {
+    render();
+    expect(byTestId('furniture-intro')!.textContent).toMatch(/^Trykk på et rom først, eller /);
+    render({ variant: 'sheet' });
+    expect(byTestId('furniture-intro')!.textContent).toMatch(/^Trykk på et rom først, eller .*hold fingeren/);
+  });
+
   it('a click places the item (the placer picks the room and the wall) and says where', () => {
     render();
     act(() => byTestId('furniture-item-seng-90')!.click());

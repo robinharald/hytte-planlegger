@@ -19,31 +19,35 @@
  * FLAT_EDGE_HIT_PX band along their outline, so a tap inside a rug selects the room under it.
  *
  * `FurnitureRotateHandle` (drawn by the plan on top of everything for the selected item while editing): a white
- * circle with an accent border on a short stem outside the middle of the item's FRONT edge. A tap turns the item 90°
- * (`onRotate(id, 90)`, like «Roter 90°»); a drag turns the item's front towards the pointer in 15° steps (1° with Alt),
- * previewed as a dashed outline with the angle, and applied once on release (`onRotate(id, degrees)`: one undo step).
- *  - Hit area: the drawn circle only. On touch (`coarse`) its radius is at most ROTATE_HANDLE_MAX_M in plan metres;
+ * circle with an accent border on a short stem outside the middle of one of the item's edges. A tap turns the item
+ * 90° (`onRotate(id, 90)`, like «Roter 90°»); a drag turns the item so that the handle's side faces the pointer in 15°
+ * steps (1° with Alt), previewed as a dashed outline with the angle, and applied once on release (`onRotate(id,
+ * degrees)`: one undo step).
+ *  - Which edge (final fix round, `handleSide`): the first of front, back, left and right whose handle covers no other
+ *    item (`items`) and no wall (`walls`) and whose stem crosses no wall (so an item backed onto a wall never gets its
+ *    handle in the next room), else one that covers only a rug, else the front. A dining chair at the
+ *    table gets it on its back, away from the table. On touch an edge facing up on the screen comes after those (the
+ *    phone's mini-bar floats just above the selection and would cover the handle there), but before a covered one.
+ *  - Hit area: the drawn circle only, and a press on it ALWAYS turns the item (final fix round; before, a press where
+ *    the handle stood on another item, a rug, a wall or a room's name went through to the plan, so the handle did
+ *    nothing for most seed items). On touch (`coarse`) its radius is at most ROTATE_HANDLE_MAX_M in plan metres;
  *    below the zoom where a touch handle of ROTATE_HANDLE_MIN_TOUCH_PX would cover more than that, it is not drawn
  *    (the mini-bar's «Roter» remains) — `rotateHandleRadiusPx`.
- *  - It never covers other things: a press whose point lies on another item's footprint (`items`; a rug too), an
- *    opening, a wall (band), a ghost, a post, a railing or a room's name (what the plan would hit without the handle,
- *    `elementUnderHandle`) goes through to the plan as a press on what lies there (usePanZoom.ts `passPointer`): the
- *    tap selects what it would select without the handle.
- *  - A press it keeps is still reported to the plan's gesture tracker (usePanZoom.ts `holdPointer`), which neither
- *    pans nor taps with it; a second finger turns the gesture into a pinch and the handle drops its press (no turn).
+ *  - A press is still reported to the plan's gesture tracker (usePanZoom.ts `holdPointer`), which neither pans nor
+ *    taps with it; a second finger turns the gesture into a pinch and the handle drops its press (no turn).
  */
-import { memo, useId, useRef, useState } from 'react';
+import { memo, useId, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
-import type { DerivedFurniture } from '../../model/derived';
+import type { DerivedFurniture, DerivedWall } from '../../model/derived';
 import type { Vec2 } from '../../model/types';
 import type { PlanSelection } from '../editTypes';
 import { domId, polygonPath } from '../svg';
-import { pointInPolygon } from '../../geometry/polygon';
-import { isSelected, selAttrs, selectionFromTarget } from '../selection';
-import { holdPointer, passPointer } from '../usePanZoom';
+import { distancePointSegment, pointInPolygon, segmentIntersection } from '../../geometry/polygon';
+import { isSelected, selAttrs } from '../selection';
+import { holdPointer } from '../usePanZoom';
 import { ACCENT, COLORS, FONT_PX, NSS, PAPER, STROKE } from '../style';
 import { FurnitureSymbol } from './FurnitureSymbol';
-import { COLLISION, ROTATE_STEP_DEG, ROTATE_STEP_FINE_DEG, codeFits, labelFits, rotateHandle, rotationToward, toPlan } from './furnitureLayerModel';
+import { COLLISION, ROTATE_STEM_PX, ROTATE_STEP_DEG, ROTATE_STEP_FINE_DEG, codeFits, labelFits, rotationToward, toPlan } from './furnitureLayerModel';
 import { hasSymbol, symbolFor } from './furnitureSymbols';
 import { ScreenText } from './ScreenText';
 
@@ -201,8 +205,10 @@ export interface FurnitureRotateHandleProps {
   handleR: number;
   /** A coarse (touch) pointer: the radius is capped in plan metres, and the handle hidden when too small (see the header). */
   coarse?: boolean;
-  /** The storey's items: a press on another one's footprint goes through to the plan (see the header). */
+  /** The storey's items: the handle stands on a side clear of them (see the header). */
   items?: readonly DerivedFurniture[];
+  /** The storey's walls (ghosts are ignored): the handle stands on a side clear of them too. */
+  walls?: readonly DerivedWall[];
   /** Viewport point → plan point (PlanView's clientToPlan); null outside the plan. */
   clientToPlan: (clientX: number, clientY: number) => Vec2 | null;
   onRotate: (furnitureId: string, degrees: number) => void;
@@ -238,37 +244,77 @@ function rotateHandleRadiusPx(handleR: number, scale: number, coarse: boolean): 
 }
 
 /**
- * What the plan would hit at a client point without the rotate handle (`layer`: its group): the handle's elements
- * take no pointer events for the look-up. Null without a layout (jsdom without a stub).
+ * The edges a rotate handle can stand on, in the item's own frame (front = local −y): the outward normal, and the turn
+ * (degrees) from the front to that side, so a drag turns the handle's side towards the pointer.
  */
-function elementUnderHandle(layer: Element, clientX: number, clientY: number): Element | null {
-  const doc = layer.ownerDocument;
-  if (typeof doc?.elementFromPoint !== 'function') return null;
-  const els = [layer, ...layer.querySelectorAll('*')].filter((el): el is SVGElement | HTMLElement => 'style' in el);
-  const before = els.map((el) => el.style.pointerEvents);
-  for (const el of els) el.style.pointerEvents = 'none';
-  try {
-    const hit = doc.elementFromPoint(clientX, clientY);
-    return hit && !layer.contains(hit) ? hit : null;
-  } finally {
-    els.forEach((el, i) => {
-      el.style.pointerEvents = before[i];
-    });
-  }
+const HANDLE_SIDES: readonly { n: Vec2; fromFrontDeg: number }[] = [
+  { n: [0, -1], fromFrontDeg: 0 },
+  { n: [0, 1], fromFrontDeg: 180 },
+  { n: [-1, 0], fromFrontDeg: -90 },
+  { n: [1, 0], fromFrontDeg: 90 },
+];
+
+type HandleGeo = { position: Vec2; rotationDeg: number; size: { w: number; d: number } };
+
+/** The handle on side `n` (see HANDLE_SIDES) at `scale` px/m with radius `handleR` px: stem start, centre, radius (m). */
+function sideHandle(item: HandleGeo, n: Vec2, scale: number, handleR: number): { edge: Vec2; centre: Vec2; r: number } {
+  const s = scale > 0 ? scale : 1;
+  const half = n[0] !== 0 ? item.size.w / 2 : item.size.d / 2;
+  const out = half + (handleR + ROTATE_STEM_PX) / s;
+  return { edge: toPlan(item, [n[0] * half, n[1] * half]), centre: toPlan(item, [n[0] * out, n[1] * out]), r: handleR / s };
+}
+
+/** Does a circle (plan metres) touch a polygon (inside it, or within `r` of an edge)? */
+function circleMeets(c: Vec2, r: number, poly: readonly Vec2[]): boolean {
+  if (poly.length < 3) return false;
+  if (pointInPolygon(c, poly as Vec2[])) return true;
+  return poly.some((q, i) => distancePointSegment(c, q, poly[(i + 1) % poly.length]) < r);
 }
 
 /**
- * Whether a press on the rotate handle of item `itemId` belongs to what lies under it: another item, an opening, a
- * wall, a ghost, structure, a railing, … or a room's name. The floor the handle stands on (a room, a block, a deck)
- * and empty paper keep the press.
+ * Does the stem from the item's edge `a` to the handle's centre `b` run into or through `poly` (a wall between the item
+ * and its handle: an item backed onto a wall would otherwise get its handle in the next room)?
  */
-function passesThroughHandle(under: Element | null, itemId: string): boolean {
-  if (!under) return false;
-  if (typeof under.closest === 'function' && under.closest('[data-room-label-hit]')) return true;
-  const sel = selectionFromTarget(under);
-  if (!sel) return false;
-  if (sel.kind === 'furniture') return sel.id !== itemId;
-  return sel.kind !== 'room' && sel.kind !== 'block' && sel.kind !== 'deck';
+function stemCrosses(a: Vec2, b: Vec2, poly: readonly Vec2[]): boolean {
+  if (poly.length < 3) return false;
+  if (pointInPolygon(b, poly as Vec2[])) return true;
+  return poly.some((q, i) => segmentIntersection(a, b, q, poly[(i + 1) % poly.length]) !== null);
+}
+
+/**
+ * Which side the rotate handle of `item` stands on (see the header): the first of front, back, left, right whose
+ * circle (with its 2 px border) meets no other item and no live wall, and whose stem crosses no live wall (integration:
+ * a kommode backed onto Soverom's wall got its handle in Gang); else the first that meets only flat items (rugs); on
+ * touch (`coarse`) else the first facing up on the screen (under the mini-bar); else the front.
+ */
+function handleSide(item: DerivedFurniture, scale: number, handleR: number, items: readonly DerivedFurniture[] = [], walls: readonly DerivedWall[] = [], coarse = false): { n: Vec2; fromFrontDeg: number } {
+  const size = item.item.size ?? { w: 1, d: 1, h: 1 };
+  const geo: HandleGeo = { position: item.item.position, rotationDeg: item.item.rotationDeg, size };
+  const s = scale > 0 ? scale : 1;
+  const others = items.filter((f) => f.id !== item.id && f.footprint.length >= 3);
+  const solid = walls.filter((w) => !w.isGhost && w.footprint.length >= 3);
+  let best = HANDLE_SIDES[0];
+  let bestScore = Infinity;
+  for (const side of HANDLE_SIDES) {
+    const h = sideHandle(geo, side.n, s, handleR);
+    const r = h.r + 1 / s;
+    // Facing up on the screen (plan +y): on touch the mini-bar above the selection covers it.
+    const up = coarse && h.centre[1] - h.edge[1] > 0.5 * Math.hypot(h.centre[0] - h.edge[0], h.centre[1] - h.edge[1]);
+    let score = up ? 1.5 : 0;
+    if (solid.some((w) => circleMeets(h.centre, r, w.footprint) || stemCrosses(h.edge, h.centre, w.footprint))) score = 2;
+    else
+      for (const f of others) {
+        if (!circleMeets(h.centre, r, f.footprint)) continue;
+        score = f.catalog?.mount === 'flat' ? Math.max(score, 1) : 2;
+        if (score === 2) break;
+      }
+    if (score < bestScore) {
+      best = side;
+      bestScore = score;
+    }
+    if (score === 0) break;
+  }
+  return best;
 }
 
 function rectOf(it: { position: Vec2; rotationDeg: number; size: { w: number; d: number } }): Vec2[] {
@@ -283,14 +329,17 @@ function rectOf(it: { position: Vec2; rotationDeg: number; size: { w: number; d:
   ).map((q) => toPlan(it, q));
 }
 
-export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = false, items, clientToPlan, onRotate, title }: FurnitureRotateHandleProps) {
+export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = false, items, walls, clientToPlan, onRotate, title }: FurnitureRotateHandleProps) {
   const gesture = useRef<RotateGesture | null>(null);
   const [preview, setPreview] = useState<number | null>(null);
   const size = item.item.size ?? { w: 1, d: 1, h: 1 };
   const geo = { position: item.item.position, rotationDeg: item.item.rotationDeg, size };
   const handleR = rotateHandleRadiusPx(baseR, scale, coarse) ?? 0;
-  const h = rotateHandle(geo, scale, handleR);
+  const side = useMemo(() => handleSide(item, scale, handleR, items, walls, coarse), [item, scale, handleR, items, walls, coarse]);
+  const h = sideHandle(geo, side.n, scale, handleR);
   const s = scale > 0 ? scale : 1;
+  // A drag turns the handle's side (the front, or the side it stands on) towards the pointer.
+  const turnToward = (p: Vec2, step: number) => rotationToward({ position: geo.position, rotationDeg: geo.rotationDeg + side.fromFrontDeg }, p, step);
 
   const end = () => {
     gesture.current = null;
@@ -299,14 +348,7 @@ export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = fa
   const stepOf = (e: { altKey: boolean }) => (e.altKey ? ROTATE_STEP_FINE_DEG : ROTATE_STEP_DEG);
   const onPointerDown = (e: ReactPointerEvent<SVGGElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // On something else (another item, a door, a wall, a room's name): the plan gets the press there.
-    const under = elementUnderHandle(e.currentTarget.closest('[data-layer="furniture-rotate"]') ?? e.currentTarget, e.clientX, e.clientY);
-    const at = items ? clientToPlan(e.clientX, e.clientY) : null;
-    const onOther = !!at && !!items && items.some((f) => f.id !== item.id && f.footprint.length >= 3 && pointInPolygon(at, f.footprint));
-    if (onOther || passesThroughHandle(under, item.id)) {
-      passPointer(e.nativeEvent, under);
-      return;
-    }
+    // A press on the drawn circle always turns the item, whatever lies under it.
     e.preventDefault();
     const pointerId = e.pointerId;
     gesture.current = { pointerId, x: e.clientX, y: e.clientY, touch: e.pointerType === 'touch', moved: false };
@@ -326,7 +368,7 @@ export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = fa
     if (!g.moved && Math.hypot(e.clientX - g.x, e.clientY - g.y) < (g.touch ? ROTATE_DRAG_TOUCH_PX : ROTATE_DRAG_PX)) return;
     g.moved = true;
     const p = clientToPlan(e.clientX, e.clientY);
-    if (p) setPreview(rotationToward(geo, p, stepOf(e)));
+    if (p) setPreview(turnToward(p, stepOf(e)));
   };
   const onPointerUp = (e: ReactPointerEvent<SVGGElement>) => {
     const g = gesture.current;
@@ -334,7 +376,7 @@ export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = fa
     let turn = 90;
     if (g.moved) {
       const p = clientToPlan(e.clientX, e.clientY);
-      turn = p ? rotationToward(geo, p, stepOf(e)) : (preview ?? 0);
+      turn = p ? turnToward(p, stepOf(e)) : (preview ?? 0);
     }
     end();
     if (turn !== 0) onRotate(item.id, turn);
@@ -352,7 +394,7 @@ export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = fa
   const arrow = `M${n4(arcR)} 0A${n4(arcR)} ${n4(arcR)} 0 1 1 0 ${n4(-arcR)}M-2.5 ${n4(-arcR - 2.5)}L0 ${n4(-arcR)}L-2.5 ${n4(-arcR + 2.5)}`;
   const label = preview !== null ? `${Math.round((((geo.rotationDeg + preview) % 360) + 360) % 360)}°` : null;
   return (
-    <g data-layer="furniture-rotate" data-rotate-of={item.id}>
+    <g data-layer="furniture-rotate" data-rotate-of={item.id} data-rotate-side={side.fromFrontDeg}>
       {turned && <path d={polygonPath(rectOf(turned))} fill={ACCENT} fillOpacity={0.08} stroke={ACCENT} strokeWidth={1.5} strokeDasharray="5 3" pointerEvents="none" data-rotate-preview={preview ?? 0} {...NSS} />}
       <line x1={n4(h.edge[0])} y1={n4(h.edge[1])} x2={n4(h.centre[0])} y2={n4(h.centre[1])} stroke={ACCENT} strokeWidth={1.5} pointerEvents="none" {...NSS} />
       <g

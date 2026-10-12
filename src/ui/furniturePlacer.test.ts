@@ -19,7 +19,7 @@ const derived: DerivedVariant = { ...seed.derived, furniture: [] };
 function env(over: Partial<PlacerEnv> = {}) {
   const addFurniture = vi.fn((..._args: unknown[]) => 'f-new' as unknown);
   const select = vi.fn();
-  const planCentre = vi.fn((): { centre: Vec2; storeyId?: string | null } | null => ({ centre: [19.7, 0.3], storeyId: 'ground' }));
+  const planCentre = vi.fn((_catalogId: string): { centre: Vec2; storeyId?: string | null } | null => ({ centre: [19.7, 0.3], storeyId: 'ground' }));
   const e: PlacerEnv = { derived, storeyId: 'ground', selection: null, addFurniture, select, planCentre, ...over };
   return { e, addFurniture: e.addFurniture as typeof addFurniture, select: e.select as typeof select, planCentre: e.planCentre as typeof planCentre };
 }
@@ -48,7 +48,7 @@ describe('tap in the library', () => {
   it('without a selected room: in the room at the middle of the plan', () => {
     const { e, addFurniture, planCentre } = env();
     const r = placeFurniture(e, 'servant', { kind: 'tap' });
-    expect(planCentre).toHaveBeenCalled();
+    expect(planCentre).toHaveBeenCalledWith('servant');
     expect(r!.room?.id).toBe('room-hovedbad');
     expect((addFurniture.mock.calls[0][2] as { levelId: string }).levelId).toBe('main');
   });
