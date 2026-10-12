@@ -19,11 +19,22 @@
  *  (k) moving a tree in "Mitt forslag" leaves the site and Forslag D unchanged (trees per proposal);
  *  (l) blk-main's west gable moved to x −1: the three west windows turn new and leave ghosts;
  *  (m) the whole wing moved 3 m east: every room keeps its name;
- *  (n) a placed Vedskjul turns 90° with "Roter 90°" in Egenskaper.
+ *  (n) a placed Vedskjul turns 90° with "Roter 90°" in Egenskaper and keeps its back on the deck's north edge.
+ * Second fix round after 2a:
+ *  (o) the glass bump's east wall moved 0.5 m: the moved piece is new, the old wall a ghost, and today's BRA and axis
+ *      area stay (BYA loses only the old cladding strips now inside the building);
+ *  (p) a corner of the glass bump dragged out, then "Ta tilbake" on every ghost: no ghost left, the seed again;
+ *  (q) w-105-diag moved 0.2 m, then "Ta tilbake": walls and openings as in the seed (the neighbour w-104-diag too);
+ *  (r) the end handle of w-vf-korr dragged 0.36 m at the starting zoom moves the end (point snapping lets it go);
+ *  (s) a Vedskjul against the wing's north wall turned twice stays against it, with no overlap warning;
+ *  (t) after deleting w-104-103 a click on the middle of its ghost selects the ghost (no room label covers it);
+ *  (c) also checks that the "Ny advarsel" toast of the unnamed piece goes away once the piece is named, and (e) that
+ *      the door has its end handles at the starting zoom.
  * No state may produce a 'generic' warning (a failed derive or a geometry fallback).
  *
  * Screenshots (e2e/screenshots/): plan-editing.png (the deck selected: vertex and "+" handles), plan-unit-on-deck.png,
- * plan-ghosts.png (a moved door's and a deleted wall's ghosts, zoomed in).
+ * plan-ghosts.png (a moved door's and a deleted wall's ghosts, zoomed in), plan-glass-bump.png (the glass bump's east
+ * wall moved: new wall, old wall dashed).
  */
 import { expect, test, type Page } from '@playwright/test';
 import type { Variant, Vec2 } from '../src/model/types';
@@ -111,6 +122,100 @@ async function deckContains(page: Page, p: Vec2): Promise<boolean> {
 async function freshProposal(page: Page): Promise<void> {
   await loadAndWaitReady(page);
   await createNewProposal(page);
+}
+
+/** Zoom the plan in around a plan point with the mouse wheel (each step about × 1.25). */
+async function zoomAt(page: Page, p: Vec2, steps: number): Promise<void> {
+  const [x, y] = await planToClient(page, p);
+  await page.mouse.move(x, y);
+  for (let i = 0; i < steps; i++) {
+    await page.mouse.wheel(0, -150);
+    await page.waitForTimeout(80);
+  }
+  await page.waitForTimeout(300);
+}
+
+/** Today's (existing) BYA, BRA and axis area. */
+async function existingAreas(page: Page): Promise<{ bya: number; bra: number; axis: number }> {
+  return page.evaluate(() => {
+    const a = (window as HytteWindow).__hytte?.derived?.areas;
+    if (!a) throw new Error('derived missing');
+    return { bya: a.bya.existing, bra: a.bra.existing, axis: a.axis.existing };
+  });
+}
+
+/**
+ * The point of the segment a–b (the drawn line of wall or ghost `id`) farthest from every other wall line, opening
+ * and edge ghost of Plan 1, so a click there selects `id` and nothing drawn beside it.
+ */
+async function clearPointOn(page: Page, id: string, a: Vec2, b: Vec2): Promise<Vec2> {
+  return page.evaluate(
+    ({ id, a, b }) => {
+      type P = [number, number];
+      const d = (window as HytteWindow).__hytte?.derived;
+      if (!d) throw new Error('derived missing');
+      const segs: [P, P][] = [];
+      for (const w of d.walls) {
+        if (!w.storeyIds.includes('ground')) continue;
+        if (w.id !== id) segs.push([w.a, w.b]);
+        const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+        const u: P = [(w.b[0] - w.a[0]) / len, (w.b[1] - w.a[1]) / len];
+        for (const o of w.openings) {
+          const s0 = o.offset - o.width / 2;
+          const s1 = o.offset + o.width / 2;
+          segs.push([
+            [w.a[0] + u[0] * s0, w.a[1] + u[1] * s0],
+            [w.a[0] + u[0] * s1, w.a[1] + u[1] * s1],
+          ]);
+        }
+      }
+      for (const g of d.ghosts) if (g.id !== id) segs.push([g.a, g.b]);
+      const distSeg = (p: P, [s, e]: [P, P]) => {
+        const dx = e[0] - s[0];
+        const dy = e[1] - s[1];
+        const l2 = dx * dx + dy * dy;
+        const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((p[0] - s[0]) * dx + (p[1] - s[1]) * dy) / l2));
+        return Math.hypot(p[0] - s[0] - t * dx, p[1] - s[1] - t * dy);
+      };
+      let best: P = a;
+      let bestD = -1;
+      for (let i = 1; i < 60; i++) {
+        const t = i / 60;
+        const p: P = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        const m = Math.min(...segs.map((s) => distSeg(p, s)));
+        if (m > bestD) {
+          bestD = m;
+          best = p;
+        }
+      }
+      return best;
+    },
+    { id, a, b },
+  );
+}
+
+/** The derived line (a, b) of a wall, wall ghost or edge ghost by id. */
+async function derivedLine(page: Page, id: string): Promise<{ a: Vec2; b: Vec2 }> {
+  return page.evaluate((id) => {
+    const d = (window as HytteWindow).__hytte?.derived;
+    const w = d?.walls.find((x) => x.id === id) ?? d?.ghosts.find((g) => g.id === id);
+    if (!w) throw new Error(`${id} is not drawn`);
+    return { a: w.a, b: w.b };
+  }, id);
+}
+
+/** Select the glass bump (Leseskrok) itself: tap its room, then "Velg bygningsdelen". */
+async function selectGlassBump(page: Page): Promise<void> {
+  await selectAt(page, [7, -1.3], { kind: 'room', id: 'room-leseskrok' });
+  await page.getByRole('button', { name: 'Velg bygningsdelen' }).click();
+  await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: 'blk-glass' });
+}
+
+/** Blocks, walls and openings of the active proposal against an earlier copy of it (`ghosts` as they are now). */
+async function sameAs(page: Page, v0: Variant): Promise<{ blocks: boolean; walls: boolean; openings: boolean; ghosts: unknown }> {
+  const v = await activeVariant(page);
+  const J = (x: unknown) => JSON.stringify(x);
+  return { blocks: J(v.blocks) === J(v0.blocks), walls: J(v.walls) === J(v0.walls), openings: J(v.openings) === J(v0.openings), ghosts: v.ghosts };
 }
 
 test.describe('editing a proposal (desktop 1400×900)', () => {
@@ -222,6 +327,10 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     await expect(page.getByTestId('hint-line')).toContainText('Trykk der den skal slutte');
     await clickPlan(page, [18.95, 6.2]);
     await expect.poll(async () => (await activeVariant(page)).walls.length).toBe(wallCount + 1);
+    // The unnamed piece is announced once, as a warning toast.
+    const warningToast = page.getByTestId('toast').filter({ hasText: /advarsel/i });
+    await expect(warningToast).toHaveCount(1);
+    await expect(warningToast).toContainText('Rom uten navn');
     const wall = (await activeVariant(page)).walls.at(-1);
     expect(wall?.status).toBe('new');
     expect(Math.min(wall!.a[1], wall!.b[1])).toBeCloseTo(3.4, 1);
@@ -248,6 +357,8 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     await expect.poll(() => selection(page)).toMatchObject({ kind: 'room', id: kontor?.id });
     await expect(page.getByTestId('properties')).toContainText('Kontor');
     await expect(page.getByTestId('properties')).not.toContainText('finnes ikke lenger');
+    // The warning is gone, and so is its toast (it does not stay up for its full time).
+    await expect(warningToast).toHaveCount(0);
   });
 
   test('(d) Dybde 2,40 for Soverom (ny fløy) moves w-gang-n', async ({ page }) => {
@@ -272,6 +383,9 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
 
     // (e) Move the existing door between Vindfang and Mellombygg 0.5 m east.
     await selectAt(page, [7.01, 6.2], { kind: 'opening', id: 'door-mellom-vf' });
+    // At the starting zoom the 0.91 m door is wider than one handle: it has its end handles (outside its ends).
+    await expect(page.locator('[data-testid=plan-view] [data-handle="oe:start"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=plan-view] [data-handle="oe:end"]')).toHaveCount(1);
     await dragPlan(page, [7.01, 6.2], [7.51, 6.2]);
     await expect.poll(async () => (await activeVariant(page)).openings.find((o) => o.id === 'door-mellom-vf')?.status).toBe('new');
     let v = await activeVariant(page);
@@ -494,7 +608,7 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     expect(hovedbad?.[0]).toBeGreaterThan(19);
   });
 
-  test('(n) a placed Vedskjul turns 90° with "Roter 90°"', async ({ page }) => {
+  test('(n) a placed Vedskjul turns 90° with "Roter 90°" and keeps its back on the deck edge', async ({ page }) => {
     await freshProposal(page);
     await page.getByTestId('tool-unit').click();
     await page.getByTestId('unit-vedskjul').click();
@@ -516,12 +630,207 @@ test.describe('editing a proposal (desktop 1400×900)', () => {
     }).toBe(1.5);
     const b1 = bbox(blockPolygon(await activeVariant(page), unit.id));
     expect(b1.y1 - b1.y0).toBeCloseTo(2, 3);
-    expect(near((b1.x0 + b1.x1) / 2, (b0.x0 + b0.x1) / 2, 0.11) && near((b1.y0 + b1.y1) / 2, (b0.y0 + b0.y1) / 2, 0.11), 'turned about its centre').toBe(true);
+    // It stood with its back on the deck's north edge (y 12.1): it turns about its middle and stays on that line.
+    expect(b0.y1).toBeCloseTo(12.1, 2);
+    expect(b1.y1, 'still on the deck edge').toBeCloseTo(12.1, 2);
+    expect(near((b1.x0 + b1.x1) / 2, (b0.x0 + b0.x1) / 2, 0.11), 'turned about its middle').toBe(true);
+    const overlaps = await page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.warnings ?? []).filter((w) => w.kind === 'block-overlap').length);
+    expect(overlaps).toBe(0);
     // One undo step turns it back.
     await page.getByTestId('undo').click();
     await expect.poll(async () => {
       const b = bbox(blockPolygon(await activeVariant(page), unit.id));
       return Math.round((b.x1 - b.x0) * 100) / 100;
     }).toBe(2);
+  });
+
+  test("(o) the glass bump's east wall moved 0.5 m: new wall, old wall a ghost, today's areas do not grow", async ({ page }, testInfo) => {
+    await freshProposal(page);
+    const a0 = await existingAreas(page);
+    await selectGlassBump(page);
+    // The east edge's handle sits at its middle (9, −1); drag it 0.5 m east.
+    await expect(page.locator('[data-testid=plan-view] [data-handle="be:v-glass-se"]')).toHaveCount(1);
+    await dragPlan(page, [9, -1], [9.5, -1]);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), 'blk-glass')).x1).toBeCloseTo(9.5, 2);
+    expect(bbox(blockPolygon(await activeVariant(page), 'blk-glass')), 'only the east edge moved').toMatchObject({ x0: 5, y0: -2, y1: 0 });
+
+    // The moved piece is new; the old east wall and the stretch of today's south wall the open junction now covers are
+    // ghosts, drawn in the plan.
+    const pieces = await page.evaluate(() =>
+      ((window as HytteWindow).__hytte?.derived?.walls ?? [])
+        .filter((w) => w.source.kind === 'blockEdge' && w.source.blockId === 'blk-glass' && w.source.edgeId === 'v-glass-se')
+        .map((w) => w.isNew),
+    );
+    expect(pieces, 'the moved east wall is new').toEqual([true]);
+    const ghosts = (await activeVariant(page)).ghosts?.map((g) => g.id) ?? [];
+    expect(ghosts).toEqual(expect.arrayContaining(['blk-glass/v-glass-se/ghost', 'blk-main/v-main-sw/ghost']));
+    await expect(page.locator('[data-testid=plan-view] [data-sel-kind=ghost][data-sel-id="blk-glass/v-glass-se/ghost"]').first()).toBeAttached();
+    const leseskrok = await page.evaluate(() => (window as HytteWindow).__hytte?.derived?.rooms.find((r) => r.id === 'room-leseskrok'));
+    expect(leseskrok?.areaNew, 'what Leseskrok gains is new').toBeGreaterThan(0.5);
+
+    // Today's BRA and axis area stay; BYA loses only the old cladding strips that are now inside the building
+    // (0.11 × 2.11 along the old east wall and 0.11 × 0.39 of the main wall beyond it), as for the west gable.
+    const a1 = await existingAreas(page);
+    expect(a1.bra).toBeCloseTo(a0.bra, 4);
+    expect(a1.axis).toBeCloseTo(98, 4);
+    expect(a1.bya).toBeCloseTo(a0.bya - 0.11 * 2.11 - 0.11 * 0.39, 3);
+    await expect(page.getByTestId('headline')).toContainText('i dag 101,9');
+
+    await page.keyboard.press('Escape');
+    await zoomAt(page, [8, -0.5], 5);
+    await shoot(page, testInfo, 'plan-glass-bump');
+
+    // One undo step gives today's glass bump back, with no ghost.
+    await page.getByTestId('undo').click();
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), 'blk-glass')).x1).toBeCloseTo(9, 3);
+    expect((await activeVariant(page)).ghosts).toBeUndefined();
+  });
+
+  test('(p) a corner of the glass bump dragged out, then "Ta tilbake" on every ghost: none is left', async ({ page }) => {
+    await freshProposal(page);
+    const v0 = await activeVariant(page);
+    // Today's ghosts of the seed itself (the windows the proposal takes out) stay; count them first.
+    const ghostEls = page.locator('[data-testid=plan-view] [data-sel-kind=ghost]');
+    const ghostEls0 = await ghostEls.count();
+    await selectGlassBump(page);
+    await expect(page.locator('[data-testid=plan-view] [data-handle="bv:v-glass-sw"]')).toHaveCount(1);
+    await dragPlan(page, [5, -2], [4.5, -2.5]);
+    await expect
+      .poll(async () => {
+        const b = bbox(blockPolygon(await activeVariant(page), 'blk-glass'));
+        return [b.x0, b.y0, b.x1, b.y1].map((c) => Math.round(c * 100) / 100);
+      })
+      .toEqual([4.5, -2.5, 9, 0]);
+    const ghosts0 = (await activeVariant(page)).ghosts ?? [];
+    expect(ghosts0.length, 'the old south and west walls are ghosts').toBeGreaterThan(1);
+
+    // Zoomed in, "Ta tilbake" on each edge ghost in turn (clicked where nothing else is drawn next to it).
+    await page.keyboard.press('Escape');
+    await zoomAt(page, [7, -1.2], 6);
+    const restored: string[] = [];
+    for (let n = 0; n < 6; n++) {
+      const g = (await activeVariant(page)).ghosts?.[0];
+      if (!g) break;
+      const line = await derivedLine(page, g.id);
+      const at = await clearPointOn(page, g.id, line.a, line.b);
+      await page.keyboard.press('Escape');
+      await selectAt(page, at, { kind: 'ghost', id: g.id });
+      await page.getByTestId('ghost-restore').click();
+      await expect.poll(async () => (await activeVariant(page)).ghosts?.some((x) => x.id === g.id) ?? false).toBe(false);
+      restored.push(g.id);
+    }
+    expect(restored.length).toBeGreaterThan(0);
+    expect(await sameAs(page, v0), `after "Ta tilbake" on ${restored.join(', ')}`).toEqual({ blocks: true, walls: true, openings: true, ghosts: undefined });
+    expect((await derivedRooms(page)).filter((r) => r.name === null)).toEqual([]);
+    await expect(ghostEls, 'no ghost of the drag is left in the plan').toHaveCount(ghostEls0);
+  });
+
+  test('(q) w-105-diag moved 0.2 m, then "Ta tilbake": walls and openings as in the seed, the neighbour too', async ({ page }) => {
+    await freshProposal(page);
+    const v0 = await activeVariant(page);
+    // Zoomed in on the diagonal walls of the lower floor (0.2 m is below the 5 px drag threshold at the starting zoom).
+    await zoomAt(page, [2.7, 2.7], 6);
+    const w = await derivedLine(page, 'w-105-diag');
+    const at = await clearPointOn(page, 'w-105-diag', w.a, w.b);
+    await selectAt(page, at, { kind: 'wall', id: 'w-105-diag' });
+    // 0.2 m across the wall, towards the south-west (its left normal).
+    const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+    const n: Vec2 = [-(w.b[1] - w.a[1]) / len, (w.b[0] - w.a[0]) / len];
+    await dragPlan(page, at, [at[0] + n[0] * 0.2, at[1] + n[1] * 0.2]);
+    await expect.poll(async () => (await activeVariant(page)).walls.find((x) => x.id === 'w-105-diag')?.status).toBe('new');
+    const moved = (await activeVariant(page)).walls.find((x) => x.id === 'w-105-diag');
+    const shift = Math.max(Math.hypot((moved?.a[0] ?? 0) - w.a[0], (moved?.a[1] ?? 0) - w.a[1]), Math.hypot((moved?.b[0] ?? 0) - w.b[0], (moved?.b[1] ?? 0) - w.b[1]));
+    expect(shift, 'the wall moved').toBeGreaterThan(0.1);
+    expect((await activeVariant(page)).walls.find((x) => x.id === 'w-104-diag')?.status, 'the neighbour was carried along').toBe('new');
+
+    // "Ta tilbake" on the old line.
+    await page.keyboard.press('Escape');
+    const g = await derivedLine(page, 'w-105-diag/ghost');
+    const gAt = await clearPointOn(page, 'w-105-diag/ghost', g.a, g.b);
+    await selectAt(page, gAt, { kind: 'ghost', id: 'w-105-diag/ghost' });
+    await page.getByTestId('ghost-restore').click();
+    await expect.poll(async () => (await activeVariant(page)).walls.find((x) => x.id === 'w-105-diag')?.status).toBe('existing');
+    expect(await sameAs(page, v0)).toEqual({ blocks: true, walls: true, openings: true, ghosts: undefined });
+    expect((await derivedRooms(page)).filter((r) => r.name === null)).toEqual([]);
+  });
+
+  test('(r) the end handle of w-vf-korr dragged 0.36 m at the starting zoom moves the end', async ({ page }) => {
+    await freshProposal(page);
+    const w0 = (await activeVariant(page)).walls.find((x) => x.id === 'w-vf-korr');
+    expect(w0?.b).toEqual([9, 4.24]);
+    const line = await derivedLine(page, 'w-vf-korr');
+    await selectAt(page, await clearPointOn(page, 'w-vf-korr', line.a, line.b), { kind: 'wall', id: 'w-vf-korr' });
+    const handle = page.locator('[data-testid=plan-view] [data-handle="we:b"]');
+    await expect(handle).toHaveCount(1);
+    const box = await handle.boundingBox();
+    if (!box) throw new Error('the end handle is not on screen');
+    const [hx, hy] = [box.x + box.width / 2, box.y + box.height / 2];
+    // Grab the handle and move the pointer 0.36 m north on screen.
+    const from = await planToClient(page, [9, 4.24]);
+    const to = await planToClient(page, [9, 4.6]);
+    await page.mouse.move(hx, hy);
+    await page.mouse.down();
+    for (let i = 1; i <= 12; i++) await page.mouse.move(hx + ((to[0] - from[0]) * i) / 12, hy + ((to[1] - from[1]) * i) / 12);
+    await page.mouse.up();
+    await expect.poll(async () => (await activeVariant(page)).walls.find((x) => x.id === 'w-vf-korr')?.b[1] ?? 0).toBeGreaterThan(4.5);
+    const w1 = (await activeVariant(page)).walls.find((x) => x.id === 'w-vf-korr');
+    expect(near(w1?.b[0] ?? NaN, 9, 0.03) && near(w1?.b[1] ?? NaN, 4.6, 0.05), `end b at ${w1?.b.join(', ')}`).toBe(true);
+    expect(w1?.a, 'the other end stays').toEqual(w0?.a);
+  });
+
+  test('(s) a Vedskjul against the wing turned twice stays against it, with no overlap warning', async ({ page }) => {
+    await freshProposal(page);
+    await page.getByTestId('tool-unit').click();
+    await page.getByTestId('unit-vedskjul').click();
+    const [x, y] = await planToClient(page, [14, 11.3]);
+    await page.mouse.move(x - 20, y - 20);
+    await page.mouse.move(x, y, { steps: 5 });
+    await page.mouse.click(x, y);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(5);
+    const unit = (await activeVariant(page)).blocks[4];
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: unit.id });
+    const c0 = bbox(unit.polygon.map((q) => q.p));
+    // Against the wing's north wall (y 6.2), flush with its east corner.
+    await dragPlan(page, [(c0.x0 + c0.x1) / 2, (c0.y0 + c0.y1) / 2], [19.8, 6.95], 20);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), unit.id)).y0).toBeCloseTo(6.2, 2);
+    const start = bbox(blockPolygon(await activeVariant(page), unit.id));
+    const state = () =>
+      page.evaluate((id) => {
+        const d = (window as HytteWindow).__hytte?.derived;
+        return {
+          junctions: d?.blocks.find((b) => b.block.id === id)?.junctions.map((j) => j.otherBlockId) ?? [],
+          overlaps: (d?.warnings ?? []).filter((w) => w.kind === 'block-overlap').length,
+        };
+      }, unit.id);
+    expect(await state()).toMatchObject({ junctions: expect.arrayContaining(['blk-wing']), overlaps: 0 });
+
+    for (const turn of [1, 2]) {
+      await dismissToasts(page);
+      await page.getByTestId('block-rotate').click();
+      await expect
+        .poll(async () => {
+          const b = bbox(blockPolygon(await activeVariant(page), unit.id));
+          return Math.round((b.x1 - b.x0) * 100) / 100;
+        })
+        .toBe(turn === 1 ? 1.5 : 2);
+      const b = bbox(blockPolygon(await activeVariant(page), unit.id));
+      expect(b.y0, `turn ${turn}: still on the wing's north wall`).toBeCloseTo(6.2, 2);
+      expect(await state(), `turn ${turn}`).toMatchObject({ junctions: expect.arrayContaining(['blk-wing']), overlaps: 0 });
+      await expect(page.getByTestId('toast').filter({ hasText: 'overlapper' })).toHaveCount(0);
+    }
+    const end = bbox(blockPolygon(await activeVariant(page), unit.id));
+    for (const k of ['x0', 'y0', 'x1', 'y1'] as const) expect(end[k], `back on the start footprint (${k})`).toBeCloseTo(start[k], 2);
+  });
+
+  test("(t) after deleting w-104-103 a click on its ghost's middle selects the ghost", async ({ page }) => {
+    await freshProposal(page);
+    await selectAt(page, [3.05, 5.6], { kind: 'wall', id: 'w-104-103' });
+    await page.getByTestId('wall-delete').click();
+    await expect.poll(async () => (await activeVariant(page)).walls.find((w) => w.id === 'w-104-103')?.status).toBe('removed');
+    await dismissToasts(page);
+    await page.keyboard.press('Escape');
+    // The ghost runs x 3.05, y 4.24..6.2; the merged room's label must not cover its middle.
+    await selectAt(page, [3.05, 5.22], { kind: 'ghost', id: 'w-104-103' });
+    await expect(page.getByTestId('ghost-restore')).toBeVisible();
   });
 });

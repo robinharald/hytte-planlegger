@@ -12,12 +12,21 @@
  *  - a freshly placed Vedskjul dragged by its body moves and keeps its size;
  *  - the Egenskaper sheet for a wall leaves the wall in view above the sheet (the plan pans);
  *  - the tool row shows all six tools on the 390 px screen.
+ * Second fix round after 2a, at the starting zoom:
+ *  - taps 4 px to either side of three walls and a door select them (the touch band is at least 10 px, data-hit-band);
+ *  - the Vedskjul dragged 2 m west moves 2 ± 0.25 m and 1 m north moves about 1 m (snapping no longer adds metres
+ *    or pulls it back);
+ *  - a tap on a placed unit selects the unit, a second tap its room (whose mini-bar has "Roter 90°" and "Velg
+ *    bygningsdelen");
+ *  - the delete toast sits below the tool row and the hint line, also with the tool row scrolled to the top.
  * Screenshots: phone-edit.png (the dragged wall selected, handles and the mini-bar), phone-sheet.png (the sheet),
- * phone-tools.png (the tool row).
+ * phone-tools.png (the tool row), phone-toast.png (the delete toast below the tool row).
  */
 import { expect, test, type CDPSession, type Page } from '@playwright/test';
+import { join } from 'node:path';
 import type { Vec2 } from '../src/model/types';
 import {
+  SCREENSHOT_DIR,
   activeVariant,
   assertNoGenericWarnings,
   collectPageErrors,
@@ -216,7 +225,7 @@ test.describe('editing on an iPhone at the starting zoom (fix round after 2a)', 
     expect(await selection(page)).toMatchObject({ kind: 'opening', id: 'door-mellom-vf' });
   });
 
-  test('a freshly placed Vedskjul dragged by its body keeps its size', async ({ page }) => {
+  test('a freshly placed Vedskjul dragged by its body keeps its size and follows the finger', async ({ page }) => {
     await phoneProposal(page);
     const cdp = await touchSession(page);
     await page.getByTestId('tool-unit').tap();
@@ -234,10 +243,21 @@ test.describe('editing on an iPhone at the starting zoom (fix round after 2a)', 
     const c0: Vec2 = [(b0.x0 + b0.x1) / 2, (b0.y0 + b0.y1) / 2];
     await touchDragPlan(page, cdp, c0, [c0[0] - 2, c0[1]], 16);
     const box = async () => bbox((await activeVariant(page)).blocks.find((b) => b.id === unit.id)?.polygon.map((q) => q.p) ?? []);
-    await expect.poll(async () => (await box()).x0).toBeLessThan(b0.x0 - 1.5);
+    await expect.poll(async () => (await box()).x0).toBeLessThan(b0.x0 - 1);
     const b1 = await box();
     expect(b1.x1 - b1.x0, 'the width is unchanged').toBeCloseTo(2, 3);
     expect(b1.y1 - b1.y0, 'the depth is unchanged').toBeCloseTo(1.5, 3);
+    // 2 m west moves it 2 m, give or take a snap of at most 0.25 m (before: 4 m, onto the bod wing).
+    expect(Math.abs(b1.x0 - b0.x0 + 2), `moved ${(b1.x0 - b0.x0).toFixed(2)} m for a 2 m drag`).toBeLessThanOrEqual(0.25);
+    expect(b1.y0, 'no sideways jump').toBeCloseTo(b0.y0, 1);
+
+    // 1 m north, away from the deck edge it stood on: about 1 m (before: snapped all the way back).
+    const c1: Vec2 = [(b1.x0 + b1.x1) / 2, (b1.y0 + b1.y1) / 2];
+    await touchDragPlan(page, cdp, c1, [c1[0], c1[1] + 1], 16);
+    await expect.poll(async () => (await box()).y0).toBeGreaterThan(b1.y0 + 0.5);
+    const b2 = await box();
+    expect(Math.abs(b2.y0 - b1.y0 - 1), `moved ${(b2.y0 - b1.y0).toFixed(2)} m for a 1 m drag`).toBeLessThanOrEqual(0.25);
+    expect(b2.x0, 'no sideways jump').toBeCloseTo(b1.x0, 1);
   });
 
   test('the Egenskaper sheet for a wall leaves the wall in view above it', async ({ page }) => {
@@ -280,5 +300,121 @@ test.describe('editing on an iPhone at the starting zoom (fix round after 2a)', 
       expect(fits, `tool-${t}'s label is not clipped`).toBe(true);
     }
     await shoot(page, testInfo, 'phone-tools');
+  });
+
+  test('taps 4 px beside three walls and a door select them', async ({ page }) => {
+    await phoneProposal(page);
+    const plan = page.getByTestId('plan-view');
+    const scale = Number(await plan.getAttribute('data-scale'));
+    const band = Number(await plan.getAttribute('data-hit-band'));
+    expect(scale, 'the starting zoom on the phone').toBeLessThan(16);
+    expect(band, 'the touch band reaches 4 px to either side').toBeGreaterThanOrEqual(8);
+    // Centre and direction of each target: three stored walls, and the door on the old cabin's north wall.
+    const targets = await page.evaluate(() => {
+      const d = (window as HytteWindow).__hytte?.derived;
+      if (!d) throw new Error('derived missing');
+      const out: { kind: string; id: string; c: [number, number]; u: [number, number] }[] = [];
+      const dir = (a: [number, number], b: [number, number]): [number, number] => {
+        const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+      };
+      for (const id of ['w-gang-n', 'w-104-103', 'dv-pass-n']) {
+        const w = d.walls.find((x) => x.id === id);
+        if (!w) throw new Error(`${id} missing`);
+        out.push({ kind: 'wall', id, c: [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2], u: dir(w.a, w.b) });
+      }
+      for (const w of d.walls) {
+        const o = w.openings.find((x) => x.id === 'door-mellom-vf');
+        if (!o) continue;
+        const u = dir(w.a, w.b);
+        out.push({ kind: 'opening', id: o.id, c: [w.a[0] + u[0] * o.offset, w.a[1] + u[1] * o.offset], u });
+      }
+      return out;
+    });
+    expect(targets).toHaveLength(4);
+    const misses: string[] = [];
+    for (const t of targets) {
+      // 4 screen px to either side, across the line.
+      const c = await planToClient(page, t.c);
+      const e = await planToClient(page, [t.c[0] + t.u[0], t.c[1] + t.u[1]]);
+      const l = Math.hypot(e[0] - c[0], e[1] - c[1]);
+      const n: Vec2 = [-(e[1] - c[1]) / l, (e[0] - c[0]) / l];
+      for (const sgn of [-1, 1]) {
+        await page.keyboard.press('Escape');
+        await expect.poll(() => selection(page)).toBeNull();
+        const at: Vec2 = [c[0] + n[0] * 4 * sgn, c[1] + n[1] * 4 * sgn];
+        expect(await onPlan(page, at), `${t.id} is on screen`).toBe(true);
+        await page.touchscreen.tap(at[0], at[1]);
+        await expect.poll(() => selection(page)).not.toBeNull();
+        const s = await selection(page);
+        if (s?.kind !== t.kind || s.id !== t.id) misses.push(`${t.id} ${sgn > 0 ? '+' : '−'}4 px → ${s?.kind}:${s?.id}`);
+      }
+    }
+    expect(misses).toEqual([]);
+  });
+
+  test('a tap on a placed unit selects the unit, a second tap its room', async ({ page }) => {
+    await phoneProposal(page);
+    await page.getByTestId('tool-unit').tap();
+    await page.getByTestId('unit-vedskjul').tap();
+    await page.getByTestId('plan-view').scrollIntoViewIfNeeded();
+    await tapPlan(page, [14, 11.3]);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(5);
+    const unit = (await activeVariant(page)).blocks[4];
+    const b = bbox(unit.polygon.map((q) => q.p));
+    const c: Vec2 = [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
+    await dismissToasts(page);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => selection(page)).toBeNull();
+
+    // First tap: the unit (it can be dragged and turned right away).
+    await tapPlan(page, c);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: unit.id });
+    await expect(page.getByTestId('mini-rotate')).toBeVisible();
+    // Second tap: the room inside it, whose mini-bar still offers "Roter 90°" and "Velg bygningsdelen".
+    await tapPlan(page, c);
+    await expect.poll(async () => (await selection(page))?.kind).toBe('room');
+    const roomId = (await selection(page))?.id;
+    const label = await page.evaluate((id) => (window as HytteWindow).__hytte?.derived?.rooms.find((r) => r.id === id)?.labelPoint, roomId);
+    expect(label && label[0] > b.x0 && label[0] < b.x1 && label[1] > b.y0 && label[1] < b.y1, 'the room is the unit\'s').toBe(true);
+    await expect(page.getByTestId('mini-rotate')).toBeVisible();
+    await expect(page.getByTestId('mini-select-block')).toBeVisible();
+    await page.getByTestId('mini-select-block').tap();
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: unit.id });
+  });
+
+  test('the delete toast sits below the tool row and the hint line', async ({ page }, testInfo) => {
+    await phoneProposal(page);
+    await tapPlan(page, [18.4, 3.4]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'wall', id: 'w-gang-n' });
+    await page.getByTestId('mini-delete').tap();
+    const toast = page.getByTestId('toast').filter({ hasText: 'Slettet' });
+    await expect(toast).toBeVisible();
+    type Box = { x: number; y: number; width: number; height: number };
+    const overlaps = (a: Box, o: Box) => a.x < o.x + o.width && o.x < a.x + a.width && a.y < o.y + o.height && o.y < a.y + a.height;
+    const clear = async () => {
+      const t = await toast.boundingBox();
+      const tools = await page.getByTestId('toolbar').boundingBox();
+      const hint = await page.getByTestId('hint-line').boundingBox();
+      if (!t || !tools || !hint) return 'missing';
+      if (overlaps(t, tools)) return `covers the tool row (toast ${t.y.toFixed(0)}–${(t.y + t.height).toFixed(0)}, tools ${tools.y.toFixed(0)}–${(tools.y + tools.height).toFixed(0)})`;
+      if (overlaps(t, hint)) return `covers the hint line (toast ${t.y.toFixed(0)}, hint ${hint.y.toFixed(0)}–${(hint.y + hint.height).toFixed(0)})`;
+      return 'clear';
+    };
+    await expect.poll(clear).toBe('clear');
+    // With the tool row scrolled to the top of the screen (as when the sheet opens) the toast sits below the hint line.
+    await page.evaluate(() => document.querySelector('.toolbar-wrap')?.scrollIntoView({ block: 'start' }));
+    await expect
+      .poll(async () => {
+        const t = await toast.boundingBox();
+        const hint = await page.getByTestId('hint-line').boundingBox();
+        return !!t && !!hint && t.y >= hint.y + hint.height - 0.5;
+      })
+      .toBe(true);
+    await expect.poll(clear).toBe('clear');
+    // The toast stays on screen in the shot (shoot() would close it).
+    const file = join(SCREENSHOT_DIR, 'phone-toast.png');
+    await page.screenshot({ path: file, fullPage: false, animations: 'disabled' });
+    await testInfo.attach('phone-toast', { path: file, contentType: 'image/png' });
   });
 });
