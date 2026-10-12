@@ -5,7 +5,12 @@
  * after a reload, then
  * OFFLINE: a reload still starts the app (precached index.html, JS, CSS, fonts), the self-hosted fonts load from
  * the cache, and a proposal made before going offline is still there (local mode under automation).
+ * UPDATE (fix round after 2b): two tabs, a new version of the worker (dist/sw.js changed on disk, restored afterwards):
+ * both show «Ny versjon av appen er klar. [Oppdater]»; Oppdater in one reloads that tab only; the other shows «Appen er
+ * oppdatert i en annen fane … [Last på nytt]» and does not reload by itself.
  */
+import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { activeVariant, collectPageErrors, createNewProposal, type HytteWindow, projectOnScreen, READY_TIMEOUT_MS, skipFirstRun } from './helpers';
 
@@ -73,4 +78,56 @@ test('offline: the service worker serves the app, its fonts and the saved propos
   await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'local');
   await context.setOffline(false);
   expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+});
+
+test('update: Oppdater in one tab reloads that tab only; the other says so and waits', async ({ context }) => {
+  // The worker the preview server serves (vite preview reads dist/ from disk on every request).
+  const swFile = fileURLToPath(new URL('../dist/sw.js', import.meta.url));
+  const original = readFileSync(swFile, 'utf8');
+  const a = await context.newPage();
+  const b = await context.newPage();
+  const errors = [...[a, b].map((p) => collectPageErrors(p))];
+  for (const p of [a, b]) await skipFirstRun(p);
+  // Installed and controlling both tabs (the first install never shows the toast).
+  await a.goto('./');
+  await waitReady(a);
+  await a.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+  });
+  for (const p of [a, b]) {
+    await (p === a ? p.reload() : p.goto('./'));
+    await waitReady(p);
+    await expect.poll(() => p.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
+  }
+  await expect(a.getByTestId('update-toast')).toHaveCount(0);
+  await b.evaluate(() => ((window as unknown as { __e2eMarker?: string }).__e2eMarker = 'still here'));
+  let reloadsB = 0;
+  b.on('load', () => reloadsB++);
+  try {
+    writeFileSync(swFile, `${original}\n// e2e: a new version ${Date.now()}\n`);
+    await a.evaluate(async () => {
+      await (await navigator.serviceWorker.getRegistration())?.update();
+    });
+    for (const p of [a, b]) {
+      await expect(p.getByTestId('update-toast')).toContainText('Ny versjon av appen er klar.', { timeout: 30_000 });
+      await expect(p.getByTestId('update-now')).toHaveText('Oppdater');
+    }
+    // Oppdater in A: A reloads into the new version.
+    await Promise.all([a.waitForEvent('load', { timeout: 30_000 }), a.getByTestId('update-now').click()]);
+    await waitReady(a);
+    await expect(a.getByTestId('update-toast')).toHaveCount(0);
+    // B: the notice and its button, no reload.
+    await expect(b.getByTestId('update-toast')).toContainText('Appen er oppdatert i en annen fane.', { timeout: 30_000 });
+    await expect(b.getByTestId('update-now')).toHaveText('Last på nytt');
+    await b.waitForTimeout(3000);
+    expect(reloadsB, 'B did not reload by itself').toBe(0);
+    expect(await b.evaluate(() => (window as unknown as { __e2eMarker?: string }).__e2eMarker)).toBe('still here');
+    // Its own button reloads it, into the new version.
+    await Promise.all([b.waitForEvent('load', { timeout: 30_000 }), b.getByTestId('update-now').click()]);
+    await waitReady(b);
+    await expect(b.getByTestId('update-toast')).toHaveCount(0);
+  } finally {
+    writeFileSync(swFile, original);
+  }
+  expect(errors.flat(), 'uncaught errors in the pages').toEqual([]);
 });
