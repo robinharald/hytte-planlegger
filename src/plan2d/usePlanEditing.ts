@@ -799,7 +799,10 @@ export function usePlanEditing(params: PlanEditingParams) {
   // A drag's own hint (a wall drag cut short: «Veggen kan ikke flyttes lenger hit …») wins while the drag lasts; it
   // goes away with the next frame that has none, and when the drag ends.
   const dragHint = drag.on ? drag.feedback.hint : undefined;
-  const hint = dragHint ?? toolHint(tool, { wallStarted: toolState.wallStart !== null, measureStarted: toolState.measure !== null && toolState.measure.b === null });
+  // The Nytt bygg ghost standing on another building that cannot be shifted clear (a tap there is refused) says so
+  // while it is hovered: the snap's `hint` («Bygget kan ikke stå oppå et annet bygg»).
+  const ghostHint = tool === 'unit' && toolState.hover ? toolState.feedback.hint : undefined;
+  const hint = dragHint ?? ghostHint ?? toolHint(tool, { wallStarted: toolState.wallStart !== null, measureStarted: toolState.measure !== null && toolState.measure.b === null });
   useEffect(() => {
     p.current.onHint?.(hint);
   }, [hint]);

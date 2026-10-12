@@ -698,6 +698,19 @@ describe('tools', () => {
     expect(onToolChange).toHaveBeenCalledWith('select');
   });
 
+  it('Nytt bygg: a ghost that stands on another building says so on the hint line while it is hovered', () => {
+    // state/editActions.ts snapPoint('unit') sets `hint` when the ghost cannot be shifted clear (placeUnit refuses there).
+    const ON_BLOCK = 'Bygget kan ikke stå oppå et annet bygg';
+    const snapPoint = vi.fn((p: unknown): unknown => ({ point: p, indicators: [], chips: [], ...((p as Vec2)[0] < 15 ? { hint: ON_BLOCK } : {}) }));
+    const onHint = vi.fn();
+    const svg = render(baseProps({ editable: true, editActions: mockActions({ snapPoint }), onHint, tool: 'unit', toolOptions: { unitTemplate: 'vedskjul' } }));
+    expect(onHint).toHaveBeenLastCalledWith(editStrings.hintUnit);
+    hoverAt(svg, scr(svg, [10.02, 2.04]));
+    expect(onHint).toHaveBeenLastCalledWith(ON_BLOCK);
+    hoverAt(svg, scr(svg, [20.02, 3.04]));
+    expect(onHint).toHaveBeenLastCalledWith(editStrings.hintUnit);
+  });
+
   it('Nytt bygg: nothing is placed without a template', () => {
     const actions = mockActions();
     const svg = render(baseProps({ editable: true, editActions: actions, tool: 'unit' }));

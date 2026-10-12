@@ -1,7 +1,8 @@
 /**
  * `useFurniturePlacer()`: furniturePlacer.ts `placeFurniture` bound to the app — the active proposal's derived model,
  * the plan's storey and the selection from the app store, the editor core's `addFurniture`, and the shown plan's
- * centre and zoom (plan2d/furnitureDrop.ts `requestPlanCentre`).
+ * centre and zoom (plan2d/furnitureDrop.ts `requestPlanCentre`), and the app's toast (where an item landed when it is
+ * not the room that was picked or in the middle).
  *
  * The library calls it for a tap; the plan's and the 3D view's `onDropFurniture` should call it for drops:
  * `place(catalogId, { kind: 'drop', at })` (the 3D view adding `levelId: hit.levelId`).
@@ -24,6 +25,8 @@ function appEnv(addFurniture: PlacerEnv['addFurniture']): PlacerEnv {
     selection: s.ui.selection,
     addFurniture,
     select: (sel) => appStore.getState().select(sel),
+    // A tap that lands in another room than the picked / middle one says where (last fix round).
+    toast: (text) => void appStore.getState().showToast({ text }),
     planCentre: (catalogId) => {
       const c = requestPlanCentre(document, catalogId);
       return c?.centre ? { centre: c.centre, storeyId: c.storeyId } : null;

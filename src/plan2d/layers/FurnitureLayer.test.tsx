@@ -12,8 +12,14 @@ import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DerivedFurniture, DerivedWall } from '../../model/derived';
 import { catalogItem } from '../../furniture/catalog';
+import { distancePointSegment, pointInPolygon, segmentIntersection } from '../../geometry/polygon';
+import { createForslagD } from '../../model/seed/forslagD';
 import type { Vec2 } from '../../model/types';
+import { createAppStore } from '../../state/store';
+import { deriveForState } from '../../state/useDerived';
+import { HANDLE_RADIUS_PX } from '../editModel';
 import { rectFootprint } from '../furniturePlacement';
+import { planLayerData } from '../storeyData';
 import { ACCENT } from '../style';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { pointerHandOff } from '../usePanZoom';
@@ -283,14 +289,16 @@ describe('FurnitureRotateHandle', () => {
           </svg>,
         ),
       );
-      return Number(container.querySelector('[data-rotate-side]')!.getAttribute('data-rotate-side'));
+      const drawn = container.querySelector('[data-rotate-side]');
+      return drawn ? Number(drawn.getAttribute('data-rotate-side')) : null;
     };
     const side = (items: DerivedFurniture[], walls: DerivedWall[] = []) => sideOf(items, walls, false);
     expect(side([])).toBe(0);
     expect(side([front])).toBe(180);
     expect(side([front, back])).toBe(-90);
     expect(side([front, back, left])).toBe(90);
-    expect(side([front, back, left, right])).toBe(0);
+    // Last fix round: an item under the middle of every side's handle: no handle (before: the front, on the item).
+    expect(side([front, back, left, right])).toBeNull();
     // A wall in front (its footprint): the back.
     const wall = { id: 'w', isGhost: false, footprint: [[0, 1.5], [4, 1.5], [4, 1.7], [0, 1.7]] } as unknown as DerivedWall;
     expect(side([], [wall])).toBe(180);
@@ -311,6 +319,96 @@ describe('FurnitureRotateHandle', () => {
     expect(touch([front, left, right])).toBe(180);
     expect(touch([front, box('f-rug-l', [1.25 - 13 / 40, 3], true), right])).toBe(-90);
     expect(touch([])).toBe(0);
+  });
+
+  it('no free side (last fix round): an item only grazed beats a wall, the least overlap wins; walls or items under every handle hide it', () => {
+    // BED as above: each 7 px handle (0.2 m with its border at 40 px/m) stands 13 px beyond the edge's middle.
+    const box = (id: string, at: Vec2) => item(id, 'kommode', at, { w: 0.6, d: 0.6, h: 0.8 });
+    const slab = (id: string, x0: number, y0: number, x1: number, y1: number) =>
+      ({ id, isGhost: false, footprint: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]] }) as unknown as DerivedWall;
+    // Walls under the front, back, left and right handles' middles.
+    const wallFront = slab('w-f', 0, 1.5, 4, 1.7);
+    const wallBack = slab('w-b', 0, 4.2, 4, 4.4);
+    const wallLeft = slab('w-l', 0.8, 0, 0.95, 6);
+    const wallRight = slab('w-r', 3.05, 0, 3.2, 6);
+    // Items whose edge the front / back handle only grazes: 0.05 m, 0.08 m and 0.02 m deep, the middle off them.
+    const frontGraze = box('f-fg', [2, 2 - 13 / 40 - 0.45]);
+    const backGraze = box('f-bg', [2, 4 + 13 / 40 + 0.42]);
+    const backLess = box('f-bl', [2, 4 + 13 / 40 + 0.48]);
+    const frontOn = box('f-fo', [2, 2 - 13 / 40]);
+    const sideOf = (items: DerivedFurniture[], walls: DerivedWall[], coarse = false) => {
+      act(() =>
+        root.render(
+          <svg>
+            <FurnitureRotateHandle item={BED} scale={40} handleR={coarse ? 14 : 7} coarse={coarse} items={[BED, ...items]} walls={walls} clientToPlan={clientToPlan} onRotate={vi.fn()} />
+          </svg>,
+        ),
+      );
+      const drawn = container.querySelector('[data-rotate-side]');
+      return drawn ? Number(drawn.getAttribute('data-rotate-side')) : null;
+    };
+    // Walls all round: no handle (before: the front, its stem through the wall).
+    expect(sideOf([], [wallFront, wallBack, wallLeft, wallRight])).toBeNull();
+    // A grazed item beats walls; an item under the handle's middle does not.
+    expect(sideOf([frontGraze], [wallBack, wallLeft, wallRight])).toBe(0);
+    expect(sideOf([frontOn], [wallBack, wallLeft, wallRight])).toBeNull();
+    // Two grazed sides: the one with less overlap.
+    expect(sideOf([frontGraze, backGraze], [wallLeft, wallRight])).toBe(0);
+    expect(sideOf([frontGraze, backLess], [wallLeft, wallRight])).toBe(180);
+    // A rug beats a grazed item.
+    expect(sideOf([frontGraze, item('f-rug', 'teppe', [2, 4 + 13 / 40], { w: 0.6, d: 0.6, h: 0.01 })], [wallLeft, wallRight])).toBe(180);
+  });
+
+  it('the seed at the laptop starting zoom (23.5 px/m): a handle never meets a wall nor stands on another item; the WC toilet\'s is hidden or free', () => {
+    const store = createAppStore(createForslagD());
+    store.getState().duplicateVariant('forslag-d', 'Mitt forslag');
+    const derived = deriveForState(store.getState());
+    const data = planLayerData(derived, 'ground');
+    const walls = data.pieces.filter((w) => !w.isGhost && w.footprint.length >= 3);
+    const scale = 23.5;
+    const r = (HANDLE_RADIUS_PX + 1) / scale;
+    let drawn = 0;
+    for (const f of data.furniture) {
+      act(() =>
+        root.render(
+          <svg>
+            <FurnitureRotateHandle item={f} scale={scale} handleR={HANDLE_RADIUS_PX} items={data.furniture} walls={data.pieces} clientToPlan={clientToPlan} onRotate={vi.fn()} />
+          </svg>,
+        ),
+      );
+      const circle = container.querySelector(`[data-rotate-hit="${f.id}"]`);
+      if (!circle) continue;
+      drawn++;
+      const line = container.querySelector(`[data-rotate-of="${f.id}"] line`)!;
+      const c: Vec2 = [Number(circle.getAttribute('cx')), Number(circle.getAttribute('cy'))];
+      const e: Vec2 = [Number(line.getAttribute('x1')), Number(line.getAttribute('y1'))];
+      for (const w of walls) {
+        const fp = w.footprint;
+        const meets = pointInPolygon(c, fp) || fp.some((q, i) => distancePointSegment(c, q, fp[(i + 1) % fp.length]) < r - 1e-6) || fp.some((q, i) => segmentIntersection(e, c, q, fp[(i + 1) % fp.length]) !== null);
+        expect(meets, `${f.id}'s handle meets ${w.id}`).toBe(false);
+      }
+      for (const o of data.furniture) {
+        if (o.id === f.id || o.catalog?.mount === 'flat' || o.footprint.length < 3) continue;
+        expect(pointInPolygon(c, o.footprint), `${f.id}'s handle stands on ${o.id}`).toBe(false);
+      }
+    }
+    // Most items keep a handle.
+    expect(drawn).toBeGreaterThan(data.furniture.length / 2);
+    // The review's toilet in WC (its handle stood in Pantry, across w-pantry-wc): hidden, or on a free side.
+    const wc = data.furniture.find((f) => f.id === 'fu-wc-1')!;
+    act(() =>
+      root.render(
+        <svg>
+          <FurnitureRotateHandle item={wc} scale={scale} handleR={HANDLE_RADIUS_PX} items={data.furniture} walls={data.pieces} clientToPlan={clientToPlan} onRotate={vi.fn()} />
+        </svg>,
+      ),
+    );
+    const hit = container.querySelector('[data-rotate-hit="fu-wc-1"]');
+    if (hit) {
+      const c: Vec2 = [Number(hit.getAttribute('cx')), Number(hit.getAttribute('cy'))];
+      const room = derived.rooms.find((x) => x.id === 'room-wc')!;
+      expect(pointInPolygon(c, room.polygon), 'the toilet\'s handle stands in WC').toBe(true);
+    }
   });
 
   it('drawn on the back when something stands in front; a drag turns the back towards the pointer', () => {

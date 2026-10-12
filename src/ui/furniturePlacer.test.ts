@@ -9,8 +9,13 @@ import type { DerivedVariant } from '../model/derived';
 import type { Vec2 } from '../model/types';
 import { insideRoom } from '../plan2d/furniturePlacement';
 import type { Selection } from '../state/selection';
-import { dropReach, placeFurniture, roomForSelection } from './furniturePlacer';
-import type { PlacerEnv } from './furniturePlacer';
+import { dropReach, placeFurniture, roomForSelection, unitNearMiddle } from './furniturePlacer';
+import type { PlacerEnv, PlanMiddle } from './furniturePlacer';
+import { nb } from '../i18n/nb';
+import { createForslagD } from '../model/seed/forslagD';
+import { placeUnit } from '../state/editActions';
+import { createAppStore } from '../state/store';
+import { deriveForState } from '../state/useDerived';
 import { seedFixture } from './testSeed';
 
 const seed = seedFixture();
@@ -106,5 +111,66 @@ describe('drops', () => {
     expect(dropReach(120, true)).toBeCloseTo(0.2, 9);
     expect(dropReach(20, false)).toBe(0.25);
     expect(dropReach(null, false)).toBe(0.25);
+  });
+});
+
+describe('last fix round: a selected unit only while it is near the middle; a toast when the item lands elsewhere', () => {
+  // The first-time flow: Nytt bygg → Vedskjul on the deck at (14, 9.35) leaves the new shed selected.
+  const store = createAppStore(createForslagD());
+  store.getState().duplicateVariant('forslag-d', 'Mitt forslag');
+  const shedId = placeUnit(store, 'vedskjul', [14, 9.35]) as string;
+  const withShed: DerivedVariant = { ...deriveForState(store.getState()), furniture: [] };
+  const shedRoom = withShed.rooms.find((r) => r.blockId === shedId)!;
+  const BEDROOM_MIDDLE: Vec2 = [18.35, 4.75];
+  const shedEnv = (middle: PlanMiddle | null, toast = vi.fn()) => {
+    const planCentre = vi.fn((_catalogId: string): { centre: Vec2; storeyId?: string | null } | null => (middle ? { centre: middle.centre, storeyId: 'ground' } : null));
+    const e: PlacerEnv = { derived: withShed, storeyId: 'ground', selection: { kind: 'block', id: shedId }, addFurniture: () => 'f-new', select: vi.fn(), planCentre, planMiddle: () => middle, toast };
+    return { e, planCentre, toast };
+  };
+
+  it('the shed stays selected and Soverom (ny fløy) is zoomed into the middle (40.5 px/m): the kommode goes to the bedroom, without a toast', () => {
+    expect(shedRoom).toBeDefined();
+    const { e, planCentre, toast } = shedEnv({ centre: BEDROOM_MIDDLE, storeyId: 'ground', scale: 40.5 });
+    const r = placeFurniture(e, 'kommode', { kind: 'tap' });
+    expect(planCentre).toHaveBeenCalledWith('kommode');
+    expect(r!.room?.id).toBe('room-sov-ny');
+    expect(r!.placement.free).toBe(true);
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('the shed near the middle (the whole plan at the starting zoom, or zoomed onto it), or no plan shown: the shed’s room', () => {
+    // At 11.6 px/m the shed's room is about 60 px from the middle of the building.
+    for (const middle of [{ centre: [11.5, 3.8] as Vec2, storeyId: 'ground', scale: 11.6 }, { centre: shedRoom.labelPoint, storeyId: 'ground', scale: 60 }, null]) {
+      const { e, planCentre, toast } = shedEnv(middle);
+      const r = placeFurniture(e, 'vedstabel', { kind: 'tap' });
+      expect(r!.room?.id, JSON.stringify(middle)).toBe(shedRoom.id);
+      expect(planCentre).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+    }
+    expect(unitNearMiddle(shedRoom, { centre: [11.5, 3.8], storeyId: 'ground', scale: 11.6 })).toBe(true);
+    expect(unitNearMiddle(shedRoom, { centre: [11.5, 3.8], storeyId: 'ground', scale: 40 })).toBe(false);
+    expect(unitNearMiddle(shedRoom, { centre: shedRoom.labelPoint, storeyId: 'loft', scale: 40 })).toBe(false);
+  });
+
+  it('nothing selected: a toast when the item goes to another room than the one in the middle (a full room gives way), none when it stays', () => {
+    const hovedbad: Vec2 = [19.7, 0.3];
+    const gang = room('room-gang');
+    // The middle is in Hovedbad, but the plan answers with Gang (its room for the item when Hovedbad is full).
+    const toast = vi.fn();
+    const { e } = env({ planMiddle: () => ({ centre: hovedbad, storeyId: 'ground', scale: 40 }), planCentre: () => ({ centre: gang.labelPoint, storeyId: 'ground' }), toast });
+    const r = placeFurniture(e, 'kommode', { kind: 'tap' });
+    expect(r!.room?.id).toBe('room-gang');
+    expect(toast).toHaveBeenCalledWith('Kommode er satt inn i «Gang».');
+    // The room in the middle itself: no toast.
+    const quiet = vi.fn();
+    placeFurniture(env({ planMiddle: () => ({ centre: hovedbad, storeyId: 'ground', scale: 40 }), toast: quiet }).e, 'servant', { kind: 'tap' });
+    expect(quiet).not.toHaveBeenCalled();
+    // A selected room: never (the item stays in it).
+    placeFurniture(env({ selection: { kind: 'room', id: 'room-wc', levelId: 'main' }, planMiddle: () => ({ centre: hovedbad, storeyId: 'ground', scale: 40 }), toast: quiet }).e, 'servant', { kind: 'tap' });
+    expect(quiet).not.toHaveBeenCalled();
+    // Refused (Forslag D): no toast either.
+    placeFurniture(env({ addFurniture: () => null, planMiddle: () => ({ centre: hovedbad, storeyId: 'ground', scale: 40 }), planCentre: () => ({ centre: gang.labelPoint, storeyId: 'ground' }), toast: quiet }).e, 'kommode', { kind: 'tap' });
+    expect(quiet).not.toHaveBeenCalled();
+    expect(nb.library.placedInToast('Kommode', null)).toBe('Kommode er satt inn i et rom uten navn.');
   });
 });

@@ -29,7 +29,8 @@
  *   after every pan and zoom — and once per animation frame on window scroll and resize); `onHint` reports the hint
  *   line text of the active tool. On the locked base proposal a drag that starts on the selection calls `onLocked`
  *   (else the refusing `editActions.beginDrag`) instead of panning. `viewportInsets` keeps the selection out from
- *   under the toolbar / bottom sheet by panning minimally when the selection or the insets change.
+ *   under the toolbar / bottom sheet by panning minimally when the selection or the insets change; a furniture item
+ *   just added (library, Dupliser) is panned into view also without insets (a PC; last fix round).
  * - Touch: the invisible wall / opening / ghost hit bands are 0.25 m wide in plan metres, but 10–24 px on screen
  *   (editModel.ts `hitBandPx`, shown as `data-hit-band` on the svg), and each drawn room label is a hit area of its
  *   room BELOW them (LabelLayer.tsx `LabelHitLayer`): a tap within ±5 px of a wall, door or ghost selects it, a tap
@@ -201,6 +202,8 @@ const GRID_SNAP_M = 5;
 const NO_HANDLES: PlanHandle[] = [];
 const NO_LABELS: readonly PlacedLabel[] = [];
 const NO_OPTIONS: PlanToolOptions = {};
+/** Zero insets: the reveal of a new furniture item where the plan has none (a PC). */
+const NO_INSETS: ViewportInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 
 function anchorKey(a: SelectionBarAnchor | null): string {
   return a ? [a.x, a.y, a.localX, a.localY, a.box.x0, a.box.y0, a.box.x1, a.box.y1, a.rect.left, a.rect.top].map((v) => Math.round(v)).join(',') : 'none';
@@ -562,10 +565,20 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   // pan just enough to bring its bounding box into the uncovered part (never zoom; nothing when it already fits).
   const revealKey = `${selection ? `${selection.kind}:${selection.id}:${selection.levelId ?? ''}` : ''}|${insetsKey(props.viewportInsets)}`;
   const lastReveal = useRef<string | null>(null);
+  // Last fix round: a selected furniture item the last render did not have (just placed from the library, or a
+  // copy) is revealed without insets too (a PC: none), so an item a fallback put in a room off screen comes into view.
+  const furnitureIds = useMemo(() => new Set(derived.furniture.map((f) => f.id)), [derived.furniture]);
+  const knownFurniture = useRef<ReadonlySet<Id> | null>(null);
   useLayoutEffect(() => {
     if (lastReveal.current === revealKey) return;
-    const insets = cb.current.viewportInsets;
-    if (!insets || !selection || dragging) {
+    const fresh = selection?.kind === 'furniture' && !!knownFurniture.current && !knownFurniture.current.has(selection.id);
+    const insets = cb.current.viewportInsets ?? (fresh ? NO_INSETS : undefined);
+    // A selected unit is not panned into view while the Møbler library is open: a library tap places into the room the
+    // user is looking at unless the unit is near the plan's middle (ui/furniturePlacer.ts `unitNearMiddle`), and this pan
+    // moved that middle (integration of the last fix round: in the phone's first-time flow the shed, still selected
+    // after Nytt bygg, was pulled above the opening sheet and the Kommode went to Spiseplass instead of the bedroom).
+    const libraryOverUnit = cb.current.tool === 'furniture' && selection?.kind === 'block';
+    if (!insets || !selection || dragging || libraryOverUnit) {
       lastReveal.current = revealKey;
       return;
     }
@@ -581,6 +594,10 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     const area = { x0: insets.left + m, y0: insets.top + m, x1: w - insets.right - m, y1: h - insets.bottom - m };
     const [dx, dy] = revealPan(box, area);
     if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5) setView(pan(v, dx, dy));
+  });
+  // After the reveal: the items this render had (a new one stays "fresh" until the derived model has it).
+  useLayoutEffect(() => {
+    knownFurniture.current = furnitureIds;
   });
 
   const cornerFor = overlay?.cornerDimensionFor ?? null;

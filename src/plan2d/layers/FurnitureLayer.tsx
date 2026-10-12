@@ -25,9 +25,12 @@
  * degrees)`: one undo step).
  *  - Which edge (final fix round, `handleSide`): the first of front, back, left and right whose handle covers no other
  *    item (`items`) and no wall (`walls`) and whose stem crosses no wall (so an item backed onto a wall never gets its
- *    handle in the next room), else one that covers only a rug, else the front. A dining chair at the
- *    table gets it on its back, away from the table. On touch an edge facing up on the screen comes after those (the
- *    phone's mini-bar floats just above the selection and would cover the handle there), but before a covered one.
+ *    handle in the next room), else one that covers only a rug, else one that only grazes another item, the least
+ *    overlap first. A dining chair at the table gets it on its back, away from the table. On touch an edge facing up
+ *    on the screen comes after the rug (the phone's mini-bar floats just above the selection and would cover the
+ *    handle there), but before a grazed item. Last fix round: a side that meets a wall (circle or stem) or whose
+ *    handle middle stands on a solid item is never used; with no side left the handle is not drawn (before: the
+ *    front, through a wall or onto the table) — «Roter 90°» in the mini-bar and Egenskaper remains.
  *  - Hit area: the drawn circle only, and a press on it ALWAYS turns the item (final fix round; before, a press where
  *    the handle stood on another item, a rug, a wall or a room's name went through to the plan, so the handle did
  *    nothing for most seed items). On touch (`coarse`) its radius is at most ROTATE_HANDLE_MAX_M in plan metres;
@@ -281,33 +284,52 @@ function stemCrosses(a: Vec2, b: Vec2, poly: readonly Vec2[]): boolean {
   return poly.some((q, i) => segmentIntersection(a, b, q, poly[(i + 1) % poly.length]) !== null);
 }
 
+/** How deep (m) a circle reaches into a polygon: its radius past the nearest edge (more when its middle is inside). */
+function circleDepth(c: Vec2, r: number, poly: readonly Vec2[]): number {
+  const d = Math.min(...poly.map((q, i) => distancePointSegment(c, q, poly[(i + 1) % poly.length])));
+  return Math.max(0, pointInPolygon(c, poly as Vec2[]) ? r + d : r - d);
+}
+
 /**
- * Which side the rotate handle of `item` stands on (see the header): the first of front, back, left, right whose
- * circle (with its 2 px border) meets no other item and no live wall, and whose stem crosses no live wall (integration:
- * a kommode backed onto Soverom's wall got its handle in Gang); else the first that meets only flat items (rugs); on
- * touch (`coarse`) else the first facing up on the screen (under the mini-bar); else the front.
+ * Which side the rotate handle of `item` stands on (see the header), or null when it is not drawn: the first of
+ * front, back, left, right whose circle (with its 2 px border) meets no other item and no live wall, and whose stem
+ * crosses no live wall (integration: a kommode backed onto Soverom's wall got its handle in Gang); else one that meets
+ * only flat items (rugs); on touch (`coarse`) else the first facing up on the screen (under the mini-bar); else one
+ * that only grazes a solid item (its middle off it). Among sides of the same kind the least overlap wins. Last fix
+ * round: a side whose circle or stem meets a live wall, or whose middle stands on a solid item, is never used, and
+ * when that leaves no side the handle is hidden (before: the front, through a wall or on the table; «Roter 90°» in
+ * the mini-bar and Egenskaper remains).
  */
-function handleSide(item: DerivedFurniture, scale: number, handleR: number, items: readonly DerivedFurniture[] = [], walls: readonly DerivedWall[] = [], coarse = false): { n: Vec2; fromFrontDeg: number } {
+function handleSide(item: DerivedFurniture, scale: number, handleR: number, items: readonly DerivedFurniture[] = [], walls: readonly DerivedWall[] = [], coarse = false): { n: Vec2; fromFrontDeg: number } | null {
   const size = item.item.size ?? { w: 1, d: 1, h: 1 };
   const geo: HandleGeo = { position: item.item.position, rotationDeg: item.item.rotationDeg, size };
   const s = scale > 0 ? scale : 1;
   const others = items.filter((f) => f.id !== item.id && f.footprint.length >= 3);
   const solid = walls.filter((w) => !w.isGhost && w.footprint.length >= 3);
-  let best = HANDLE_SIDES[0];
+  let best: { n: Vec2; fromFrontDeg: number } | null = null;
   let bestScore = Infinity;
   for (const side of HANDLE_SIDES) {
     const h = sideHandle(geo, side.n, s, handleR);
     const r = h.r + 1 / s;
+    if (solid.some((w) => circleMeets(h.centre, r, w.footprint) || stemCrosses(h.edge, h.centre, w.footprint))) continue;
     // Facing up on the screen (plan +y): on touch the mini-bar above the selection covers it.
     const up = coarse && h.centre[1] - h.edge[1] > 0.5 * Math.hypot(h.centre[0] - h.edge[0], h.centre[1] - h.edge[1]);
-    let score = up ? 1.5 : 0;
-    if (solid.some((w) => circleMeets(h.centre, r, w.footprint) || stemCrosses(h.edge, h.centre, w.footprint))) score = 2;
-    else
-      for (const f of others) {
-        if (!circleMeets(h.centre, r, f.footprint)) continue;
-        score = f.catalog?.mount === 'flat' ? Math.max(score, 1) : 2;
-        if (score === 2) break;
+    let kind = up ? 1.5 : 0;
+    let depth = 0;
+    let onSolid = false;
+    for (const f of others) {
+      if (!circleMeets(h.centre, r, f.footprint)) continue;
+      const flat = f.catalog?.mount === 'flat';
+      if (!flat && pointInPolygon(h.centre, f.footprint as Vec2[])) {
+        onSolid = true;
+        break;
       }
+      kind = Math.max(kind, flat ? 1 : 2);
+      depth += circleDepth(h.centre, r, f.footprint);
+    }
+    if (onSolid) continue;
+    // The least overlap first within a kind (the added fraction stays below the gap to the next kind).
+    const score = kind + (0.49 * depth) / (depth + r);
     if (score < bestScore) {
       best = side;
       bestScore = score;
@@ -335,11 +357,12 @@ export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = fa
   const size = item.item.size ?? { w: 1, d: 1, h: 1 };
   const geo = { position: item.item.position, rotationDeg: item.item.rotationDeg, size };
   const handleR = rotateHandleRadiusPx(baseR, scale, coarse) ?? 0;
+  // Null: every side is blocked (a wall, or the middle on a solid item), and the handle is not drawn.
   const side = useMemo(() => handleSide(item, scale, handleR, items, walls, coarse), [item, scale, handleR, items, walls, coarse]);
-  const h = sideHandle(geo, side.n, scale, handleR);
+  const h = sideHandle(geo, (side ?? HANDLE_SIDES[0]).n, scale, handleR);
   const s = scale > 0 ? scale : 1;
   // A drag turns the handle's side (the front, or the side it stands on) towards the pointer.
-  const turnToward = (p: Vec2, step: number) => rotationToward({ position: geo.position, rotationDeg: geo.rotationDeg + side.fromFrontDeg }, p, step);
+  const turnToward = (p: Vec2, step: number) => rotationToward({ position: geo.position, rotationDeg: geo.rotationDeg + (side?.fromFrontDeg ?? 0) }, p, step);
 
   const end = () => {
     gesture.current = null;
@@ -386,7 +409,7 @@ export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = fa
     end();
   };
 
-  if (handleR <= 0) return null;
+  if (handleR <= 0 || !side) return null;
 
   const turned = preview !== null && preview !== 0 ? { ...geo, rotationDeg: geo.rotationDeg + preview } : null;
   const arcR = handleR * 0.55;
