@@ -26,6 +26,8 @@ import {
 } from 'three';
 import type { Material } from 'three';
 import type { FloorMaterial } from '../model/types';
+import { FURNITURE_SLOTS } from './furnitureBuilders';
+import type { FurnitureSlot } from './furnitureBuilders';
 
 export type FrameColour = 'white' | 'green' | 'wood' | 'black';
 export type LeafColour = 'white' | 'green' | 'wood';
@@ -422,4 +424,107 @@ export function materialSet(m: Materials, isNew: boolean, highlightNew: boolean)
 /** Roof surface material by roof material type. */
 export function roofSurface(set: MaterialSet, material: 'turf' | 'metal' | 'shingle'): Material {
   return material === 'metal' ? set.metalRoof : material === 'shingle' ? set.shingleRoof : set.turf;
+}
+
+// ---------------------------------------------------------------------------
+// Furniture (phase 2b; models in furnitureBuilders.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Furniture colours per material slot (furnitureBuilders.ts FURNITURE_SLOTS): the old model's `F` table (wood,
+ * mattress, duvetA–C, counter, top, sofa, porcelain, black, rug, metal, water, sauna) plus pine (the lining colour),
+ * dark (railing brown: log-stack ends and top, TV bench), logs (the logs texture; white base) and fire (the stove
+ * window). sRGB hex used as linear values, like PALETTE.
+ */
+export const FURNITURE_PALETTE: Record<FurnitureSlot, number> = {
+  wood: 0x8a6744,
+  pine: PALETTE.pine,
+  dark: PALETTE.rail,
+  mattress: 0xf1efe8,
+  duvetA: 0x6d8aa6,
+  duvetB: 0xb46a55,
+  duvetC: 0x8a9a6a,
+  counter: 0xe9e7e0,
+  top: 0x6a6560,
+  sofa: 0x4d5e4c,
+  porcelain: 0xf7f7f4,
+  black: 0x1e1f20,
+  rug: 0xb9a98c,
+  metal: 0x9ba1a6,
+  water: PALETTE.water,
+  sauna: PALETTE.sauna,
+  logs: 0xffffff,
+  fire: 0xc8641e,
+};
+
+/** Shower glass: the old model's F.pane (0x9cc3dd at 40 %), double-sided, no depth write. */
+export const FURNITURE_GLASS = { colour: 0x9cc3dd, opacity: 0.4 } as const;
+
+/** Red of furniture that collides with something (the plan's collision outline). */
+export const FURNITURE_COLLISION = 0xb3261e;
+
+/** Tint of a furniture item: collisions win over the "new" highlight. */
+export type FurnitureTint = 'plain' | 'new' | 'collision';
+
+export function furnitureTint(isNew: boolean, highlightNew: boolean, colliding: boolean): FurnitureTint {
+  if (colliding) return 'collision';
+  return isNew && highlightNew ? 'new' : 'plain';
+}
+
+/** A tinted clone of `m` ('plain' returns `m`): "new" = the orange emissive of the building; collision = towards red. */
+function tintFurniture(m: MeshLambertMaterial, tint: FurnitureTint): MeshLambertMaterial {
+  if (tint === 'plain') return m;
+  const c = m.clone();
+  if (tint === 'new') {
+    c.emissive = legacyColour(PALETTE.newEmissive);
+    c.emissiveIntensity = 0.5;
+  } else {
+    c.color.lerp(legacyColour(FURNITURE_COLLISION), 0.55);
+    c.emissive = legacyColour(FURNITURE_COLLISION);
+    c.emissiveIntensity = 0.35;
+  }
+  return c;
+}
+
+let furniturePlain: MeshLambertMaterial[] | null = null;
+const furnitureArrays = new Map<string, MeshLambertMaterial[]>();
+const furnitureGlass = new Map<FurnitureTint, MeshLambertMaterial>();
+
+function plainFurniture(): MeshLambertMaterial[] {
+  if (!furniturePlain) {
+    furniturePlain = FURNITURE_SLOTS.map((s) => (s === 'logs' ? getMaterials().plain.logs : lambert(FURNITURE_PALETTE[s])));
+  }
+  return furniturePlain;
+}
+
+/**
+ * Material array (FURNITURE_SLOTS order) for a furniture mesh with the given tint; with `colour`, its slots share one
+ * material in the item's own colour (hex, used as linear like the palette; the textured logs slot is never
+ * recoloured). Created on first use, cached, never disposed (like the other materials).
+ */
+export function getFurnitureMaterials(tint: FurnitureTint, colour: { slots: readonly FurnitureSlot[]; hex: number } | null = null): MeshLambertMaterial[] {
+  const slots = colour ? FURNITURE_SLOTS.filter((s) => s !== 'logs' && colour.slots.includes(s)) : [];
+  const key = colour && slots.length ? `${tint}|${slots.join(',')}|${colour.hex}` : tint;
+  let arr = furnitureArrays.get(key);
+  if (!arr) {
+    if (colour && slots.length) {
+      arr = getFurnitureMaterials(tint).slice();
+      const own = tintFurniture(lambert(colour.hex), tint);
+      for (const s of slots) arr[FURNITURE_SLOTS.indexOf(s)] = own;
+    } else {
+      arr = plainFurniture().map((m) => tintFurniture(m, tint));
+    }
+    furnitureArrays.set(key, arr);
+  }
+  return arr;
+}
+
+/** Glass material of furniture (shower walls) with the given tint. */
+export function getFurnitureGlass(tint: FurnitureTint): MeshLambertMaterial {
+  let m = furnitureGlass.get(tint);
+  if (!m) {
+    m = tintFurniture(lambert(FURNITURE_GLASS.colour, { side: DoubleSide, transparent: true, opacity: FURNITURE_GLASS.opacity, depthWrite: false }), tint);
+    furnitureGlass.set(tint, m);
+  }
+  return m;
 }

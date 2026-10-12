@@ -3,8 +3,9 @@
  *
  * Groups (architecture.md "3D view"; keyed on the derived sub-objects, sceneParts.ts): `building` (`exterior`:
  * exterior walls, their openings, roofs, foundations; `interior`: floors and flat ceilings, interior walls and their
- * openings, structure), `outdoor` (decks, railings, deck steps, hot tubs), `furniture` (placeholder boxes until phase
- * 2b) and `site` (terrain, water, trees). Each group is a memoised component fed one object of derived sub-objects
+ * openings, structure), `outdoor` (decks, railings, deck steps, hot tubs), `furniture` (parametric models per catalogue
+ * entry, Furniture.tsx / furnitureBuilders.ts) and `site` (terrain, water, trees). Each group is a memoised component
+ * fed one object of derived sub-objects
  * that `sceneParts` reuses while its members are unchanged, so a furniture or deck edit does not re-render (or
  * rebuild) the walls and roofs. The building is the label occluder; everything is pickable. Ghosts (status
  * 'removed') are never built. Mode-dependent content is mounted/unmounted rather than hidden, because ray casts do not
@@ -37,7 +38,7 @@ import type { DropHit } from './drop';
 import { FURNITURE_DROP_EVENT, furnitureDropDetail } from './dropEvent';
 import { Floors } from './Floors';
 import { Foundations } from './Foundations';
-import { FurnitureMeshes } from './FurnitureMeshes';
+import { Furniture } from './Furniture';
 import { shownGroundFn } from './ground';
 import { Labels } from './Labels';
 import { getMaterials, PALETTE } from './materials';
@@ -141,7 +142,7 @@ export function Scene(props: SceneProps) {
           <BuildingGroup parts={parts.building} vis={vis} highlightNew={highlightNew} />
         </group>
         <OutdoorGroup parts={parts.outdoor} highlightNew={highlightNew} />
-        <FurnitureMeshes furniture={parts.furniture.furniture} vis={vis} highlightNew={highlightNew} />
+        <Furniture furniture={parts.furniture.furniture} vis={vis} highlightNew={highlightNew} />
         <SiteGroup parts={parts.site} site={site} terrain={terrain} showTerrain={props.showTerrain} showTrees={props.showTrees} />
       </group>
 

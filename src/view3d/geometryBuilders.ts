@@ -27,7 +27,6 @@ import type {
   DerivedDeck,
   DerivedFloor,
   DerivedFoundation,
-  DerivedFurniture,
   DerivedOpening,
   DerivedRailing,
   DerivedRoof,
@@ -912,22 +911,6 @@ export function buildStructure(s: DerivedStructure, cutZ: number | null = null):
   return d;
 }
 
-/** Height (m) of a furniture placeholder whose item has no valid size (the migration's 1 × 1 × 1 m fallback). */
-export const FURNITURE_FALLBACK_HEIGHT = 1;
-
-/**
- * Furniture placeholder until phase 2b's parametric models: the plan footprint extruded from the item's bottom `z`
- * to z + size.h, clipped at `cutZ` (null = uncut); one slot. Empty when nothing is left above the floor.
- */
-export function buildFurnitureBox(f: Pick<DerivedFurniture, 'footprint' | 'z' | 'item'>, cutZ: number | null = null): MeshData {
-  const d = createMeshData(1);
-  const h = f.item.size?.h;
-  const height = typeof h === 'number' && Number.isFinite(h) && h > 0 ? h : FURNITURE_FALLBACK_HEIGHT;
-  const top = cutZ === null ? f.z + height : Math.min(f.z + height, cutZ);
-  if (f.footprint.length < 3 || !(top - f.z > MIN_HEIGHT) || Math.abs(signedArea2(f.footprint)) < 1e-9) return d;
-  appendPrism(d, { ring: f.footprint, bottomZ: f.z, topZ: top, topSlot: 0, bottomSlot: 0, sideSlot: 0 });
-  return d;
-}
 
 // ---------------------------------------------------------------------------
 // Terrain, water
