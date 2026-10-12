@@ -1,17 +1,18 @@
 /**
- * Outdoor: decks (0.15 m board slab + skirt boards down to the terrain), railings (posts, cap rail, glass panels
- * or board slats), steps in railing gaps (solid treads in the deck-side colour) and hot tubs built like the old
- * model's badestamp (open wooden cylinder, water disc 13 cm below the rim, two sage hoops, a step box on the side
- * facing the house). Selectable as deck / railing (steps belong to their railing) / hotTub.
+ * Outdoor: decks (their `pieces`: 0.15 m board slab + skirt boards down to the terrain), railings (one per deck:
+ * posts, cap rail, glass panels or board slats), deck steps (`outdoor.steps`, one mesh per steps: solid treads in the
+ * deck-side colour, tinted with their deck; blocked steps are not built) and hot tubs built like the old model's
+ * badestamp (open wooden cylinder, water disc 13 cm below the rim, two sage hoops, a step box on the side facing the
+ * house). Pickable (selection3d.ts) as deck / railing (`${deckId}/railing`) / steps (also lit by their deck) / hotTub.
  */
 import { memo, useMemo } from 'react';
-import type { DerivedDeck, DerivedHotTub, DerivedRailing, DerivedVariant } from '../model/derived';
+import type { DerivedDeck, DerivedHotTub, DerivedRailing, DerivedSteps, DerivedVariant } from '../model/derived';
 import type { Vec2 } from '../model/types';
 import { rotationYForPlanDir, toWorldTuple } from './coords';
-import { buildDeck, buildRailing, buildSteps, createMeshData } from './geometryBuilders';
-import type { MeshData } from './geometryBuilders';
+import { buildDeck, buildRailing, buildSteps } from './geometryBuilders';
 import { getMaterials, materialSet } from './materials';
-import { selectable, useGeometries, useGeometry } from './sceneUtils';
+import { pickable, useGeometries, useGeometry } from './sceneUtils';
+import { deckPick, hotTubPick, railingPick, stepsPick } from './selection3d';
 
 export interface OutdoorProps {
   outdoor: DerivedVariant['outdoor'];
@@ -21,6 +22,7 @@ export interface OutdoorProps {
 }
 
 export const Outdoor = memo(function Outdoor({ outdoor, centre, highlightNew }: OutdoorProps) {
+  const deckIsNew = useMemo(() => new Map(outdoor.decks.map((d) => [d.id, d.isNew])), [outdoor.decks]);
   return (
     <group name="outdoor">
       {outdoor.decks.map((d) => (
@@ -29,6 +31,11 @@ export const Outdoor = memo(function Outdoor({ outdoor, centre, highlightNew }: 
       {outdoor.railings.map((r) => (
         <RailingMesh key={r.id} railing={r} highlightNew={highlightNew} />
       ))}
+      {outdoor.steps
+        .filter((s) => !s.blocked)
+        .map((s) => (
+          <StepsMesh key={s.id} steps={s} isNew={deckIsNew.get(s.deckId) ?? false} highlightNew={highlightNew} />
+        ))}
       {outdoor.hotTubs.map((t) => (
         <HotTub key={t.id} tub={t} centre={centre} highlightNew={highlightNew} />
       ))}
@@ -41,38 +48,36 @@ const DeckMesh = memo(function DeckMesh({ deck, highlightNew }: { deck: DerivedD
   const geometry = useGeometry(data);
   const set = materialSet(getMaterials(), deck.isNew, highlightNew);
   const materials = useMemo(() => [set.deck, set.deckSide], [set]);
+  const userData = useMemo(() => pickable(deckPick(deck)), [deck]);
   if (!geometry) return null;
-  return <mesh geometry={geometry} material={materials} castShadow receiveShadow userData={selectable({ kind: 'deck', id: deck.id })} />;
+  return <mesh geometry={geometry} material={materials} castShadow receiveShadow userData={userData} />;
 });
-
-function mergeSteps(r: DerivedRailing): MeshData {
-  const out = createMeshData(1);
-  for (const s of r.steps) {
-    const d = buildSteps(s);
-    const base = out.positions.length / 3;
-    out.positions.push(...d.positions);
-    out.normals.push(...d.normals);
-    out.uvs.push(...d.uvs);
-    for (const i of d.indices[0]) out.indices[0].push(base + i);
-  }
-  return out;
-}
 
 const RailingMesh = memo(function RailingMesh({ railing, highlightNew }: { railing: DerivedRailing; highlightNew: boolean }) {
   const datas = useMemo(() => {
     const b = buildRailing(railing);
-    return [b.solid, railing.style === 'glass' ? b.glass : null, mergeSteps(railing)];
+    return [b.solid, railing.style === 'glass' ? b.glass : null];
   }, [railing]);
-  const [solid, glass, steps] = useGeometries(datas);
+  const [solid, glass] = useGeometries(datas);
   const m = getMaterials();
   const set = materialSet(m, railing.isNew, highlightNew);
+  const userData = useMemo(() => pickable(railingPick(railing)), [railing]);
   return (
-    <group userData={selectable({ kind: 'railing', id: railing.id })}>
+    <group userData={userData}>
       {solid && <mesh geometry={solid} material={set.rail} castShadow receiveShadow />}
       {glass && <mesh geometry={glass} material={m.railGlass} renderOrder={1} />}
-      {steps && <mesh geometry={steps} material={set.deckSide} castShadow receiveShadow />}
     </group>
   );
+});
+
+/** One steps (not blocked), tinted like its deck. */
+const StepsMesh = memo(function StepsMesh({ steps, isNew, highlightNew }: { steps: DerivedSteps; isNew: boolean; highlightNew: boolean }) {
+  const data = useMemo(() => buildSteps(steps), [steps]);
+  const geometry = useGeometry(data);
+  const set = materialSet(getMaterials(), isNew, highlightNew);
+  const userData = useMemo(() => pickable(stepsPick(steps)), [steps]);
+  if (!geometry) return null;
+  return <mesh geometry={geometry} material={set.deckSide} castShadow receiveShadow userData={userData} />;
 });
 
 const HotTub = memo(function HotTub({ tub, centre, highlightNew }: { tub: DerivedHotTub; centre: Vec2; highlightNew: boolean }) {
@@ -89,9 +94,10 @@ const HotTub = memo(function HotTub({ tub, centre, highlightNew }: { tub: Derive
   }, [centre, tub.centre]);
   const step: Vec2 = [toHouse[0] * (r + 0.3), toHouse[1] * (r + 0.3)];
   const stepRotation = rotationYForPlanDir([-toHouse[1], toHouse[0]]);
+  const userData = useMemo(() => pickable(hotTubPick(tub)), [tub]);
   if (r <= 0) return null;
   return (
-    <group position={toWorldTuple(tub.centre[0], tub.centre[1], tub.baseZ)} userData={selectable({ kind: 'hotTub', id: tub.id })}>
+    <group position={toWorldTuple(tub.centre[0], tub.centre[1], tub.baseZ)} userData={userData}>
       <mesh position={[0, h / 2, 0]} material={set.tub} castShadow receiveShadow>
         <cylinderGeometry args={[r, r, h, 40, 1, true]} />
       </mesh>

@@ -13,7 +13,17 @@
  *
  * UVs are in metres (geometryBuilders.ts), so each texture's `repeat` is 1 / its tile size in metres.
  */
-import { CanvasTexture, Color, DoubleSide, LinearSRGBColorSpace, MeshBasicMaterial, MeshLambertMaterial, RepeatWrapping, SRGBColorSpace } from 'three';
+import {
+  CanvasTexture,
+  Color,
+  DoubleSide,
+  LinearSRGBColorSpace,
+  LineBasicMaterial,
+  MeshBasicMaterial,
+  MeshLambertMaterial,
+  RepeatWrapping,
+  SRGBColorSpace,
+} from 'three';
 import type { Material } from 'three';
 import type { FloorMaterial } from '../model/types';
 
@@ -274,6 +284,8 @@ export interface Materials {
   branch: MeshLambertMaterial;
   /** Overlay drawn on top of the selected element. */
   selection: MeshBasicMaterial;
+  /** Outline of the selected element's crease edges, drawn through everything (no depth test). */
+  selectionLine: LineBasicMaterial;
 }
 
 function lambert(hex: number, extra: Partial<Pick<MeshLambertMaterial, 'side' | 'transparent' | 'opacity' | 'depthWrite'>> = {}): MeshLambertMaterial {
@@ -376,6 +388,7 @@ function createMaterials(): Materials {
   selection.polygonOffset = true;
   selection.polygonOffsetFactor = -1;
   selection.polygonOffsetUnits = -4;
+  const selectionLine = new LineBasicMaterial({ color: PALETTE.selection, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false });
   return {
     plain,
     highlight: highlighted(plain),
@@ -389,6 +402,7 @@ function createMaterials(): Materials {
     trunk: lambert(PALETTE.trunk),
     branch: lambert(PALETTE.branch),
     selection,
+    selectionLine,
   };
 }
 

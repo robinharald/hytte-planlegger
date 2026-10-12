@@ -11,7 +11,8 @@
  *   derived model with the same cuts does not rebuild the terrain.
  * - Water: one plane at waterZ (derived.site.waterZ, else site.waterLevel − floorElevation) + 2 cm over the
  *   coarsest grid's extent, in the old model's lake colour; the terrain hides it where it is higher.
- * - No terrain asset: a flat grass plane 2 cm below the lowest block ground level (like the old model's ground).
+ * - No terrain asset: a flat grass plane 2 cm below the lowest block ground level (like the old model's ground),
+ *   500 m square round the blocks' centre.
  *   `showTerrain` off: neither terrain, water nor the flat plane.
  */
 import { memo, useMemo } from 'react';
@@ -19,14 +20,15 @@ import { sampleTerrainAsl } from '../geometry/terrain';
 import type { DerivedVariant } from '../model/derived';
 import type { GroundWork, Site, TerrainAsset, Vec2 } from '../model/types';
 import { buildHorizontalRect, buildTerrainGrid, gridsExtent, terrainPatch } from './geometryBuilders';
-import { groundZFn } from './ground';
+import { blocksCentre, flatGroundZ, groundZFn } from './ground';
 import { getMaterials } from './materials';
 import { useGeometries, useGeometry } from './sceneUtils';
 
 export interface TerrainProps {
   terrain: TerrainAsset | null;
   site: Site;
-  derived: Pick<DerivedVariant, 'site' | 'blocks' | 'bounds' | 'groundWorks'>;
+  /** Only these parts are read, so deck and furniture edits leave the terrain alone. */
+  derived: Pick<DerivedVariant, 'site' | 'blocks' | 'groundWorks'>;
 }
 
 export const Terrain = memo(function Terrain({ terrain, site, derived }: TerrainProps) {
@@ -34,8 +36,7 @@ export const Terrain = memo(function Terrain({ terrain, site, derived }: Terrain
   const works = useMemo(() => JSON.parse(worksKey) as GroundWork[], [worksKey]);
   const waterZ = derived.site.waterZ ?? (site.waterLevel !== undefined ? site.waterLevel - site.floorElevation : undefined);
   if (!terrain || terrain.grids.length === 0) {
-    const groundZ = derived.blocks.length ? Math.min(...derived.blocks.map((b) => b.groundZ)) : -0.5;
-    return <FlatGround bounds={derived.bounds} z={(Number.isFinite(groundZ) ? groundZ : -0.5) - 0.02} />;
+    return <FlatGround centre={blocksCentre(derived.blocks)} z={flatGroundZ(derived.blocks)} />;
   }
   return (
     <group name="terrain">
@@ -88,14 +89,9 @@ const Water = memo(function Water({ terrain, z }: { terrain: TerrainAsset; z: nu
   return <mesh geometry={geometry} material={getMaterials().lake} receiveShadow />;
 });
 
-const FlatGround = memo(function FlatGround({ bounds, z }: { bounds: { min: Vec2; max: Vec2 }; z: number }) {
-  const data = useMemo(() => {
-    const cx = (bounds.min[0] + bounds.max[0]) / 2;
-    const cy = (bounds.min[1] + bounds.max[1]) / 2;
-    const ok = Number.isFinite(cx) && Number.isFinite(cy);
-    const c: Vec2 = ok ? [cx, cy] : [0, 0];
-    return buildHorizontalRect({ min: [c[0] - 250, c[1] - 250], max: [c[0] + 250, c[1] + 250] }, z);
-  }, [bounds, z]);
+const FlatGround = memo(function FlatGround({ centre, z }: { centre: Vec2; z: number }) {
+  const [cx, cy] = centre;
+  const data = useMemo(() => buildHorizontalRect({ min: [cx - 250, cy - 250], max: [cx + 250, cy + 250] }, z), [cx, cy, z]);
   const geometry = useGeometry(data);
   if (!geometry) return null;
   return <mesh geometry={geometry} material={getMaterials().grass} receiveShadow />;

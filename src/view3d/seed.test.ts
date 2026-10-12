@@ -63,10 +63,8 @@ describe.skipIf(isStub)('3D builders on the Forslag D seed', () => {
     }
     for (const f of derived.floors) expect(finite(B.buildFloor(f)), f.id).toBe(true);
     for (const d of derived.outdoor.decks) expect(finite(B.buildDeck(d)), d.id).toBe(true);
-    for (const r of derived.outdoor.railings) {
-      expect(finite(B.buildRailing(r).solid), r.id).toBe(true);
-      for (const s of r.steps) expect(finite(B.buildSteps(s)), s.id).toBe(true);
-    }
+    for (const r of derived.outdoor.railings) expect(finite(B.buildRailing(r).solid), r.id).toBe(true);
+    for (const s of derived.outdoor.steps) expect(finite(B.buildSteps(s)), s.id).toBe(true);
     for (const s of derived.structure) expect(finite(B.buildStructure(s)), s.id).toBe(true);
     for (const f of derived.foundations) expect(finite(B.buildFoundation(f)), f.blockId).toBe(true);
   });

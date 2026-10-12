@@ -2,13 +2,15 @@
  * Wall pieces: one mesh per derived wall (sub-prisms from geometryBuilders.buildWallPieces), rebuilt when the
  * wall or its cut height changes. Exterior pieces: dark board cladding on the outside (right) face and on the
  * reveals/ends, pine inside (left); interior and old-exterior walls: pine on both sides; cut tops in the cap
- * colour. Dividers and removed walls draw nothing. Selectable as { kind: 'wall', id }.
+ * colour. Dividers and ghosts (removed walls) draw nothing. Pickable per selection3d.wallPick: exterior pieces select
+ * their block edge ({ kind: 'blockEdge', id: edgeId }), stored walls { kind: 'wall', id }.
  */
 import { memo, useMemo } from 'react';
 import type { DerivedWall } from '../model/derived';
 import { buildWallPieces } from './geometryBuilders';
 import { getMaterials, materialSet } from './materials';
-import { selectable, useGeometry } from './sceneUtils';
+import { pickable, useGeometry } from './sceneUtils';
+import { wallPick } from './selection3d';
 import { wallIsDrawn } from './visibility';
 import type { Visibility } from './visibility';
 
@@ -40,6 +42,7 @@ const WallMesh = memo(function WallMesh({ wall, cutZ, highlightNew }: { wall: De
     () => (wall.isExterior ? [set.board, set.pine, set.board, set.cut] : [set.pine, set.pine, set.pine, set.cut]),
     [set, wall.isExterior],
   );
+  const userData = useMemo(() => pickable(wallPick(wall)), [wall]);
   if (!geometry) return null;
-  return <mesh geometry={geometry} material={materials} castShadow receiveShadow userData={selectable({ kind: 'wall', id: wall.id })} />;
+  return <mesh geometry={geometry} material={materials} castShadow receiveShadow userData={userData} />;
 });

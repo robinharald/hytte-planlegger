@@ -27,6 +27,7 @@ import type {
   DerivedDeck,
   DerivedFloor,
   DerivedFoundation,
+  DerivedFurniture,
   DerivedOpening,
   DerivedRailing,
   DerivedRoof,
@@ -789,13 +790,19 @@ export function appendDeckSkirt(d: MeshData, polygon: Vec2[], underZ: number, sk
   return quads;
 }
 
-/** Deck: boards on top (DECK_MAT.top, UV swapped for boards along y), edge + skirt (DECK_MAT.side). No underside. */
+/**
+ * Deck: its `pieces` (the outline trimmed by the buildings, with holes) as boards on top (DECK_MAT.top, UV swapped
+ * for boards along y), edge + skirt along each piece's outer ring (DECK_MAT.side). No underside.
+ */
 export function buildDeck(deck: DerivedDeck): MeshData {
   const d = createMeshData(2);
-  if (deck.polygon.length < 3 || Math.abs(signedArea2(deck.polygon)) < 1e-9) return d;
   const underZ = deck.topZ - deck.thickness;
-  appendPrism(d, { ring: deck.polygon, bottomZ: underZ, topZ: deck.topZ, topSlot: DECK_MAT.top, bottomSlot: null, sideSlot: DECK_MAT.side });
-  appendDeckSkirt(d, deck.polygon, underZ, deck.skirtBottomZ, DECK_MAT.side);
+  deck.pieces.forEach((piece, i) => {
+    const ring = piece[0];
+    if (!ring || ring.length < 3 || Math.abs(signedArea2(ring)) < 1e-9) return;
+    appendPrism(d, { ring, holes: piece.slice(1), bottomZ: underZ, topZ: deck.topZ, topSlot: DECK_MAT.top, bottomSlot: null, sideSlot: DECK_MAT.side });
+    appendDeckSkirt(d, ring, underZ, deck.skirtBottomZ[i] ?? [], DECK_MAT.side);
+  });
   if (deck.boardDirection === 'y') swapUVs(d, DECK_MAT.top);
   return d;
 }
@@ -902,6 +909,23 @@ export function buildStructure(s: DerivedStructure, cutZ: number | null = null):
       }
       break;
   }
+  return d;
+}
+
+/** Height (m) of a furniture placeholder whose item has no valid size (the migration's 1 × 1 × 1 m fallback). */
+export const FURNITURE_FALLBACK_HEIGHT = 1;
+
+/**
+ * Furniture placeholder until phase 2b's parametric models: the plan footprint extruded from the item's bottom `z`
+ * to z + size.h, clipped at `cutZ` (null = uncut); one slot. Empty when nothing is left above the floor.
+ */
+export function buildFurnitureBox(f: Pick<DerivedFurniture, 'footprint' | 'z' | 'item'>, cutZ: number | null = null): MeshData {
+  const d = createMeshData(1);
+  const h = f.item.size?.h;
+  const height = typeof h === 'number' && Number.isFinite(h) && h > 0 ? h : FURNITURE_FALLBACK_HEIGHT;
+  const top = cutZ === null ? f.z + height : Math.min(f.z + height, cutZ);
+  if (f.footprint.length < 3 || !(top - f.z > MIN_HEIGHT) || Math.abs(signedArea2(f.footprint)) < 1e-9) return d;
+  appendPrism(d, { ring: f.footprint, bottomZ: f.z, topZ: top, topSlot: 0, bottomSlot: 0, sideSlot: 0 });
   return d;
 }
 

@@ -2,13 +2,14 @@
  * Roofs: one prism per RoofSlope (top polygon, −thickness vertically, side faces; turf on top and sides, dark
  * soffit below), sage trims (barge boards, fascias) and a turf ridge roll. Metal / shingle roofs use plain
  * colours. Slopes tint individually for "new" (they are split at part boundaries). Hidden in the interior mode
- * (the caller does not mount them). Selectable as the block: { kind: 'block', id: blockId }.
+ * (the caller does not mount them). Pickable as the block: { kind: 'block', id: blockId }.
  */
 import { memo, useMemo } from 'react';
 import type { DerivedRoof, RoofSlope } from '../model/derived';
 import { buildRoofSlope, buildRoofTrims } from './geometryBuilders';
 import { getMaterials, materialSet, roofSurface } from './materials';
-import { selectable, useGeometry } from './sceneUtils';
+import { pickable, useGeometry } from './sceneUtils';
+import { blockPick } from './selection3d';
 
 export interface RoofsProps {
   roofs: DerivedRoof[];
@@ -19,7 +20,7 @@ export const Roofs = memo(function Roofs({ roofs, highlightNew }: RoofsProps) {
   return (
     <group name="roofs">
       {roofs.map((r) => (
-        <group key={r.blockId} userData={selectable({ kind: 'block', id: r.blockId })}>
+        <group key={r.blockId} userData={pickable(blockPick(r.blockId))}>
           {r.slopes.map((s, i) => (
             <SlopeMesh key={i} slope={s} roof={r} highlightNew={highlightNew} />
           ))}

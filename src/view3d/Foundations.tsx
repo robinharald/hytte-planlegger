@@ -2,13 +2,14 @@
  * Foundations: light-grey plinth prisms on the block's outer outline between bottomZ (ground − 0.3) and topZ
  * (lowest floor of the block). Where an exterior wall piece stands higher than the plinth top (the main floor
  * next to a lower floor zone), a plinth skirt fills the gap under that piece, so the cladding never floats.
- * Selectable as the block.
+ * Pickable as the block. Ghost wall pieces (removed) get no skirt.
  */
 import { memo, useMemo } from 'react';
 import type { DerivedFoundation, DerivedVariant, DerivedWall } from '../model/derived';
 import { buildFoundation } from './geometryBuilders';
 import { getMaterials, materialSet } from './materials';
-import { selectable, useGeometry } from './sceneUtils';
+import { pickable, useGeometry } from './sceneUtils';
+import { blockPick } from './selection3d';
 
 export interface FoundationsProps {
   foundations: DerivedFoundation[];
@@ -23,7 +24,7 @@ export const Foundations = memo(function Foundations({ foundations, walls, block
   const skirtsByBlock = useMemo(() => {
     const map = new Map<string, DerivedWall[]>();
     for (const w of walls) {
-      if (!w.isExterior || w.isDivider || w.status === 'removed' || w.source.kind !== 'blockEdge') continue;
+      if (!w.isExterior || w.isDivider || w.isGhost || w.status === 'removed' || w.source.kind !== 'blockEdge') continue;
       const list = map.get(w.source.blockId) ?? [];
       list.push(w);
       map.set(w.source.blockId, list);
@@ -56,6 +57,7 @@ const FoundationMesh = memo(function FoundationMesh({ foundation, skirts, isNew,
   const data = useMemo(() => buildFoundation(foundation, skirts), [foundation, skirts]);
   const geometry = useGeometry(data);
   const set = materialSet(getMaterials(), isNew, highlightNew);
+  const userData = useMemo(() => pickable(blockPick(foundation.blockId)), [foundation.blockId]);
   if (!geometry) return null;
-  return <mesh geometry={geometry} material={set.plinth} castShadow receiveShadow userData={selectable({ kind: 'block', id: foundation.blockId })} />;
+  return <mesh geometry={geometry} material={set.plinth} castShadow receiveShadow userData={userData} />;
 });

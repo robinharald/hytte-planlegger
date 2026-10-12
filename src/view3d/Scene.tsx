@@ -1,43 +1,60 @@
 /**
  * Scene contents of the 3D view (inside the R3F <Canvas> of View3D).
  *
- * Groups (architecture.md "3D view"): `exterior` (exterior walls, their openings, roofs, foundations),
- * `interior` (floors, interior walls and their openings, structure), `base` (terrain, water, decks, railings,
- * steps, hot tubs, trees). The building (exterior + interior) is the label occluder; everything is pickable.
- * Mode-dependent content is mounted/unmounted rather than hidden, because ray casts do not skip invisible objects.
+ * Groups (architecture.md "3D view"; keyed on the derived sub-objects, sceneParts.ts): `building` (`exterior`:
+ * exterior walls, their openings, roofs, foundations; `interior`: floors and flat ceilings, interior walls and their
+ * openings, structure), `outdoor` (decks, railings, deck steps, hot tubs), `furniture` (placeholder boxes until phase
+ * 2b) and `site` (terrain, water, trees). Each group is a memoised component fed one object of derived sub-objects
+ * that `sceneParts` reuses while its members are unchanged, so a furniture or deck edit does not re-render (or
+ * rebuild) the walls and roofs. The building is the label occluder; everything is pickable. Ghosts (status
+ * 'removed') are never built. Mode-dependent content is mounted/unmounted rather than hidden, because ray casts do not
+ * skip invisible objects.
  *
  * Also here: background colour and fog of the old model, OrbitControls (damped, maxPolarAngle 0.495π,
  * minDistance 3), the camera rig (presets animated ~900 ms with the old ease, instant on mount and with reduced
  * motion; exterior presets pulled back in viewports narrower than cameras.ts REF_ASPECT and re-framed when the
  * viewport changes shape while the user has not moved the camera; transitions are cancelled when the user grabs
- * the controls), click selection (ray cast on pointer-up when the pointer
- * moved ≤ 5 px and only one pointer was down, so orbiting never selects; empty space → null), the selection
- * overlay, `invalidate()` on every prop change (frameloop 'demand') and `onReady` after the first rendered frame.
+ * the controls), click selection (selection3d.ts: a ray cast on pointer-up when only one pointer was down and it
+ * moved ≤ 5 px, 10 px for touch, so orbiting never selects; the nearest shown object's pick tags decide, empty
+ * space → null; no dragging in 3D in this phase), the selection highlight (a translucent overlay plus an outline of
+ * the crease edges of every shown mesh the selection matches, selection3d.highlightMatches), the furniture drop target
+ * (dropEvent.ts / drop.ts → `onDropFurniture`), `invalidate()` on every prop change (frameloop 'demand') and
+ * `onReady` after the first rendered frame.
  */
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import { Group, Mesh, Raycaster, Vector2, Vector3 } from 'three';
-import type { Object3D } from 'three';
+import { EdgesGeometry, Group, LineSegments, Mesh, Raycaster, Vector2, Vector3 } from 'three';
+import type { BufferGeometry, Object3D } from 'three';
 import type { DerivedVariant } from '../model/derived';
 import type { Id, Site, TerrainAsset, Vec2, Vec3 } from '../model/types';
 import type { Selection } from '../state/selection';
 import { CAMERA_ANIM_MS, easeInOutQuad, ORBIT_LIMITS, presetWorld, REF_ASPECT } from './cameras';
 import type { CameraPreset } from './cameras';
+import { dropHit, dropSurfaces, ndcOf, planRayFromNdc } from './drop';
+import type { DropHit } from './drop';
+import { FURNITURE_DROP_EVENT, furnitureDropDetail } from './dropEvent';
 import { Floors } from './Floors';
 import { Foundations } from './Foundations';
+import { FurnitureMeshes } from './FurnitureMeshes';
+import { shownGroundFn } from './ground';
 import { Labels } from './Labels';
 import { getMaterials, PALETTE } from './materials';
 import { Openings } from './Openings';
 import { Outdoor } from './Outdoor';
 import { Roofs } from './Roofs';
-import { isShown, matchesSelection, selectionOf } from './sceneUtils';
+import { sceneParts } from './sceneParts';
+import type { BuildingParts, OutdoorParts, SceneParts, SiteParts } from './sceneParts';
+import { isShown, pickTagsOf, selectionOf } from './sceneUtils';
+import { highlightMatches, isClick } from './selection3d';
+import type { FloorPickContext } from './selection3d';
 import { StructureMeshes } from './StructureMeshes';
 import { SunLight } from './SunLight';
 import { Terrain } from './Terrain';
 import { Trees } from './Trees';
 import { computeVisibility } from './visibility';
+import type { Visibility } from './visibility';
 import { Walls } from './Walls';
 
 export interface SceneProps {
@@ -56,6 +73,10 @@ export interface SceneProps {
   selection: Selection | null;
   onSelect: (sel: Selection | null) => void;
   onReady?: () => void;
+  /** A furniture library item dropped on the view (View3DProps.onDropFurniture). */
+  onDropFurniture?: (catalogId: string, planPoint: Vec2, hit: DropHit) => void;
+  /** Element that receives the furniture drop events (View3D's root); default: the canvas. */
+  dropRoot?: RefObject<HTMLElement | null>;
   /** Coarse pointer (phone/tablet): smaller shadow map, harder shadows. */
   coarse: boolean;
   /** An element over the canvas the labels keep clear of (View3D's navigation hint). */
@@ -63,8 +84,18 @@ export interface SceneProps {
 }
 
 const BACKGROUND = `#${PALETTE.background.toString(16).padStart(6, '0')}`;
-/** Pointer travel (CSS px) above which a press is a drag (orbit), not a click. */
-export const CLICK_TOLERANCE_PX = 5;
+
+/**
+ * The scene's group objects for `derived`, reusing the previous render's objects whose members are unchanged
+ * (state derived from the previous render: React re-renders at once with the stored value, no effect involved).
+ */
+function useSceneParts(derived: DerivedVariant): SceneParts {
+  const [state, setState] = useState(() => ({ derived, parts: sceneParts(derived) }));
+  if (state.derived === derived) return state.parts;
+  const next = { derived, parts: sceneParts(derived, state.parts) };
+  setState(next);
+  return next.parts;
+}
 
 export function Scene(props: SceneProps) {
   const { derived, site, terrain, mode, activeStoreyId, cutHeight, highlightNew } = props;
@@ -78,10 +109,11 @@ export function Scene(props: SceneProps) {
   }, []);
   const isPlaced = useCallback(() => placed.current, []);
 
-  const vis = useMemo(() => computeVisibility(derived, mode, activeStoreyId, cutHeight), [derived, mode, activeStoreyId, cutHeight]);
-  const centre: Vec2 = useMemo(
-    () => [(derived.bounds.min[0] + derived.bounds.max[0]) / 2, (derived.bounds.min[1] + derived.bounds.max[1]) / 2],
-    [derived.bounds],
+  const parts = useSceneParts(derived);
+  const vis = useMemo(() => computeVisibility(parts.levels, mode, activeStoreyId, cutHeight), [parts.levels, mode, activeStoreyId, cutHeight]);
+  const ground = useMemo(
+    () => shownGroundFn(terrain, site, parts.site.groundWorks, parts.site.blocks, props.showTerrain),
+    [terrain, site, parts.site, props.showTerrain],
   );
 
   // frameloop 'demand': draw again after every prop change
@@ -106,24 +138,11 @@ export function Scene(props: SceneProps) {
 
       <group ref={pickRoot} name="pickable">
         <group ref={building} name="building">
-          <group name="exterior">
-            <Walls walls={derived.walls} vis={vis} highlightNew={highlightNew} exterior />
-            <Openings walls={derived.walls} vis={vis} highlightNew={highlightNew} exterior />
-            {vis.showRoofs && <Roofs roofs={derived.roofs} highlightNew={highlightNew} />}
-            <Foundations foundations={derived.foundations} walls={derived.walls} blocks={derived.blocks} highlightNew={highlightNew} />
-          </group>
-          <group name="interior">
-            <Floors floors={derived.floors} rooms={derived.rooms} foundations={derived.foundations} vis={vis} highlightNew={highlightNew} />
-            <Walls walls={derived.walls} vis={vis} highlightNew={highlightNew} exterior={false} />
-            <Openings walls={derived.walls} vis={vis} highlightNew={highlightNew} exterior={false} />
-            <StructureMeshes structure={derived.structure} cutZ={vis.structureCutZ} highlightNew={highlightNew} />
-          </group>
+          <BuildingGroup parts={parts.building} vis={vis} highlightNew={highlightNew} />
         </group>
-        <group name="base">
-          {props.showTerrain && <Terrain terrain={terrain} site={site} derived={derived} />}
-          <Outdoor outdoor={derived.outdoor} centre={centre} highlightNew={highlightNew} />
-          {props.showTrees && <Trees trees={derived.site.trees} />}
-        </group>
+        <OutdoorGroup parts={parts.outdoor} highlightNew={highlightNew} />
+        <FurnitureMeshes furniture={parts.furniture.furniture} vis={vis} highlightNew={highlightNew} />
+        <SiteGroup parts={parts.site} site={site} terrain={terrain} showTerrain={props.showTerrain} showTrees={props.showTrees} />
       </group>
 
       {props.showLabels && (
@@ -140,13 +159,72 @@ export function Scene(props: SceneProps) {
       <SelectionOverlay
         selection={props.selection}
         root={pickRoot}
-        version={[derived, mode, activeStoreyId, cutHeight, props.showTrees, props.showTerrain]}
+        version={[parts.building, parts.outdoor, parts.furniture, parts.site, vis, props.showTrees, props.showTerrain]}
       />
       <Picking root={pickRoot} onSelect={props.onSelect} />
+      <DropTarget
+        root={props.dropRoot}
+        onDrop={props.onDropFurniture}
+        floors={parts.building.floors}
+        decks={parts.outdoor.outdoor.decks}
+        vis={vis}
+        ground={ground}
+      />
       <ReadySignal onReady={props.onReady} isPlaced={isPlaced} />
     </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Groups (memoised on their sceneParts objects)
+// ---------------------------------------------------------------------------
+
+const BuildingGroup = memo(function BuildingGroup({ parts, vis, highlightNew }: { parts: BuildingParts; vis: Visibility; highlightNew: boolean }) {
+  const { walls, roofs, floors, rooms, foundations, blocks, structure } = parts;
+  const pickContext: FloorPickContext = useMemo(
+    () => ({ openingIds: new Set(walls.flatMap((w) => w.openings.map((o) => o.id))), blockIds: new Set(blocks.map((b) => b.block.id)) }),
+    [walls, blocks],
+  );
+  return (
+    <>
+      <group name="exterior">
+        <Walls walls={walls} vis={vis} highlightNew={highlightNew} exterior />
+        <Openings walls={walls} vis={vis} highlightNew={highlightNew} exterior />
+        {vis.showRoofs && <Roofs roofs={roofs} highlightNew={highlightNew} />}
+        <Foundations foundations={foundations} walls={walls} blocks={blocks} highlightNew={highlightNew} />
+      </group>
+      <group name="interior">
+        <Floors floors={floors} rooms={rooms} foundations={foundations} vis={vis} highlightNew={highlightNew} pickContext={pickContext} />
+        <Walls walls={walls} vis={vis} highlightNew={highlightNew} exterior={false} />
+        <Openings walls={walls} vis={vis} highlightNew={highlightNew} exterior={false} />
+        <StructureMeshes structure={structure} cutZ={vis.structureCutZ} highlightNew={highlightNew} />
+      </group>
+    </>
+  );
+});
+
+const OutdoorGroup = memo(function OutdoorGroup({ parts, highlightNew }: { parts: OutdoorParts; highlightNew: boolean }) {
+  const { bounds } = parts;
+  const centre: Vec2 = useMemo(() => [(bounds.min[0] + bounds.max[0]) / 2, (bounds.min[1] + bounds.max[1]) / 2], [bounds]);
+  return <Outdoor outdoor={parts.outdoor} centre={centre} highlightNew={highlightNew} />;
+});
+
+interface SiteGroupProps {
+  parts: SiteParts;
+  site: Site;
+  terrain: TerrainAsset | null;
+  showTerrain: boolean;
+  showTrees: boolean;
+}
+
+const SiteGroup = memo(function SiteGroup({ parts, site, terrain, showTerrain, showTrees }: SiteGroupProps) {
+  return (
+    <group name="site">
+      {showTerrain && <Terrain terrain={terrain} site={site} derived={parts} />}
+      {showTrees && <Trees trees={parts.site.trees} />}
+    </group>
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Camera presets
@@ -268,20 +346,20 @@ function Picking({ root, onSelect }: { root: RefObject<Group | null>; onSelect: 
     const raycaster = new Raycaster();
     const ndc = new Vector2();
     const active = new Set<number>();
-    let press: { id: number; x: number; y: number } | null = null;
+    let press: { id: number; x: number; y: number; type: string } | null = null;
 
     const down = (e: PointerEvent) => {
       active.add(e.pointerId);
-      press = active.size === 1 && e.button === 0 ? { id: e.pointerId, x: e.clientX, y: e.clientY } : null;
+      press = active.size === 1 && e.button === 0 ? { id: e.pointerId, x: e.clientX, y: e.clientY, type: e.pointerType } : null;
     };
     const move = (e: PointerEvent) => {
-      if (press && press.id === e.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > CLICK_TOLERANCE_PX) press = null;
+      if (press && press.id === e.pointerId && !isClick(press, { x: e.clientX, y: e.clientY }, press.type)) press = null;
     };
     const up = (e: PointerEvent) => {
       active.delete(e.pointerId);
       const p = press;
       press = null;
-      if (!p || p.id !== e.pointerId || Math.hypot(e.clientX - p.x, e.clientY - p.y) > CLICK_TOLERANCE_PX) return;
+      if (!p || p.id !== e.pointerId || !isClick(p, { x: e.clientX, y: e.clientY }, p.type)) return;
       const r = root.current;
       if (!r) return;
       const rect = el.getBoundingClientRect();
@@ -314,7 +392,13 @@ function Picking({ root, onSelect }: { root: RefObject<Group | null>; onSelect: 
 
 const noRaycast = () => {};
 
-/** Translucent overlay sharing the geometry of every visible mesh tagged with the selected element. */
+/** Crease angle (degrees) above which an edge of a selected mesh is outlined. */
+const OUTLINE_CREASE_DEG = 25;
+
+/**
+ * Highlight of the selection: for every shown mesh whose pick tags match it (selection3d.highlightMatches), a
+ * translucent overlay sharing its geometry and an outline of its crease edges drawn through everything.
+ */
 function SelectionOverlay({ selection, root, version }: { selection: Selection | null; root: RefObject<Group | null>; version: unknown[] }) {
   const group = useRef<Group>(null);
   const invalidate = useThree((s) => s.invalidate);
@@ -323,29 +407,86 @@ function SelectionOverlay({ selection, root, version }: { selection: Selection |
     const r = root.current;
     if (!g || !r) return;
     g.clear();
+    const owned: BufferGeometry[] = [];
     if (selection) {
-      const material = getMaterials().selection;
+      const m = getMaterials();
       r.updateWorldMatrix(true, true);
       r.traverse((o: Object3D) => {
         const mesh = o as Mesh;
         if (!mesh.isMesh || !isShown(mesh)) return;
-        const sel = selectionOf(mesh);
-        if (!sel || !matchesSelection(sel, selection)) return;
-        const overlay = new Mesh(mesh.geometry, material);
-        overlay.matrixAutoUpdate = false;
-        overlay.matrix.copy(mesh.matrixWorld);
-        overlay.renderOrder = 10;
-        overlay.raycast = noRaycast;
-        g.add(overlay);
+        if (!highlightMatches(pickTagsOf(mesh), selection)) return;
+        const fill = new Mesh(mesh.geometry, m.selection);
+        const edges = new EdgesGeometry(mesh.geometry, OUTLINE_CREASE_DEG);
+        owned.push(edges);
+        const line = new LineSegments(edges, m.selectionLine);
+        const layers: [Object3D, number][] = [
+          [fill, 10],
+          [line, 11],
+        ];
+        for (const [obj, order] of layers) {
+          obj.matrixAutoUpdate = false;
+          obj.matrix.copy(mesh.matrixWorld);
+          obj.renderOrder = order;
+          obj.raycast = noRaycast;
+          g.add(obj);
+        }
       });
     }
     invalidate();
     return () => {
       g.clear();
+      for (const e of owned) e.dispose();
     };
     // `version` lists everything that rebuilds meshes
   }, [selection, root, invalidate, ...version]); // eslint-disable-line react-hooks/exhaustive-deps
   return <group ref={group} name="selection" />;
+}
+
+// ---------------------------------------------------------------------------
+// Furniture drop target
+// ---------------------------------------------------------------------------
+
+interface DropTargetProps {
+  root?: RefObject<HTMLElement | null>;
+  onDrop?: (catalogId: string, planPoint: Vec2, hit: DropHit) => void;
+  floors: DerivedVariant['floors'];
+  decks: DerivedVariant['outdoor']['decks'];
+  vis: Visibility;
+  ground: ((x: number, y: number) => number) | null;
+}
+
+/**
+ * Accepts FURNITURE_DROP_EVENT (dropEvent.ts) on `root` (else the canvas): the camera ray through the drop point is
+ * intersected with the visible floors, the decks and the shown ground (drop.ts); on a hit the event is accepted
+ * (preventDefault) and `onDrop(catalogId, planPoint, hit)` called. Without `onDrop` nothing is accepted.
+ */
+function DropTarget({ root, onDrop, floors, decks, vis, ground }: DropTargetProps) {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const latest = useRef({ onDrop, floors, decks, vis, ground });
+  useLayoutEffect(() => {
+    latest.current = { onDrop, floors, decks, vis, ground };
+  }, [onDrop, floors, decks, vis, ground]);
+
+  useEffect(() => {
+    const el = root?.current ?? gl.domElement;
+    const handle = (e: Event) => {
+      const cur = latest.current;
+      const detail = furnitureDropDetail(e);
+      if (!cur.onDrop || !detail) return;
+      const ndc = ndcOf(detail.clientX, detail.clientY, gl.domElement.getBoundingClientRect());
+      if (!ndc) return;
+      camera.updateMatrixWorld();
+      const ray = planRayFromNdc(camera, ndc.x, ndc.y);
+      const hit = dropHit(ray, dropSurfaces(cur.floors, cur.decks, cur.vis), cur.ground);
+      if (!hit) return;
+      e.preventDefault();
+      cur.onDrop(detail.catalogId, hit.point, hit);
+    };
+    el.addEventListener(FURNITURE_DROP_EVENT, handle);
+    return () => el.removeEventListener(FURNITURE_DROP_EVENT, handle);
+  }, [gl, camera, root]);
+  return null;
 }
 
 // ---------------------------------------------------------------------------

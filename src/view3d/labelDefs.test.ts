@@ -226,9 +226,11 @@ describe('wallIsDrawn', () => {
     const drawn = FIXTURE_DERIVED.walls.filter((w) => wallIsDrawn(w, ute)).map((w) => w.id);
     expect(drawn).not.toContain('w-div');
     expect(drawn.length).toBe(5);
-    const hiddenLoft = computeVisibility({ ...FIXTURE_DERIVED, walls: [{ ...FIXTURE_DERIVED.walls[4], levelId: 'loft', levelIds: ['loft'] }] }, 'inne', 'ground', 1.6);
+    const hiddenLoft = computeVisibility(FIXTURE_DERIVED, 'inne', 'ground', 1.6);
     expect(wallIsDrawn({ ...FIXTURE_DERIVED.walls[4], levelId: 'loft', levelIds: ['loft'] }, hiddenLoft)).toBe(false);
     expect(wallIsDrawn({ ...FIXTURE_DERIVED.walls[0], status: 'removed' }, ute)).toBe(false);
+    // a ghost is never drawn, whatever its status says
+    expect(wallIsDrawn({ ...FIXTURE_DERIVED.walls[0], isGhost: true }, ute)).toBe(false);
   });
 });
 

@@ -2,14 +2,15 @@
  * Birches built exactly like the old model's trees: a white tapering trunk (r 0.07 → 0.13, 6 sides) and seven
  * thin dark branches whose length, height and direction follow the old formulas (a = k·2.3 + x). Placed at the
  * tree position on the terrain (`baseZ` from the derived site). Geometries are shared by all trees (trunks are a
- * unit-height cylinder scaled to the tree height) and live for the page. Selectable as { kind: 'tree', id }.
+ * unit-height cylinder scaled to the tree height) and live for the page. Pickable as { kind: 'tree', id }.
  */
 import { memo } from 'react';
 import { CylinderGeometry } from 'three';
 import type { DerivedVariant } from '../model/derived';
 import { toWorldTuple } from './coords';
 import { getMaterials } from './materials';
-import { selectable } from './sceneUtils';
+import { pickable } from './sceneUtils';
+import { treePick } from './selection3d';
 
 const BRANCHES = 7;
 
@@ -48,7 +49,7 @@ const Birch = memo(function Birch({ id, x, y, z, h }: { id: string; x: number; y
   const g = geometries();
   const m = getMaterials();
   return (
-    <group position={toWorldTuple(x, y, Number.isFinite(z) ? z : 0)} userData={selectable({ kind: 'tree', id })}>
+    <group position={toWorldTuple(x, y, Number.isFinite(z) ? z : 0)} userData={pickable(treePick(id))}>
       <mesh geometry={g.trunk} material={m.trunk} position={[0, h / 2, 0]} scale={[1, h, 1]} castShadow />
       {g.branches.map((geo, k) => {
         const bl = branchLength(k);

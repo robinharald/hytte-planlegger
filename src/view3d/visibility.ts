@@ -7,8 +7,12 @@
  *    wall that spans several storeys is cut relative to the storey being looked at. Floors, rooms and
  *    structure follow the same level set; structure above the cut plane is clipped. Flat ceilings
  *    (DerivedFloor kind 'ceiling') are hidden: the interior mode looks down into the cut rooms.
+ *  - Ghosts (walls and openings with status 'removed', docs/phase2-plan.md §1.2) are never drawn in 3D.
+ *
+ * Only `levels` and `storeys` of the derived model are read, so the scene memoises the visibility on those (they keep
+ * their identity across furniture and outdoor edits).
  */
-import type { DerivedFloor, DerivedVariant, DerivedWall } from '../model/derived';
+import type { DerivedFloor, DerivedOpening, DerivedVariant, DerivedWall } from '../model/derived';
 import type { Id } from '../model/types';
 
 export interface Visibility {
@@ -24,7 +28,10 @@ export interface Visibility {
   structureCutZ: number | null;
 }
 
-export function storeyRank(derived: DerivedVariant): Map<Id, number> {
+/** The parts of the derived model the visibility depends on. */
+export type VisibilityInput = Pick<DerivedVariant, 'levels' | 'storeys'>;
+
+export function storeyRank(derived: VisibilityInput): Map<Id, number> {
   const minZ = new Map<Id, number>();
   for (const s of derived.storeys) {
     const zs = s.levelIds.map((id) => derived.levels.find((l) => l.id === id)?.elevation ?? 0);
@@ -34,7 +41,7 @@ export function storeyRank(derived: DerivedVariant): Map<Id, number> {
   return new Map(sorted.map(([id], i) => [id, i]));
 }
 
-export function computeVisibility(derived: DerivedVariant, mode: 'ute' | 'inne', activeStoreyId: Id, cutHeight: number): Visibility {
+export function computeVisibility(derived: VisibilityInput, mode: 'ute' | 'inne', activeStoreyId: Id, cutHeight: number): Visibility {
   const levelsById = new Map(derived.levels.map((l) => [l.id, l]));
   const all = new Set(derived.levels.map((l) => l.id));
   if (mode === 'ute') {
@@ -78,9 +85,14 @@ export function computeVisibility(derived: DerivedVariant, mode: 'ute' | 'inne',
   };
 }
 
-/** Walls that get a mesh: not dividers, not removed, with a footprint, on a visible level. */
+/** Walls that get a mesh: not dividers, not ghosts (removed), with a footprint, on a visible level. */
 export function wallIsDrawn(w: DerivedWall, vis: Visibility): boolean {
-  return !w.isDivider && w.status !== 'removed' && w.footprint.length >= 3 && vis.isWallVisible(w);
+  return !w.isDivider && !w.isGhost && w.status !== 'removed' && w.footprint.length >= 3 && vis.isWallVisible(w);
+}
+
+/** Openings that get a mesh (in a drawn wall): not ghosts (removed), not frameless (the wall leaves those open). */
+export function openingIsDrawn(o: Pick<DerivedOpening, 'isGhost' | 'status' | 'type'>): boolean {
+  return !o.isGhost && o.status !== 'removed' && o.type !== 'opening';
 }
 
 /** Floors that get a mesh: a real polygon on a visible level; flat ceilings only in the exterior mode. */

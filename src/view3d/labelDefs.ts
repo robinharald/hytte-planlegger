@@ -170,12 +170,14 @@ export function roofProbes(b: DerivedBlock, roof: DerivedRoof | undefined): Vec3
 
 /**
  * Which block each pickable 3D object belongs to, keyed `${selection.kind}:${selection.id}`: the exterior wall
- * pieces of a block and the openings in them (roofs and foundations carry the block itself as their selection).
+ * pieces of a block (picked as their block edge, selection3d.wallPick; the piece id is kept for older tags) and the
+ * openings in them (roofs and foundations carry the block itself as their selection).
  */
-export function blockOwners(derived: DerivedVariant): Map<string, Id> {
+export function blockOwners(derived: Pick<DerivedVariant, 'walls'>): Map<string, Id> {
   const out = new Map<string, Id>();
   for (const w of derived.walls) {
     if (w.source.kind !== 'blockEdge') continue;
+    out.set(`blockEdge:${w.source.edgeId}`, w.source.blockId);
     out.set(`wall:${w.id}`, w.source.blockId);
     for (const o of w.openings) out.set(`opening:${o.id}`, w.source.blockId);
   }

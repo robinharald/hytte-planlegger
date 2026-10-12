@@ -16,7 +16,8 @@
  * labelOrder(): the room the camera stands in first (never hidden, see labelDefs.placeTag), then by importance
  * (area, weighted by distance; strongly for blocks); a tag that would overlap an already placed one is hidden —
  * block tags first try nudged positions (labelDefs.tagCandidates). The rectangle of `reserve` (the navigation
- * hint) counts as placed, so no tag covers it or hides under it (tag sizes are measured once per density).
+ * hint) counts as placed, so no tag covers it or hides under it (tag sizes are measured once per density). The tags
+ * are recreated only when the label content changes (compared by value), not on every new derived model.
  */
 import { useFrame, useThree } from '@react-three/fiber';
 import { memo, useLayoutEffect, useMemo, useRef } from 'react';
@@ -124,11 +125,15 @@ export interface LabelsProps {
 }
 
 export const Labels = memo(function Labels({ derived, mode, activeStoreyId, cutHeight, highlightNew, occluder, reserve }: LabelsProps) {
-  const defs = useMemo(
+  const computed = useMemo(
     () => (mode === 'inne' ? roomLabels(derived, activeStoreyId, cutHeight) : blockLabels(derived)),
     [derived, mode, activeStoreyId, cutHeight],
   );
-  const owners = useMemo(() => blockOwners(derived), [derived]);
+  // The tags are rebuilt only when their content changes, so an edit elsewhere (furniture, a deck) keeps them.
+  const defsKey = useMemo(() => JSON.stringify(computed), [computed]);
+  const defs = useMemo(() => computed, [defsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const walls = derived.walls;
+  const owners = useMemo(() => blockOwners({ walls }), [walls]);
   /** The reserved rectangle in layer coordinates, measured once per layer size (none while it has no size). */
   const reserved = useRef<{ width: number; height: number; rects: ScreenRect[] } | null>(null);
   const gl = useThree((s) => s.gl);

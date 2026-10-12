@@ -436,7 +436,7 @@ describe('floors, decks, railings, steps', () => {
 
   it('keeps skirt bottoms on their vertices for clockwise decks', () => {
     const deck = FIXTURE_DERIVED.outdoor.decks[0];
-    const cw = { ...deck, polygon: [...deck.polygon].reverse(), skirtBottomZ: [...deck.skirtBottomZ].reverse() };
+    const cw = { polygon: [...deck.pieces[0][0]].reverse(), skirtBottomZ: [...deck.skirtBottomZ[0]].reverse() };
     const d = createMeshData(1);
     expect(appendDeckSkirt(d, cw.polygon, -0.15, cw.skirtBottomZ, 0)).toBe(4);
     let zAtSW = Infinity;
@@ -449,7 +449,17 @@ describe('floors, decks, railings, steps', () => {
   it('skips skirt quads where the terrain is at the deck underside', () => {
     const d = createMeshData(1);
     expect(appendDeckSkirt(d, [[0, 0], [1, 0], [1, 1]], -0.15, [-0.15, -0.1, 0], 0)).toBe(0);
-    expect(isEmpty(buildDeck({ ...FIXTURE_DERIVED.outdoor.decks[0], polygon: [[0, 0], [1, 0]] }))).toBe(true);
+    expect(isEmpty(buildDeck({ ...FIXTURE_DERIVED.outdoor.decks[0], pieces: [[[[0, 0], [1, 0]]]] }))).toBe(true);
+    expect(isEmpty(buildDeck({ ...FIXTURE_DERIVED.outdoor.decks[0], pieces: [] }))).toBe(true);
+  });
+
+  it('builds a deck from its pieces: no boards over a hole (a unit standing on the deck)', () => {
+    const deck = FIXTURE_DERIVED.outdoor.decks[0];
+    const hole: Vec2[] = [[1, -2], [1, -1], [2, -1], [2, -2]];
+    const d = buildDeck({ ...deck, pieces: [[deck.pieces[0][0], hole]] });
+    const top = triangleCentroids(d, DECK_MAT.top);
+    expect(top.length).toBeGreaterThan(2);
+    expect(top.some((c) => c[0] > 1 && c[0] < 2 && c[1] > -2 && c[1] < -1)).toBe(false);
   });
 
   it('rotates deck boards along y by swapping the top UVs', () => {
@@ -478,7 +488,7 @@ describe('floors, decks, railings, steps', () => {
   });
 
   it('builds steps as solid blocks', () => {
-    const s = FIXTURE_DERIVED.outdoor.railings[0].steps[0];
+    const s = FIXTURE_DERIVED.outdoor.steps[0];
     const d = buildSteps(s);
     expect(triangleCount(d)).toBe(3 * 10);
     expect(meshBounds(d).min[2]).toBeCloseTo(-0.75, 9);
