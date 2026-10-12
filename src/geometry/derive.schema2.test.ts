@@ -90,6 +90,34 @@ describe('deriveVariant: stages memoised on the sub-collections', () => {
     expect(b.areas.bya.total).toBeCloseTo(a.areas.bya.total, 9);
   });
 
+  it('an opening-only edit keeps the building stage: only the walls holding openings, the floors and the warnings change', () => {
+    const a = deriveVariant(base, seed.site, terrain);
+    const moved = produce(base, (v) => {
+      v.openings.find((o) => o.id === 'door-mellom-vf')!.offset += 0.3;
+    });
+    const b = deriveVariant(moved, seed.site, terrain);
+    for (const key of ['rooms', 'roofs', 'blocks', 'wallUnion', 'structure', 'dimensions', 'foundations', 'outdoor', 'groundWorks'] as const) {
+      expect(b[key], key).toBe(a[key]);
+    }
+    expect(b.areas.bra).toBe(a.areas.bra);
+    expect(b.areas.bya).toBe(a.areas.bya);
+    expect(b.walls).not.toBe(a.walls);
+    // Walls without openings are the same objects; the door's host is a new one with the door at its new place.
+    const host = b.walls.find((w) => w.openings.some((o) => o.id === 'door-mellom-vf'))!;
+    expect(a.walls.find((w) => w.id === host.id)).not.toBe(host);
+    const bare = b.walls.filter((w) => w.openings.length === 0 && w.patches.length === 0);
+    expect(bare.length).toBeGreaterThan(10);
+    for (const w of bare) expect(a.walls.find((x) => x.id === w.id), w.id).toBe(w);
+    // The same model as a derive from scratch (fresh object identities, nothing memoised).
+    const fresh = deriveVariant(JSON.parse(JSON.stringify(moved)) as Variant, seed.site, terrain);
+    expect(b.walls).toEqual(fresh.walls);
+    expect(b.floors).toEqual(fresh.floors);
+    expect(b.warnings).toEqual(fresh.warnings);
+    expect(b.areas).toEqual(fresh.areas);
+    // The memoised pieces were not written to: the base derive still has the door at its old place.
+    expect(deriveVariant(JSON.parse(JSON.stringify(base)) as Variant, seed.site, terrain).walls).toEqual(a.walls);
+  });
+
   it('a block edit recomputes the building (and everything after it)', () => {
     const a = deriveVariant(base, seed.site, terrain);
     const wider = produce(base, (v) => {
@@ -102,7 +130,7 @@ describe('deriveVariant: stages memoised on the sub-collections', () => {
     expect(b.areas.bya.buildings).toBeGreaterThan(a.areas.bya.buildings);
   });
 
-  it('is fast: a block-edge change ≤ 60 ms, a furniture-only change ≤ 5 ms (best of several runs; × 1.5 locally, × 3 on CI)', () => {
+  it('is fast: a block-edge change ≤ 60 ms, an opening-only change ≤ 8 ms, a furniture-only change ≤ 5 ms (best of several runs; × 1.5 locally, × 3 on CI)', () => {
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
     // The full suite runs the test files in parallel workers, which slows a single derive down: some slack locally too.
     const slack = env.CI ? 3 : 1.5;
@@ -128,8 +156,15 @@ describe('deriveVariant: stages memoised on the sub-collections', () => {
         v.furniture.push(item(`f-${k}`, [18.5, 4.5 + 0.01 * k]));
       }),
     );
+    const openingOnly = best(10, (k) =>
+      produce(base, (v) => {
+        v.openings.find((o) => o.id === 'door-mellom-vf')!.offset += 0.01 * (k + 1);
+      }),
+    );
     expect(blockEdge).toBeLessThanOrEqual(60 * slack);
     expect(furnitureOnly).toBeLessThanOrEqual(5 * slack);
+    // An opening drag frame (fix round 2 after 2a): the building stage is reused, only the opening stage runs.
+    expect(openingOnly).toBeLessThanOrEqual(8 * slack);
   });
 });
 

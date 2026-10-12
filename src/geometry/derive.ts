@@ -2,13 +2,18 @@
  * deriveVariant — docs/architecture.md "Derivation pipeline", steps 1–9. Pure: the stored Variant + Site + terrain
  * asset in, the DerivedVariant every renderer reads out. Memoised on the (variant, site, terrain) object identities,
  * and assembled from three stages memoised on the sub-collections they read (docs/phase2-plan.md §2, "memo split"):
- *  - building (site, terrain, levels, blocks, walls, openings, rooms, structure, ghosts): steps 1–5, 7, 8 without BYA
- *    and trees (BRA reads the edge ghosts: the strip where a moved old wall stood counts as new, see areas.ts);
+ *  - building (site, terrain, levels, blocks, walls, rooms, structure, ghosts): steps 1–5, 7, 8 without BYA and trees,
+ *    and without the openings: the wall pieces (`deriveWallPieces`), rooms, floors without the door thresholds (BRA
+ *    reads the edge ghosts: the strip where a moved old wall stood counts as new, see areas.ts);
+ *  - openings (building, openings): the openings attached to copies of the pieces that hold them
+ *    (`attachWallOpenings`), the door thresholds (and the stairwell floors again only when a threshold lies under a
+ *    stair), the opening warnings — an opening drag re-derives only this (well under 1 ms on the seed);
  *  - trees (building, `treesOf(project, variant)` = the variant's own trees, else the site's): placed on the terrain;
  *  - outdoor (building, outdoor.decks, outdoor.hotTubs): step 6 (decks trimmed by the building), BYA, bounds;
  *  - furniture (building, furniture): step 9.
  * The assembled DerivedVariant reuses the stage results, so an edit of the furniture or of the outdoor collections
- * keeps the building's arrays (walls, rooms, floors …) as the same instances. `locked` and `ghosts` come straight
+ * keeps the building's arrays (walls, rooms, floors …) as the same instances, and an opening edit keeps everything but
+ * `walls` (the walls without openings stay the same objects), `floors` and `warnings`. `locked` and `ghosts` come straight
  * from the variant; ghost walls (status 'removed', `isGhost`) are left out of room detection and dangling checks.
  *
  *  1. Blocks (`deriveBlocks`), block warnings (`block-overlap`, `parts-overlap`).
@@ -77,7 +82,7 @@ import type {
   DerivedWall,
   ModelWarning,
 } from '../model/derived';
-import type { FloorMaterial, FurnitureItem, GroundWork, Id, Level, Project, Room, RoomType, Site, TerrainAsset, Tree, Variant, Vec2 } from '../model/types';
+import type { FloorMaterial, FurnitureItem, GroundWork, Id, Level, Opening, Project, Room, RoomType, Site, TerrainAsset, Tree, Variant, Vec2 } from '../model/types';
 import { blockPartRegions, computeBuildingAreas, computeBya, partitionRough, splitAreaByParts } from './areas';
 import type { PartRegion } from './areas';
 import { locateLevel } from './levels';
@@ -100,7 +105,8 @@ import { buildRoofsWithWarnings, combinedUndersideAt } from './roof';
 import { ROOM_FACE_FALLBACK, detectRooms } from './rooms';
 import type { DetectedRoom, WallLine } from './rooms';
 import { terrainZAt } from './terrain';
-import { blockGroundZ, deriveBlockWarnings, deriveBlocks, deriveWalls } from './walls';
+import { attachWallOpenings, blockGroundZ, deriveBlockWarnings, deriveBlocks, deriveWallPieces, noWallPieces } from './walls';
+import type { WallPieces } from './walls';
 
 /** Graph-only lines (floor-zone edges) carry ids with this prefix; they are not derived walls. */
 const ZONE_LINE = 'zone:';
@@ -526,15 +532,36 @@ function ceilingFloors(blocks: DerivedBlock[], levels: Map<Id, Level>): DerivedF
   return out;
 }
 
-/** Step 5: slabs, room floors, thresholds (stairwells cut out), stairwell floors, block ceilings. */
-function deriveFloors(variant: Variant, blocks: DerivedBlock[], walls: DerivedWall[], rooms: DerivedRoom[], levels: Map<Id, Level>): DerivedFloor[] {
+/** Step 5 without the door thresholds (the building stage): slabs and room floors, their stairwell floors, ceilings. */
+interface BaseFloors {
+  cuts: StairCut[];
+  /** Slabs, then room floors (stairwells cut out). */
+  floors: DerivedFloor[];
+  /** `stairwellFloors` over `floors` (valid as long as no threshold lies under a stair, see `withThresholds`). */
+  stairwells: DerivedFloor[];
+  ceilings: DerivedFloor[];
+}
+
+const NO_BASE_FLOORS: BaseFloors = { cuts: [], floors: [], stairwells: [], ceilings: [] };
+
+function deriveBaseFloors(variant: Variant, blocks: DerivedBlock[], rooms: DerivedRoom[], levels: Map<Id, Level>): BaseFloors {
   const cuts = stairCuts(variant, levels);
-  const floors = [
-    ...slabFloors(blocks, levels, cuts),
-    ...roomFloors(rooms, levels).flatMap((f) => cutFloor(f, cuts)),
-    ...thresholdFloors(walls, rooms, levels).flatMap((f) => cutFloor(f, cuts)),
-  ];
-  return [...floors, ...stairwellFloors(cuts, floors, levels), ...ceilingFloors(blocks, levels)];
+  const floors = [...slabFloors(blocks, levels, cuts), ...roomFloors(rooms, levels).flatMap((f) => cutFloor(f, cuts))];
+  return { cuts, floors, stairwells: stairwellFloors(cuts, floors, levels), ceilings: ceilingFloors(blocks, levels) };
+}
+
+/**
+ * Step 5 complete (the opening stage): slabs, room floors, thresholds (stairwells cut out), stairwell floors, block
+ * ceilings. The stairwell floors are recomputed only when a threshold lies at or below a stair's bottom under its
+ * footprint box (they cover what is below the stair); otherwise the base ones are exactly what that would give.
+ */
+function withThresholds(base: BaseFloors, walls: DerivedWall[], rooms: DerivedRoom[], levels: Map<Id, Level>): DerivedFloor[] {
+  const thresholds = thresholdFloors(walls, rooms, levels).flatMap((f) => cutFloor(f, base.cuts));
+  const underStair = thresholds.some((t) =>
+    base.cuts.some((c) => t.z <= c.bottomZ + Z_EPS && t.polygon.length >= 3 && boxesOverlap(bbox(c.footprint), bbox(t.polygon))),
+  );
+  const stairwells = underStair ? stairwellFloors(base.cuts, [...base.floors, ...thresholds], levels) : base.stairwells;
+  return [...base.floors, ...thresholds, ...stairwells, ...base.ceilings];
 }
 
 // ---------------------------------------------------------------------------
@@ -705,19 +732,22 @@ function withFallbacks<T>(fn: () => T): { result: T; fallbacks: string[] } {
 
 /**
  * Building stage: everything that depends only on `site`, the terrain and the variant's levels, blocks, walls,
- * openings, rooms, structure and edge ghosts — blocks, roofs, walls and openings, rooms, floors, structure,
- * foundations, dimensions, wall unions, ground works, BRA / axis / room areas and their warnings. (It reads no other
- * variant field, which is what makes the memo key correct; trees are placed per variant in computeVariant.)
+ * rooms, structure and edge ghosts — blocks, roofs, the wall pieces WITHOUT openings, rooms, floors without the door
+ * thresholds, structure, foundations, dimensions, wall unions, ground works, BRA / axis / room areas and their
+ * warnings. (It reads no other variant field — openings in particular are the opening stage's —, which is what makes
+ * the memo key correct; trees are placed per variant in computeVariant.)
  */
 interface BuildingStage {
   levels: Level[];
+  levelMap: Map<Id, Level>;
   storeys: DerivedVariant['storeys'];
   blocks: DerivedBlock[];
   roofs: DerivedVariant['roofs'];
-  walls: DerivedWall[];
+  /** Wall pieces without openings (`attachWallOpenings` in the opening stage). */
+  pieces: WallPieces;
   wallUnion: DerivedVariant['wallUnion'];
   rooms: DerivedRoom[];
-  floors: DerivedFloor[];
+  baseFloors: BaseFloors;
   structure: DerivedVariant['structure'];
   foundations: DerivedVariant['foundations'];
   dimensions: DerivedDimension[];
@@ -726,7 +756,9 @@ interface BuildingStage {
   buildingAreas: Omit<AreaSummary, 'bya'>;
   /** Terrain after the site's and the blocks' implicit ground works (relative to the main floor). */
   terrainZ: (x: number, y: number) => number;
-  warnings: ModelWarning[];
+  /** Block and roof warnings (listed before the opening warnings), room warnings (after them). */
+  warningsBefore: ModelWarning[];
+  warningsAfter: ModelWarning[];
   fallbacks: string[];
 }
 
@@ -742,10 +774,11 @@ function buildingStage(variant: Variant, site: Site, terrain: TerrainAsset | nul
 
     const { roofs, warnings: roofWarnings } = stage('roofs', () => buildRoofsWithWarnings(variant), () => ({ roofs: [], warnings: [] }));
     const undersideAt = (x: number, y: number) => combinedUndersideAt(roofs, x, y);
-    const { walls, warnings: wallWarnings } = stage('walls', () => deriveWalls(variant, blocks, roofs, { undersideAt }), () => ({ walls: [], warnings: [] }));
+    const pieces = stage('walls', () => deriveWallPieces(variant, blocks, roofs, { undersideAt }), () => noWallPieces(variant));
+    const walls = pieces.walls;
     const { rooms, warnings: roomWarnings } = stage('rooms', () => deriveRooms(variant, storeys, blocks, walls), () => ({ rooms: [], warnings: [] }));
     const structure = deriveStructure(variant, roofs, { undersideAt });
-    const floors = stage('floors', () => deriveFloors(variant, blocks, walls, rooms, levels), () => []);
+    const baseFloors = stage('floors', () => deriveBaseFloors(variant, blocks, rooms, levels), () => NO_BASE_FLOORS);
     const buildingAreas = stage('areas', () => computeBuildingAreas({ variant, blocks, rooms, undersideAt, roofs }), emptyBuildingAreas);
     const blockWarnings = stage('block checks', () => deriveBlockWarnings(blocks), () => []);
 
@@ -755,13 +788,14 @@ function buildingStage(variant: Variant, site: Site, terrain: TerrainAsset | nul
 
     const out: Omit<BuildingStage, 'fallbacks'> = {
       levels: variant.levels,
+      levelMap: levels,
       storeys,
       blocks,
       roofs,
-      walls,
+      pieces,
       wallUnion: wallUnions(walls, storeys),
       rooms,
-      floors,
+      baseFloors,
       structure,
       foundations: blocks
         .filter((db) => db.outer.length >= 3)
@@ -771,9 +805,37 @@ function buildingStage(variant: Variant, site: Site, terrain: TerrainAsset | nul
       groundWorks: [...site.groundWorks, ...implicit],
       buildingAreas,
       terrainZ,
-      warnings: [...blockWarnings, ...roofWarnings, ...wallWarnings, ...roomWarnings],
+      warningsBefore: [...blockWarnings, ...roofWarnings],
+      warningsAfter: roomWarnings,
     };
     return out;
+  });
+  return { ...result, fallbacks };
+}
+
+/**
+ * Opening stage (building, openings): the openings resolved onto the building's wall pieces (`attachWallOpenings`:
+ * the walls that hold an opening or a patch are copies, the others the pieces themselves), the floors with the door
+ * thresholds, and the opening warnings. Cheap, so an opening drag re-derives only this (the outdoor and furniture
+ * stages hang on the building stage, not on this one).
+ */
+interface OpeningStage {
+  walls: DerivedWall[];
+  floors: DerivedFloor[];
+  warnings: ModelWarning[];
+  fallbacks: string[];
+}
+
+function openingStage(openings: Opening[], building: BuildingStage): OpeningStage {
+  const { result, fallbacks } = withFallbacks(() => {
+    const { walls, warnings } = stage('walls', () => attachWallOpenings(building.pieces, openings), () => ({ walls: building.pieces.walls, warnings: [] }));
+    const base = building.baseFloors;
+    const floors = stage(
+      'floors',
+      () => withThresholds(base, walls, building.rooms, building.levelMap),
+      () => [...base.floors, ...base.stairwells, ...base.ceilings],
+    );
+    return { walls, floors, warnings };
   });
   return { ...result, fallbacks };
 }
@@ -889,6 +951,7 @@ const NO_TERRAIN = {};
 /** Key for a variant without edge ghosts (BRA reads them: the strip where a moved old wall stood is new). */
 const NO_GHOSTS = {};
 const buildingMemo = new IdentityMemo<BuildingStage>();
+const openingMemo = new IdentityMemo<OpeningStage>();
 const outdoorMemo = new IdentityMemo<OutdoorStage>();
 const furnitureMemo = new IdentityMemo<FurnitureStage>();
 const siteMemo = new IdentityMemo<DerivedVariant['site']>();
@@ -897,9 +960,10 @@ const variantMemo = new IdentityMemo<DerivedVariant>();
 function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | null): DerivedVariant {
   const terrainKey: object = terrain ?? NO_TERRAIN;
   const building = buildingMemo.get(
-    [site, terrainKey, variant.levels, variant.blocks, variant.walls, variant.openings, variant.rooms, variant.structure, variant.ghosts ?? NO_GHOSTS],
+    [site, terrainKey, variant.levels, variant.blocks, variant.walls, variant.rooms, variant.structure, variant.ghosts ?? NO_GHOSTS],
     () => buildingStage(variant, site, terrain),
   );
+  const opened = openingMemo.get([building, variant.openings], () => openingStage(variant.openings, building));
   const outdoor = outdoorMemo.get([building, variant.outdoor.decks, variant.outdoor.hotTubs], () => outdoorStage(variant, site, terrain, building));
   const furniture = furnitureMemo.get([building, variant.furniture], () => furnitureStage(variant.furniture, building));
   const trees = treesOf({ site }, variant);
@@ -909,11 +973,11 @@ function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | nu
   }));
 
   const areas: AreaSummary = { bya: outdoor.bya, ...building.buildingAreas };
-  const warnings: ModelWarning[] = [...building.warnings, ...outdoor.warnings, ...furniture.warnings];
+  const warnings: ModelWarning[] = [...building.warningsBefore, ...opened.warnings, ...building.warningsAfter, ...outdoor.warnings, ...furniture.warnings];
   const limit = variant.settings.areaLimit;
   if (limit !== null && areas.bya.total > limit) warnings.push({ kind: 'area-limit', limit, actual: areas.bya.total });
   const seen = new Set<string>();
-  for (const where of [...building.fallbacks, ...outdoor.fallbacks]) {
+  for (const where of [...building.fallbacks, ...opened.fallbacks, ...outdoor.fallbacks]) {
     if (seen.has(where)) continue;
     seen.add(where);
     warnings.push({ kind: 'generic', message: `${GEOMETRY_FALLBACK}: ${where} (polygon clipping failed)` });
@@ -925,10 +989,10 @@ function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | nu
     levels: building.levels,
     storeys: building.storeys,
     blocks: building.blocks,
-    walls: building.walls,
+    walls: opened.walls,
     wallUnion: building.wallUnion,
     rooms: building.rooms,
-    floors: building.floors,
+    floors: opened.floors,
     roofs: building.roofs,
     outdoor: outdoor.outdoor,
     structure: building.structure,

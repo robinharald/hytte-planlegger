@@ -3,6 +3,10 @@
  * (`deriveBlocks`) and 3 (`deriveWalls`), "Data model conventions" and "Derived ids". Pure functions: plan frame in
  * metres, z relative to the main floor.
  *
+ * Step 3 comes in two halves so derive can memoise them separately (fix round 2 after 2a): `deriveWallPieces` (the
+ * pieces and stored walls without openings, plus the host index) and `attachWallOpenings(pieces, openings)` (copies of
+ * the pieces that hold openings / patches, and the opening warnings); `deriveWalls` = both.
+ *
  * Both entry points take an optional last `opts` argument so the module can be used and tested on its own:
  * `opts.terrainZ` replaces `terrainZAt(terrain, site, x, y)` and `opts.undersideAt` replaces
  * `combinedUndersideAt(roofs, x, y)`.
@@ -1294,7 +1298,10 @@ interface Placement {
 
 type HostLookup = (o: Opening) => { length: number; resolve: () => Placement | 'removed-edge' | null } | null;
 
-function edgeHostLookup(hosts: Map<string, EdgeHost>): HostLookup {
+/** The wall an opening is attached to: a copy of a bare piece, made once per piece (see `attachWallOpenings`). */
+type OwnWall = (w: DerivedWall) => DerivedWall;
+
+function edgeHostLookup(hosts: Map<string, EdgeHost>, own: OwnWall): HostLookup {
   return (o) => {
     if (o.host.kind !== 'blockEdge') return null;
     const host = hosts.get(`${o.host.blockId}\u0000${o.host.edgeId}`);
@@ -1314,7 +1321,7 @@ function edgeHostLookup(hosts: Map<string, EdgeHost>): HostLookup {
         const probe = along(along(layout.geom.a, layout.geom.u, off), layout.nIn, SILL_PROBE);
         const zone = replaceZoneAt(db, probe);
         return {
-          wall: hit.wall,
+          wall: own(hit.wall),
           offset: off - hit.spec.s0,
           levelId: o.levelId ?? (zone ? zone.levelId : db.block.levelId),
           outward: scale(layout.nIn, -1),
@@ -1324,12 +1331,12 @@ function edgeHostLookup(hosts: Map<string, EdgeHost>): HostLookup {
   };
 }
 
-function wallHostLookup(walls: Map<Id, DerivedWall>): HostLookup {
+function wallHostLookup(walls: Map<Id, DerivedWall>, own: OwnWall): HostLookup {
   return (o) => {
     if (o.host.kind !== 'wall') return null;
     const w = walls.get(o.host.wallId);
     if (!w || w.isDivider) return null;
-    return { length: dist(w.a, w.b), resolve: () => ({ wall: w, offset: o.offset, levelId: o.levelId ?? w.levelId }) };
+    return { length: dist(w.a, w.b), resolve: () => ({ wall: own(w), offset: o.offset, levelId: o.levelId ?? w.levelId }) };
   };
 }
 
@@ -1391,11 +1398,11 @@ export function patchMinusOpenings(patch: Patch, openings: { offset: number; wid
   return rects.map((r) => ({ offset: (r.s0 + r.s1) / 2, width: r.s1 - r.s0, sillZ: r.z0, headZ: r.z1 }));
 }
 
-function attachOpenings(variant: Variant, lookups: HostLookup[], levels: Levels): ModelWarning[] {
+function attachOpenings(openings: readonly Opening[], lookups: HostLookup[], levels: Levels): ModelWarning[] {
   const warnings: ModelWarning[] = [];
   const spans = new Map<string, Span[]>();
   const patched = new Set<DerivedWall>();
-  for (const o of variant.openings) {
+  for (const o of openings) {
     const removed = o.status === 'removed';
     const host = lookups.map((f) => f(o)).find((h) => h !== null);
     if (!host) {
@@ -1437,19 +1444,36 @@ function attachOpenings(variant: Variant, lookups: HostLookup[], levels: Levels)
 }
 
 // ---------------------------------------------------------------------------
-// deriveWalls
+// deriveWalls = deriveWallPieces (no openings) + attachWallOpenings
 // ---------------------------------------------------------------------------
 
+/** What attaching openings needs from the pieces (opaque outside this module). */
+export interface OpeningHostIndex {
+  edges: Map<string, EdgeHost>;
+  stored: Map<Id, DerivedWall>;
+  levels: Levels;
+}
+
 /**
- * Step 3: exterior wall pieces of every block (junctions applied, split at part and zone boundaries) followed by
- * the stored walls, each with footprint, top profile, levels and resolved openings; plus the opening warnings.
+ * The wall pieces of a variant WITHOUT its openings (derive's building stage memoises them on the blocks, walls,
+ * levels and roofs only, so an opening edit reuses them): every wall has empty `openings` and `patches` arrays, which
+ * are never written — `attachWallOpenings` attaches to copies.
  */
-export function deriveWalls(
+export interface WallPieces {
+  walls: DerivedWall[];
+  hosts: OpeningHostIndex;
+}
+
+/**
+ * Step 3 without the openings: exterior wall pieces of every block (junctions applied, split at part and zone
+ * boundaries) followed by the stored walls, each with footprint, top profile and levels.
+ */
+export function deriveWallPieces(
   variant: Variant,
   blocks: DerivedBlock[],
   roofs: DerivedRoof[],
   opts: { undersideAt?: UndersideFn } = {},
-): { walls: DerivedWall[]; warnings: ModelWarning[] } {
+): WallPieces {
   const ctx: Ctx = {
     levels: levelIndex(variant),
     blocks,
@@ -1471,6 +1495,43 @@ export function deriveWalls(
   }
   const stored = variant.walls.map((w) => storedWall(w, ctx));
   walls.push(...stored);
-  const warnings = attachOpenings(variant, [edgeHostLookup(edgeHosts), wallHostLookup(new Map(stored.map((w) => [w.id, w])))], ctx.levels);
-  return { walls, warnings };
+  return { walls, hosts: { edges: edgeHosts, stored: new Map(stored.map((w) => [w.id, w])), levels: ctx.levels } };
+}
+
+/** No pieces (derive's fallback when the wall stage fails): openings attached to it all get `opening-outside-host`. */
+export function noWallPieces(variant: Variant): WallPieces {
+  return { walls: [], hosts: { edges: new Map(), stored: new Map(), levels: levelIndex(variant) } };
+}
+
+/**
+ * The openings resolved onto the pieces (see the header), with the opening warnings. A wall that gets an opening or a
+ * patch is a fresh copy of its piece; the others are the pieces themselves (same objects). The pieces are never
+ * changed, so one `WallPieces` can take any number of opening lists (derive's opening stage).
+ */
+export function attachWallOpenings(pieces: WallPieces, openings: readonly Opening[]): { walls: DerivedWall[]; warnings: ModelWarning[] } {
+  const copies = new Map<DerivedWall, DerivedWall>();
+  const own: OwnWall = (w) => {
+    let c = copies.get(w);
+    if (!c) {
+      c = { ...w, openings: [], patches: [] };
+      copies.set(w, c);
+    }
+    return c;
+  };
+  const { edges, stored, levels } = pieces.hosts;
+  const warnings = attachOpenings(openings, [edgeHostLookup(edges, own), wallHostLookup(stored, own)], levels);
+  return { walls: pieces.walls.map((w) => copies.get(w) ?? w), warnings };
+}
+
+/**
+ * Step 3: exterior wall pieces of every block (junctions applied, split at part and zone boundaries) followed by
+ * the stored walls, each with footprint, top profile, levels and resolved openings; plus the opening warnings.
+ */
+export function deriveWalls(
+  variant: Variant,
+  blocks: DerivedBlock[],
+  roofs: DerivedRoof[],
+  opts: { undersideAt?: UndersideFn } = {},
+): { walls: DerivedWall[]; warnings: ModelWarning[] } {
+  return attachWallOpenings(deriveWallPieces(variant, blocks, roofs, opts), variant.openings);
 }
