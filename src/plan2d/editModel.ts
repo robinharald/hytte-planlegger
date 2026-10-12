@@ -48,8 +48,9 @@
  *    6 first chosen, so a 0,5 m nudge works at the starting zoom); pans and taps elsewhere keep 10 px. usePanZoom.ts
  *    applies it to every press the plan claims; usePlanEditing.ts still turns a claimed touch "tap" that moved more
  *    than that into the drag it was.
- *  - Opening end handles on touch appear from half a handle diameter of width (`openingEndHandlesShown`: they sit
- *    outside the jambs, so they never cover the door); walls and the mouse keep one diameter.
+ *  - Opening end handles on touch appear at any zoom (`openingEndHandlesShown`; fix round after 2b, before: from half
+ *    a handle diameter of width): they sit outside the jambs, so they never cover the door; walls and the mouse keep
+ *    one diameter.
  *  - Room labels on narrow rooms (`labelTap`): a tap whose DOM target is a wall, opening or ghost band but that lies
  *    inside a drawn room label selects the label's room, unless it is within LABEL_TAP_CORE_PX of the element's line
  *    (or on its drawn body). The core is 4,5 px, not 3: at the phone's starting zoom the ±4 px taps beside w-gang-n,
@@ -126,8 +127,12 @@ export const TOUCH_BAND_MIN_PX = 10;
 export const HANDLE_MIN_DIAMETERS = 3;
 /** End handles (just outside a wall's ends / an opening's jambs) are left out below this many diameters of length. */
 export const END_HANDLE_MIN_DIAMETERS = 1;
-/** … but an opening's end handles on touch already from half a diameter of width (28 px handles: from 14 px). */
-export const OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH = 0.5;
+/**
+ * … but an opening's end handles on touch at any width (fix round after 2b: they sit outside the jambs, so even two
+ * 28 px handles beside a 10 px door never cover it; before, from half a diameter, a door had none at the phone's
+ * starting zoom).
+ */
+export const OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH = 0;
 /**
  * A tap inside a drawn room label beats the wall / opening / ghost hit band under it, except within this distance
  * (screen px) of the element's line (`labelTap`), so walls stay tappable ±4 px from their line everywhere.
@@ -353,9 +358,10 @@ export function endHandlesShown(lengthM: number, screen?: HandleScreen): boolean
 }
 
 /**
- * Are the END handles of an opening `widthM` wide drawn at this screen? As `endHandlesShown`, but on touch from
- * OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH (half a diameter): the 28 px handles sit outside the jambs, so a 0,91 m door
- * gets them from about 15 px/m instead of 31 px/m. Without a screen: always.
+ * Are the END handles of an opening `widthM` wide drawn at this screen? As `endHandlesShown` with the mouse; on touch
+ * from OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH (0: at any zoom): the 28 px handles sit one radius outside the jambs
+ * (`endHandle`), so they never cover the opening, and door-mellom-vf has them at the phone's starting zoom (11,6 px/m).
+ * Without a screen: always.
  */
 export function openingEndHandlesShown(widthM: number, screen?: HandleScreen): boolean {
   if (!screen || !(screen.scale > 0)) return true;

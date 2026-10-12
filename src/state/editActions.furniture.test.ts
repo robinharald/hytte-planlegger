@@ -5,6 +5,8 @@
  * wall face (stored walls, block edges, thickness, drags, "Ta tilbake").
  */
 import { describe, expect, it } from 'vitest';
+import { backEdge } from '../geometry/furnitureDerive';
+import { distancePointSegment } from '../geometry/polygon';
 import type { DerivedVariant } from '../model/derived';
 import { createForslagD } from '../model/seed/forslagD';
 import type { Variant, Vec2 } from '../model/types';
@@ -130,19 +132,56 @@ describe('placing and editing', () => {
     expect(A.setFurnitureProps(store, 'fu-stue-2', { levelId: 'main' })).toBe(false);
   });
 
-  it('duplicate (0,3 m east and south, everything else equal, new) and delete (toast)', () => {
+  it('duplicate (Ctrl+D, Dupliser): beside the original on a free spot, everything else equal, new; one undo step; delete (toast)', () => {
     const store = proposal();
     A.setFurnitureProps(store, 'fu-stue-5', { colour: '#7b7d80' });
+    const before = steps(store);
     const copyId = A.duplicateFurniture(store, 'fu-stue-5') as string;
+    expect(steps(store)).toBe(before + 1);
     const src = item(store, 'fu-stue-5')!;
     const copy = item(store, copyId)!;
     expect(copyId).not.toBe('fu-stue-5');
     expect(copy).toMatchObject({ catalogId: 'lenestol', size: src.size, rotationDeg: src.rotationDeg, colour: '#7b7d80', levelId: 'main', isNew: true });
-    near(copy.position, [src.position[0] + 0.3, src.position[1] - 0.3]);
+    // Not the old fixed 0.3 m east + south (into the Stue's outer wall and the original): free, in the same room, beside it.
+    const d = D(store);
+    const derivedCopy = d.furniture.find((f) => f.id === copyId)!;
+    expect(derivedCopy.collisions).toEqual([]);
+    expect(derivedCopy.blocksDoors).toEqual([]);
+    expect(derivedCopy.roomId).toBe('room-stue');
+    expect(d.warnings.filter((w) => JSON.stringify(w).includes(copyId))).toEqual([]);
+    expect(d.warnings.filter((w) => w.kind === 'furniture-in-wall' || w.kind === 'furniture-overlap' || w.kind === 'door-blocked')).toEqual([]);
+    const gap = Math.hypot(copy.position[0] - src.position[0], copy.position[1] - src.position[1]);
+    expect(gap).toBeGreaterThanOrEqual(0.7 - 1e-9); // the armchair is 0.7 × 0.7: no overlap with the original …
+    expect(gap).toBeLessThanOrEqual(1.0); // … and right beside it
     expect(A.deleteFurniture(store, copyId)).toBe(true);
     expect(item(store, copyId)).toBeUndefined();
     expect(store.getState().toasts.map((t) => t.text)).toContain(EDIT_STRINGS.deleted);
     expect(A.deleteFurniture(store, copyId)).toBe(false);
+  });
+
+  it('duplicate: a back-to-wall item goes to the free wall spot nearest the original, against the wall; a full room never puts it in a wall', () => {
+    const store = proposal();
+    // Nattbord fu-sov-ny-2 (back to the east wall of Soverom (ny)): the copy stands with its back on a wall too.
+    const copyId = A.duplicateFurniture(store, 'fu-sov-ny-2') as string;
+    const d = D(store);
+    const copy = d.furniture.find((f) => f.id === copyId)!;
+    expect(copy.collisions).toEqual([]);
+    expect(copy.blocksDoors).toEqual([]);
+    expect(copy.roomId).toBe('room-sov-ny');
+    const src = item(store, 'fu-sov-ny-2')!;
+    expect(Math.hypot(copy.item.position[0] - src.position[0], copy.item.position[1] - src.position[1])).toBeLessThan(0.5);
+    const room = d.rooms.find((r) => r.id === 'room-sov-ny')!;
+    const [a, b] = backEdge(copy.item);
+    const onEdge = (p: Vec2) => room.polygon.some((q, i) => distancePointSegment(p, q, room.polygon[(i + 1) % room.polygon.length]) < 1e-6);
+    expect(onEdge(a) && onEdge(b)).toBe(true);
+    // The kitchen's tall cabinet has no free spot left: the copy overlaps other furniture but stands in no wall and
+    // not on the original.
+    const tall = A.duplicateFurniture(store, 'fu-kjokken-1') as string;
+    const d2 = D(store);
+    const tallCopy = d2.furniture.find((f) => f.id === tall)!;
+    expect(tallCopy.roomId).toBe('room-kjokken');
+    expect(d2.warnings.filter((w) => w.kind === 'furniture-in-wall' && w.furnitureId === tall)).toEqual([]);
+    expect(tallCopy.collisions).not.toContain('fu-kjokken-1');
   });
 });
 

@@ -52,7 +52,10 @@
  * duration (performance.now()), 16, 150) (`updateInterval`); a previewed position not yet applied keeps the frame
  * loop going until T has passed, so the plan catches up when the finger rests, and pointer-up always applies the last
  * position with a final `updateDrag` (unless it is the one applied last) before `endDrag`. The overlay draws the
- * preview's feedback with the base outline from `updateDrag` (its ghost: the element at pointer-down) under it.
+ * preview's feedback with two outlines: the base outline from `updateDrag` (its ghost: the element at pointer-down)
+ * and over it the dragged element at the snapped pointer (the preview's `target`; `previewFeedback`, fix round after
+ * 2b — before it, `target` was dropped and only the base outline was drawn, so the element moved only when an
+ * `updateDrag` landed).
  * Without `previewDrag` every frame calls `updateDrag`, as before.
  * Room labels on hit bands (tool Velg): a tap the DOM gives to a wall, opening or ghost but that lies inside a drawn
  * room label (LabelLayer.tsx `data-label-box`) selects that room unless it is within LABEL_TAP_CORE_PX of the
@@ -69,7 +72,8 @@ import { levelAt } from '../model/derived';
 import type { Id, Vec2 } from '../model/types';
 import { openingDefaults } from '../geometry/edit';
 import { isEditableTarget } from '../ui/keys';
-import { EMPTY_FEEDBACK, normalizeFeedback, normalizeSnap, resultId, sessionOrNull } from './editFeedback';
+import { EMPTY_FEEDBACK, normalizeFeedback, normalizePreview, normalizeSnap, resultId, sessionOrNull } from './editFeedback';
+import type { PlanDragFeedback } from './editFeedback';
 import {
   bodyDragTarget,
   cycleFurnitureRoom,
@@ -169,11 +173,18 @@ export function clockMs(): number {
 /** Rings equal point by point (the base outline is not drawn twice when a preview also sends it). */
 const sameRing = (a: readonly Vec2[], b: readonly Vec2[]) => a.length === b.length && a.every((p, i) => Math.abs(p[0] - b[i][0]) < 1e-9 && Math.abs(p[1] - b[i][1]) < 1e-9);
 
-/** The overlay's drag feedback: the preview's markers, guides and chips, its ghost over the base outline. */
-export function previewFeedback(preview: PlanFeedback, base: readonly Vec2[][]): PlanFeedback {
-  if (base.length === 0) return preview;
-  const extra = preview.ghost.filter((r) => !base.some((b) => sameRing(b, r)));
-  return { ...preview, ghost: [...base, ...extra] };
+/**
+ * The overlay's drag feedback: the preview's markers, guides and chips, and two outlines — the base outline (`base`:
+ * the first updateDrag's ghost; before it, the preview's own ghost, which is the same) and over it the dragged
+ * element's moving outline (the preview's `target`, `normalizePreview`), each ring once. The moving rings are also
+ * returned apart as `target`. A preview without `target` (an older API that sent the moving outline as its ghost):
+ * its ghost rings other than the base are the moving outline, as before.
+ */
+export function previewFeedback(preview: PlanFeedback & { target?: Vec2[][] }, base: readonly Vec2[][]): PlanDragFeedback {
+  const under = base.length > 0 ? base : preview.target !== undefined ? preview.ghost : [];
+  const moving = preview.target ?? preview.ghost;
+  const target = moving.filter((r) => !under.some((b) => sameRing(b, r)));
+  return { ...preview, ghost: [...under, ...target], target };
 }
 
 /** The pacing of one drag session (see "Adaptive drag" in the header). */
@@ -187,9 +198,9 @@ interface Pace {
   applied: string | null;
   /** The base outline (the first `updateDrag`'s ghost), null before it. */
   base: Vec2[][] | null;
-  /** The last `updateDrag` feedback, and the last preview (null: none, or the API sent no object). */
+  /** The last `updateDrag` feedback, and the last preview with its moving outline (null: none, or the API sent no object). */
   updated: PlanFeedback;
-  preview: PlanFeedback | null;
+  preview: PlanDragFeedback | null;
   /** `previewDrag` threw in this drag: the rest of it updates every frame, as without a preview. */
   noPreview: boolean;
 }
@@ -429,7 +440,8 @@ export function usePlanEditing(params: PlanEditingParams) {
     if (now) {
       const key = updateKey(now);
       frame.current.last = key;
-      pc.preview = raw !== null && typeof raw === 'object' ? normalizeFeedback(raw) : null;
+      // The moving outline is the preview's `target` (its `ghost` is the base outline): normalizePreview keeps it.
+      pc.preview = raw !== null && typeof raw === 'object' ? normalizePreview(raw) : null;
       pc.pending = key === pc.applied ? null : now;
     }
     const hadBase = pc.base !== null;

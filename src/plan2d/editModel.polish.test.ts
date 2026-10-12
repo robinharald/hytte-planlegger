@@ -55,9 +55,9 @@ describe('drag thresholds', () => {
   });
 });
 
-describe('opening end handles on touch: from half a handle diameter', () => {
+describe('opening end handles on touch: at any zoom', () => {
   it('door-mellom-vf (0,91 m) at 23 px/m on touch has its end handles (before: from 31 px/m)', () => {
-    expect(OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH).toBe(0.5);
+    expect(OPENING_END_HANDLE_MIN_DIAMETERS_TOUCH).toBe(0);
     const handles = handlesFor(d, DOOR, TOUCH(23));
     expect(handles.map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
     // They sit one handle radius outside the jambs and act on them.
@@ -70,11 +70,20 @@ describe('opening end handles on touch: from half a handle diameter', () => {
     expect(Math.hypot(handles[0].p[0] - jamb[0], handles[0].p[1] - jamb[1]) * 23).toBeCloseTo(HANDLE_RADIUS_COARSE_PX, 6);
   });
 
-  it('below half a diameter they stay away (the phone\'s starting zoom), and walls and the mouse keep one diameter', () => {
-    // 0,91 m × 11,56 px/m = 10,5 px < 14 px.
-    expect(handlesFor(d, DOOR, TOUCH(11.56))).toEqual([]);
+  it('at the phone\'s starting zoom too (fix round after 2b), outside the jambs; walls and the mouse keep one diameter', () => {
+    // 0,91 m × 11,56 px/m = 10,5 px: before, under half a diameter (14 px), no handles at all.
+    const handles = handlesFor(d, DOOR, TOUCH(11.56));
+    expect(handles.map((h) => h.key)).toEqual(['oe:start', 'oe:end']);
+    // Each sits one handle radius beyond its jamb, away from the door: neither covers the opening.
+    const { wall, opening } = findOpening(d, 'door-mellom-vf')!;
+    const l = Math.hypot(wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]);
+    const u: Vec2 = [(wall.b[0] - wall.a[0]) / l, (wall.b[1] - wall.a[1]) / l];
+    const along = (p: Vec2) => (p[0] - wall.a[0]) * u[0] + (p[1] - wall.a[1]) * u[1];
+    expect((opening.offset - opening.width / 2 - along(handles[0].p)) * 11.56).toBeCloseTo(HANDLE_RADIUS_COARSE_PX, 6);
+    expect((along(handles[1].p) - opening.offset - opening.width / 2) * 11.56).toBeCloseTo(HANDLE_RADIUS_COARSE_PX, 6);
     expect(openingEndHandlesShown(0.91, TOUCH(15.4))).toBe(true);
-    expect(openingEndHandlesShown(0.91, TOUCH(15.3))).toBe(false);
+    expect(openingEndHandlesShown(0.91, TOUCH(15.3))).toBe(true);
+    expect(openingEndHandlesShown(0.3, TOUCH(2))).toBe(true);
     // An explicit `coarse` wins over the radius.
     expect(openingEndHandlesShown(0.91, { scale: 23, handleR: HANDLE_RADIUS_COARSE_PX, coarse: false })).toBe(false);
     expect(openingEndHandlesShown(0.91, { scale: 9, handleR: HANDLE_RADIUS_PX, coarse: true })).toBe(true);

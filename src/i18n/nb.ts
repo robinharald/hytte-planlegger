@@ -1173,6 +1173,12 @@ export const nb = {
     tooSmall: 'Så langt går det ikke – da blir det for lite.',
     /** duplicateBlock: name of the copy. */
     copyName: (name: string) => `${name} (kopi)`,
+    /** A unit placed over furniture pushed it out of the unit: "«Utebord» er flyttet ut av «Vedskjul»." */
+    furniturePushedOut: (unit: string, items: readonly string[]) => {
+      const q = items.map((n) => `«${n}»`);
+      const list = q.length <= 1 ? (q[0] ?? '') : `${q.slice(0, -1).join(', ')} og ${q[q.length - 1]}`;
+      return `${list} er flyttet ut av «${unit}».`;
+    },
     /**
      * "Nytt bygg" templates (model/unitTemplates.ts): the new block's name and its one room's name (project data
      * once placed). The toolbar's chooser shows `nb.tools.units`, which uses the same block names.

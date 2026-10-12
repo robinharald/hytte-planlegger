@@ -9,7 +9,8 @@
  *  - chips: `{ a, b }` with `text`, or a number (`value` | `distance` | `length`, metres → "1,20 m"); an optional
  *    `at` places the chip (default: the middle of a–b); a chip with neither text nor number is dropped;
  *  - ghost: a ring `Vec2[]`, rings `Vec2[][]`, a MultiPolygon `Vec2[][][]`, `{ polygon }`, `{ polygons }`,
- *    `{ rings }`, `{ outline }` or a segment `{ a, b }`;
+ *    `{ rings }`, `{ outline }` or a segment `{ a, b }`; a drag preview's `target` (the dragged element's moving
+ *    outline) takes the same shapes (`normalizePreview`);
  *  - snap results: `{ point, indicators, chips }` (or `p` / `snapped` for the point), else a bare Vec2;
  *  - ids: a string, or `{ id }`.
  * Anything else is ignored; nothing here throws.
@@ -119,6 +120,24 @@ export function normalizeFeedback(raw: unknown): PlanFeedback {
   if (!isRec(raw)) return EMPTY_FEEDBACK;
   const { markers, guides } = readIndicators(raw.indicators);
   return { markers, guides, chips: readChips(raw.chips), ghost: readGhost(raw.ghost) };
+}
+
+/**
+ * Drag feedback with the dragged element's MOVING outline kept apart from the base ghost: `target` holds the rings of
+ * the element where the frame puts it (`previewDrag`'s `target`, state/editActions.ts `DragPreview`), `ghost` the base
+ * outline (the element at pointer-down). The overlay draws both (usePlanEditing.ts `previewFeedback` appends the
+ * target rings to `ghost`, after the base); `target` is kept so the overlay can style the moving outline apart.
+ */
+export interface PlanDragFeedback extends PlanFeedback {
+  target: Vec2[][];
+}
+
+/**
+ * A `previewDrag` answer `{ indicators, chips, ghost, target }` (fix round after 2b: `normalizeFeedback` alone dropped
+ * `target`, so the per-frame preview never drew the dragged element). Missing / unreadable `target`: none.
+ */
+export function normalizePreview(raw: unknown): PlanDragFeedback {
+  return { ...normalizeFeedback(raw), target: isRec(raw) ? readGhost(raw.target) : [] };
 }
 
 /** A snap result: the snapped point (else `fallback`) and its feedback. */

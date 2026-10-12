@@ -64,15 +64,23 @@
  * (w-103-korr dragged south: w-103-102 is extended, the collinear w-vf-korr stays; before, the end stayed pinned and
  * the wall tilted). A free node (no support) moves as a node: every coincident wall keeps its direction and ends on the
  * moved line; the moved wall ends at the outermost of those points, so with several coincident walls of different
- * directions the others meet it as T-junctions instead of the node falling apart (parallel coincident walls follow
- * the node; without non-parallel ones the node moves with the wall). A wall attached at both ends therefore cannot
- * slide along itself. Walls ending on the moved wall's interior (T-junctions, non-parallel) are trimmed / extended
+ * directions the others meet it as T-junctions instead of the node falling apart (without non-parallel ones the node
+ * moves with the wall). A wall attached at both ends therefore cannot slide along itself. Fix round after 2b — a moved
+ * wall never turns: a clamped end slides onto a non-parallel coincident wall that runs on towards the moved line (left
+ * as it is, a T-junction: w-wing-w east along w-sauna-n); when an end still stays clamped (its support ends short of
+ * the moved line and nothing carries it), the
+ * move is cut back to the largest part that every end can follow (`followableFraction`; exactly onto the support's
+ * end: w-peis-n 1 m south stops on y 2,2, w-vf-kjk 1 m east on x 9), and refused when an end cannot move at all
+ * (lw-split north); a parallel coincident wall (a continuation in line) is carried along sideways when its far end can
+ * follow (`carryParallel`: w-106-korr takes the loft piece lw-106-top along level), else it stays where a non-parallel
+ * wall carries the node and follows the node only when nothing else does. Walls ending on the moved wall's interior
+ * (T-junctions, non-parallel) are trimmed / extended
  * along their own direction. Openings on the moved wall keep their offset; openings on stretched walls keep their
  * plan position (re-offset, clamped to the wall when they fit). Endpoint drags: an anchored end slides along its
  * support to the projection of the pointer; a free end goes to the pointer and the coincident walls' ends go with it
  * (the plan's "keeping its direction" cannot reach the pointer, so the node simply moves); openings on the dragged
- * wall keep their plan position. Known gap: a wall continued in line by a wall of another storey (w-106-korr /
- * lw-106-top at the loft landing) leaves that continuation behind.
+ * wall keep their plan position. Endpoint drags snap to the ends of ghost walls too (geometry/snap.ts `ghostEnds`), so
+ * an end dragged out and back by hand lands on today's point and the wall heals.
  *
  * Block edits (§3.4, §3.5). Edges move along their outward normal. Gable / mono blocks keep their shape: a corner
  * drag moves both adjacent edges (each by the pointer's component along its normal); only flat-roof blocks get free
@@ -110,6 +118,9 @@
  * vertex ids, `templateFrontEdgeId` = the front edge), one room (anchor = centroid), the Vedskjul's full-height
  * frameless opening on the front (0.1 m posts at the corners), else a door on the deck-facing side (the front when it
  * faces the deck or nothing better does; a side whose outside probe 0.6 m out lies on a deck piece and in no block).
+ * Furniture whose centre the new unit covers is pushed out past its nearest side (`pushFurnitureOut`), and whole-block
+ * moves, turns and deletes take only the furniture standing in the block's own rooms (`furnitureOfBlock`): a Vedskjul
+ * placed over the terrace table and moved later leaves the table (fix round after 2b).
  *
  * Rooms (§3.5): `reconcileRooms(baseDerived, next, nextDerived, { carried })` — each Room stays with a face of its
  * storey that overlaps its previous inner polygon (unchanged faces are kept without clipping; a room a whole-block
@@ -426,17 +437,66 @@ export function parseEdgeGhostId(id: Id): { blockId: Id; edgeId: Id } | null {
   return m ? { blockId: m[1], edgeId: m[2] } : null;
 }
 
-/** Whether the range [s0, s1] of a block edge overlaps a shared segment where the edge has no wall of its own. */
-function sharedWithoutWall(list: readonly EdgeJunction[] | undefined, s0: number, s1: number): boolean {
+/**
+ * The parts of the range [s0, s1] of a block edge that lie on a shared segment where the edge has no wall of its own
+ * (merged, sorted; empty when none overlaps by more than SAME).
+ */
+function sharedWithoutWall(list: readonly EdgeJunction[] | undefined, s0: number, s1: number): [number, number][] {
   const lo = Math.min(s0, s1);
   const hi = Math.max(s0, s1);
-  return (list ?? []).some((j) => j.role !== 'own' && Math.min(hi, j.s1) - Math.max(lo, j.s0) > SAME);
+  const parts: [number, number][] = [];
+  for (const j of list ?? []) {
+    if (j.role === 'own') continue;
+    const p0 = Math.max(lo, j.s0);
+    const p1 = Math.min(hi, j.s1);
+    if (p1 - p0 > SAME) parts.push([p0, p1]);
+  }
+  return mergeRanges(parts);
+}
+
+/**
+ * Clip an edge ghost that lies on its live edge to the stretch [c0, c1] (along the edge) that a junction still keeps
+ * open (fix round after 2b): the rest of its line is today's wall again. Keeps the ghost's direction; its host wall
+ * (opening ghosts at the old place) shrinks with it, and the openings on the host outside the stretch go back onto the
+ * edge at their plan position (where they heal against live openings that are back too). Returns false when an equal
+ * ghost of the same edge already records that stretch (the caller drops this one).
+ */
+function clipEdgeGhost(draft: Variant, g: VariantGhost, block: Block, edgeIndex: number, c0: number, c1: number): boolean {
+  const { a, b } = blockEdgeGeom(block, edgeIndex);
+  const forward = along(a, b, g.a) <= along(a, b, g.b);
+  const p = copy(pointAlong(a, b, forward ? c0 : c1));
+  const q = copy(pointAlong(a, b, forward ? c1 : c0));
+  const ref = parseEdgeGhostId(g.id);
+  const twin = (draft.ghosts ?? []).find((x) => x !== g && parseEdgeGhostId(x.id)?.edgeId === ref?.edgeId && parseEdgeGhostId(x.id)?.blockId === ref?.blockId && samePoint(x.a, p) && samePoint(x.b, q));
+  if (twin) return false;
+  const host = draft.walls.find((w) => w.id === g.id && w.status === 'removed');
+  if (host) {
+    const ref2 = parseEdgeGhostId(g.id);
+    for (const o of draft.openings) {
+      if (o.host.kind !== 'wall' || o.host.wallId !== g.id) continue;
+      const centre = pointAlong(host.a, host.b, o.offset);
+      const s = along(a, b, centre);
+      if (s >= c0 - SAME && s <= c1 + SAME) o.offset = clean(along(p, q, centre));
+      else if (ref2) {
+        o.host = { kind: 'blockEdge', blockId: ref2.blockId, edgeId: ref2.edgeId };
+        o.offset = clean(s);
+      }
+    }
+    host.a = p;
+    host.b = q;
+    if (!draft.openings.some((o) => o.host.kind === 'wall' && o.host.wallId === g.id)) draft.walls.splice(draft.walls.indexOf(host), 1);
+  }
+  g.a = p;
+  g.b = q;
+  return true;
 }
 
 /**
  * Drop every ghost whose element is back on it (see the header): walls and openings get status 'existing' again,
  * a block edge ghost covered by its edge disappears — unless a junction without a wall ('open', or the partner's
- * wall) lies on that stretch: there today's wall is still gone (see addJunctionGhosts).
+ * wall) lies on that stretch: there today's wall is still gone (see addJunctionGhosts), and the ghost is clipped to
+ * that stretch (fix round after 2b: main south +0.3, glass east +0.5, then "Ta tilbake" on the main wall left its
+ * ghost [9, 0]–[12, 0] over the live wall from 9.5 to 12; now [9, 0]–[9.5, 0], as from the seed with glass +0.5).
  */
 export function healGhosts(draft: Variant): void {
   // Edge ghosts first: their host walls give their opening ghosts back to the edge, where they may heal below.
@@ -452,7 +512,16 @@ export function healGhosts(draft: Variant): void {
       const { a, b } = blockEdgeGeom(block, i);
       if (distancePointSegment(g.a, a, b) > SAME || distancePointSegment(g.b, a, b) > SAME) return true;
       junctions ??= resolveJunctions(draft);
-      if (sharedWithoutWall(junctions.get(block.id)?.[i], along(a, b, g.a), along(a, b, g.b))) return true;
+      const open = sharedWithoutWall(junctions.get(block.id)?.[i], along(a, b, g.a), along(a, b, g.b));
+      if (open.length > 0) {
+        // Still open there: keep the ghost on that stretch only (the first to the last open part).
+        const c0 = open[0][0];
+        const c1 = open[open.length - 1][1];
+        const s0 = Math.min(along(a, b, g.a), along(a, b, g.b));
+        const s1 = Math.max(along(a, b, g.a), along(a, b, g.b));
+        if (c0 <= s0 + SAME && c1 >= s1 - SAME) return true;
+        if (clipEdgeGhost(draft, g, block, i, c0, c1)) return true;
+      }
       healed.push(g.id);
       return false;
     });
@@ -1095,7 +1164,9 @@ function openingZ(v: Variant, o: Opening): [number, number] {
  *  - a return in several steps: when the ghost's place does not fit yet, an opening that was pressed against the end
  *    on its ghost's side stays pressed against that end as it moves out (as near its ghost as fits), so the next
  *    lengthening finds it pressed again and the last one puts it back (blk-bod's south edge −0.5, then +0.25 twice:
- *    door-green-e at 0.69 again). One the user moved off the end stays where it is;
+ *    door-green-e at 0.69 again). One the user moved off the end stays where it is. Another opening blocks such a
+ *    step only when the opening would overlap it more than it does now (fix round after 2b: the glass east edge −1
+ *    and back +0.2 / +0.8 left win-glass-s2, already over win-glass-s1, «Nytt» beside its ghost);
  *  - a stored wall back on today's line (existing again: an end moved out and back turned it there and back) takes
  *    back an opening within DRIFT_BACK of its ghost whose ghost place fits: keeping its plan position on the turned
  *    wall and back left it 1–12 cm off (d-104 on w-104-diag after w-103-korr's end a out and back).
@@ -1142,8 +1213,12 @@ function pullBackOpenings(draft: Variant, ctx: EditContext, changedHosts: Change
       if (target === null || Math.abs(target - o.offset) <= SAME) continue;
       const t = target;
       const zo = openingZ(draft, o);
+      // Blocked only by an opening it would overlap MORE there than where it is now (fix round after 2b): a clamped
+      // opening pressed against the end often already overlaps its neighbour (win-glass-s2 over win-glass-s1 after the
+      // glass east edge −1), and the step that moves it out towards its ghost lessens that overlap.
+      const overlapAt = (s: number, x: Opening) => Math.max(0, Math.min(s + half, x.offset + x.width / 2) - Math.max(s - half, x.offset - x.width / 2));
       const blocked = onHost.some((x) => {
-        if (x === o || Math.min(t + half, x.offset + x.width / 2) - Math.max(t - half, x.offset - x.width / 2) <= SAME) return false;
+        if (x === o || overlapAt(t, x) <= overlapAt(o.offset, x) + SAME) return false;
         const zx = openingZ(draft, x);
         return Math.min(zo[1], zx[1]) - Math.max(zo[0], zx[0]) > SAME;
       });
@@ -1214,7 +1289,7 @@ export function wallEndsFree(ctx: EditContext, wallId: Id): boolean {
  * the move must leave alone (no support, follower or T-junction): "Ta tilbake" moving a wall back keeps the walls the
  * forward step did not touch, even where the forward step left the wall's end on theirs.
  */
-export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delta: Vec2, opts: { keep?: ReadonlySet<Id> } = {}): boolean {
+export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delta: Vec2, opts: { keep?: ReadonlySet<Id>; clamped?: boolean } = {}): boolean {
   const w0 = ctx.base.walls.find((w) => w.id === wallId);
   if (!w0 || w0.status === 'removed' || len(delta) < TINY) return false;
   const storeys = wallStoreys(ctx, w0);
@@ -1238,7 +1313,19 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
     };
     const anchored = anchorOnLine(supports, o, dir);
     const clamped = anchored !== null && anchored.err > COINCIDE;
-    return { end, p, followers, through, onMoved, extended, anchored, clamped, carriers: [...followers, ...through].some(extended) };
+    // A clamped end may instead slide onto a non-parallel coincident wall that runs on towards the moved line, which
+    // then stays as it is (a T-junction; fix round after 2b: w-wing-w moved east slides along w-sauna-n, which it would
+    // otherwise have to shorten).
+    const slide = clamped
+      ? ([...followers, ...through]
+          .map((c) => {
+            const x = onMoved(c);
+            const other = c.end === 'a' ? c.wall.b : c.wall.a;
+            return x && dot(sub(x, p), sub(other, p)) > TINY && dist(x, p) <= dist(other, p) - MIN_WALL_LENGTH ? copy(x) : null;
+          })
+          .find((x) => x !== null) ?? null)
+      : null;
+    return { end, p, followers, through, onMoved, extended, anchored, clamped, slide, carriers: [...followers, ...through].some(extended) };
   });
   // A support that ends short of the moved line (clamped, e.g. the floor step and w-103-102 under w-103-korr's east end
   // when the wall moves south) would pin that end and turn the wall. When a non-parallel coincident wall can carry the
@@ -1247,10 +1334,19 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
   // the carried wall as a T-junction (polish round, phase 2b). Only when no end stays clamped (else the wall would turn
   // anyway) and never by shortening a wall (w-wing-w east: w-sauna-n would leave the wing's edge): as before then.
   const carry = plans.some((pl) => pl.clamped) && plans.every((pl) => !pl.clamped || pl.carriers);
-  for (const { end, p, followers, through, onMoved, extended, anchored, clamped } of plans) {
+  // Never one end sliding while the other is pinned (fix round after 2b, generalising the w-103-korr rule): when an end
+  // stays clamped (its supports end short of the moved line and no coincident wall carries it), the move is cut back to
+  // the largest part of `delta` that every end can follow, so the wall stays parallel (w-peis-n 1 m south stops on
+  // y 2,2, w-vf-kjk 1 m east on x 9, lw-landing at the ends of lw-106-top); an end that cannot move at all refuses the
+  // move (lw-split north: its east end is pinned at the stairwell corner).
+  if (!carry && !opts.clamped && plans.some((pl) => pl.clamped && !pl.slide)) {
+    const t = followableFraction(ctx, w0, delta, self);
+    return t * len(delta) > SAME ? applyMoveWall(draft, ctx, wallId, scale(delta, t), { ...opts, clamped: true }) : false;
+  }
+  for (const { end, p, followers, through, onMoved, extended, anchored, clamped, slide } of plans) {
     const carriedCorner = carry && clamped;
     if (anchored && !carriedCorner) {
-      ends[end] = copy(anchored.p);
+      ends[end] = copy(clamped && slide ? slide : anchored.p);
       continue;
     }
     const movers = carriedCorner ? [...followers, ...through.filter(extended)] : followers;
@@ -1260,17 +1356,25 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
     const outward = unit(sub(p, end === 'a' ? w0.b : w0.a));
     let node = addc(p, delta);
     let best = -Infinity;
+    const ud = unit(dir);
     for (const x of xs) {
       if (!x) continue;
       const s = dot(sub(x, o), outward);
       if (s > best) {
         best = s;
-        node = copy(x);
+        // Exactly on the moved line (the intersection's float noise tilted the wall by a nanometre).
+        node = copy(add(o, scale(ud, dot(sub(x, o), ud))));
       }
     }
     ends[end] = node;
+    // A parallel coincident wall (a continuation in line) never turns where it can help it (fix round after 2b: moving
+    // w-106-korr turned the loft piece lw-106-top): it is carried along sideways, parallel, when its far end can follow
+    // (free, or sliding on a support; `carryParallel`); else it stays where a non-parallel wall carries the node (it
+    // meets the moved wall as a T-junction there, as w-vf-korr does for w-103-korr), and follows the node only when
+    // nothing else does.
+    const carriedNode = carriedCorner || xs.some((x) => x !== null);
     movers.forEach((c, i) => {
-      if (carriedCorner && xs[i] === null) return;
+      if (xs[i] === null && (carryParallel(ctx, c, p, node, self, changes) || carriedNode)) return;
       const ch = changes.get(c.wall.id) ?? {};
       ch[c.end] = copy(xs[i] ?? node);
       changes.set(c.wall.id, ch);
@@ -1286,6 +1390,74 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
   w.b = copy(ends.b);
   pullBackOpenings(draft, ctx, [...changedWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
   return true;
+}
+
+/**
+ * A parallel coincident wall `c` (its end `c.end` at the moved wall's node `p`, which goes to `node`) carried along
+ * sideways, keeping its direction (fix round after 2b): its far end goes onto the follower's moved line — sliding on
+ * its non-parallel support there (not past its end), or straight across when it is free — and walls with a T-junction
+ * on it follow. Not when its far end has coincident walls, only parallel supports or a support that ends short, nor when
+ * the node slid past its far end: then nothing is recorded and false is returned (the caller lets it stay, or follow
+ * the node).
+ */
+function carryParallel(ctx: EditContext, c: { wall: Wall; end: 'a' | 'b' }, p: Vec2, node: Vec2, except: ReadonlySet<Id>, changes: Map<Id, WallChange>): boolean {
+  const f = c.wall;
+  if (changes.has(f.id)) return false;
+  const far = c.end === 'a' ? 'b' : 'a';
+  const F = f[far];
+  const fdir = sub(f.b, f.a);
+  const n = leftNormal(unit(fdir));
+  const across = dot(sub(node, p), n);
+  if (Math.abs(across) < TINY) return false;
+  const skip = new Set([...except, f.id]);
+  const { supports, followers } = endClass(ctx, f, F, skip);
+  if (followers.length > 0) return false;
+  const o = add(F, scale(n, across));
+  const anchored = anchorOnLine(supports, o, fdir);
+  if (supports.length > 0 && (!anchored || anchored.err > COINCIDE)) return false;
+  const nf = copy(anchored ? anchored.p : o);
+  const nn = copy(node);
+  const [na, nb] = c.end === 'a' ? [nn, nf] : [nf, nn];
+  // Not when the node slid past its far end (the moved wall then runs over it): it would turn round.
+  if (dot(sub(nn, nf), unit(sub(p, F))) < MIN_WALL_LENGTH) return false;
+  changes.set(f.id, { a: na, b: nb });
+  tJunctionChanges(ctx, f.a, f.b, na, nb, wallStoreys(ctx, f), new Set([...skip, ...changes.keys()]), changes);
+  return true;
+}
+
+/**
+ * The largest fraction t ∈ [0, 1] of `delta` by which wall `w0` can move with every end that has a non-parallel support
+ * still on one (anchorOnLine's error within 1 µm at every fraction up to t; bisection). Ends without such a support move
+ * freely. (applyMoveWall: a move whose end would stay clamped is cut back to t·delta, so the wall keeps its direction.)
+ */
+function followableFraction(ctx: EditContext, w0: Wall, delta: Vec2, self: ReadonlySet<Id>): number {
+  const dir = sub(w0.b, w0.a);
+  const ends = (['a', 'b'] as const).map((end) => endClass(ctx, w0, w0[end], self).supports);
+  const follows = (t: number) => ends.every((supports) => {
+    const anchored = anchorOnLine(supports, add(w0.a, scale(delta, t)), dir);
+    return anchored === null || anchored.err <= 1e-9;
+  });
+  if (follows(1)) return 1;
+  if (!follows(0)) return 0;
+  let lo = 0;
+  let hi = 1;
+  for (let k = 0; k < 60; k++) {
+    const m = (lo + hi) / 2;
+    if (follows(m)) lo = m;
+    else hi = m;
+  }
+  // Exactly onto the limiting support's end: just past the limit an end is clamped to that end point, so the fraction
+  // that puts the moved line through it is exact (no bisection error, the wall stays exactly parallel).
+  const n = leftNormal(unit(dir));
+  const across = dot(delta, n);
+  if (Math.abs(across) < TINY) return lo;
+  let exact = Infinity;
+  const past = Math.min(1, lo + 1e-4);
+  for (const supports of ends) {
+    const anchored = anchorOnLine(supports, add(w0.a, scale(delta, past)), dir);
+    if (anchored && anchored.err > 1e-9) exact = Math.min(exact, dot(sub(anchored.p, w0.a), n) / across);
+  }
+  return Number.isFinite(exact) && exact >= 0 && exact <= 1 && Math.abs(exact - lo) < 1e-6 ? exact : lo;
 }
 
 /**
@@ -1509,11 +1681,15 @@ export function applyRestoreEdgeGhost(draft: Variant, ctx: EditContext, id: Id):
   // Hosts that healed away: their opening ghosts are restored. (A ghost the move could not reach is only dropped; its
   // opening ghosts stay ghosts, back on the edge.)
   const healed = new Set([...parked.values()].filter((h) => !draft.walls.some((w) => w.id === h)));
-  if (draft.ghosts?.some((g) => g.id === id)) {
+  // A ghost healGhosts clipped to the stretch a partner block still keeps open stays (that stretch of today's wall is
+  // still gone; fix round after 2b); one the move could not reach at all is dropped.
+  const left = draft.ghosts?.find((g) => g.id === id);
+  const clipped = left !== undefined && (!samePoint(left.a, ref.a) || !samePoint(left.b, ref.b));
+  if (left && !clipped && draft.ghosts) {
     draft.ghosts = draft.ghosts.filter((g) => g.id !== id);
     if (draft.ghosts.length === 0) delete draft.ghosts;
   }
-  dropGhostHost(draft, id);
+  if (!clipped) dropGhostHost(draft, id);
   for (const [oid, hostId] of parked) if (healed.has(hostId)) restoreOpeningIn(draft, oid);
   healGhosts(draft);
   return true;
@@ -2031,6 +2207,86 @@ function translateStructure(s: StructureElement, d: Vec2): void {
   }
 }
 
+/**
+ * The furniture that belongs to a block (fix round after 2b: units carried and deleted the terrace furniture that stood
+ * there before them): on the block's storeys, and standing in one of the block's rooms or unnamed faces — its derived
+ * room (DerivedFurniture.roomId in `ctx.derived`) is a room whose label point lies in the block (DerivedRoom.blockId).
+ * An item in the block's wall or outside its rooms does not belong. Items the derived model does not know (or no
+ * context): the centre strictly inside the axis polygon, as before.
+ */
+function furnitureOfBlock(v: Variant, ctx: Pick<EditContext, 'derived'> | undefined, block: Block, axis: Vec2[], storeys: ReadonlySet<Id>): (f: FurnitureItem) => boolean {
+  const rooms = new Set((ctx?.derived.rooms ?? []).filter((r) => r.blockId === block.id).map((r) => r.id));
+  const known = new Map((ctx?.derived.furniture ?? []).map((f) => [f.id, f]));
+  return (f) => {
+    const s = storeyOfLevel(v, f.levelId);
+    if (s === undefined || !storeys.has(s)) return false;
+    const df = known.get(f.id);
+    if (df) return df.roomId !== undefined && rooms.has(df.roomId);
+    return insideOrOn(f.position, axis, 0);
+  };
+}
+
+/** Clearance (m) between a unit's cladding and the furniture `pushFurnitureOut` moves out of it. */
+const PUSH_GAP = 0.02;
+
+/**
+ * A unit placed over furniture (fix round after 2b): every item on the unit's storey whose centre lies inside the
+ * unit's outer outline (the axis rectangle grown by the cladding) is pushed straight out past the nearest side, by the
+ * smallest move that clears the cladding by PUSH_GAP and puts it neither into another block nor onto another item of
+ * that storey (bounding boxes; else the smallest move). So a unit never owns what stood there before it
+ * (`furnitureOfBlock`). Items whose centre is outside stay (the collision warning shows them). Returns the ids of the
+ * items it moved.
+ */
+function pushFurnitureOut(draft: Variant, ctx: EditContext, poly: Vec2[], outerOffset: number, levelId: Id): Id[] {
+  type Box = { min: Vec2; max: Vec2 };
+  const storey = storeyOfLevel(draft, levelId);
+  const ub = bbox(poly);
+  const lo: Vec2 = [ub.min[0] - outerOffset, ub.min[1] - outerOffset];
+  const hi: Vec2 = [ub.max[0] + outerOffset, ub.max[1] + outerOffset];
+  const blocks: Box[] = ctx.base.blocks.map((b) => {
+    const bb = bbox(b.polygon.map((x) => x.p));
+    const o = b.wall.outerOffset;
+    return { min: [bb.min[0] - o, bb.min[1] - o], max: [bb.max[0] + o, bb.max[1] + o] };
+  });
+  const onStorey = draft.furniture.filter((f) => storeyOfLevel(draft, f.levelId) === storey);
+  const footprints = new Map(ctx.derived.furniture.map((f) => [f.id, f.footprint]));
+  /** An item's footprint box where it stands now (the derived footprint shifted by any move since the base). */
+  const boxOf = (f: FurnitureItem): Box => {
+    const f0 = ctx.base.furniture.find((x) => x.id === f.id);
+    const fp = footprints.get(f.id);
+    if (fp && f0) {
+      const b = bbox(fp);
+      const d = sub(f.position, f0.position);
+      return { min: add(b.min, d), max: add(b.max, d) };
+    }
+    const r = Math.max(f.size.w, f.size.d) / 2;
+    return { min: [f.position[0] - r, f.position[1] - r], max: [f.position[0] + r, f.position[1] + r] };
+  };
+  const overlaps = (p: Box, q: Box) => p.min[0] < q.max[0] && p.max[0] > q.min[0] && p.min[1] < q.max[1] && p.max[1] > q.min[1];
+  const moved: Id[] = [];
+  for (const f of onStorey) {
+    const c = f.position;
+    if (!(c[0] > lo[0] && c[0] < hi[0] && c[1] > lo[1] && c[1] < hi[1])) continue;
+    const fb = boxOf(f);
+    const moves = (
+      [
+        [hi[0] - fb.min[0] + PUSH_GAP, 0],
+        [lo[0] - fb.max[0] - PUSH_GAP, 0],
+        [0, hi[1] - fb.min[1] + PUSH_GAP],
+        [0, lo[1] - fb.max[1] - PUSH_GAP],
+      ] as Vec2[]
+    ).sort((p, q) => len(p) - len(q));
+    const clear = (d: Vec2) => {
+      const nb: Box = { min: add(fb.min, d), max: add(fb.max, d) };
+      return !blocks.some((o) => overlaps(nb, o)) && !onStorey.some((g) => g !== f && overlaps(nb, boxOf(g)));
+    };
+    const d = moves.find(clear) ?? moves[0];
+    f.position = addc(c, d);
+    moved.push(f.id);
+  }
+  return moved;
+}
+
 /** Storey ids whose levels a block's floor reaches (its level and its zones' levels). */
 function blockStoreys(v: Variant, block: Block): Set<Id> {
   const out = new Set<Id>();
@@ -2072,10 +2328,9 @@ export function applyMoveBlock(draft: Variant, ctx: EditContext, blockId: Id, de
     r.anchor = addc(r.anchor, delta);
     ctx.carried?.set(r.id, (p) => add(p, delta));
   }
-  for (const f of draft.furniture) {
-    const s = storeyOfLevel(ctx.base, f.levelId);
-    if (s && storeys.has(s) && insideOrOn(f.position, axis, 0)) f.position = addc(f.position, delta);
-  }
+  // Only its own furniture (in its rooms), not what stood on the terrace before it (furnitureOfBlock).
+  const own = furnitureOfBlock(ctx.base, ctx, b0, axis, storeys);
+  for (const f of draft.furniture) if (own(f)) f.position = addc(f.position, delta);
   for (const s of draft.structure) if (structureInside(s, axis)) translateStructure(s, delta);
   healGhosts(draft);
   return true;
@@ -2247,9 +2502,9 @@ export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, 
     r.anchor = T(r.anchor);
     ctx.carried?.set(r.id, T);
   }
+  const own = furnitureOfBlock(ctx.base, ctx, b0, axis, storeys);
   for (const f of draft.furniture) {
-    const s = storeyOfLevel(ctx.base, f.levelId);
-    if (!s || !storeys.has(s) || !insideOrOn(f.position, axis, 0)) continue;
+    if (!own(f)) continue;
     f.position = T(f.position);
     f.rotationDeg = (((f.rotationDeg + deg) % 360) + 360) % 360;
   }
@@ -2275,7 +2530,7 @@ export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, 
  * edges, the stored walls on / inside it (and their openings), furniture and room anchors inside it, the junction
  * entries of other blocks that name it and its edge ghosts.
  */
-export function applyDeleteBlock(draft: Variant, blockId: Id): boolean | 'existing' {
+export function applyDeleteBlock(draft: Variant, blockId: Id, ctx?: Pick<EditContext, 'derived'>): boolean | 'existing' {
   const b = draft.blocks.find((x) => x.id === blockId);
   if (!b) return false;
   if (blockHasExistingArea(b)) return 'existing';
@@ -2298,7 +2553,9 @@ export function applyDeleteBlock(draft: Variant, blockId: Id): boolean | 'existi
     (o) => !(o.host.kind === 'blockEdge' && o.host.blockId === blockId) && !(o.host.kind === 'wall' && goneWalls.has(o.host.wallId)),
   );
   draft.rooms = draft.rooms.filter((r) => !(onStoreys(r.levelId) && insideOrOn(r.anchor, axis, 0)));
-  draft.furniture = draft.furniture.filter((f) => !(onStoreys(f.levelId) && insideOrOn(f.position, axis, 0)));
+  // Its own furniture (in its rooms; with `ctx`, see furnitureOfBlock), not what stood there before it.
+  const own = furnitureOfBlock(draft, ctx, b, axis, storeys);
+  draft.furniture = draft.furniture.filter((f) => !own(f));
   for (const other of draft.blocks) other.junctions = other.junctions.filter((j) => j.otherBlockId !== blockId);
   if (draft.ghosts) {
     draft.ghosts = draft.ghosts.filter((g) => parseEdgeGhostId(g.id)?.blockId !== blockId);
@@ -2475,6 +2732,8 @@ export interface PlacedUnit {
   blockId: Id;
   roomId: Id;
   openingId: Id | null;
+  /** Furniture that stood where the unit went and was pushed out of it (`pushFurnitureOut`). */
+  pushedFurniture?: Id[];
 }
 
 function uniqueName(name: string, taken: Iterable<string>): string {
@@ -2565,7 +2824,9 @@ export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: str
     draft.openings.push(o);
     openingId = o.id;
   }
-  return { blockId, roomId: room.id, openingId };
+  // What stood there goes out of the unit, so the unit never carries or deletes it later (fix round after 2b).
+  const pushed = pushFurnitureOut(draft, ctx, poly, wall.outerOffset, levelId);
+  return pushed.length > 0 ? { blockId, roomId: room.id, openingId, pushedFurniture: pushed } : { blockId, roomId: room.id, openingId };
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
@@ -2817,18 +3078,64 @@ export function reconcileRooms(
  * their storey. Returns the records to add (anchor moved to the label point when it is not inside the face).
  */
 export function reviveRooms(v: Variant, derived: DerivedVariant, candidates: Room[]): Room[] {
+  return reviveRoomRecords(v, derived, candidates).add;
+}
+
+/**
+ * A Room record a merge deleted (fix round after 2b): the record and the anchors of the rooms that were alive with it
+ * in the newest earlier state that still had it (state/editActions.ts reads both from the undo history). The room it
+ * was merged into (`mergedInto`) is the one whose face now holds its anchor and that stood elsewhere then.
+ */
+export interface RoomTombstone {
+  room: Room;
+  peers?: ReadonlyMap<Id, Vec2>;
+}
+
+/** What `reviveRoomRecords` gives back: records to add, and new anchors for live rooms that move to another face. */
+export interface RevivedRooms {
+  add: Room[];
+  anchors: Map<Id, Vec2>;
+}
+
+/**
+ * `reviveRooms` with tombstones (fix round after 2b). First, as before, a deleted record whose anchor lies in an
+ * unnamed face comes back there. Then a tombstone whose anchor lies in a face named by the room it was merged into
+ * (`mergedInto`: that room's anchor, among the tombstone's peers, lies in an unnamed face of the same storey — it took
+ * the tombstone's face when a later edit split the merged face again) comes back in its own face, and that room goes
+ * back to the face its anchor was in (blk-bod west +0.2, "Ta tilbake" on w-bod-gavl/ghost and w-mellom-boder/ghost,
+ * then on the edge ghost: «Bod (ny)» had taken Mellombygg's face and left its own unnamed; now 27 named rooms again).
+ * Anchors that are not strictly inside their face go to its label point.
+ */
+export function reviveRoomRecords(v: Variant, derived: DerivedVariant, candidates: readonly (Room | RoomTombstone)[]): RevivedRooms {
   const have = new Set(v.rooms.map((r) => r.id));
-  const out: Room[] = [];
+  const add: Room[] = [];
+  const anchors = new Map<Id, Vec2>();
   const used = new Set<DerivedRoom>();
-  for (const c of candidates) {
-    if (have.has(c.id) || out.some((r) => r.id === c.id)) continue;
+  const stones: RoomTombstone[] = candidates.map((c) => ('anchor' in c ? { room: c } : c));
+  const placed = (c: Room, face: DerivedRoom): Room => (anchorInFace(c.anchor, face) ? plain(c) : { ...plain(c), anchor: copy(face.labelPoint) });
+  for (const { room: c } of stones) {
+    if (have.has(c.id) || add.some((r) => r.id === c.id)) continue;
     const storey = storeyOfLevel(v, c.levelId);
     const face = derived.rooms.find((f) => !f.room && !used.has(f) && f.storeyId === storey && pointInPolygon(c.anchor, f.facePolygon));
     if (!face) continue;
     used.add(face);
-    out.push(anchorInFace(c.anchor, face) ? plain(c) : { ...plain(c), anchor: copy(face.labelPoint) });
+    add.push(placed(c, face));
   }
-  return out;
+  for (const { room: c, peers } of stones) {
+    if (!peers || have.has(c.id) || add.some((r) => r.id === c.id)) continue;
+    const storey = storeyOfLevel(v, c.levelId);
+    const taken = derived.rooms.find((f) => f.room && !used.has(f) && f.storeyId === storey && pointInPolygon(c.anchor, f.facePolygon));
+    const holder = taken?.room;
+    const was = holder ? peers.get(holder.id) : undefined;
+    if (!taken || !holder || !was || anchors.has(holder.id) || pointInPolygon(was, taken.facePolygon)) continue;
+    const back = derived.rooms.find((f) => !f.room && !used.has(f) && f.storeyId === storey && pointInPolygon(was, f.facePolygon));
+    if (!back) continue;
+    used.add(taken);
+    used.add(back);
+    add.push(placed(c, taken));
+    anchors.set(holder.id, anchorInFace(was, back) ? copy(was) : copy(back.labelPoint));
+  }
+  return { add, anchors };
 }
 
 /**

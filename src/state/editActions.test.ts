@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DerivedVariant } from '../model/derived';
 import { treesOf } from '../geometry/derive';
+import { hostLine } from '../geometry/edit';
 import { distancePointSegment, pointInPolygon } from '../geometry/polygon';
 import { createForslagD } from '../model/seed/forslagD';
 import type { Opening, Variant, Vec2 } from '../model/types';
@@ -578,7 +579,8 @@ describe('openings (§3.5)', () => {
     A.updateDrag(store, s, [9.5, 6.2]);
     A.endDrag(store, s);
     const o = opening(store, 'win-kjk-n');
-    expect(o?.width).toBeCloseTo(6.5 - 4.855, 6);
+    // 6.5 − 4.855 = 1.645, stored in whole centimetres (fix round after 2b): 1.65.
+    expect(o?.width).toBe(1.65);
     expect((o?.offset ?? 0) - (o?.width ?? 0) / 2).toBeCloseTo(4.855, 6);
     expect(o?.status).toBe('new');
     expect(opening(store, 'win-kjk-n/ghost')?.width).toBe(1.11);
@@ -1578,5 +1580,27 @@ describe('fix round 2: Roter 90° keeps a unit against the wall or deck edge it 
     for (const p of turned) expect(onOrIn(p), JSON.stringify(p)).toBe(true);
     expect(A.rotateBlock(store, id, -90)).toBe(true);
     expect(V(store).blocks.find((x) => x.id === id)?.polygon).toEqual(before?.polygon);
+  });
+});
+
+describe('opening resize by an end handle stores whole centimetres (fix round after 2b)', () => {
+  it('door-mellom-vf (0,91 m) narrowed to the 0,3 m minimum by its end handle stores 0.3, not 0.3000000000000007', () => {
+    const store = createAppStore(createForslagD());
+    store.getState().duplicateVariant('forslag-d', 'Mitt forslag');
+    const before = selectActiveVariant(store.getState()).openings.find((o) => o.id === 'door-mellom-vf')!;
+    const line = hostLine(selectActiveVariant(store.getState()), before.host)!;
+    const u: Vec2 = [(line.b[0] - line.a[0]) / line.length, (line.b[1] - line.a[1]) / line.length];
+    const at = (s: number): Vec2 => [line.a[0] + u[0] * s, line.a[1] + u[1] * s];
+    const startJamb = before.offset - before.width / 2;
+    const s = A.beginDrag(store, { kind: 'opening', id: 'door-mellom-vf' }, at(before.offset + before.width / 2), 'end');
+    expect(s?.kind).toBe('openingResize');
+    // The phone review: the end handle dragged 0,6 m towards the other jamb (clamped at the minimum width).
+    A.updateDrag(store, s, at(before.offset + before.width / 2 - 0.6), { snapRadiusM: 2.07, coarse: true });
+    A.endDrag(store, s);
+    const o = selectActiveVariant(store.getState()).openings.find((x) => x.id === 'door-mellom-vf')!;
+    expect(o.width).toBe(0.3);
+    expect(String(o.width)).toBe('0.3');
+    // The other jamb stays.
+    expect(o.offset - o.width / 2).toBeCloseTo(startJamb, 9);
   });
 });

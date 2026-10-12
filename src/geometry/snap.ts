@@ -11,7 +11,9 @@
  *  - grid 0.10 m (0.01 m with `fine`, i.e. Alt).
  * Priority: a point within the radius > an intersection of two candidate lines within the radius > the nearest
  * candidate line (the point slides along it; on an axis-parallel line the free coordinate snaps to the grid) > grid.
- * Ghost walls (status 'removed') are never targets. Walls of other storeys are not targets; blocks and decks are.
+ * Ghost walls (status 'removed') are never targets, except their ends as 'ghostEnd' points in a context built with
+ * `ghostEnds` (endpoint drags, fix round after 2b: an end dragged back by hand lands on today's point). Walls of other
+ * storeys are not targets; blocks and decks are.
  *
  * Line snapping is gentle so short drags are not pulled back (UX review of phase 2a): target lines (wall lines, block
  * axis edges, deck edges, their extensions and perpendiculars) only reach `min(radius, LINE_SNAP_MAX_M)` — the UI's
@@ -76,7 +78,7 @@ export const SNAP_ADD_FRACTION = 0.5;
 const PARALLEL_SIN = Math.sin((0.5 * Math.PI) / 180);
 const TINY = 1e-9;
 
-export type SnapPointKind = 'endpoint' | 'midpoint' | 'vertex' | 'deckVertex';
+export type SnapPointKind = 'endpoint' | 'midpoint' | 'vertex' | 'deckVertex' | 'ghostEnd';
 export type SnapLineKind = 'wall' | 'blockEdge' | 'deckEdge';
 
 export interface SnapPointTarget {
@@ -167,6 +169,12 @@ export interface SnapContextOptions {
   exclude?: Iterable<Id>;
   /** A drag session's dragged element at pointer-down (see the header). */
   origin?: SnapOrigin;
+  /**
+   * Also offer the ends of ghost stored walls (status 'removed': today's walls that an edit moved, stretched or
+   * deleted) as 'ghostEnd' point targets — endpoint drags (fix round after 2b), so an end dragged out and back by hand
+   * lands exactly on today's point (w-103-korr's end a back at x 3,05, off the 10 cm grid) and the wall heals.
+   */
+  ghostEnds?: boolean;
 }
 
 export interface SnapOptions {
@@ -246,6 +254,9 @@ export function buildSnapContext(derived: DerivedVariant, opts: SnapContextOptio
   const storeyOfLevel = new Map(derived.levels.map((l) => [l.id, l.storeyId]));
 
   for (const w of derived.walls) {
+    if (w.isGhost && opts.ghostEnds && w.source.kind === 'wall' && w.storeyIds.includes(opts.storeyId) && !exclude.has(w.source.wallId)) {
+      ctx.points.push({ p: w.a, kind: 'ghostEnd', id: w.source.wallId }, { p: w.b, kind: 'ghostEnd', id: w.source.wallId });
+    }
     if (w.isGhost || !w.storeyIds.includes(opts.storeyId)) continue;
     const ownerIds = w.source.kind === 'wall' ? [w.source.wallId] : [w.source.blockId, `${w.source.blockId}/${w.source.edgeId}`];
     if (ownerIds.some((id) => exclude.has(id)) || exclude.has(w.id)) continue;

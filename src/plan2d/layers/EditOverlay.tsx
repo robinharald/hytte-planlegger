@@ -3,7 +3,8 @@
  * their pixel sizes at any zoom (docs/phase2-plan.md §3.1): drag handles (white circles with an accent border,
  * radius 7 px / 14 px on a coarse pointer; "+" on deck edge midpoints, skipped when the edge is shorter on screen
  * than four handle radii; deck edges as invisible corridors of the hit-corridor width), drag and snap feedback
- * (dashed ghost outline, guide lines, snap markers, dimension chips), the placement tools' previews (Vegg rubber
+ * (dashed ghost outline of the element at pointer-down, and during a previewed drag the dragged element's moving
+ * outline solid over it (`data-edit-moving`), guide lines, snap markers, dimension chips), the placement tools' previews (Vegg rubber
  * band with its length (unless the snapper sends its own length chip), the Nytt bygg ghost, the wall a Dør/vindu click would hit, the Mål line), the furniture
  * drop marker, and temporary dimensions asked for by the properties panel ("Avstand fra hjørne", room-size wall
  * highlights with an arrow).
@@ -91,20 +92,26 @@ function Chips({ chips, view }: { chips: PlanChip[]; view: View }) {
 
 function Feedback({ fb, view }: { fb: PlanFeedback; view: View }) {
   const s = (p: Vec2) => planToScreen(view, p);
+  // The drag preview's moving outline (fb.target) is also in fb.ghost (after the base): drawn once, solid, on top.
+  const moving = new Set<Vec2[]>(fb.target ?? []);
   return (
     <g data-edit-feedback>
-      {fb.ghost.map((ring, i) => (
-        <path
-          key={`g${i}`}
-          data-edit-ghost
-          d={pathOf(ring.map(s), ring.length >= 3)}
-          fill={ring.length >= 3 ? ACCENT : 'none'}
-          fillOpacity={0.08}
-          stroke={ACCENT}
-          strokeWidth={1.5}
-          strokeDasharray="5 4"
-        />
-      ))}
+      {fb.ghost.map((ring, i) => {
+        const isMoving = moving.has(ring);
+        return (
+          <path
+            key={`g${i}`}
+            data-edit-ghost
+            data-edit-moving={isMoving ? '' : undefined}
+            d={pathOf(ring.map(s), ring.length >= 3)}
+            fill={ring.length >= 3 ? ACCENT : 'none'}
+            fillOpacity={isMoving ? 0.18 : 0.08}
+            stroke={ACCENT}
+            strokeWidth={isMoving ? 2 : 1.5}
+            strokeDasharray={isMoving ? undefined : '5 4'}
+          />
+        );
+      })}
       {fb.guides.map((g, i) => {
         const a = s(g.a);
         const b = s(g.b);

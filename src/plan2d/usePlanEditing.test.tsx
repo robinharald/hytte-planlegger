@@ -18,13 +18,13 @@ import type { DerivedVariant } from '../model/derived';
 import { createForslagD } from '../model/seed/forslagD';
 import type { Vec2 } from '../model/types';
 import * as A from '../state/editActions';
-import { createAppStore } from '../state/store';
+import { createAppStore, selectActiveVariant } from '../state/store';
 import { deriveForState } from '../state/useDerived';
 import { LABEL_TAP_CORE_PX, labelTap, parseLabelBox, wallsById } from './editModel';
 import type { PlanSelection } from './editTypes';
 import { svgElementAt } from './svgHitTest';
 import type { LabelBox } from './editModel';
-import { EMPTY_FEEDBACK } from './editFeedback';
+import { EMPTY_FEEDBACK, normalizeFeedback, normalizePreview } from './editFeedback';
 import { createPlanFixture, createPlanFixtureSite } from './fixture';
 import { PlanView } from './PlanView';
 import { UPDATE_INTERVAL_MAX_MS, UPDATE_INTERVAL_MIN_MS, labelBoxesNear, previewFeedback, updateInterval } from './usePlanEditing';
@@ -115,14 +115,31 @@ describe('updateInterval and previewFeedback', () => {
     expect(updateInterval(Number.NaN)).toBe(16);
   });
 
-  it('draws the preview over the base outline, without drawing the base twice', () => {
+  it('draws the moving outline (the preview\'s target) over the base outline, without drawing the base twice', () => {
     const target: Vec2[] = BASE.map(([x, y]) => [x, y + 0.5]);
-    const preview = { ...EMPTY_FEEDBACK, ghost: [BASE, target], chips: [{ at: [8, 3] as Vec2, text: '1,00 m' }] };
+    // The real shape (state/editActions.ts previewDrag): ghost = the base outline, target = the moving outline.
+    const preview = { ...EMPTY_FEEDBACK, ghost: [BASE], target: [target], chips: [{ at: [8, 3] as Vec2, text: '1,00 m' }] };
     const fb = previewFeedback(preview, [BASE]);
     expect(fb.ghost).toEqual([BASE, target]);
+    expect(fb.target).toEqual([target]);
     expect(fb.chips).toEqual(preview.chips);
+    // Before the first updateDrag: the preview's own ghost is the base outline.
+    expect(previewFeedback(preview, []).ghost).toEqual([BASE, target]);
+    // A preview at the pointer-down place: one outline.
+    expect(previewFeedback({ ...preview, target: [BASE] }, [BASE]).ghost).toEqual([BASE]);
+    // An API without `target` that sends the moving outline as its ghost: as before.
     expect(previewFeedback({ ...EMPTY_FEEDBACK, ghost: [target] }, [BASE]).ghost).toEqual([BASE, target]);
-    expect(previewFeedback(preview, [])).toBe(preview);
+    expect(previewFeedback({ ...EMPTY_FEEDBACK, ghost: [target] }, []).ghost).toEqual([target]);
+  });
+
+  it('normalizePreview keeps the target that normalizeFeedback drops', () => {
+    const target: Vec2[] = BASE.map(([x, y]) => [x, y + 0.5]);
+    const raw = { indicators: [], chips: [], ghost: [BASE], target: [target] };
+    expect(normalizeFeedback(raw).ghost).toEqual([BASE]);
+    expect(normalizePreview(raw).ghost).toEqual([BASE]);
+    expect(normalizePreview(raw).target).toEqual([target]);
+    expect(normalizePreview({ ghost: [BASE] }).target).toEqual([]);
+    expect(normalizePreview(null).target).toEqual([]);
   });
 });
 
@@ -131,9 +148,10 @@ describe('adaptive drag: previewDrag every frame, updateDrag at most every T ms'
   function slowActions(clock: { t: number }, cost: number) {
     return {
       beginDrag: vi.fn<Fn>(() => SESSION),
+      // The real shape (state/editActions.ts DragPreview): ghost = the base outline, target = the moving outline.
       previewDrag: vi.fn<Fn>((_s, p) => {
         const q = p as Vec2;
-        return { indicators: [{ kind: 'grid', p: q }], chips: [], ghost: [[[q[0] - 1.5, q[1] - 0.1], [q[0] + 1.5, q[1] - 0.1], [q[0] + 1.5, q[1] + 0.1], [q[0] - 1.5, q[1] + 0.1]]] };
+        return { indicators: [{ kind: 'grid', p: q }], chips: [], ghost: [BASE], target: [[[q[0] - 1.5, q[1] - 0.1], [q[0] + 1.5, q[1] - 0.1], [q[0] + 1.5, q[1] + 0.1], [q[0] - 1.5, q[1] + 0.1]]] };
       }),
       updateDrag: vi.fn<Fn>(() => {
         clock.t += cost;
@@ -580,5 +598,80 @@ describe('a tap on the selected opening over a ghost selects the ghost (zoomed i
     svg = render60({ kind: 'ghost', id: 'door-106-old' } as Props['selection']);
     tap();
     expect(onSelect).toHaveBeenLastCalledWith({ kind: 'opening', id: 'win-106-s', levelId: 'lower' });
+  });
+});
+
+describe('the drag preview draws the dragged element at the pointer, with the REAL bound edit actions (no mock)', () => {
+  /** Plan points of a drawn ghost path (screen px "M x yL x y…" mapped back to plan metres). */
+  const ringOf = (svg: SVGSVGElement, el: Element): Vec2[] => {
+    const nums = (el.getAttribute('d') ?? '').match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+    const out: Vec2[] = [];
+    for (let i = 0; i + 1 < nums.length; i += 2) out.push(plan(svg, [nums[i], nums[i + 1]]));
+    return out;
+  };
+
+  it('w-gang-n dragged south: every frame draws two outlines, the base at y 3,4 and the moving one at the pointer', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] });
+    const store = createAppStore(createForslagD());
+    store.getState().duplicateVariant('forslag-d', 'Mitt forslag');
+    store.getState().clearHistory();
+    const actions = A.bindEditActions(store);
+    const derived = deriveForState(store.getState());
+    const selection = { kind: 'wall' as const, id: 'w-gang-n', levelId: 'main' };
+    act(() =>
+      root.render(
+        <PlanView
+          derived={derived}
+          site={store.getState().project.site}
+          planStorey="ground"
+          selection={selection}
+          onSelect={() => {}}
+          showLabels
+          showDims={false}
+          showGrid={false}
+          showRoofPlan={false}
+          highlightNew
+          editable
+          editActions={actions}
+        />,
+      ),
+    );
+    const svg = container.querySelector<SVGSVGElement>('svg[data-testid="plan-view"]')!;
+    const s = rootMatrix(svg)[0];
+    const at = scr(svg, [18.5, 3.4]);
+    act(() => {
+      pointer(svg.querySelector('[data-wall-id="w-gang-n"]')!, 'pointerdown', at);
+      pointer(svg, 'pointermove', plus(at, 0, 10));
+    });
+    const movingY: number[] = [];
+    for (let i = 1; i <= 12; i++) {
+      const now = plus(at, 0, 10 + i * 4);
+      act(() => pointer(svg, 'pointermove', now));
+      act(() => void vi.advanceTimersByTime(16));
+      const ghosts = [...svg.querySelectorAll('[data-edit-ghost]')];
+      expect(ghosts.length, `frame ${i}`).toBe(2);
+      // The overlay styles them apart: the base dashed, the moving outline solid (EditOverlay `data-edit-moving`).
+      expect(ghosts[0].hasAttribute('data-edit-moving'), `frame ${i}`).toBe(false);
+      expect(ghosts[1].hasAttribute('data-edit-moving'), `frame ${i}`).toBe(true);
+      const [base, moving] = ghosts.map((g) => ringOf(svg, g));
+      // The base outline stays where the wall was at pointer-down …
+      for (const p of base) expect(p[1]).toBeCloseTo(3.4, 1);
+      // … and the moving one is at the pointer: on the grid or a snap target, never farther than the snap reach
+      // (geometry/snap.ts LINE_SNAP_MAX_M, 0,25 m), and level (the whole wall moved).
+      const y = plan(svg, now)[1];
+      for (const p of moving) expect(Math.abs(p[1] - y), `frame ${i}`).toBeLessThanOrEqual(0.25 + 1 / s);
+      expect(Math.abs(moving[0][1] - moving[1][1])).toBeLessThan(1e-6 + 0.2 / s);
+      expect(moving.map((p) => p[0]).sort((p, q) => p - q)).toEqual([expect.closeTo(16, 1), expect.closeTo(20.8, 1)]);
+      movingY.push(moving[0][1]);
+    }
+    // It followed the finger 1,6 m south over the frames (not only when an updateDrag landed).
+    expect(movingY[0]).toBeLessThan(3.4 - 0.2);
+    expect(movingY.at(-1)!).toBeLessThan(movingY[0] - 1);
+    for (let i = 1; i < movingY.length; i++) expect(movingY[i]).toBeLessThanOrEqual(movingY[i - 1] + 1e-9);
+    act(() => pointer(svg, 'pointerup', plus(at, 0, 58)));
+    // The drop applied the last position: the wall is 1,2 m further south (48 px at the plan's zoom, on the grid).
+    const w = selectActiveVariant(store.getState()).walls.find((x) => x.id === 'w-gang-n')!;
+    expect(w.a[1]).toBeCloseTo(Math.round(plan(svg, plus(at, 0, 58))[1] * 10) / 10, 6);
+    expect(svg.querySelectorAll('[data-edit-ghost]').length).toBe(0);
   });
 });

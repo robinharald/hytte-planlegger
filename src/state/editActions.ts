@@ -35,7 +35,8 @@
  * Unit and block moves reach contact targets as far as the pointer's drag threshold (`DragModifiers.dragThresholdM`,
  * default 10 / 24 of the snap radius = 5 px / 10 px), so a phone can attach a unit (geometry/snap.ts snapPolygon).
  * `snapPoint(store, p, opts)` serves the placement tools (Vegg / Mål with `from`, Dør/vindu → the host under the
- * point, Nytt bygg → the snapped unit centre with its footprint as `ghost`, Møbler → grid).
+ * point, Nytt bygg → the snapped unit centre with its footprint as `ghost`, reaching the pointer radius but on touch
+ * at most max(0.25 m, 10 px) (`unitPlacementReach`, fix round after 2b), Møbler → grid).
  *
  * Where the plan is silent: `insertDeckVertex` takes (edgeId, p) or (deckId, edgeId, p) (the two UI sides use
  * both); `resizeRoom` returns the refusal ('block-edge' → "Endres under bygningsdelen", also as a toast); `nudge` of a
@@ -101,17 +102,19 @@ import {
   isLocked,
   pieceRange,
   reconcileRooms,
-  reviveRooms,
+  reviveRoomRecords,
   roomResizeMove,
   wallEndsFree,
 } from '../geometry/edit';
-import type { BlockPatch, DeckPatch, EditContext, OpeningPatch, PlanTransform, RoomMerge, RoomPatch, WallPatch } from '../geometry/edit';
+import type { BlockPatch, DeckPatch, EditContext, OpeningPatch, PlanTransform, RoomMerge, RoomPatch, RoomTombstone, WallPatch } from '../geometry/edit';
 import { backEdge } from '../geometry/furnitureDerive';
 import { levelAt } from '../geometry/levels';
 import { buildSnapContext, chipsAcross, gridStep, rayToWall, roundTo, snap, snapCircle, snapFootprint, snapLineOffset, snapPolygon } from '../geometry/snap';
 import type { DimensionChip, SnapContext, SnapIndicator, SnapResult } from '../geometry/snap';
-import { distancePointSegment } from '../geometry/polygon';
+import { distancePointSegment, pointInPolygon } from '../geometry/polygon';
 import type { DerivedVariant } from '../model/derived';
+import { catalogPlacementSpec, convexOverlap, insideRoom, placementObstacles, rectFootprint, tapPlacement } from '../plan2d/furniturePlacement';
+import type { Obstacle, PlacementSpec } from '../plan2d/furniturePlacement';
 import { catalogItem, clampSize, placementSize } from '../furniture/catalog';
 import type { FurnitureItem, Id, OpeningHost, OpeningType, Project, Room, RoomType, Site, Tree, Variant, Vec2, Wall } from '../model/types';
 import { unitFootprint, unitTemplate } from '../model/unitTemplates';
@@ -201,8 +204,11 @@ interface RunOpts {
    * tubs, trees, furniture): no derive of the result and no matching inside the action.
    */
   reconcile?: boolean;
-  /** Deleted Room records that may come back into unnamed faces (restoreGhost). */
-  revive?: () => Room[];
+  /**
+   * Deleted Room records that may come back into unnamed faces (restoreGhost), with the anchors of the rooms alive
+   * with them (tombstones from the undo history: a room that took a merged-away room's face gives it back).
+   */
+  revive?: () => RoomTombstone[];
 }
 
 interface RunResult<R> {
@@ -243,10 +249,14 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
       final = followWallFaces(base, derived, final, nextDerived);
       if (opts.revive) {
         const fd = deriveOf(site, final);
-        const back = fd ? reviveRooms(final, fd, opts.revive()) : [];
-        if (back.length > 0) {
+        const back = fd ? reviveRoomRecords(final, fd, opts.revive()) : { add: [], anchors: new Map<Id, Vec2>() };
+        if (back.add.length > 0 || back.anchors.size > 0) {
           final = produce(final, (d) => {
-            d.rooms.push(...back);
+            for (const r of d.rooms) {
+              const a = back.anchors.get(r.id);
+              if (a) r.anchor = a;
+            }
+            d.rooms.push(...back.add);
           });
         }
       }
@@ -309,20 +319,26 @@ export function setWallProps(store: EditStore, wallId: Id, patch: WallPatch): bo
   return changed(run(store, (d) => applySetWallProps(d, wallId, patch)));
 }
 
-/** Deleted Room records of the active variant found in the undo history, newest first. */
-function roomsFromHistory(store: EditStore): Room[] {
+/**
+ * Deleted Room records of the active variant found in the undo history, newest first, as tombstones: each with the
+ * anchors of the rooms alive in the newest past state that still had it (fix round after 2b: geometry/edit.ts
+ * `reviveRoomRecords` gives a merged-away room its face back from the room that took it).
+ */
+function roomsFromHistory(store: EditStore): RoomTombstone[] {
   const s = store.getState();
   const v = selectActiveVariant(s);
   const have = new Set(v.rooms.map((r) => r.id));
   const seen = new Set<Id>();
-  const out: Room[] = [];
+  const out: RoomTombstone[] = [];
   const past = s.history().past;
   for (let i = past.length - 1; i >= 0; i--) {
     const pv = past[i].variants.find((x) => x.id === v.id);
+    let peers: Map<Id, Vec2> | null = null;
     for (const r of pv?.rooms ?? []) {
       if (have.has(r.id) || seen.has(r.id)) continue;
       seen.add(r.id);
-      out.push(r);
+      peers ??= new Map((pv?.rooms ?? []).map((x) => [x.id, x.anchor]));
+      out.push({ room: r, peers });
     }
   }
   return out;
@@ -347,6 +363,7 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
   let parallelSame = false;
   let from: RunOpts['from'];
   let neighbours: NeighbourEnd[] = [];
+  let carried: Id[] = [];
   // Walls no step since the wall was first touched has changed (the undo history): the way back leaves them alone.
   let still: ReadonlySet<Id> = new Set();
   // Opening ghosts parked on removed walls (the ghost being restored, or the ghosts of walls a cascade touched): restored
@@ -365,10 +382,12 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       const ug = unit(sub(g.b, g.a));
       parallelSame = Math.abs(dot(ud, ug) - 1) < 1e-6 && Math.abs(dist(live.a, live.b) - dist(g.a, g.b)) < 1e-6;
       // Not just translated (an endpoint drag, or a move and an endpoint drag): drag each end back to the ghost's
-      // end with the endpoint cascades (coincident ends, T-junctions), one end after the other.
-      still = unchangedSince(store, v, id);
+      // end with the endpoint cascades (coincident ends, T-junctions), one end after the other. Continuations the
+      // forward step carried sideways stay out of that and go back whole afterwards (fix round after 2b).
+      carried = carriedSideways(v, live, g);
+      still = new Set([...unchangedSince(store, v, id), ...carried]);
       if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g, still);
-      neighbours = neighbourEnds(v, live, g);
+      neighbours = neighbourEnds(v, live, g).filter((n) => !carried.includes(n.wallId));
     }
   }
   const r = run(
@@ -387,6 +406,8 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
         healGhosts(d);
         // Neighbours the forward step left just off the wall's line: their ends back onto the junction too.
         bringBackNeighbours(d, s.project.site, neighbours);
+        // Continuations it carried along sideways: back whole.
+        bringBackCarried(d, s.project.site, carried);
         // Openings the cascade moved on the walls it touched (their ghosts sat on those walls' ghosts): back too.
         for (const [oid, hostId] of parked) if (!d.walls.some((w) => w.id === hostId)) applyRestoreOpening(d, oid);
         healGhosts(d);
@@ -522,6 +543,50 @@ function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[])
 }
 
 /**
+ * Walls the forward step of `live` (ghost `g`) carried along sideways (fix round after 2b, geometry/edit.ts
+ * `carryParallel`: a continuation in line, such as the loft piece lw-106-top beside w-106-korr): new, with a ghost
+ * that ends on one of g's ends, parallel to that ghost but off its line. "Ta tilbake" keeps them out of the cascades
+ * back (an endpoint drag back would turn them) and then moves each back whole (`bringBackCarried`).
+ */
+function carriedSideways(v: Variant, live: Wall, g: Wall): Id[] {
+  const out: Id[] = [];
+  for (const w of v.walls) {
+    if (w.id === live.id || w.status !== 'new') continue;
+    const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
+    if (!wg || !(['a', 'b'] as const).some((e) => dist(wg.a, g[e]) <= COINCIDE_M || dist(wg.b, g[e]) <= COINCIDE_M)) continue;
+    const u = sub(w.b, w.a);
+    const ug = sub(wg.b, wg.a);
+    const lu = Math.hypot(u[0], u[1]);
+    const lg = Math.hypot(ug[0], ug[1]);
+    if (lu < 1e-9 || lg < 1e-9 || Math.abs(u[0] * ug[1] - u[1] * ug[0]) > 1e-9 * lu * lg) continue;
+    const n = leftNormal(unit(ug));
+    if (Math.abs(dot(sub(w.a, wg.a), n)) > 1e-9) out.push(w.id);
+  }
+  return out;
+}
+
+/**
+ * Move each carried wall (`carriedSideways`) back across itself onto its ghost's line (applyMoveWall: walls with a
+ * T-junction on it follow), then give it its ghost's exact geometry (applyRestoreWall) and heal.
+ */
+function bringBackCarried(d: Variant, site: Site, ids: readonly Id[]): void {
+  for (const id of ids) {
+    const w = d.walls.find((x) => x.id === id && x.status !== 'removed');
+    const wg = d.walls.find((x) => x.id === `${id}/ghost` && x.status === 'removed');
+    if (!w || !wg) continue;
+    const n = leftNormal(unit(sub(wg.b, wg.a)));
+    const across = dot(sub(wg.a, w.a), n);
+    if (Math.abs(across) > 1e-9) {
+      const base = isDraft(d) ? current(d) : (JSON.parse(JSON.stringify(d)) as Variant);
+      const derived = deriveOf(site, base);
+      if (derived) applyMoveWall(d, { base, derived }, id, scale(n, across), { keep: untouched(base) });
+    }
+    applyRestoreWall(d, `${id}/ghost`);
+    healGhosts(d);
+  }
+}
+
+/**
  * The variant with the ends of `wallId` dragged back to the ends of its ghost `g` (applyMoveWallEndpoint with its
  * cascades, each end from the state after the other one), and its derived model; undefined when nothing moved.
  */
@@ -590,9 +655,22 @@ export function rotateBlock(store: EditStore, blockId: Id, deg: 90 | -90): boole
   return changed(run(store, (d, ctx) => applyRotateBlock(d, ctx, blockId, q === 1 ? 90 : -90)), (x) => x === true);
 }
 
-/** Place a unit from a template, centred on `at`, turned by `rotation90` quarter turns. Returns the new block id. */
+/**
+ * Place a unit from a template, centred on `at`, turned by `rotation90` quarter turns. Returns the new block id.
+ * Furniture that stood there is pushed out of the unit (geometry/edit.ts `pushFurnitureOut`), with a toast that names
+ * it ("«Utebord» er flyttet ut av «Vedskjul».", Angre undoes the placement).
+ */
 export function placeUnit(store: EditStore, templateId: string, at: Vec2, rotation90 = 0): Id | null {
   const r = run(store, (d, ctx) => applyPlaceUnit(d, ctx, templateId, at, rotation90));
+  const pushed = r?.result?.pushedFurniture ?? [];
+  if (r?.result && pushed.length > 0) {
+    const unit = r.variant.blocks.find((b) => b.id === r.result?.blockId)?.name ?? '';
+    const names = pushed.map((id) => {
+      const f = r.variant.furniture.find((x) => x.id === id);
+      return f ? (catalogItem(f.catalogId)?.name ?? f.catalogId) : id;
+    });
+    store.getState().showToast({ text: EDIT_STRINGS.furniturePushedOut(unit, names), undo: true });
+  }
   return r?.result?.blockId ?? null;
 }
 
@@ -606,7 +684,7 @@ export function deleteBlock(store: EditStore, blockId: Id): boolean {
     store.getState().showToast({ text: EDIT_STRINGS.existingBlockDelete });
     return false;
   }
-  const ok = changed(run(store, (d) => applyDeleteBlock(d, blockId)), (x) => x === true);
+  const ok = changed(run(store, (d, ctx) => applyDeleteBlock(d, blockId, ctx)), (x) => x === true);
   if (ok) deletedToast(store);
   return ok;
 }
@@ -1077,20 +1155,101 @@ export function setFurnitureProps(store: EditStore, furnitureId: Id, patch: Furn
   );
 }
 
-/** Copy an item 0.3 m east and 0.3 m south (same size, turn, colour and level); returns the copy's id. */
+/** Grid step (m) and reach (m) of the free-spot search beside an item being duplicated (`duplicatePlacement`). */
+const DUP_STEP_M = 0.05;
+const DUP_REACH_M = 3;
+
+/** Grid offsets (steps, in the item's own frame) within DUP_REACH_M, nearest first, beside (local x) before in front / behind. */
+let dupOffsets: readonly (readonly [number, number])[] | null = null;
+function duplicateOffsets(): readonly (readonly [number, number])[] {
+  if (dupOffsets) return dupOffsets;
+  const n = Math.round(DUP_REACH_M / DUP_STEP_M);
+  const out: [number, number][] = [];
+  for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) if ((i !== 0 || j !== 0) && i * i + j * j <= n * n) out.push([i, j]);
+  out.sort((a, b) => a[0] * a[0] + a[1] * a[1] - (b[0] * b[0] + b[1] * b[1]) || Math.abs(a[1]) - Math.abs(b[1]) || b[0] - a[0] || b[1] - a[1]);
+  dupOffsets = out;
+  return out;
+}
+
+const round6 = (v: number) => Math.round(v * 1e6) / 1e6 || 0;
+
+/**
+ * Where a copy of `item` goes (`duplicateFurniture`): the nearest free spot beside the original, "free" as for a tap
+ * in the library (plan2d/furniturePlacement.ts): inside the original's room, clear of the walls, structure, door zones,
+ * the other furniture whose height range meets its own, and the original itself.
+ *  - back-to-wall / corner items: `tapPlacement` started from the original (the room's wall edges, the free spot
+ *    nearest the original first: usually the next spot along the same wall);
+ *  - free and flat items, and wall items without a free wall spot: the original's turn, on a 5 cm grid in the item's
+ *    own frame around it, nearest first (beside before in front / behind), within DUP_REACH_M; outside the rooms on the
+ *    deck the original stands on, if any;
+ *  - nothing free (a full room): the same search clear of the walls, structure and the original only.
+ * Null when even that finds nothing (the caller keeps the fixed offset).
+ */
+export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem): { position: Vec2; rotationDeg: number } | null {
+  const df = derived.furniture.find((x) => x.id === item.id);
+  if (!df || df.footprint.length < 3) return null;
+  const size = { w: item.size?.w ?? 1, d: item.size?.d ?? 1, h: item.size?.h ?? 1 };
+  const room = df.roomId === undefined ? null : (derived.rooms.find((r) => r.id === df.roomId && r.levelId === df.levelId) ?? null);
+  const storeyId = room?.storeyId ?? derived.levels.find((l) => l.id === df.levelId)?.storeyId;
+  if (!storeyId) return null;
+  const spec: PlacementSpec = { ...catalogPlacementSpec(item.catalogId, item.sizeVariant), size };
+  if (room && !spec.flat && spec.mode !== 'free') {
+    // Tap placement searches from the room's label point: start it at the original instead.
+    const p = tapPlacement(derived, storeyId, spec, item.position, { ...room, labelPoint: item.position });
+    if (p.free) return { position: p.position, rotationDeg: p.rotationDeg };
+  }
+  const z0 = spec.elevation ?? 0;
+  const xs = df.footprint.map((q) => q[0]);
+  const ys = df.footprint.map((q) => q[1]);
+  const own: Obstacle = { id: item.id, polygon: df.footprint, box: { min: [Math.min(...xs), Math.min(...ys)], max: [Math.max(...xs), Math.max(...ys)] } };
+  const deck = room ? null : (derived.outdoor.decks.find((dk) => dk.polygon.length >= 3 && pointInPolygon(item.position, dk.polygon)) ?? null);
+  const t = (item.rotationDeg * Math.PI) / 180;
+  const c = Math.cos(t);
+  const sn = Math.sin(t);
+  // First a free spot; in a full room, a spot clear of the walls, structure and the original only (the copy then
+  // shows its overlap with the other furniture, but stands in no wall and not on the original).
+  for (const strict of [true, false]) {
+    const obstacles = [...placementObstacles(derived, storeyId, [z0, z0 + size.h], new Set([item.id]), strict ? spec.flat : true), own];
+    const clear = (fp: Vec2[]) => {
+      const bx0 = Math.min(...fp.map((q) => q[0]));
+      const bx1 = Math.max(...fp.map((q) => q[0]));
+      const by0 = Math.min(...fp.map((q) => q[1]));
+      const by1 = Math.max(...fp.map((q) => q[1]));
+      return !obstacles.some((o) => bx0 < o.box.max[0] && o.box.min[0] < bx1 && by0 < o.box.max[1] && o.box.min[1] < by1 && convexOverlap(fp, o.polygon));
+    };
+    for (const [i, j] of duplicateOffsets()) {
+      const u = i * DUP_STEP_M;
+      const v = j * DUP_STEP_M;
+      const at: Vec2 = [round6(item.position[0] + c * u - sn * v), round6(item.position[1] + sn * u + c * v)];
+      if (room && !pointInPolygon(at, room.polygon)) continue;
+      const fp = rectFootprint(at, item.rotationDeg, size.w, size.d);
+      if (room ? !insideRoom(fp, room) : deck && !fp.every((q) => pointInPolygon(q, deck.polygon))) continue;
+      if (clear(fp)) return { position: at, rotationDeg: item.rotationDeg };
+    }
+  }
+  return null;
+}
+
+/**
+ * Copy an item (same size, colour and level) to the nearest free spot beside the original (`duplicatePlacement`: a
+ * back-to-wall item against the nearest free wall spot, anything else with the original's turn), else 0.3 m east and
+ * 0.3 m south with the same turn; returns the copy's id.
+ */
 export function duplicateFurniture(store: EditStore, furnitureId: Id): Id | null {
   return (
     run(
       store,
-      (d) => {
+      (d, ctx) => {
         const f = d.furniture.find((x) => x.id === furnitureId);
         if (!f) return null;
+        const src = ctx.base.furniture.find((x) => x.id === furnitureId);
+        const at = src ? duplicatePlacement(ctx.derived, src) : null;
         return applyAddFurniture(d, {
           catalogId: f.catalogId,
-          position: [f.position[0] + 0.3, f.position[1] - 0.3],
+          position: at ? at.position : [f.position[0] + 0.3, f.position[1] - 0.3],
           levelId: f.levelId,
           size: { ...f.size },
-          rotationDeg: f.rotationDeg,
+          rotationDeg: at ? at.rotationDeg : f.rotationDeg,
           sizeVariant: f.sizeVariant,
           colour: f.colour,
         });
@@ -1487,7 +1646,8 @@ function dragSnapContext(variant: Variant, derived: DerivedVariant, storeyId: Id
         return undefined;
     }
   })();
-  return buildSnapContext(derived, { storeyId, exclude: target.exclude, origin });
+  // An end dragged back by hand finds today's point: the ghost walls' ends are point targets (fix round after 2b).
+  return buildSnapContext(derived, { storeyId, exclude: target.exclude, origin, ghostEnds: target.kind === 'wallEndpoint' });
 }
 
 /**
@@ -2019,9 +2179,12 @@ function resizePlan(session: DragSession, pointer: Vec2, fine: boolean): DragPla
   let s = roundTo(dot(sub(pointer, line.a), u), gridStep(fine));
   s = startSide ? Math.min(s, fixed - MIN_OPENING_WIDTH) : Math.max(s, fixed + MIN_OPENING_WIDTH);
   s = Math.min(hi, Math.max(lo, s));
-  const width = Math.abs(fixed - s);
+  // The width in whole centimetres (fix round after 2b: 0.91 − 0.61 stored 0.3000000000000007); the fixed jamb stays
+  // where it was, the centre follows from it (to the micrometre).
+  // (Half a centimetre rounds up, after the float noise is gone: 6.5 − 4.855 → 1.65.)
+  const width = Math.round(Math.round(Math.abs(fixed - s) * 1e6) / 1e4) / 100;
   if (width < MIN_OPENING_WIDTH - 1e-9) return null;
-  const centre = (fixed + s) / 2;
+  const centre = Math.round((startSide ? fixed - width / 2 : fixed + width / 2) * 1e6) / 1e6;
   const j0 = add(line.a, scale(u, o.offset - o.width / 2));
   const j1 = add(line.a, scale(u, o.offset + o.width / 2));
   const n0 = add(line.a, scale(u, centre - width / 2));
@@ -2091,6 +2254,23 @@ function cachedContext(derived: DerivedVariant, storeyId: Id): SnapContext {
   return ctx;
 }
 
+/** The phone's starting zoom is 11,56 px/m; a tap there is no more precise than about this many pixels. */
+const UNIT_TOUCH_REACH_PX = 10;
+/** … nor than this (m) when zoomed in. */
+const UNIT_TOUCH_REACH_MIN_M = 0.25;
+
+/**
+ * How far the Nytt bygg placement snaps the unit (m): the pointer's snap radius (12 px / 24 px coarse), but on touch at
+ * most max(UNIT_TOUCH_REACH_MIN_M, UNIT_TOUCH_REACH_PX) — fix round after 2b: the full 24 px is 2,07 m at the phone's
+ * starting zoom, so a shed tapped anywhere on the deck jumped up to 2 m onto a wall or the deck edge; 10 px (0,87 m
+ * there) still attaches a shed tapped 0,4 m from the wing. `radius` = the snap radius in metres (24 px when coarse).
+ */
+export function unitPlacementReach(radius: number, coarse: boolean): number {
+  if (!coarse) return radius;
+  const tenPx = radius * (UNIT_TOUCH_REACH_PX / 24);
+  return Math.min(radius, Math.max(UNIT_TOUCH_REACH_MIN_M, tenPx));
+}
+
 /** Snapping for the placement tools (header). */
 export function snapPoint(store: EditStore, p: Vec2, opts: ToolSnapOptions): ToolSnapResult {
   const s = store.getState();
@@ -2105,7 +2285,7 @@ export function snapPoint(store: EditStore, p: Vec2, opts: ToolSnapOptions): Too
       const t = unitTemplate(opts.templateId);
       if (!t) return snap(ctx, p, { radius, fine, points: false, lines: false });
       const poly = unitFootprint(t, p, opts.rotation90 ?? 0);
-      const sres = snapPolygon(ctx, poly, { radius, fine });
+      const sres = snapPolygon(ctx, poly, { radius: unitPlacementReach(radius, opts.modifiers?.coarse === true), fine });
       const at = add(p, sres.delta);
       return { point: at, kind: sres.indicators.length > 0 ? 'line' : 'grid', indicators: sres.indicators, chips: [], ghost: [unitFootprint(t, at, opts.rotation90 ?? 0)] };
     }

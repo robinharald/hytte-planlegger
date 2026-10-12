@@ -178,4 +178,10 @@ export interface PlanFeedback {
   chips: PlanChip[];
   /** Outline(s) of the moving element: rings of 3+ points are drawn closed, 2-point rings as segments. */
   ghost: Vec2[][];
+  /**
+   * During a drag with a per-frame preview: the dragged element's MOVING outline (the preview's `target`). These rings
+   * are also the last entries of `ghost` (usePlanEditing.ts `previewFeedback`); the overlay draws them once, solid,
+   * over the dashed base outline (the element at pointer-down). Absent: every ghost ring is drawn dashed, as before.
+   */
+  target?: Vec2[][];
 }

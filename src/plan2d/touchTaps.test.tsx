@@ -215,6 +215,7 @@ describe('phone (11,6 px/m): walls, doors and ghosts are tappable, room names st
       // 17 areas stay in the labels (Romskjema and Egenskaper have them all).
       expect(areaFurnished).toBeLessThanOrEqual(withArea(bare));
       if (scale === LAPTOP) expect(areaFurnished).toBeGreaterThanOrEqual(10);
+      // The same root (and svg) again with the furniture: the bare render above replaced it.
       renderAt(d, scale, coarse);
       expect(drawn.length).toBe(bareCount);
       expect(drawn.length).toBeGreaterThanOrEqual(scale === PHONE ? 7 : 20);
@@ -232,8 +233,6 @@ describe('phone (11,6 px/m): walls, doors and ghosts are tappable, room names st
       if (scale === PHONE) expect(tapAt(svg, d.furniture.find((f) => f.id === 'fu-sov1-1')!.item.position)).toBe('furniture:fu-sov1-1');
       if (scale === LAPTOP) {
         // The bed in Soverom (ny fløy): its middle is the bed's (the room's name moved off it).
-        const lb = svg.querySelector('[data-room-label-hit="room-sov-ny"]');
-        console.log('SOVNY', lb?.getAttribute('data-label-box'), [...svg.querySelectorAll('[data-room-label]')].find((x) => x.textContent?.includes('Soverom (ny'))?.textContent);
         expect(tapAt(svg, [19.64, 4.75])).toBe('furniture:fu-sov-ny-1');
         // A rug is taken by its edge only: inside it, the room under it; the coffee table on it is drawn above it.
         expect(tapAt(svg, [6.4, -0.5])).toBe('room:room-leseskrok');
@@ -247,7 +246,8 @@ describe('phone (11,6 px/m): walls, doors and ghosts are tappable, room names st
         for (const p of table) expect(tapAt(svg, p), `${p}`).toBe(inBox(p) ? 'room:room-leseskrok' : 'furniture:fu-leseskrok-3');
       }
     }
-  });
+    // Two full plan renders of the furnished seed per scale (about 4 s alone, more while the whole suite runs).
+  }, 30_000);
 
   it('laptop (23,5 px/m, mouse): every room by its name, and walls ±4 px', () => {
     // Without the seed's furniture (with a mouse an item under a name wins the click).
