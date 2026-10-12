@@ -212,6 +212,15 @@ export function Controls(props: { isPhone: boolean }) {
               testId="toggle-new"
             />
           )}
+          {showPlan && (
+            <Toggle
+              label={nb.toggles.clearances}
+              title={T.clearances}
+              checked={ui.showClearances}
+              onChange={(v) => setUi({ showClearances: v })}
+              testId="toggle-clearances"
+            />
+          )}
           {show3d && (
             <Toggle
               label={

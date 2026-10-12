@@ -11,7 +11,17 @@
  *  - an opening on a stretch of block edge that is gone (`opening-on-removed-edge`): its place from the block's own
  *    edge, and the building part now standing against that stretch;
  *  - the end of a roof that does not meet its neighbour (`roof-no-meet`): the compass direction of that end;
- *  - blocked deck steps (`deck-steps-blocked`): the direction they face and the building part in their way.
+ *  - blocked deck steps (`deck-steps-blocked`): the direction they face and the building part in their way;
+ *  - what a furniture item stands in when it is not a wall (`furniture-in-wall`): "i trappa", "i pipa", "i en
+ *    stolpe", "i badestampen"; and a door blocked by a furniture item names the item («Seng 150»).
+ *
+ * Loose walls (editor polish, phase 2b): the 'wall' name of a wall with only ONE named room around it says where in
+ * that room it stands ("veggen nord i Stue", "midt i Stue": the part of the room's box its middle is in); a wall in no
+ * named room keeps "i «Ny tverrfløy»" inside a building part, and outside the buildings it is "nord på terrassen" on a
+ * deck, else "sør for «Bod-fløy»" (the nearest building part). Loose walls with the same text become one line in the
+ * Advarsler panel (`warningItems`, `count`): "3 vegger nord i Stue henger løs og danner ikke noe rom." (other kinds
+ * keep a line each). The place words are in `nb.warnings.names`. Openings keep their place words ("vinduet i veggen i
+ * Stue").
  */
 import type { DerivedOpening, DerivedVariant, DerivedWall, ModelWarning } from '../model/derived';
 import type { Block, Id, Roof, Site, Variant, Vec2 } from '../model/types';
@@ -23,6 +33,7 @@ import type { Selection } from '../state/selection';
 import { formatM2 } from './format';
 
 const N = nb.warnings.names;
+const L = N;
 
 /** Compass word of a plan direction ("nord", "nordøst", …): true north with the site, else plan +y. */
 export function compassWord(dir: Vec2, site?: Pick<Site, 'planNorthBearing'>): string {
@@ -47,6 +58,32 @@ function ridgeAxis(roof: Roof): 'x' | 'y' | null {
 /** How far outside an edge (m) to look for the building part standing against it. */
 const OUTSIDE_PROBE = 0.1;
 
+/** A point within this fraction of a box's half-size from its centre is in its middle ("midt i Stue"). */
+const MIDDLE_FRACTION = 1 / 3;
+
+/** Axis-aligned box of a polygon (null when empty). */
+function boxOf(poly: readonly Vec2[]): { c: Vec2; h: Vec2 } | null {
+  if (poly.length === 0) return null;
+  const xs = poly.map((p) => p[0]);
+  const ys = poly.map((p) => p[1]);
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  return { c: [(x0 + x1) / 2, (y0 + y1) / 2], h: [(x1 - x0) / 2, (y1 - y0) / 2] };
+}
+
+/**
+ * Which part of an area (a room, a deck) the point `p` is in: the compass word of its offset from the area's box
+ * centre measured in half-sizes ("nord" for the northern part of a long room too), or null in the middle.
+ */
+export function partOf(poly: readonly Vec2[], p: Vec2, site?: Pick<Site, 'planNorthBearing'>): string | null {
+  const b = boxOf(poly);
+  if (!b) return null;
+  const n: Vec2 = [(p[0] - b.c[0]) / Math.max(b.h[0], 1e-6), (p[1] - b.c[1]) / Math.max(b.h[1], 1e-6)];
+  return Math.hypot(n[0], n[1]) < MIDDLE_FRACTION ? null : compassWord(n, site);
+}
+
 /** Place words for walls and openings of one derived model. */
 export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planNorthBearing'>) {
   const wallsById = new Map(derived.walls.map((w) => [w.id, w]));
@@ -54,12 +91,15 @@ export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planN
   for (const w of derived.walls) for (const o of w.openings) if (!openingHost.has(o.id)) openingHost.set(o.id, { wall: w, opening: o });
 
   const named = (r: DerivedVariant['rooms'][number]) => r.room?.name?.trim() || '';
+  const outline = (r: DerivedVariant['rooms'][number]) => (r.facePolygon.length >= 3 ? r.facePolygon : r.polygon);
+
+  /** The named room at a plan point on one of the given levels (any level when empty). */
+  const namedRoomAt = (p: Vec2, levelIds: readonly Id[]) =>
+    derived.rooms.find((x) => named(x) && (levelIds.length === 0 || levelIds.includes(x.levelId)) && pointInPolygon(p, outline(x)));
 
   /** The named room at a plan point on one of the wall's levels ('' when none). */
   const roomAt = (p: Vec2, levelIds: readonly Id[]): string => {
-    const r = derived.rooms.find(
-      (x) => named(x) && (levelIds.length === 0 || levelIds.includes(x.levelId)) && pointInPolygon(p, x.facePolygon.length >= 3 ? x.facePolygon : x.polygon),
-    );
+    const r = namedRoomAt(p, levelIds);
     return r ? named(r) : '';
   };
 
@@ -88,9 +128,51 @@ export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planN
     return block ? `${base} ${N.inBlock(block.block.name)}` : N.looseWall;
   };
 
+  /**
+   * A wall's noun and place for the 'wall' name (see the header): "veggen" + "mellom Gang og Bad" / "nord i Stue" /
+   * "i «Ny tverrfløy»" / "nord på terrassen" / "sør for «Bod-fløy»", "ytterveggen" + "mot nord i Kjøkken". Null when
+   * nothing places it (no building part at all).
+   */
+  const wallParts = (w: DerivedWall): { noun: string; place: string } | null => {
+    const d: Vec2 = [w.b[0] - w.a[0], w.b[1] - w.a[1]];
+    const len = Math.hypot(d[0], d[1]) || 1;
+    const n: Vec2 = [-d[1] / len, d[0] / len];
+    const p: Vec2 = [w.a[0] + d[0] / 2, w.a[1] + d[1] / 2];
+    const left = namedRoomAt([p[0] + n[0] * (w.faceLeft + 0.05), p[1] + n[1] * (w.faceLeft + 0.05)], w.levelIds);
+    const right = namedRoomAt([p[0] - n[0] * (w.faceRight + 0.05), p[1] - n[1] * (w.faceRight + 0.05)], w.levelIds);
+    const rooms = [...new Set([left, right].filter((x) => x !== undefined).map(named))].sort((a, b) => a.localeCompare(b, 'nb'));
+    const noun = w.isDivider ? N.divider : N.wall;
+    if (rooms.length === 2) return { noun, place: N.between(rooms[0], rooms[1]) };
+    if (w.isExterior) {
+      const towards = N.towards(compassWord([-n[0], -n[1]], site));
+      return { noun: N.exterior, place: rooms.length === 1 ? `${towards} ${N.inRoom(rooms[0])}` : towards };
+    }
+    const room = left ?? right;
+    if (room) return { noun, place: L.inRoomPart(partOf(outline(room), p, site), named(room)) };
+    const block = derived.blocks.find((b) => pointInPolygon(p, b.axis));
+    if (block) return { noun, place: N.inBlock(block.block.name) };
+    const deck = derived.outdoor.decks.find((dk) => dk.polygon.length >= 3 && pointInPolygon(p, dk.polygon));
+    if (deck) return { noun, place: L.onDeck(partOf(deck.polygon, p, site)) };
+    let nearest: { name: string; c: Vec2; dist: number } | null = null;
+    for (const b of derived.blocks) {
+      const box = boxOf(b.axis);
+      if (!box || b.axis.length < 3) continue;
+      const dist = Math.min(...b.axis.map((q, i) => distanceToSegment(p, q, b.axis[(i + 1) % b.axis.length])));
+      if (!nearest || dist < nearest.dist) nearest = { name: b.block.name, c: box.c, dist };
+    }
+    return nearest ? { noun, place: L.nearBlock(compassWord([p[0] - nearest.c[0], p[1] - nearest.c[1]], site), nearest.name) } : null;
+  };
+
   const wall = (id: Id): string => {
     const w = wallsById.get(id);
-    return w ? wallPhrase(w) : N.looseWall;
+    const parts = w ? wallParts(w) : null;
+    return parts ? `${parts.noun} ${parts.place}` : N.looseWall;
+  };
+
+  /** `wallParts` by id (null for an unknown wall or one nothing places). */
+  const wallPartsOf = (id: Id) => {
+    const w = wallsById.get(id);
+    return w ? wallParts(w) : null;
   };
 
   const openingType = (id: Id, variant?: Variant): string => {
@@ -168,7 +250,15 @@ export function makePlaceNamer(derived: DerivedVariant, site?: Pick<Site, 'planN
     return { towards: compassWord(st.outward, site), blockedBy: block?.name ?? '' };
   };
 
-  return { wall, openingType, openingPlace, openingCoveredBy, roofEnd, steps };
+  return { wall, wallParts: wallPartsOf, openingType, openingPlace, openingCoveredBy, roofEnd, steps };
+}
+
+/** Distance from p to the segment a–b. */
+function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
+  const d: Vec2 = [b[0] - a[0], b[1] - a[1]];
+  const l2 = d[0] * d[0] + d[1] * d[1];
+  const t = l2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2)) : 0;
+  return Math.hypot(p[0] - (a[0] + d[0] * t), p[1] - (a[1] + d[1] * t));
 }
 
 export function makeNameLookup(derived: DerivedVariant, variant: Variant, site?: Pick<Site, 'planNorthBearing'>): NameLookup {
@@ -206,6 +296,12 @@ export function makeNameLookup(derived: DerivedVariant, variant: Variant, site?:
       case 'furniture': {
         const f = derived.furniture.find((x) => x.id === id);
         return f ? (f.catalog?.name ?? f.item.catalogId) : id;
+      }
+      case 'obstacle': {
+        // What a furniture item stands in other than a wall: structure (stairs, chimney, posts) or a hot tub.
+        const s = derived.structure.find((x) => x.id === id);
+        if (s) return N.obstacles[s.kind] ?? '';
+        return derived.outdoor.hotTubs.some((h) => h.id === id) ? (N.obstacles.hotTub ?? '') : '';
       }
       default:
         return id;
@@ -263,14 +359,40 @@ export function warningKey(w: ModelWarning): string {
 export interface WarningItem {
   key: string;
   text: string;
+  /** The first warning's element (a merged line points at the first of its warnings). */
   target: Selection | null;
+  /** How many warnings the line stands for (identical texts are merged into one line); 1 for most. */
+  count: number;
 }
 
+/**
+ * The Advarsler panel's lines: one per warning, except that loose walls (`wall-dangling`) with the same text become one
+ * line with a count, at the first one's place: "3 vegger nord i Stue henger løs og danner ikke noe rom." ("… (2 steder)"
+ * when the wall has no noun to put in the plural). Other kinds keep a line each: two windows on one covered wall are
+ * still two windows to move.
+ */
 export function warningItems(derived: DerivedVariant, variant: Variant, site?: Pick<Site, 'planNorthBearing'>): WarningItem[] {
   const names = makeNameLookup(derived, variant, site);
-  return derived.warnings.map((w, i) => ({
-    key: `${w.kind}-${i}`,
-    text: warningText(w, names, formatM2),
-    target: warningTarget(w),
-  }));
+  const place = makePlaceNamer(derived, site);
+  const items: WarningItem[] = [];
+  /** The line of each loose-wall text so far, and the first wall it names. */
+  const loose = new Map<string, { item: WarningItem; wallId: Id }>();
+  for (const [i, w] of derived.warnings.entries()) {
+    const text = warningText(w, names, formatM2);
+    const same = w.kind === 'wall-dangling' ? loose.get(text) : undefined;
+    if (same) {
+      same.item.count++;
+      continue;
+    }
+    const item: WarningItem = { key: `${w.kind}-${i}`, text, target: warningTarget(w), count: 1 };
+    items.push(item);
+    if (w.kind === 'wall-dangling') loose.set(text, { item, wallId: w.wallId });
+  }
+  for (const { item, wallId } of loose.values()) {
+    if (item.count === 1) continue;
+    const parts = place.wallParts(wallId);
+    const nouns = parts ? L.plural[parts.noun] : undefined;
+    item.text = parts && nouns ? L.looseWalls(item.count, nouns, parts.place) : `${item.text} ${L.repeated(item.count)}`;
+  }
+  return items;
 }

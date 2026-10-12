@@ -22,7 +22,7 @@ import { BlockEditor, BlockVertexEditor } from './editors/BlockEditor';
 import { EditorEnvContext } from './editors/env';
 import type { EditorEnv } from './editors/env';
 import { InfoRows, TextField } from './editors/fields';
-import { FurnitureEditor } from './editors/FurnitureEditor';
+import { FurnitureProps } from './properties/FurnitureProps';
 import { GhostEditor } from './editors/GhostEditor';
 import { furnitureName, ghostKindLabel } from './editors/helpers';
 import { OpeningEditor } from './editors/OpeningEditor';
@@ -144,7 +144,7 @@ function EditorBody(props: { r: UiResolved; derived: DerivedVariant }) {
     case 'tree':
       return <TreeEditor tree={r.tree} baseZ={r.baseZ} />;
     case 'furniture':
-      return <FurnitureEditor furniture={r.furniture} />;
+      return <FurnitureProps furniture={r.furniture} />;
     case 'ghost':
       return <GhostEditor ghost={r.ghost} />;
     case 'structure': {

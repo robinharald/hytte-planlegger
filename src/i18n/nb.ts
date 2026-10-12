@@ -36,8 +36,54 @@ const HINTS = {
   unit: 'Trykk der bygget skal stå – det fester seg til terrassekanten og veggene',
   measure: 'Trykk på to punkter',
   measureEnd: 'Trykk på det andre punktet (Esc avbryter)',
-  furniture: 'Møbelbiblioteket kommer i neste oppdatering.',
+  furniture: 'Trykk på et møbel i listen for å sette det inn, eller dra det inn i planen.',
 } as const;
+
+/** §5: the status pill (and its explanation in docs/firebase-oppsett.md). */
+const PILL = {
+  local: 'Kun på denne enheten (ingen delt plass satt opp)',
+  /** Shared mode, but the family's space could not be loaded: saved here, sent when it can be reached. */
+  unreachable: 'Kun på denne enheten (familiens plass kan ikke nås nå)',
+  synced: 'Lagret for alle',
+  pending: 'Lagret her – sendes når du er på nett',
+  saving: 'Lagrer …',
+  connecting: 'Kobler til …',
+  error: 'Ikke koblet til familiens plass – lagres her',
+  failed: 'Ikke lagret – prøver igjen',
+  localFailed: 'Kunne ikke lagre på denne enheten (lite plass?)',
+} as const;
+
+const MONTHS = ['jan.', 'feb.', 'mars', 'apr.', 'mai', 'juni', 'juli', 'aug.', 'sep.', 'okt.', 'nov.', 'des.'] as const;
+
+function two(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+/** "i dag 14.30", "i går 09.05", "3. okt. 14.30", "3. okt. 2025" (device time). */
+function when(iso: string, now: number = Date.now()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const time = `${two(d.getHours())}.${two(d.getMinutes())}`;
+  const today = new Date(now);
+  const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((dayStart(today) - dayStart(d)) / 86_400_000);
+  if (days === 0) return `i dag ${time}`;
+  if (days === 1) return `i går ${time}`;
+  const date = `${d.getDate()}. ${MONTHS[d.getMonth()]}`;
+  return d.getFullYear() === today.getFullYear() ? `${date} ${time}` : `${date} ${d.getFullYear()}`;
+}
+
+/** "akkurat nå", "for 2 min siden", "for 3 timer siden", else `when`. */
+function ago(iso: string, now: number = Date.now()): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const min = Math.floor((now - t) / 60_000);
+  if (min < 1) return 'akkurat nå';
+  if (min < 60) return `for ${min} min siden`;
+  const hours = Math.floor(min / 60);
+  if (hours < 12) return `for ${hours} ${hours === 1 ? 'time' : 'timer'} siden`;
+  return when(iso, now);
+}
 
 /** §3.6: today's cabin cannot be deleted as a whole (the editor core's toast and the Bygningsdel editor). */
 const EXISTING_BLOCK_DELETE = 'Hytta i dag kan ikke slettes som helhet – flytt eller fjern vegger i stedet.';
@@ -79,7 +125,7 @@ export const nb = {
     help: 'Hjelp',
     helpTitle: 'Slik bruker du planleggeren: verktøy, bevegelser og hurtigtaster',
     more: 'Mer',
-    moreTitle: 'Lagre versjon, versjoner, eksport og import',
+    moreTitle: 'Tidligere versjoner, Papirkurv, lagre og åpne fil',
     fileActions: 'Lagring og deling',
   },
 
@@ -188,6 +234,7 @@ export const nb = {
     new3d: 'Vis hva som er nytt i 3D',
     trees: 'Bjørketrær',
     terrain: 'Terreng',
+    clearances: 'Plassbehov for møbler',
     titles: {
       labels: 'Vis romnavn med mål og areal i planen og i 3D',
       dims: 'Vis målkjeder langs ytterveggene i planen',
@@ -197,6 +244,7 @@ export const nb = {
       new3d: 'Farg det som er nytt oransje i 3D-modellen. Av: naturlige farger.',
       trees: 'Vis bjørketrærne på tomta i 3D',
       terrain: 'Vis terrenget rundt hytta i 3D',
+      clearances: 'Vis skravert hvor mye plass møblene trenger foran og rundt seg (det valgte møbelet viser det alltid)',
     },
   },
 
@@ -249,13 +297,26 @@ export const nb = {
     locked: 'Forslag D er det faste grunnlaget og kan ikke endres. «Nytt forslag» lager en kopi som du kan endre.',
   },
 
-  /** Furniture library slot (the catalogue arrives in phase 2b). */
+  /** The furniture library (ui/FurnitureLibrary.tsx; the Møbler column, the bottom sheet on phones). */
   library: {
     heading: 'Møbler',
     close: 'Lukk',
     closeTitle: 'Lukk møbelbiblioteket og gå tilbake til Velg',
-    placeholder:
-      'Møbelbiblioteket kommer i neste oppdatering: senger, sofaer, bord, kjøkken og bad som du trykker på eller drar inn i planen.',
+    searchLabel: 'Søk i møblene',
+    searchPlaceholder: 'Søk etter møbler',
+    searchClear: 'Tøm søket',
+    noMatch: (q: string) => `Ingen møbler passer «${q}».`,
+    /** Under the search box. */
+    intro: 'Trykk på et møbel for å sette det inn, eller dra det inn i planen.',
+    introTouch: 'Trykk på et møbel for å sette det inn. Hold fingeren på det for å dra det inn i planen.',
+    /** Category header: number of items. */
+    count: (n: number) => (n === 1 ? '1 møbel' : `${n} møbler`),
+    /** Item size in the list ("90 × 200 cm"). */
+    size: (wCm: number, dCm: number) => `${wCm} × ${dCm} cm`,
+    itemTitle: (name: string, size: string) => `${name}, ${size}. Trykk for å sette inn, eller dra inn i planen.`,
+    /** Screen-reader status after a placement. */
+    placedIn: (name: string, room: string) => `${name} er satt inn i ${room}.`,
+    placed: (name: string) => `${name} er satt inn.`,
   },
 
   toasts: {
@@ -421,16 +482,24 @@ export const nb = {
     },
     furniture: {
       name: 'Navn',
+      size: 'Størrelse',
+      sizeCustom: 'Egen størrelse',
       width: 'Bredde',
       depth: 'Dybde',
       colour: 'Farge',
       colourDefault: 'Standard',
       colours: { white: 'Hvit', wood: 'Tre', grey: 'Grå', green: 'Grønn', black: 'Svart' } as Record<string, string>,
       rotate: 'Roter 90°',
+      rotateTitle: 'Roter møbelet 90° (R)',
       duplicate: 'Dupliser',
+      duplicateTitle: 'Lag en kopi av møbelet ved siden av (Ctrl+D)',
       delete: 'Slett',
+      deleteTitle: 'Slett møbelet (Delete)',
       room: (name: string) => `Rom: ${name}`,
       noRoom: 'Rom: –',
+      unknown: 'Dette møbelet finnes ikke i møbellisten lenger. Det vises som en boks med målene sine.',
+      /** Range note under a stretchable field ("0,30–6,00 m"). */
+      range: (min: string, max: string) => `${min}–${max} m`,
     },
     ghost: {
       text: 'Dette er en del av hytta i dag som er fjernet eller flyttet i dette forslaget. Det vises stiplet.',
@@ -446,10 +515,15 @@ export const nb = {
     heading: 'Slik kommer du i gang',
     /** docs/phase2-plan.md §5 first-run card. */
     items: [
-      'Trykk på et rom, en vegg, en dør eller et vindu for å se målene. I ditt eget forslag drar du det valgte for å flytte det.',
-      'Forslag D er det faste grunnlaget og kan ikke endres. «+ Nytt forslag» lager en kopi som du kan endre: flytt vegger, dører og vinduer, sett ut nye bygg – og angre alt med Angre.',
-      'Alt lagres automatisk og deles med familien. Trykk «Send forslaget» for å sende lenken.',
+      'Trykk på et rom, en vegg, en dør, et vindu eller et møbel for å se målene. I ditt eget forslag drar du det valgte for å flytte det.',
+      'Forslag D er det faste grunnlaget og kan ikke endres. «+ Nytt forslag» lager en kopi som du kan endre: flytt vegger, dører, vinduer og møbler, sett ut nye bygg – og angre alt med Angre.',
     ],
+    /** The third bullet, true for the running mode (familyStore: shared = Firestore, local = this device only). */
+    saved: {
+      shared:
+        'Alt lagres automatisk i familiens delte plass, så alle med familielenken ser forslagene – uten nett lagres det her og sendes senere. Trykk «Send forslaget» for å sende lenken.',
+      local: 'Alt lagres automatisk på denne enheten. Trykk «Send forslaget» for å dele en kopi av forslaget som lenke.',
+    },
     ok: 'Skjønner',
   },
 
@@ -631,6 +705,20 @@ export const nb = {
       /** Compass points from north, clockwise (45° each). */
       directions: ['nord', 'nordøst', 'øst', 'sørøst', 'sør', 'sørvest', 'vest', 'nordvest'],
       and: 'og',
+      /** A loose wall in one named room, by the part of the room it stands in: "nord i Stue"; null: "midt i Stue". */
+      inRoomPart: (direction: string | null, room: string) => (direction ? `${direction} i ${room}` : `midt i ${room}`),
+      /** A loose wall on the deck: "nord på terrassen"; null: "på terrassen". */
+      onDeck: (direction: string | null) => (direction ? `${direction} på terrassen` : 'på terrassen'),
+      /** A loose wall outside the buildings and the deck: "sør for «Bod-fløy»" (the nearest building part). */
+      nearBlock: (direction: string, block: string) => `${direction} for «${block}»`,
+      /** Plural of the wall nouns above (wall, exterior, divider), for merged loose-wall lines. */
+      plural: { veggen: 'vegger', ytterveggen: 'yttervegger', romdeleren: 'romdelere' } as Record<string, string>,
+      /** Several loose walls in one place: "3 vegger nord i Stue henger løs og danner ikke noe rom." */
+      looseWalls: (n: number, nouns: string, place: string) => `${n} ${nouns} ${place} henger løs og danner ikke noe rom.`,
+      /** After a merged loose-wall line whose noun has no plural: "(2 steder)". */
+      repeated: (n: number) => `(${n} steder)`,
+      /** What a furniture item stands in when it is not a wall ('furniture-in-wall'): "i trappa". */
+      obstacles: { stair: 'i trappa', chimney: 'i pipa', post: 'i en stolpe', beam: 'i en bjelke', hotTub: 'i badestampen' } as Record<string, string>,
     },
     /** A 'generic' warning from a geometry fallback (derive.ts GEOMETRY_FALLBACK); the detail stays technical. */
     geometryFallback: (detail: string) =>
@@ -751,6 +839,163 @@ export const nb = {
 
   seed: {
     variantName: (rev: number) => `Forslag D (revisjon ${rev})`,
+  },
+
+  /** Shared proposals, saving, offline (docs/phase2-plan.md §5): menu, status pill, dialogs, notices. */
+  family: {
+    when,
+    ago,
+    /** Who changed something when no name is known. */
+    someone: 'noen',
+    menu: 'Forslag',
+    menuTitle: 'Bytt forslag, lag et nytt eller åpne Papirkurv',
+    baseLine: 'Det faste grunnlaget – kan ikke endres',
+    changedBy: (who: string, at: string) => `sist endret av ${who}, ${at}`,
+    changed: (at: string) => `sist endret ${at}`,
+    notSaved: 'ikke lagret ennå',
+    newFromBase: '+ Nytt forslag (kopi av Forslag D)',
+    copyActive: (name: string) => `Kopier «${name}»`,
+    trashItem: (n: number) => (n > 0 ? `Papirkurv (${n})` : 'Papirkurv'),
+    /** Name of a proposal from an old autosave whose name is the base's. */
+    ownCopyName: (name: string, n: number) => (n === 1 ? `${name} (eget)` : `${name} (eget ${n})`),
+    pill: PILL,
+    /** The pill on narrow screens (the long text stays its accessible name and tooltip). */
+    pillShort: {
+      local: 'Kun her',
+      unreachable: 'Kun her',
+      synced: 'Lagret',
+      pending: 'Lagret her',
+      saving: 'Lagrer …',
+      connecting: 'Kobler til …',
+      error: 'Ikke koblet til',
+      failed: 'Ikke lagret',
+      localFailed: 'Ikke lagret',
+    } satisfies Record<keyof typeof PILL, string>,
+    pillTitle: {
+      local: 'Forslagene lagres automatisk i denne nettleseren. Trykk «Send forslaget» for å dele en kopi som lenke.',
+      unreachable:
+        'Familiens delte plass kan ikke nås nå. Det du gjør lagres på denne enheten og legges i familiens plass når den kan nås igjen.',
+      synced: 'Alle endringer er lagret i familiens delte plass. Alle med familielenken ser dem.',
+      pending: 'Du er uten nett. Endringene er lagret på denne enheten og sendes til familien når du er på nett igjen.',
+      saving: 'Endringene lagres nå.',
+      connecting: 'Kobler til familiens delte plass. Endringene lagres her så lenge.',
+      error: 'Fikk ikke kontakt med familiens delte plass. Endringene lagres på denne enheten og sendes når det går.',
+      failed: 'Den siste endringen ble ikke lagret. Appen prøver igjen av seg selv.',
+      localFailed: 'Nettleseren har ikke plass til flere endringer. Lagre forslaget som fil (Mer → Lagre som fil).',
+    },
+    conflict: (name: string, by: string, at: string) => `«${name}» ble endret av ${by} ${at}.`,
+    conflictDeleted: (name: string, by: string, at: string) => `«${name}» ble slettet av ${by} ${at}.`,
+    conflictHint: 'Endringene dine her er ikke lagret ennå.',
+    fetchChanges: 'Hent endringene',
+    saveOver: 'Lagre over',
+    overwritten: (name: string, by: string) =>
+      `«${name}» ble endret av ${by} på en enhet uten nett mens du også endret det. Din utgave ligger under Tidligere versjoner.`,
+    showRevisions: 'Vis',
+    dismiss: 'Lukk',
+    tooNew: (n: number) =>
+      n === 1
+        ? 'Ett forslag er laget med en nyere versjon av appen og vises ikke her. Oppdater appen for å se det.'
+        : `${n} forslag er laget med en nyere versjon av appen og vises ikke her. Oppdater appen for å se dem.`,
+    familyUnavailable:
+      'Lenken går til familiens delte plass, men den er ikke tilgjengelig her. Forslagene lagres bare på denne enheten.',
+    linkImported: (name: string) => `«${name}» fra lenken er lagt til som et nytt forslag.`,
+    linkKnown: (name: string) => `«${name}» fra lenken finnes alt i listen.`,
+    fileImported: (n: number) => (n === 1 ? 'Forslaget fra fila er lagt til.' : `${n} forslag fra fila er lagt til.`),
+    importConfirm: (name: string, n: number) =>
+      n === 1 ? `Vil du legge til «${name}» fra fila som et nytt forslag?` : `Vil du legge til de ${n} forslagene fra fila som nye forslag?`,
+    restoredFromTrash: (name: string) => `«${name}» er hentet tilbake.`,
+    revisionRestored: (name: string) => `«${name}» er satt tilbake til den tidligere versjonen.`,
+    name: {
+      heading: 'Hva heter du?',
+      intro: 'Navnet vises ved forslagene du endrer, for eksempel «sist endret av Mamma». Det lagres på denne enheten og i forslagene.',
+      label: 'Navn',
+      placeholder: 'For eksempel Mamma',
+      save: 'Lagre',
+      skip: 'Hopp over',
+    },
+    delete: {
+      heading: 'Slett forslag',
+      first: (name: string) => `Vil du slette «${name}»?`,
+      sureShared: 'Er du sikker? Forslaget forsvinner for alle.',
+      sureLocal: 'Er du sikker? Forslaget forsvinner fra listen.',
+      trashNote: 'Det ligger i Papirkurv i 30 dager og kan hentes tilbake derfra.',
+      cancel: 'Avbryt',
+      next: 'Slett',
+      confirmShared: 'Slett for alle',
+      confirmLocal: 'Slett',
+      done: (name: string) => `«${name}» er lagt i Papirkurv.`,
+    },
+    trash: {
+      heading: 'Papirkurv',
+      intro: 'Slettede forslag ligger her i 30 dager. Etter det forsvinner de for godt.',
+      empty: 'Papirkurven er tom.',
+      deleted: (at: string, by: string | null) => (by ? `Slettet ${at} av ${by}` : `Slettet ${at}`),
+      daysLeft: (n: number) => (n <= 1 ? 'forsvinner i løpet av et døgn' : `forsvinner om ${n} dager`),
+      restore: 'Hent tilbake',
+      close: 'Lukk',
+    },
+    revisions: {
+      heading: 'Tidligere versjoner',
+      intro: (name: string) => `Appen tar vare på inntil 20 tidligere versjoner av «${name}», høyst én for hvert femte minutt med endringer.`,
+      base: 'Forslag D endres aldri, så det har ingen tidligere versjoner. Velg et av forslagene først.',
+      empty: 'Ingen tidligere versjoner ennå. De kommer når forslaget blir endret.',
+      loading: 'Henter versjonene …',
+      failed: 'Versjonene kunne ikke hentes. Er du uten nett?',
+      savedBy: (at: string, by: string | null) => (by ? `${at} · ${by}` : at),
+      restore: 'Gjenopprett',
+      confirm: (at: string) => `Vil du gjenopprette versjonen fra ${at}? Det du har nå, blir tatt vare på som en tidligere versjon.`,
+      restoreFailed: 'Versjonen kunne ikke gjenopprettes.',
+      legacyHeading: 'Versjoner lagret på denne enheten før',
+      legacyHint: 'Versjoner du lagret selv før forslagene ble delt. «Legg til» gjør forslagene i dem til nye forslag.',
+      legacyAdd: 'Legg til',
+      close: 'Lukk',
+    },
+    share: {
+      heading: 'Send forslaget',
+      introShared: 'Alle som får familielenken, ser de samme forslagene og kan endre dem. Send den bare til familien.',
+      proposalLink: (name: string) => `Lenke til «${name}»`,
+      proposalNote: 'Åpner dette forslaget i familiens delte plass.',
+      familyLink: 'Familielenke (alle forslagene)',
+      familyNote: 'Den som åpner denne, kommer inn i familiens delte plass og ser alle forslagene.',
+      familyId: 'Familiens plass',
+      send: 'Send …',
+      copy: 'Kopier',
+      copied: 'Kopiert!',
+      introLocal:
+        'Det er ingen delt plass satt opp, så lenken inneholder en kopi av forslaget. Den som åpner den, får kopien som et nytt forslag.',
+      localLink: 'Lenke med en kopi av forslaget',
+      shareTitle: (name: string) => `Hytteplanlegger: ${name}`,
+      shareText: 'Se forslaget i hytteplanleggeren:',
+      copyFailed: 'Kunne ikke kopiere automatisk. Merk lenken og kopier den selv.',
+    },
+    more: {
+      revisions: 'Tidligere versjoner',
+      revisionsTitle: 'Se og gjenopprett tidligere versjoner av forslaget du ser på',
+      trash: 'Papirkurv',
+      trashTitle: 'Slettede forslag (i 30 dager)',
+      saveFile: 'Lagre som fil',
+      saveFileTitle: 'Last ned forslaget du ser på som fil',
+      openFile: 'Åpne fil',
+      openFileTitle: 'Legg til forslag fra en fil',
+      exportJson: 'Eksporter JSON',
+      exportJsonTitle: 'Last ned alle forslagene som én JSON-fil',
+      changeName: 'Endre navnet ditt',
+      changeNameTitle: 'Navnet som vises ved forslagene du endrer',
+    },
+    update: {
+      ready: 'Ny versjon av appen er klar.',
+      button: 'Oppdater',
+      updatedElsewhere: 'Appen er oppdatert i en annen fane. Last siden på nytt for å bruke den nye versjonen.',
+      reload: 'Last på nytt',
+    },
+    install: {
+      heading: 'Legg planleggeren på Hjem-skjermen',
+      ios: 'Trykk på Del-knappen i Safari og velg «Legg til på Hjem-skjerm». Da åpner den som en app og virker også uten nett.',
+      iosShared: 'Gjør det mens familielenken er åpen, så kommer du rett inn i familiens forslag.',
+      prompt: 'Installer planleggeren som en app på denne enheten. Da virker den også uten nett.',
+      install: 'Installer',
+      ok: 'Skjønner',
+    },
   },
 
   /** docs/phase2-plan.md §1 rule 2: "Nytt" / "Hytta i dag" / "Fjernet" (never "rives"). */
@@ -895,6 +1140,8 @@ export const nb = {
       handleInsert: 'Trykk eller dra for å legge til et hjørne',
       handleWallEnd: 'Dra for å flytte veggenden',
       handleOpeningEnd: 'Dra for å endre bredden',
+      /** The selected furniture item's rotate handle. */
+      rotateHandle: 'Roter: trykk for 90°, eller dra rundt',
     },
   },
 
@@ -963,7 +1210,11 @@ const GEOMETRY_FALLBACK_PREFIX = 'geometry fallback:';
  *  - 'openingCoveredBy' (opening id): the building part now standing where the opening's stretch of wall was;
  *  - 'roofEnd' (`${blockId}:start` or `${blockId}:end`): the compass direction of that end of the roof, "øst";
  *  - 'stepsTowards' (steps id): the direction the deck steps face, "sør";
- *  - 'stepsBlockedBy' (steps id): the building part in the steps' way.
+ *  - 'stepsBlockedBy' (steps id): the building part in the steps' way;
+ *  - 'obstacle' (id of what a furniture item stands in): "i trappa", "i pipa", "i en stolpe", "i badestampen"
+ *    (structure and hot tubs; '' for a wall).
+ * A 'door-blocked' warning's `by` is a wall or a furniture item: 'furniture' answers with the item's name for an item
+ * and with the id itself for anything else.
  */
 export type NameLookup = (
   kind:
@@ -978,7 +1229,8 @@ export type NameLookup = (
     | 'openingCoveredBy'
     | 'roofEnd'
     | 'stepsTowards'
-    | 'stepsBlockedBy',
+    | 'stepsBlockedBy'
+    | 'obstacle',
   id: string,
 ) => string;
 
@@ -1032,8 +1284,10 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
         ? `${cap(names('opening', w.openingId))} sitter i en vegg som nå er dekket av «${by}».`
         : `${cap(names('opening', w.openingId))} sitter i en vegg som er fjernet.`;
     }
-    case 'door-blocked':
-      return `${cap(names('opening', w.openingId))} blokkeres av ${names('wall', w.by)}.`;
+    case 'door-blocked': {
+      const item = placeWord(names, 'furniture', w.by);
+      return item ? `${cap(names('opening', w.openingId))} blokkeres av «${item}».` : `${cap(names('opening', w.openingId))} blokkeres av ${names('wall', w.by)}.`;
+    }
     case 'wall-dangling':
       return `${cap(names('wall', w.wallId))} henger løs og danner ikke noe rom.`;
     case 'block-overlap':
@@ -1057,8 +1311,10 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
     }
     case 'furniture-overlap':
       return `Møblene «${names('furniture', w.furnitureIds[0])}» og «${names('furniture', w.furnitureIds[1])}» står oppå hverandre.`;
-    case 'furniture-in-wall':
-      return `Møbelet «${names('furniture', w.furnitureId)}» står inni en vegg.`;
+    case 'furniture-in-wall': {
+      const inside = placeWord(names, 'obstacle', w.wallId);
+      return `Møbelet «${names('furniture', w.furnitureId)}» står ${inside || 'inni en vegg'}.`;
+    }
     case 'furniture-outside':
       return `Møbelet «${names('furniture', w.furnitureId)}» står utenfor rommene og terrassen.`;
     case 'furniture-unknown':

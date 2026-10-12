@@ -1,0 +1,209 @@
+/* Furniture library (FurnitureLibrary.tsx): search, category accordion, items with their plan symbol, drag chip.
+   Theme tokens from theme.css; works in the Møbler column (desktop / tablet) and in the phone's bottom sheet. */
+
+/* The library never shrinks its parts: the column (or the sheet body) around it scrolls. */
+.flib {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.flib > * {
+  flex: 0 0 auto;
+}
+
+.flib-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.flib-search-input {
+  width: 100%;
+  padding-right: 32px;
+}
+.flib-search-clear {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 28px;
+  font-size: 18px;
+  line-height: 1;
+}
+/* Hide the browser's own clear button: we draw ours. */
+.flib-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.flib-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.flib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.flib-empty {
+  margin: 8px 0;
+}
+
+.flib-cat {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.flib-cat-head {
+  margin: 0;
+  font: inherit;
+}
+.flib-cat-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.flib-cat-btn:disabled {
+  cursor: default;
+  color: var(--fg);
+}
+.flib-cat-btn:hover:not(:disabled) {
+  background: var(--chip);
+}
+.flib-cat-name {
+  flex: 1 1 auto;
+}
+.flib-cat-count {
+  color: var(--muted);
+  font-family: var(--body);
+  font-weight: 400;
+  font-size: 13px;
+}
+.flib-chevron {
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 120ms ease;
+}
+.flib-cat[data-open] .flib-chevron {
+  transform: rotate(-135deg) translateY(-1px);
+}
+
+.flib-items {
+  list-style: none;
+  margin: 0;
+  padding: 2px 4px 6px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.flib-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: grab;
+  /* The list scrolls with a finger; a long press starts a drag (libraryDrag.ts). */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.flib-item:hover {
+  background: var(--chip);
+}
+.flib-item:active {
+  cursor: grabbing;
+}
+.flib-item[data-armed] {
+  border-color: var(--accent);
+  background: var(--sel-bg);
+  box-shadow: var(--shadow);
+}
+.flib-item .furniture-icon {
+  flex: 0 0 auto;
+  background: #fafaf7;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.flib-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.flib-item-name {
+  font-size: 14px;
+  line-height: 1.2;
+}
+.flib-item-size {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two columns where the column is wide enough (the Møbler column on big screens, the sheet in landscape). */
+@media (min-width: 1400px) {
+  .flib[data-variant='panel'] .flib-items {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (min-width: 560px) and (max-width: 799px) {
+  .flib[data-variant='sheet'] .flib-items {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* The chip that follows the pointer while an item is dragged; small and above the finger on touch. */
+.flib-drag {
+  position: fixed;
+  z-index: 80;
+  transform: translate(12px, -110%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 4px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.flib-drag .furniture-icon {
+  background: #fafaf7;
+  border-radius: 4px;
+}
+/* Over the plan the plan draws the item where it will land: the chip steps back. */
+.flib-drag[data-over-plan] {
+  opacity: 0.55;
+}
+.flib[data-dragging] .flib-item {
+  cursor: grabbing;
+}

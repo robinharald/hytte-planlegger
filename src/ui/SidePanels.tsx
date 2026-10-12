@@ -28,11 +28,13 @@ function WarningsPanel(props: { defaultOpen: boolean }) {
   const site = useAppStore((s) => s.project.site);
   const items = useMemo(() => warningItems(derived, variant, site), [derived, variant, site]);
   const storeyOfLevel = (levelId?: Id) => (levelId ? derived.levels.find((l) => l.id === levelId)?.storeyId : undefined);
+  // Every warning counts (a merged line "3 vegger … henger løs" is 3), as in the toolbar's badge.
+  const total = items.reduce((n, w) => n + w.count, 0);
 
   return (
     <Panel
       title={nb.warnings.heading}
-      badge={items.length ? nb.warnings.count(items.length) : undefined}
+      badge={total ? nb.warnings.count(total) : undefined}
       defaultOpen={props.defaultOpen}
       id={WARNINGS_PANEL_ID}
       testId="warnings"

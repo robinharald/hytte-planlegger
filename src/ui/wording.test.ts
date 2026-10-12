@@ -73,8 +73,8 @@ describe('nb.ts wording', () => {
     expect(nb.editor.existingBlockDelete.endsWith('.')).toBe(true);
   });
 
-  it('the Møbler hint says the library comes in the next update; the ghost header has a neutral kind tag', () => {
-    expect(hintFor('furniture')).toBe('Møbelbiblioteket kommer i neste oppdatering.');
+  it('the Møbler hint says how to use the library; the ghost header has a neutral kind tag', () => {
+    expect(hintFor('furniture')).toBe('Trykk på et møbel i listen for å sette det inn, eller dra det inn i planen.');
     expect(nb.plan2d.edit.hintFurniture).toBe(hintFor('furniture'));
     expect(nb.help.toolList.find((t) => t.name === 'Møbler')?.text).toBe(hintFor('furniture'));
     expect(nb.selectionKinds.ghost).toBe('Fra hytta i dag');
@@ -97,13 +97,13 @@ describe('nb.ts wording', () => {
     expect(nb.firstRun.items.some((t) => /det faste grunnlaget/.test(t) && t.includes('«+ Nytt forslag» lager en kopi'))).toBe(true);
   });
 
-  it('second fix round: one name per thing, no English, no furniture before the library exists', () => {
+  it('second fix round: one name per thing, no English; the first-run card names furniture now that the library exists', () => {
     // No English words in any text (the geometry fallback's technical detail is an argument, not part of nb).
     expect(allTexts().filter((t) => /(click|tap|delete|undo|redo|save|load|warning|error|the|and|select|rotate|room|wall|door|window|building)/i.test(t))).toEqual([]);
     // "Nytt bygg": the tool's tooltip names every template the chooser and the help offer.
     for (const u of Object.values(nb.tools.units)) expect(nb.tools.titles.unit.toLowerCase()).toContain(u.name.toLowerCase());
-    // The first-run card does not promise furniture (the library comes in the next update).
-    expect(nb.firstRun.items.join(' ')).not.toMatch(/møbel|møbler/i);
+    // The first-run card names furniture (phase 2b: the library exists).
+    expect(nb.firstRun.items.join(' ')).toMatch(/møbel/i);
     // The same value has the same name in the editor and in the read-only rows; "i dag" rather than "eksisterende".
     expect(nb.properties.fields.sill).toBe(nb.edit.opening.sill);
     expect(nb.properties.fields.risers).toBe(nb.edit.steps.risers);

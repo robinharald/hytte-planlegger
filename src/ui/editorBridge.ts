@@ -287,10 +287,11 @@ export interface UiEditActions {
   setVariantNotes(notes: string): void;
   /** Arrow keys: 1 cm, with Shift 10 cm (one undo step per run, transaction 'nudge:<id>'). */
   nudge(selection: Selection, dx: number, dy: number): void;
-  // Furniture (phase 2b fills in the bodies)
+  // Furniture
   rotateFurniture(furnitureId: Id, degrees: number): void;
   setFurnitureProps(furnitureId: Id, patch: FurniturePatch): void;
-  duplicateFurniture(furnitureId: Id): void;
+  /** The copy's id (the UI selects it), null when refused. */
+  duplicateFurniture(furnitureId: Id): Id | null | void;
   deleteFurniture(furnitureId: Id): void;
 }
 
@@ -341,7 +342,13 @@ export const NOOP_EDIT_ACTIONS: UiEditActions = {
 export function uiEditActionsFrom(core: Omit<UiEditActions, 'rotateBlock'> & Partial<Pick<UiEditActions, 'rotateBlock'>>): UiEditActions {
   const bound = core.rotateBlock;
   const rotateBlock = bound ? (blockId: Id, degrees: 90 | -90) => void bound(blockId, degrees) : noop;
-  return { ...core, rotateBlock };
+  // «Dupliser» / Ctrl+D selects the copy, so it can be dragged away from the original right away.
+  const duplicateFurniture = (furnitureId: Id) => {
+    const id = core.duplicateFurniture(furnitureId);
+    if (typeof id === 'string') appStore.getState().select({ kind: 'furniture', id });
+    return id;
+  };
+  return { ...core, rotateBlock, duplicateFurniture };
 }
 
 export const EditActionsContext = createContext<UiEditActions>(NOOP_EDIT_ACTIONS);

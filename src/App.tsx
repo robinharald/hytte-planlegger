@@ -21,11 +21,12 @@ import { Headline } from './ui/AreaTotals';
 import { Banners } from './ui/Banners';
 import { ErrorBoundary } from './ui/common';
 import { Controls } from './ui/Controls';
-import { HelpDialog, ShareDialog, VersionsDialog } from './ui/Dialogs';
+import { HelpDialog } from './ui/Dialogs';
 import { useEditActions } from './state/editActions';
 import { EditActionsProvider, uiEditActionsFrom, useTool, useUiEditActions } from './ui/editorBridge';
 import type { UiEditActions } from './ui/editorBridge';
 import { FirstRunCard } from './ui/FirstRunCard';
+import { FurnitureLibrary } from './ui/FurnitureLibrary';
 import { HintLine } from './ui/HintLine';
 import { PHONE_QUERY, useKeyboardShortcuts, useMediaQuery, useTestHook } from './ui/hooks';
 import { LibraryPanel, LibrarySheet } from './ui/LibraryPanel';
@@ -102,7 +103,13 @@ function Shell() {
       <TopBar onOpen={setDialog} />
       <Headline />
       <div className="workspace" data-tool={tool}>
-        {library && !isPhone ? <LibraryPanel /> : <Controls isPhone={isPhone} />}
+        {library && !isPhone ? (
+          <LibraryPanel>
+            <FurnitureLibrary />
+          </LibraryPanel>
+        ) : (
+          <Controls isPhone={isPhone} />
+        )}
         <div className="stage-col">
           <Toolbar />
           <HintLine />
@@ -113,11 +120,13 @@ function Shell() {
       </div>
       {isPhone && <SelectionMiniBar />}
       {isPhone && <PropertiesSheet />}
-      {isPhone && library && <LibrarySheet />}
+      {isPhone && library && (
+        <LibrarySheet>
+          <FurnitureLibrary variant="sheet" />
+        </LibrarySheet>
+      )}
       <Toasts />
       {dialog === 'help' && <HelpDialog onClose={closeDialog} />}
-      {dialog === 'share' && <ShareDialog onClose={closeDialog} />}
-      {dialog === 'versions' && !readOnly && <VersionsDialog onClose={closeDialog} />}
     </div>
   );
 }

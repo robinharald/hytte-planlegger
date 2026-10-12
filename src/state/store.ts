@@ -35,7 +35,8 @@
  *    belong to the proposal, `Variant.trees`, copy-on-write in state/editActions.ts.)
  *  - `transactionBase()`: the project at `beginTransaction` (drags are applied from it), null outside a transaction.
  *  - UI state: `tool` ('select' | 'wall' | 'opening' | 'unit' | 'furniture' | 'measure'), `toolOptions`,
- *    `showClearances`, `hint` (the hint line's tool-specific text, null = the tool's default). None of it is persisted.
+ *    `showClearances` (furniture clearance zones in the plan; a persisted pref since 2b), `hint` (the hint line's
+ *    tool-specific text, null = the tool's default). Apart from `showClearances` none of it is persisted.
  *  - `toasts` (top level, never in the history): `showToast` appends one (at most TOAST_LIMIT, the oldest go first;
  *    the same text already on screen is refreshed instead, `seq` bumped so its timer restarts) and returns its id;
  *    `dismissToast(id)`. `undo: true` = an [Angre] button, `action: 'newProposal'` = a "Nytt forslag" button.

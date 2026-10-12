@@ -414,11 +414,11 @@ describe('Møbel', () => {
     };
     const derived = seed.derive(variant);
     render({ kind: 'furniture', id: 'f-1' }, { derived, variant });
-    expect(byTestId('properties-title')?.textContent).toBe('seng-150');
+    // The catalogue's name (phase 2b), Møbel editor = ui/properties/FurnitureProps.tsx.
+    expect(byTestId('properties-title')?.textContent).toBe('Seng 150');
     expect(container.textContent).toContain('Rom: Soverom (ny fløy)');
-    typeInto(input('furniture-width'), '1,8');
-    press(input('furniture-width'), 'Enter');
-    expect(actions.setFurnitureProps).toHaveBeenCalledWith('f-1', { size: { w: 1.8, d: 2, h: 0.5 } });
+    // A bed has one fixed size: no Bredde / Dybde (stretchable items and presets: FurnitureProps.test.tsx).
+    expect(byTestId('furniture-width')).toBeNull();
     click(byTestId('furniture-rotate'));
     expect(actions.rotateFurniture).toHaveBeenCalledWith('f-1', 90);
     click(byTestId('furniture-duplicate'));

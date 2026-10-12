@@ -30,6 +30,16 @@ import { retireResolved, useNewWarningToasts } from './warningToasts';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const initialProject = appStore.getState().project;
+/**
+ * The seed without its furniture (phase 2b furnished it): these tests are about the toasts of walls and rooms, and a
+ * bathroom merged into a bedroom or a wall drawn through a bed adds furniture warnings (tested on their own below).
+ */
+const unfurnished = { ...initialProject, variants: initialProject.variants.map((v) => ({ ...v, furniture: [] })) };
+const startUnfurnished = () => {
+  appStore.getState().replaceProject(unfurnished, { readOnly: false, source: 'local', selection: null, tool: 'select', activeView: 'plan' });
+  appStore.setState({ toasts: [] });
+  act(() => void createNewProposal());
+};
 const core = bindEditActions(appStore);
 const actions = uiEditActionsFrom(core);
 let container: HTMLDivElement;
@@ -108,7 +118,7 @@ describe('"Nytt forslag" and the first-run card', () => {
 });
 
 describe('undo from toasts', () => {
-  beforeEach(() => act(() => void createNewProposal()));
+  beforeEach(startUnfurnished);
 
   it('resize, then a delete that merges two rooms: ONE toast, and its Angre undoes only the delete', () => {
     act(() => void actions.resizeRoom('room-sov-ny', 'd', 2.4, 'min'));
@@ -160,7 +170,7 @@ describe('undo from toasts', () => {
 });
 
 describe('new warnings', () => {
-  beforeEach(() => act(() => void createNewProposal()));
+  beforeEach(startUnfurnished);
 
   it('an edit that makes a new warning shows it once, by name and place, with "Vis"', () => {
     act(() => appStore.setState({ toasts: [] }));
@@ -222,6 +232,23 @@ describe('new warnings', () => {
     expect(warningToastEls()).toHaveLength(1);
     expect(warningToastEls()[0].text).toContain('overlapper hverandre');
     expect(document.querySelectorAll('[data-testid="toast-show-warnings"]')).toHaveLength(1);
+  });
+
+  it('furnished seed: merging Bad into Soverom 1 gives the delete toast and ONE warning toast (the toilet needs a wet room)', () => {
+    appStore.getState().replaceProject(initialProject, { readOnly: false, source: 'local', selection: null, tool: 'select', activeView: 'plan' });
+    act(() => void createNewProposal());
+    act(() => appStore.setState({ toasts: [] }));
+    deleteWall('w-104-103');
+    // Two toasts on screen: the delete (merged with the room merge, one Angre) and the new warnings (with "Vis").
+    expect(toastEls().map((t) => t.querySelector('.toast-text')?.textContent)).toEqual([`Slettet. ${nb.editor.merged('Soverom 1', 'Bad')}`, expect.stringMatching(/trenger sluk|nye advarsler/)]);
+    expect(document.querySelectorAll('[data-testid="toast-undo"]')).toHaveLength(1);
+    expect(warningToastEls()).toHaveLength(1);
+    const kinds = deriveForState(appStore.getState()).warnings.map((w) => w.kind);
+    expect(kinds).toContain('furniture-needs-wet-room');
+    // Angre on the delete: the rooms come back and the warning toast goes with its warnings.
+    click(byTestId('toast-undo'));
+    expect(deriveForState(appStore.getState()).warnings).toEqual([]);
+    expect(warningToastEls()).toHaveLength(0);
   });
 
   it('a warning toast is closed as soon as none of the warnings it announced is left, even without a new step', () => {

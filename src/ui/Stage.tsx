@@ -8,8 +8,12 @@
  * Phase 2: the plan gets the editing props (docs/phase2-plan.md §3.6 `PlanViewProps` += editable, tool, toolOptions,
  * editActions, overlay): editable unless read-only or on the locked base proposal; the tool and its options from the
  * store; the editor core's bound actions; the Egenskaper focus highlight (overlay.ts); the phone mini-bar anchor
- * (`setSelectionAnchor`); the plan's own hint texts (`ui.hint`) and its "back to Velg" after a placement. A
- * furniture item clicked or dropped onto the plan is added with `addFurniture` and selected.
+ * (`setSelectionAnchor`); the plan's own hint texts (`ui.hint`) and its "back to Velg" after a placement.
+ *
+ * Phase 2b: a library item dropped on the plan (or placed with the plan's Møbler tool) and one dropped on the 3D view
+ * go through the same placer as the library's tap (`useFurniturePlacer`, ui/furniturePlacer.ts): back to the nearest
+ * wall within the snap reach, the room's level, selected. A 3D drop passes the level of the floor it hit
+ * (view3d/furnitureBuilders.ts `furnitureDropLevel`, imported lazily so three.js stays out of the main bundle).
  *
  * Fix round after 2a:
  *  - 3D colours: the 3D view has its own switch, `highlightNew3d` ("Vis hva som er nytt i 3D", off by default:
@@ -33,6 +37,8 @@ import { isVariantLocked, setTool, showLockedToast } from './editorBridge';
 import type { ToolKind } from './editorBridge';
 import { PHONE_QUERY, useMediaQuery, useSun, WIDE_QUERY } from './hooks';
 import { setSelectionAnchor, usePanelHighlight, useSheetInset } from './overlay';
+import { useFurniturePlacer } from './useFurniturePlacer';
+import type { DropHit } from '../view3d/drop';
 import { planInsets } from './planInsets';
 import { toolbarBottom } from './reveal';
 import type { Vec2 } from '../model/types';
@@ -76,6 +82,15 @@ function usePlanInsets(isPhone: boolean, paneRef: RefObject<HTMLElement | null>)
 
 function Pane3D(props: { hidden: boolean; onReady: () => void }) {
   const derived = useDerived();
+  const place = useFurniturePlacer();
+  const onDropFurniture = useCallback(
+    (catalogId: string, at: Vec2, hit: DropHit) => {
+      void import('../view3d/furnitureBuilders').then(({ furnitureDropLevel }) => {
+        place(catalogId, { kind: 'drop', at, levelId: furnitureDropLevel(derived, hit) });
+      });
+    },
+    [place, derived],
+  );
   const site = useAppStore((s) => s.project.site);
   const sun = useSun();
   const ui = useAppStore(
@@ -110,6 +125,7 @@ function Pane3D(props: { hidden: boolean; onReady: () => void }) {
             selection={ui.selection}
             onSelect={onSelect}
             onReady={props.onReady}
+            onDropFurniture={onDropFurniture}
           />
         </Suspense>
       </ErrorBoundary>
@@ -136,18 +152,13 @@ function PanePlan(props: { hidden: boolean }) {
     })),
   );
   const actions = useEditActions();
+  const place = useFurniturePlacer();
   const highlight = usePanelHighlight();
   const overlay = useMemo(() => ({ highlight }), [highlight]);
   const isPhone = useMediaQuery(PHONE_QUERY);
   const paneRef = useRef<HTMLElement>(null);
   const insets = usePlanInsets(isPhone, paneRef);
-  const onDropFurniture = useCallback(
-    (catalogId: string, at: Vec2) => {
-      const id = actions.addFurniture(catalogId, at);
-      if (id) appStore.getState().select({ kind: 'furniture', id });
-    },
-    [actions],
-  );
+  const onDropFurniture = useCallback((catalogId: string, at: Vec2) => void place(catalogId, { kind: 'drop', at }), [place]);
   return (
     <section ref={paneRef} className={`pane pane-plan${props.hidden ? ' is-hidden' : ''}`} aria-label={nb.a11y.planView} aria-hidden={props.hidden}>
       <ErrorBoundary resetKey={derived.variantId} fallback={(error, reset) => <PaneError error={error} reset={reset} />}>
