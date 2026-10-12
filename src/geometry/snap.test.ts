@@ -212,3 +212,90 @@ describe('rays and chips', () => {
     expect(roundTo(0.30000000000000004, 0.1)).toBe(0.3);
   });
 });
+
+describe('drags carry their start (second fix round: snapping still fought short drags)', () => {
+  type V = [number, number];
+  const withOrigin = (origin: { point?: V; polygon?: V[] }) => buildSnapContext(derived, { storeyId: 'ground', origin });
+  const rect = (x0: number, y0: number, x1: number, y1: number): V[] => [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+  const moved = (poly: V[], d: V): V[] => poly.map(([x, y]) => [x + d[0], y + d[1]]);
+
+  it('buildSnapContext keeps the origin; without one nothing changes', () => {
+    expect(withOrigin({ point: [3, 4] }).origin).toEqual({ point: [3, 4] });
+    expect(ctx.origin).toBeUndefined();
+  });
+
+  it('snap: no point target at the start or coincident with it (a neighbour end that met the dragged end)', () => {
+    // A wall end that started at (3, 4), where w-1 ends, dragged to (3,1; 4,33): before, (3, 4) pulled it back.
+    expect(snap(ctx, [3.1, 4.33], { radius: 0.5 })).toMatchObject({ kind: 'point', point: [3, 4] });
+    expect(snap(withOrigin({ point: [3, 4] }), [3.1, 4.33], { radius: 0.5 })).toMatchObject({ kind: 'line', point: [3, 4.3] });
+  });
+
+  it('snap: point targets reach at most 0,25 m in a drag (the full radius without one)', () => {
+    expect(snap(ctx, [3.3, 4.3], { radius: 1 })).toMatchObject({ kind: 'point', point: [3, 4] });
+    expect(snap(withOrigin({ point: [5, 5] }), [3.3, 4.3], { radius: 1 })).toMatchObject({ kind: 'grid', point: [3.3, 4.3] });
+  });
+
+  it('snap: no target (point, intersection, line) takes back more than half of the drag', () => {
+    // Dragged 0,42 m east from (2,8; 4): the corner (3, 4) and w-1's line would take back 0,22 m; the block edge
+    // under the pointer keeps it.
+    expect(snap(ctx, [3.22, 4], { radius: 0.5 })).toMatchObject({ kind: 'point', point: [3, 4] });
+    expect(snap(withOrigin({ point: [2.8, 4] }), [3.22, 4], { radius: 0.5 })).toMatchObject({ kind: 'line', point: [3.2, 4] });
+    // Taking back less than half is fine: dragged 0,4 m, the corner 0,2 m back.
+    expect(snap(withOrigin({ point: [2.8, 4] }), [3.2, 4], { radius: 0.5 })).toMatchObject({ kind: 'point', point: [3, 4] });
+    // The ortho guide through `from` too: a wall end dragged 0,36 m off its line stays off it.
+    const end = snap(withOrigin({ point: [6, 2] }), [6, 2.36], { radius: 0.5, from: [1, 2] });
+    expect(end.point[1]).toBeCloseTo(2.4, 9);
+    expect(snap(ctx, [6, 2.36], { radius: 0.5, from: [1, 2] }).point[1]).toBeCloseTo(2, 9);
+  });
+
+  it('snap: Alt turns point targets off in a drag (they stay for the placement tools)', () => {
+    expect(snap(ctx, [3.1, 4.1], { radius: 0.5, fine: true })).toMatchObject({ kind: 'point', point: [3, 4] });
+    expect(snap(withOrigin({ point: [5, 5] }), [3.1, 4.1], { radius: 0.5, fine: true })).toMatchObject({ kind: 'grid', point: [3.1, 4.1] });
+  });
+
+  it("snapPolygon: the polygon's own starting line is no target (a unit against the block moved 0,2 m away)", () => {
+    const start = rect(6, 1, 8, 2.5);
+    expect(snapPolygon(ctx, moved(start, [0.2, 0]), { radius: 0.3 }).delta[0]).toBeCloseTo(-0.2, 9);
+    const d = snapPolygon(withOrigin({ polygon: start }), moved(start, [0.2, 0]), { radius: 0.3 }).delta;
+    expect(Math.abs(d[0]) + Math.abs(d[1])).toBeCloseTo(0, 9);
+  });
+
+  it('snapPolygon: never takes back more than half of the drag, never adds more than half of it', () => {
+    // 5 cm from the block's east edge, dragged 0,15 m east: the edge would take back 0,2 m.
+    const near = rect(6.05, 1, 8.05, 2.5);
+    expect(snapPolygon(ctx, moved(near, [0.15, 0]), { radius: 0.3 }).delta[0]).toBeCloseTo(-0.2, 9);
+    expect(snapPolygon(withOrigin({ polygon: near }), moved(near, [0.15, 0]), { radius: 0.3 }).delta[0]).toBeCloseTo(0, 9);
+    // 0,5 m from it, dragged 0,3 m west: the edge 0,2 m ahead would add two thirds of the drag; 0,4 m west: a half.
+    const far = rect(6.5, 1, 8.5, 2.5);
+    expect(snapPolygon(ctx, moved(far, [-0.3, 0]), { radius: 0.3 }).delta[0]).toBeCloseTo(-0.2, 9);
+    expect(snapPolygon(withOrigin({ polygon: far }), moved(far, [-0.3, 0]), { radius: 0.3 }).delta[0]).toBeCloseTo(0, 9);
+    expect(snapPolygon(withOrigin({ polygon: far }), moved(far, [-0.4, 0]), { radius: 0.3 }).delta[0]).toBeCloseTo(-0.1, 9);
+  });
+
+  it('snapPolygon: targets reach at most 0,25 m (placement too); an axis moved less than 5 cm stays put', () => {
+    const unit = rect(6.3, 0.05, 8.3, 1.55);
+    expect(snapPolygon(ctx, unit, { radius: 1 }).delta[0]).toBeCloseTo(0, 9);
+    expect(snapPolygon(ctx, rect(6.2, 0.05, 8.2, 1.55), { radius: 1 }).delta[0]).toBeCloseTo(-0.2, 9);
+    // A 1 m drag west with 3 cm of wobble in y: y goes back to its start (off the grid), x to the grid.
+    const start = rect(10.03, 10.07, 12.03, 11.57);
+    const d = snapPolygon(withOrigin({ polygon: start }), moved(start, [-1.04, 0.03]), { radius: 0.3 }).delta;
+    expect(d[1]).toBeCloseTo(-0.03, 9);
+    expect(d[0]).toBeCloseTo(0.01, 9);
+  });
+
+  it('snapCircle: a hot tub touching a deck edge, moved 0,2 m off it, does not snap back', () => {
+    expect(snapCircle(ctx, [3, -2.8], 1, { radius: 0.3 }).point[1]).toBeCloseTo(-3, 9);
+    expect(snapCircle(withOrigin({ point: [3, -3] }), [3, -2.8], 1, { radius: 0.3 }).point[1]).toBeCloseTo(-2.8, 9);
+  });
+
+  it('snapFootprint: furniture backed onto a wall, moved 0,2 m off it, does not snap back', () => {
+    const start = rect(3.06, 1, 4.06, 1.5);
+    expect(snapFootprint(ctx, moved(start, [0.2, 0]), { radius: 0.3, excludeIds: new Set(['f-1']) }).delta[0]).toBeCloseTo(-0.2, 9);
+    expect(snapFootprint(withOrigin({ polygon: start }), moved(start, [0.2, 0]), { radius: 0.3, excludeIds: new Set(['f-1']) }).delta[0]).toBeCloseTo(0, 9);
+  });
+});

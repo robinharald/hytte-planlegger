@@ -1211,6 +1211,51 @@ function edgeTarget(derived: DerivedVariant, blockId: Id, edgeId: Id): DragTarge
 }
 
 /**
+ * The snap context of a drag session: the storey's targets without the dragged element (`target.exclude`) and the
+ * dragged element's start (`origin`: the point `updateDrag` snaps — a wall end, a free wall's end a, a block / deck
+ * vertex, the hot tub's centre — or the polygon it moves — a block, a deck, a furniture footprint), so geometry/snap.ts
+ * never pulls a short drag back to where it started, nor adds or takes back much of it (fix round 2 after phase 2a).
+ */
+function dragSnapContext(variant: Variant, derived: DerivedVariant, storeyId: Id, target: DragTarget, handle: DragHandle | undefined): SnapContext {
+  const origin = ((): { point?: Vec2; polygon?: Vec2[] } | undefined => {
+    switch (target.kind) {
+      case 'wall':
+      case 'wallEndpoint': {
+        const w = variant.walls.find((x) => x.id === target.targetId);
+        return w ? { point: copy(target.kind === 'wallEndpoint' && handle === 'b' ? w.b : w.a) } : undefined;
+      }
+      case 'blockVertex': {
+        const v = variant.blocks.find((b) => b.id === target.ownerId)?.polygon.find((x) => x.id === target.targetId);
+        return v ? { point: copy(v.p) } : undefined;
+      }
+      case 'block': {
+        const b = variant.blocks.find((x) => x.id === target.ownerId);
+        return b ? { polygon: b.polygon.map((x) => copy(x.p)) } : undefined;
+      }
+      case 'deckVertex': {
+        const v = variant.outdoor.decks.find((d) => d.id === target.ownerId)?.polygon.find((x) => x.id === target.targetId);
+        return v ? { point: copy(v.p) } : undefined;
+      }
+      case 'deck': {
+        const d = variant.outdoor.decks.find((x) => x.id === target.targetId);
+        return d ? { polygon: d.polygon.map((x) => copy(x.p)) } : undefined;
+      }
+      case 'hotTub': {
+        const t = variant.outdoor.hotTubs.find((x) => x.id === target.targetId);
+        return t ? { point: copy(t.centre) } : undefined;
+      }
+      case 'furniture': {
+        const f = derived.furniture.find((x) => x.id === target.targetId);
+        return f ? { polygon: f.footprint.map(copy) } : undefined;
+      }
+      default:
+        return undefined;
+    }
+  })();
+  return buildSnapContext(derived, { storeyId, exclude: target.exclude, origin });
+}
+
+/**
  * Start dragging the selection (or one of its handles) at `pointer` (plan metres). Opens a transaction; returns null
  * when nothing can be dragged (the plan then pans) or when refused (locked variant / whole existing block: toast).
  */
@@ -1257,7 +1302,7 @@ export function beginDrag(
       base,
       baseVariant: inserted,
       baseDerived: derived,
-      snapCtx: buildSnapContext(derived, { storeyId, exclude: [vid, `${deck.id}/${vid}`, `${deck.id}/${prev}`] }),
+      snapCtx: buildSnapContext(derived, { storeyId, exclude: [vid, `${deck.id}/${vid}`, `${deck.id}/${prev}`], origin: { point: copy(pointer) } }),
       start: copy(pointer),
       storeyId,
       radius: opts.snapRadiusM ?? DEFAULT_SNAP_RADIUS,
@@ -1284,7 +1329,7 @@ export function beginDrag(
     base: store.getState().transactionBase() ?? s.project,
     baseVariant: variant,
     baseDerived: derived,
-    snapCtx: buildSnapContext(derived, { storeyId, exclude: target.exclude }),
+    snapCtx: dragSnapContext(variant, derived, storeyId, target, handle),
     start: copy(pointer),
     storeyId,
     radius: opts.snapRadiusM ?? DEFAULT_SNAP_RADIUS,

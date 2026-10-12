@@ -16,7 +16,21 @@
  * Line snapping is gentle so short drags are not pulled back (UX review of phase 2a): target lines (wall lines, block
  * axis edges, deck edges, their extensions and perpendiculars) only reach `min(radius, LINE_SNAP_MAX_M)` — the UI's
  * 12 / 24 px are about 0.5 / 2 m when zoomed out — and `fine` (Alt, "fest til 1 cm") turns them off altogether, not
- * only the 10 cm grid. Point targets and the ortho guides through `from` keep the full radius.
+ * only the 10 cm grid. With no drag (the placement tools) point targets and the ortho guides through `from` keep the
+ * full radius.
+ *
+ * Drags (second fix round): a drag session's context carries the dragged element's start (`SnapContext.origin`:
+ * the dragged point, or the moved polygon), and then
+ *  - `snap` (wall ends, block / deck vertices, a free wall): no point target at the start or coincident with it
+ *    (a neighbour's end that met the dragged end), point targets reach at most LINE_SNAP_MAX_M too, Alt turns point
+ *    targets off as well, and no target (point, intersection, line, ortho guide) may take back more than half of
+ *    the drag (measured along the drag);
+ *  - `snapPolygon`, `snapFootprint`, `snapCircle` (unit / block / deck moves, furniture, the hot tub): per direction
+ *    of a target (the normal of a polygon edge or deck edge), a target reaches at most LINE_SNAP_MAX_M, is no target
+ *    when it would put the edge back on its own starting line, never takes back more than half of the drag along
+ *    that direction and never adds more than SNAP_ADD_FRACTION of it; an axis direction the drag has moved less than
+ *    START_HOLD_M stays at its start (no grid jump, no sideways snap; not with Alt).
+ * Unit placement (no drag) gets the LINE_SNAP_MAX_M reach only.
  *
  * Other snaps
  *  - `snapLineOffset`: a line dragged across itself (wall move, block / deck edge move): its perpendicular position
@@ -51,6 +65,8 @@ export const LINE_SNAP_MAX_M = 0.25;
 export const START_HOLD_M = 0.05;
 /** Targets this close (m) to a dragged line's start count as collinear with it (`snapLineOffset`). */
 export const COLLINEAR_EPS = 0.005;
+/** A polygon / footprint / circle snap never adds more than this fraction of the drag (along its direction). */
+export const SNAP_ADD_FRACTION = 0.5;
 /** Lines closer than this (sin of the angle) to parallel are parallel. */
 const PARALLEL_SIN = Math.sin((0.5 * Math.PI) / 180);
 const TINY = 1e-9;
@@ -86,8 +102,18 @@ export interface SnapObstacle {
   polygon: Vec2[];
 }
 
+/** The dragged element's starting geometry (drag sessions; see the header). */
+export interface SnapOrigin {
+  /** Start of the dragged point (`snap`: a wall end, a free wall's end a, a block / deck vertex; `snapCircle`: the centre). */
+  point?: Vec2;
+  /** Start of the moved polygon (`snapPolygon`, `snapFootprint`: the same vertices in the same order). */
+  polygon?: Vec2[];
+}
+
 export interface SnapContext {
   storeyId: Id;
+  /** The dragged element's start (drag sessions only): turns on the drag rules of the header. */
+  origin?: SnapOrigin;
   points: SnapPointTarget[];
   /** Wall reference lines, block axis edges, deck edges. */
   lines: SnapLineTarget[];
@@ -128,12 +154,14 @@ export interface SnapContextOptions {
   storeyId: Id;
   /** Ids left out: stored wall ids, block ids, `${blockId}/${vertexId}`, deck ids, deck vertex ids, furniture ids. */
   exclude?: Iterable<Id>;
+  /** A drag session's dragged element at pointer-down (see the header). */
+  origin?: SnapOrigin;
 }
 
 export interface SnapOptions {
-  /** Snap radius in plan metres (target lines: at most LINE_SNAP_MAX_M). */
+  /** Snap radius in plan metres (target lines, and point targets in a drag: at most LINE_SNAP_MAX_M). */
   radius: number;
-  /** Alt: 0.01 m grid and no target lines (points and the ortho guides through `from` stay). */
+  /** Alt: 0.01 m grid and no target lines (points stay, except in a drag; the ortho guides through `from` stay). */
   fine?: boolean;
   /** Snap to the grid when nothing else is near (default true). */
   grid?: boolean;
@@ -197,6 +225,7 @@ function axisOf(u: Vec2): 0 | 1 | null {
 export function buildSnapContext(derived: DerivedVariant, opts: SnapContextOptions): SnapContext {
   const exclude = new Set(opts.exclude ?? []);
   const ctx: SnapContext = { storeyId: opts.storeyId, points: [], lines: [], axisLines: [], faces: [], walls: [], furniture: [] };
+  if (opts.origin) ctx.origin = { ...(opts.origin.point ? { point: opts.origin.point } : {}), ...(opts.origin.polygon ? { polygon: opts.origin.polygon } : {}) };
   const storeyOfLevel = new Map(derived.levels.map((l) => [l.id, l.storeyId]));
 
   for (const w of derived.walls) {
@@ -308,6 +337,18 @@ function lineCandidates(ctx: SnapContext, p: Vec2, opts: SnapOptions): LineCand[
 
 const projectOnLine = (p: Vec2, o: Vec2, u: Vec2): Vec2 => add(o, scale(u, dot(sub(p, o), u)));
 
+/**
+ * Drags: does a snapped point q keep at least half of the drag from `origin` to the pointer p (measured along the
+ * drag)? Always true without an origin or before the pointer has moved.
+ */
+function dragKeeps(origin: Vec2 | undefined, p: Vec2): (q: Vec2) => boolean {
+  if (!origin) return () => true;
+  const drag = sub(p, origin);
+  const l2 = dot(drag, drag);
+  if (l2 < TINY) return () => true;
+  return (q) => dot(sub(q, origin), drag) >= l2 / 2 - 1e-12;
+}
+
 function lengthChip(from: Vec2 | undefined, point: Vec2): DimensionChip[] {
   if (!from) return [];
   const l = dist(from, point);
@@ -321,12 +362,16 @@ function lengthChip(from: Vec2 | undefined, point: Vec2): DimensionChip[] {
 export function snap(ctx: SnapContext, p: Vec2, opts: SnapOptions): SnapResult {
   const r = opts.radius;
   const chipsFor = (point: Vec2) => (opts.from ? lengthChip(opts.from, point) : chipsAt(ctx, point));
+  // A drag (the context knows where the dragged point started): see the header.
+  const origin = ctx.origin?.point;
+  const keeps = dragKeeps(origin, p);
 
-  if (opts.points !== false) {
+  if (opts.points !== false && !(origin && opts.fine === true)) {
     // Nearest; on a tie the first listed (wall ends, then block vertices, midpoints, deck vertices).
     let best: SnapPointTarget | null = null;
-    let bestD = r;
+    let bestD = origin ? Math.min(r, LINE_SNAP_MAX_M) : r;
     for (const t of ctx.points) {
+      if (origin && (dist(t.p, origin) <= COLLINEAR_EPS || !keeps(t.p))) continue;
       const d = dist(t.p, p);
       if (best === null ? d <= bestD : d < bestD - 1e-12) {
         best = t;
@@ -349,7 +394,7 @@ export function snap(ctx: SnapContext, p: Vec2, opts: SnapOptions): SnapResult {
       const c2 = cands[j];
       if (parallel(c1.u, c2.u)) continue;
       const x = lineIntersection(c1.o, c1.u, c2.o, c2.u);
-      if (!x) continue;
+      if (!x || !keeps(x)) continue;
       const d = dist(x, p);
       if (d <= bestXD) {
         bestX = { point: x, c1, c2 };
@@ -364,8 +409,8 @@ export function snap(ctx: SnapContext, p: Vec2, opts: SnapOptions): SnapResult {
     return { point, kind: 'intersection', indicators, chips: chipsFor(point) };
   }
 
-  if (cands.length > 0) {
-    const c = cands.reduce((m, x) => (x.d < m.d ? x : m));
+  // The nearest candidate line whose point does not take back too much of a drag.
+  for (const c of [...cands].sort((x, y) => x.d - y.d)) {
     let point = projectOnLine(p, c.o, c.u);
     if (opts.grid !== false) {
       const ax = axisOf(c.u);
@@ -373,6 +418,7 @@ export function snap(ctx: SnapContext, p: Vec2, opts: SnapOptions): SnapResult {
       if (ax === 0) point = [roundTo(point[0], step), point[1]];
       else if (ax === 1) point = [point[0], roundTo(point[1], step)];
     }
+    if (!keeps(point)) continue;
     const indicators: SnapIndicator[] = [{ kind: c.kind, a: c.anchor, b: point }];
     return { point, kind: 'line', indicators, chips: chipsFor(point) };
   }
@@ -468,26 +514,62 @@ export function snapLineOffset(
 interface DirSnap {
   n: Vec2;
   g: number;
-  guide: [Vec2, Vec2];
+  /** Guide drawn when used; null for a hold (the direction stays where the drag started). */
+  guide: [Vec2, Vec2] | null;
 }
 
-/** Translation satisfying up to two directional snaps (non-parallel), grid elsewhere when `gridRef` is given. */
-function combine(snaps: DirSnap[], radius: number, gridRef: Vec2 | null, fine: boolean | undefined): { delta: Vec2; indicators: SnapIndicator[] } {
-  const ok = snaps.filter((s) => Math.abs(s.g) <= radius).sort((x, y) => Math.abs(x.g) - Math.abs(y.g));
+/**
+ * The directional snaps a move may use: within `min(radius, LINE_SNAP_MAX_M)`, and with a drag (`drag` = the
+ * translation from the start, see the header) none that puts an edge back on its own starting line, takes back more
+ * than half of the drag along its direction or adds more than SNAP_ADD_FRACTION of it. Then, unless `fine`, a hold
+ * for every axis the drag has moved less than START_HOLD_M along; holds come first and push out the snaps parallel
+ * to them.
+ */
+function dragSnaps(snaps: DirSnap[], radius: number, drag: Vec2 | null, fine: boolean | undefined): DirSnap[] {
+  const reach = Math.min(radius, LINE_SNAP_MAX_M);
+  const ok = snaps.filter((s) => {
+    if (Math.abs(s.g) > reach) return false;
+    if (!drag) return true;
+    const along = dot(drag, s.n);
+    if (Math.abs(s.g + along) <= COLLINEAR_EPS) return false;
+    if (s.g * along < 0) return Math.abs(s.g) <= Math.abs(along) / 2 + 1e-12;
+    return Math.abs(s.g) <= SNAP_ADD_FRACTION * Math.abs(along) + 1e-12;
+  });
+  if (!drag || fine === true) return ok;
+  const holds: DirSnap[] = [];
+  for (const n of [
+    [1, 0],
+    [0, 1],
+  ] as Vec2[]) {
+    if (Math.abs(dot(drag, n)) <= START_HOLD_M) holds.push({ n, g: -dot(drag, n), guide: null });
+  }
+  return [...holds, ...ok.filter((s) => !holds.some((h) => parallel(h.n, s.n)))];
+}
+
+/**
+ * Translation satisfying up to two directional snaps (non-parallel; holds first, then the smallest), grid elsewhere
+ * when `gridRef` is given. `snaps` are already filtered (`dragSnaps`).
+ */
+function combine(snaps: DirSnap[], gridRef: Vec2 | null, fine: boolean | undefined): { delta: Vec2; indicators: SnapIndicator[] } {
+  const ok = [...snaps].sort((x, y) => (x.guide === null ? 0 : 1) - (y.guide === null ? 0 : 1) || Math.abs(x.g) - Math.abs(y.g));
   const first = ok[0];
   const second = first ? ok.find((s) => !parallel(s.n, first.n)) : undefined;
   const indicators: SnapIndicator[] = [];
+  const guide = (s: DirSnap) => {
+    if (s.guide) indicators.push({ kind: 'align', a: s.guide[0], b: s.guide[1] });
+  };
   const step = gridStep(fine);
   if (first && second) {
     // Solve dot(delta, n1) = g1, dot(delta, n2) = g2.
     const det = cross(first.n, second.n);
     const delta: Vec2 = [(first.g * second.n[1] - second.g * first.n[1]) / det, (first.n[0] * second.g - second.n[0] * first.g) / det];
-    indicators.push({ kind: 'align', a: first.guide[0], b: first.guide[1] }, { kind: 'align', a: second.guide[0], b: second.guide[1] });
+    guide(first);
+    guide(second);
     return { delta, indicators };
   }
   if (first) {
     let delta = scale(first.n, first.g);
-    indicators.push({ kind: 'align', a: first.guide[0], b: first.guide[1] });
+    guide(first);
     if (gridRef) {
       const t = leftNormal(first.n);
       const ax = axisOf(t);
@@ -534,9 +616,16 @@ function overlapAlong(a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2, slack: number): bo
   return t1 >= s0 - slack && t0 <= s1 + slack;
 }
 
+/** A move's translation from the context's starting polygon (same vertex count), or null (no drag). */
+function polygonDrag(ctx: SnapContext, poly: Vec2[]): Vec2 | null {
+  const start = ctx.origin?.polygon;
+  return start && start.length === poly.length && poly.length > 0 ? sub(poly[0], start[0]) : null;
+}
+
 /**
  * Snap a polygon moved as a whole, axis to axis: each edge to parallel block axis edges / deck edges overlapping it
- * along the line (both directions combined, grid for the rest). Returns the translation to add.
+ * along the line (both directions combined, grid for the rest; reach and drag rules: the header). Returns the
+ * translation to add.
  */
 export function snapPolygon(
   ctx: SnapContext,
@@ -554,12 +643,12 @@ export function snapPolygon(
       snaps.push({ n: e.n, g, guide: [t.a, t.b] });
     }
   }
-  return combine(snaps, opts.radius, opts.grid === false ? null : poly[0], opts.fine);
+  return combine(dragSnaps(snaps, opts.radius, polygonDrag(ctx, poly), opts.fine), opts.grid === false ? null : poly[0], opts.fine);
 }
 
 /**
  * Furniture: back-to-wall (an edge against a wall face that faces it, 0 gap) and edge-to-edge with other furniture
- * (`excludeIds` = the moved item). Directions without a snap stay free (no grid).
+ * (`excludeIds` = the moved item). Directions without a snap stay free (no grid). Reach and drag rules: the header.
  */
 export function snapFootprint(
   ctx: SnapContext,
@@ -583,10 +672,10 @@ export function snapFootprint(
       }
     }
   }
-  return combine(snaps, opts.radius, null, false);
+  return combine(dragSnaps(snaps, opts.radius, polygonDrag(ctx, poly), false), null, false);
 }
 
-/** Hot tub: the rim touches deck edges from the inside (up to two edges), else the grid. */
+/** Hot tub: the rim touches deck edges from the inside (up to two edges), else the grid (reach and drag rules: the header). */
 export function snapCircle(
   ctx: SnapContext,
   centre: Vec2,
@@ -608,7 +697,8 @@ export function snapCircle(
     const g = r - Math.abs(signed); // move along n by g
     snaps.push({ n, g, guide: [t.a, t.b] });
   }
-  const res = combine(snaps, opts.radius, opts.grid === false ? null : centre, opts.fine);
+  const start = ctx.origin?.point;
+  const res = combine(dragSnaps(snaps, opts.radius, start ? sub(centre, start) : null, opts.fine), opts.grid === false ? null : centre, opts.fine);
   return { point: add(centre, res.delta), indicators: res.indicators };
 }
 
