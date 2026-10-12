@@ -7,99 +7,39 @@
  *   'inne-stua' camera: the roofs seen from inside the living room), 3d-inne-stua.png, plan-hems.png, phone.png
  *
  * Preconditions: Chromium installed (`npx playwright install chromium`); the dev server is started by
- * playwright.config.ts or reused. The UI exposes `window.__hytte = { ready, project, derived }` and the
- * data-testids listed in docs/architecture.md ("Test hooks the UI must provide").
+ * playwright.config.ts or reused. The UI exposes `window.__hytte = { ready, project, derived, selection }` and the
+ * data-testids listed in docs/architecture.md ("Test hooks the UI must provide"). The editing flows are in
+ * editing.spec.ts (desktop) and phone-editing.spec.ts (the iPhone project).
  */
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { DerivedVariant } from '../src/model/derived';
+import { expect, test, type Page } from '@playwright/test';
 import { createForslagD, SEED_REVISION } from '../src/model/seed/forslagD';
-import type { Project, Vec2 } from '../src/model/types';
+import type { DeckVertex, Vec2 } from '../src/model/types';
+import { collectPageErrors, type HytteWindow, loadAndWaitReady, PLAN_SETTLE_MS, SETTLE_MS, shoot, skipFirstRun } from './helpers';
 
-/** Shape of the test hook the UI keeps on window. */
-interface HytteHook {
-  ready: boolean;
-  project: Project;
-  derived: DerivedVariant;
-}
-type HytteWindow = Window & { __hytte?: Partial<HytteHook> };
-
-const SCREENSHOT_DIR = fileURLToPath(new URL('./screenshots/', import.meta.url));
-const READY_TIMEOUT_MS = 60_000;
-/** Camera transitions take ~900 ms; give SwiftShader some slack on top. */
-const SETTLE_MS = 1_500;
-/** The SVG plan is synchronous, but webfonts and labels may still be settling. */
-const PLAN_SETTLE_MS = 500;
-
-test.beforeAll(() => {
-  mkdirSync(SCREENSHOT_DIR, { recursive: true });
-});
-
-/** Collects uncaught exceptions thrown by the page; a smoke test should see none. */
-function collectPageErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
-
-/** Loads '/', waits until the UI reports ready (first 3D frame rendered) and checks the derive pipeline is real. */
-async function loadAndWaitReady(page: Page): Promise<void> {
-  await page.goto('/');
-  try {
-    await page.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, {
-      timeout: READY_TIMEOUT_MS,
-      polling: 250,
-    });
-  } catch (err) {
-    throw new Error(
-      `window.__hytte.ready did not become true within ${READY_TIMEOUT_MS / 1000} s. ` +
-        'The UI must set window.__hytte = { ready, project, derived } and flip ready after the first 3D frame ' +
-        '(View3D onReady). Is the 3D view mounted at start-up?',
-      { cause: err },
-    );
-  }
-  await page.evaluate(() => document.fonts.ready);
-  await assertDeriveIsNotStub(page);
-}
-
-/**
- * A 'generic' warning comes from the derive stub, a failed derive (useDerived.ts) or a geometry fallback
- * (polygon clipping failed somewhere, derive.ts GEOMETRY_FALLBACK); the seed must produce none of them.
- */
-async function assertDeriveIsNotStub(page: Page): Promise<void> {
-  const generic = await page.evaluate(() =>
-    ((window as HytteWindow).__hytte?.derived?.warnings ?? []).flatMap((w) => (w.kind === 'generic' ? [w.message] : [])),
-  );
-  expect(
-    generic,
-    `derived.warnings contains a 'generic' warning (${generic.join('; ')}): the derive pipeline failed, fell back ` +
-      'to simplified geometry, or src/geometry/derive.ts is still the stub.',
-  ).toEqual([]);
-}
-
-/** The active variant's terrace: its westmost x and the railing's step gaps (from the project on screen). */
-async function activeDeck(page: Page): Promise<{ seedRevision: number; variants: string[]; active: string; deckMinX: number; gaps: [number, number][] }> {
+/** The active variant's terrace: its westmost x and its steps as [from, to] along their edge (from the project on screen). */
+async function activeDeck(page: Page): Promise<{
+  seedRevision: number;
+  variants: string[];
+  active: string;
+  locked: boolean;
+  deckMinX: number;
+  steps: { edgeId: string; span: [number, number] }[];
+}> {
   return page.evaluate(() => {
     const p = (window as HytteWindow).__hytte?.project;
     if (!p) throw new Error('window.__hytte.project is missing');
     const v = p.variants.find((x) => x.id === p.activeVariantId) ?? p.variants[0];
+    const deck = v.outdoor.decks[0];
+    const r = (n: number) => Math.round(n * 100) / 100;
     return {
       seedRevision: p.seedRevision,
       variants: p.variants.map((x) => x.name),
       active: v.name,
-      deckMinX: Math.min(...v.outdoor.decks[0].polygon.map((q) => q[0])),
-      gaps: v.outdoor.railings[0].gaps.map((g): [number, number] => [g.from, g.to]),
+      locked: v.locked === true,
+      deckMinX: Math.min(...deck.polygon.map((q) => q.p[0])),
+      steps: deck.steps.map((s) => ({ edgeId: s.edgeId, span: [r(s.offset - s.width / 2), r(s.offset + s.width / 2)] as [number, number] })),
     };
   });
-}
-
-/** Viewport screenshot into e2e/screenshots/<name>.png, also attached to the report. */
-async function shoot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
-  const file = join(SCREENSHOT_DIR, `${name}.png`);
-  await page.screenshot({ path: file, fullPage: false, animations: 'disabled' });
-  await testInfo.attach(name, { path: file, contentType: 'image/png' });
 }
 
 /** The Romskjema fits its column: the 'Areal' header ends inside the side panel and the table does not scroll sideways. */
@@ -134,28 +74,39 @@ async function showPlan(page: Page, storey: 'ground' | 'loft'): Promise<void> {
 
 async function show3d(page: Page, mode: 'ute' | 'inne', preset: string): Promise<void> {
   await page.getByTestId('view-tab-3d').click();
-  await expect(page.getByTestId('view-3d').locator('canvas')).toBeVisible();
+  await expect(page.getByTestId('view-3d').locator('canvas')).toBeVisible({ timeout: 60_000 });
   await page.getByTestId(`mode-${mode}`).click();
   await page.getByTestId(`preset-${preset}`).click();
   await page.waitForTimeout(SETTLE_MS);
 }
 
 test.describe('desktop 1400×900', () => {
+  test.beforeEach(async ({ page }) => skipFirstRun(page));
+
   test('plan, 3D views, room schedule and area totals', async ({ page }, testInfo) => {
     const pageErrors = collectPageErrors(page);
     await loadAndWaitReady(page);
 
-    // A fresh start uses the bundled seed: the terrace starts at the glass bump's east wall (x 9), the south steps
-    // are east of the living-room door.
+    // A fresh start uses the bundled seed: the locked base proposal, the terrace starts at the glass bump's east wall
+    // (x 9), the south steps are east of the living-room door, two more steps on the east edge.
     expect(await activeDeck(page)).toMatchObject({
       seedRevision: SEED_REVISION,
+      locked: true,
       deckMinX: 9,
-      gaps: [
-        [5.2, 6.6],
-        [23.5, 24.9],
-        [29.8, 31.2],
+      steps: [
+        { edgeId: 'deck-terrasse-v0', span: [2.6, 4] },
+        { edgeId: 'deck-terrasse-v1', span: [6.7, 8.1] },
+        { edgeId: 'deck-terrasse-v1', span: [13, 14.4] },
       ],
     });
+    // The derived railing has the three gaps (none of the steps is blocked).
+    const blocked = await page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.outdoor.steps ?? []).map((s) => s.blocked));
+    expect(blocked).toEqual([false, false, false]);
+
+    // The plan is the default view; the base proposal's tag and the editing toolbar are on screen.
+    await expect(page.locator('section.pane-plan')).not.toHaveClass(/is-hidden/);
+    await expect(page.getByTestId('locked-tag')).toBeVisible();
+    await expect(page.getByTestId('toolbar')).toBeVisible();
 
     // Headline UI: the new wing's rooms are in the schedule and the area panel shows BYA.
     const schedule = page.getByTestId('room-schedule');
@@ -199,26 +150,30 @@ test.describe('desktop 1400×900', () => {
 
   test('an autosave of an older Forslag D revision is offered "Hent ny Forslag D"', async ({ page }) => {
     const pageErrors = collectPageErrors(page);
-    // The autosave of a user who started before the terrace cut: older revision, deck in front of the glass bump.
+    // The autosave of a user who started before the terrace cut: older revision, deck in front of the glass bump, and
+    // (like every migrated phase-1 proposal) not locked.
     const old = createForslagD();
     old.seedRevision = SEED_REVISION - 1;
-    const oldDeck: Vec2[] = [[5, -4.6], [23.2, -4.6], [23.2, 12.1], [9, 12.1], [9, 6.2], [20.8, 6.2], [20.8, -2], [16, -2], [16, 0], [9, 0], [9, -2], [5, -2]];
+    delete old.variants[0].locked;
+    const oldPoints: Vec2[] = [[5, -4.6], [23.2, -4.6], [23.2, 12.1], [9, 12.1], [9, 6.2], [20.8, 6.2], [20.8, -2], [16, -2], [16, 0], [9, 0], [9, -2], [5, -2]];
+    const oldDeck: DeckVertex[] = oldPoints.map((p, i) => ({ id: `deck-terrasse-v${i}`, p }));
     old.variants[0].outdoor.decks[0].polygon = oldDeck;
     await page.addInitScript((json) => {
       if (!localStorage.getItem('hytte-planlegger:project')) localStorage.setItem('hytte-planlegger:project', json);
     }, JSON.stringify(old));
     await loadAndWaitReady(page);
-    expect(await activeDeck(page)).toMatchObject({ seedRevision: SEED_REVISION - 1, deckMinX: 5 });
+    expect(await activeDeck(page)).toMatchObject({ seedRevision: SEED_REVISION - 1, deckMinX: 5, locked: false });
 
     const fetchSeed = page.getByRole('button', { name: 'Hent ny Forslag D' });
     await expect(page.getByText(`Forslag D er oppdatert (revisjon ${SEED_REVISION}).`)).toBeVisible();
     await fetchSeed.click();
     await expect(fetchSeed, 'the banner goes away').toHaveCount(0);
     await expect.poll(async () => (await activeDeck(page)).seedRevision).toBe(SEED_REVISION);
-    // The new seed is added as a variant next to the user's own (kept unchanged) and becomes the active one.
+    // The new seed is added as a (locked) variant next to the user's own (kept unchanged) and becomes the active one.
     expect(await activeDeck(page)).toMatchObject({
       variants: ['Forslag D', `Forslag D (revisjon ${SEED_REVISION})`],
       active: `Forslag D (revisjon ${SEED_REVISION})`,
+      locked: true,
       deckMinX: 9,
     });
     expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
@@ -227,16 +182,17 @@ test.describe('desktop 1400×900', () => {
 
 test.describe('phone 375×812', () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+  test.beforeEach(async ({ page }) => skipFirstRun(page));
 
   test('loads and renders in a phone viewport', async ({ page }, testInfo) => {
     const pageErrors = collectPageErrors(page);
     await loadAndWaitReady(page);
     await page.waitForTimeout(SETTLE_MS);
-    // Del lenke and Hjelp stay on screen on a phone.
-    for (const id of ['open-share', 'open-help']) {
+    // "Send forslaget" and Hjelp stay on screen on a phone, and the toolbar starts inside it.
+    for (const id of ['open-share', 'open-help', 'toolbar']) {
       const box = await page.getByTestId(id).boundingBox();
       expect(box, `${id} should be rendered`).not.toBeNull();
-      if (box) expect(box.x + box.width, `${id} should be inside the 375 px viewport`).toBeLessThanOrEqual(375);
+      if (box) expect(box.x + Math.min(box.width, 375), `${id} should be inside the 375 px viewport`).toBeLessThanOrEqual(375);
     }
     await assertScheduleFits(page);
     await shoot(page, testInfo, 'phone');

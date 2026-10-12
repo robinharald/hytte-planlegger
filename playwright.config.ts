@@ -1,7 +1,9 @@
 /**
  * Playwright configuration for the smoke test in e2e/ (see docs/architecture.md, "Testing").
  *
- * - Chromium only, desktop viewport 1400×900 (the phone test overrides the viewport itself).
+ * - Chromium only. Project 'chromium': desktop viewport 1400×900 (smoke.spec.ts, editing.spec.ts; the smoke test's
+ *   phone case sets its own viewport). Project 'iphone': the iPhone 13 device (390×844, touch, mobile) on Chromium
+ *   (phone-editing.spec.ts; WebKit is not installed, and touch input goes through the DevTools protocol).
  * - The dev server is started on a fixed port (or reused when one is already running there).
  * - One worker, no retries: the tests share a WebGL-heavy page and write the committed screenshots in
  *   e2e/screenshots/ themselves, so parallel runs would race on the same files.
@@ -9,7 +11,7 @@
  * - WebGL in headless Chromium runs on SwiftShader; the flags make that explicit and deterministic across
  *   machines (CI runners have no GPU). It is slow, hence the generous timeouts.
  */
-import { defineConfig } from '@playwright/test';
+import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: 'e2e',
@@ -30,7 +32,10 @@ export default defineConfig({
       args: ['--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
     },
   },
-  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
+  projects: [
+    { name: 'chromium', use: { browserName: 'chromium' }, testIgnore: /phone-editing\.spec\.ts/ },
+    { name: 'iphone', use: { ...devices['iPhone 13'], browserName: 'chromium' }, testMatch: /phone-editing\.spec\.ts/ },
+  ],
   webServer: {
     command: 'npm run dev -- --port 5173 --strictPort',
     url: 'http://localhost:5173/',
