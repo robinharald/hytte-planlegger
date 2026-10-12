@@ -2,8 +2,9 @@
 /**
  * The plan's furniture layer (FurnitureLayer.tsx): symbols per catalogue id, the footprint as the only hit area,
  * selection / collision outlines, clearances on request, names only when selected (or unknown), appliance codes, the
- * drop ghost, and the rotate handle (tap = 90°, drag = towards the pointer in 15° steps, never reaching the plan's
- * own gestures).
+ * drop ghost, and the rotate handle (tap = 90°, drag = towards the pointer in 15° steps; the plan's tracker only
+ * counts its pointer, a pinch drops it; its hit area is the drawn circle, capped at 0.3 m on touch; a press on
+ * something else under it goes through to the plan).
  */
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -14,7 +15,9 @@ import { catalogItem } from '../../furniture/catalog';
 import type { Vec2 } from '../../model/types';
 import { rectFootprint } from '../furniturePlacement';
 import { ACCENT } from '../style';
-import { FurnitureLayer, FurnitureRotateHandle } from './FurnitureLayer';
+import type { PointerEvent as ReactPointerEvent } from 'react';
+import { pointerHandOff } from '../usePanZoom';
+import { FurnitureLayer, FurnitureRotateHandle, ROTATE_HANDLE_MAX_M, ROTATE_HANDLE_MIN_TOUCH_PX } from './FurnitureLayer';
 import type { FurnitureGhost } from './FurnitureLayer';
 import { COLLISION } from './furnitureLayerModel';
 
@@ -147,17 +150,24 @@ describe('FurnitureRotateHandle', () => {
   const toClient = (p: Vec2): [number, number] => [p[0] * 40, 400 - p[1] * 40];
   const clientToPlan = (x: number, y: number): Vec2 => [x / 40, (400 - y) / 40];
 
-  function drawHandle(onRotate = vi.fn(), parentDown = vi.fn()) {
+  function drawHandle(onRotate = vi.fn(), parentDown = vi.fn(), opts: { scale?: number; handleR?: number; coarse?: boolean; others?: DerivedFurniture[] } = {}) {
     act(() =>
       root.render(
         <svg onPointerDown={parentDown}>
-          <FurnitureRotateHandle item={BED} scale={40} handleR={7} clientToPlan={clientToPlan} onRotate={onRotate} title="Roter" />
+          {opts.others && <FurnitureLayer items={opts.others} selection={null} scale={opts.scale ?? 40} showClearances={false} />}
+          <FurnitureRotateHandle item={BED} scale={opts.scale ?? 40} handleR={opts.handleR ?? 7} coarse={opts.coarse} clientToPlan={clientToPlan} onRotate={onRotate} title="Roter" />
         </svg>,
       ),
     );
     const handle = container.querySelector('[data-furniture-rotate="f-bed"]')!;
     return { handle, onRotate, parentDown };
   }
+
+  /** The hand-off the plan's tracker saw on the last pointer-down that reached the svg. */
+  const handOffOf = (parentDown: ReturnType<typeof vi.fn>) => {
+    const e = parentDown.mock.calls.at(-1)?.[0] as ReactPointerEvent | undefined;
+    return e ? pointerHandOff(e.nativeEvent) : undefined;
+  };
 
   function pointer(el: Element, type: string, at: [number, number], extra: Partial<PointerEventInit> = {}) {
     act(() => {
@@ -174,13 +184,112 @@ describe('FurnitureRotateHandle', () => {
     expect(container.querySelector('[data-furniture-rotate] title')!.textContent).toBe('Roter');
   });
 
-  it('a tap turns the item 90° and never reaches the plan', () => {
+  it('a tap turns the item 90°; the plan only counts the pointer (held: no pan, no tap of its own)', () => {
     const { handle, onRotate, parentDown } = drawHandle();
     const at = toClient([2, 2 - 13 / 40]);
     pointer(handle, 'pointerdown', at);
+    // The press reaches the plan's gesture tracker, marked as held by the handle.
+    expect(parentDown).toHaveBeenCalledTimes(1);
+    expect(handOffOf(parentDown)?.kind).toBe('held');
     pointer(handle, 'pointerup', at);
     expect(onRotate).toHaveBeenCalledWith('f-bed', 90);
-    expect(parentDown).not.toHaveBeenCalled();
+  });
+
+  it('a pinch drops the press: the held press is cancelled (no preview, no turn on release)', () => {
+    const { handle, onRotate, parentDown } = drawHandle();
+    const start = toClient([2, 2 - 13 / 40]);
+    pointer(handle, 'pointerdown', start);
+    pointer(handle, 'pointermove', toClient([3.5, 3.1]));
+    expect(container.querySelector('[data-rotate-preview]')).not.toBeNull();
+    const off = handOffOf(parentDown);
+    expect(off?.kind).toBe('held');
+    act(() => {
+      if (off?.kind === 'held') off.cancel();
+    });
+    expect(container.querySelector('[data-rotate-preview]')).toBeNull();
+    pointer(handle, 'pointermove', toClient([3, 2]));
+    pointer(handle, 'pointerup', toClient([3, 2]));
+    expect(onRotate).not.toHaveBeenCalled();
+  });
+
+  it('the hit area is the drawn circle, nothing bigger', () => {
+    drawHandle();
+    const hits = [...container.querySelectorAll('[data-furniture-rotate] circle, [data-furniture-rotate] path')].filter((el) => el.getAttribute('pointer-events') !== 'none');
+    expect(hits).toHaveLength(1);
+    expect(hits[0].getAttribute('fill')).toBe('#ffffff');
+    expect(Number(hits[0].getAttribute('r'))).toBeCloseTo(7 / 40, 9);
+    expect(container.querySelector('[data-rotate-hit="f-bed"]')).toBe(hits[0]);
+  });
+
+  it('on touch the handle covers at most 0.3 m, and is hidden where a usable one would cover more (11.6 px/m)', () => {
+    const radius = (scale: number, handleR: number, coarse: boolean): number | null => {
+      drawHandle(vi.fn(), vi.fn(), { scale, handleR, coarse });
+      const hit = container.querySelector('[data-rotate-hit="f-bed"]');
+      return hit ? Number(hit.getAttribute('r')) * scale : null;
+    };
+    // A fine pointer: unchanged (7 px at any zoom).
+    expect(radius(24.7, 7, false)).toBeCloseTo(7, 3);
+    // The phone's starting zoom, and 26 px/m: no handle (the mini-bar's Roter remains).
+    expect(radius(11.6, 14, true)).toBeNull();
+    expect(radius(26, 14, true)).toBeNull();
+    // Zoomed in: drawn, at most 0.3 m, at least the touch minimum; full size once 14 px is under 0.3 m.
+    expect(radius(40, 14, true)).toBeCloseTo(12, 3);
+    expect(radius(80, 14, true)).toBeCloseTo(14, 3);
+    for (const scale of [ROTATE_HANDLE_MIN_TOUCH_PX / ROTATE_HANDLE_MAX_M, 40, 60, 120]) {
+      const r = radius(scale, 14, true)!;
+      expect(r / scale).toBeLessThanOrEqual(ROTATE_HANDLE_MAX_M + 1e-6);
+      expect(r).toBeGreaterThanOrEqual(ROTATE_HANDLE_MIN_TOUCH_PX - 1e-3);
+    }
+  });
+
+  it('a press on another item under the handle goes through to the plan as a press on that item (no turn)', () => {
+    const rug = item('f-rug', 'kommode', [2, 2.6 - 13 / 40], { w: 0.8, d: 0.45, h: 0.8 });
+    const onRotate = vi.fn();
+    const parentDown = vi.fn();
+    const { handle } = drawHandle(onRotate, parentDown, { others: [rug] });
+    const other = container.querySelector('[data-furniture-id="f-rug"] path')!;
+    const real = document.elementFromPoint;
+    // What the browser would hit with the handle out of the way: the other item.
+    const seen: string[] = [];
+    document.elementFromPoint = () => {
+      seen.push(handle.querySelector('circle')!.style.pointerEvents);
+      return other;
+    };
+    try {
+      const at = toClient([2, 2 - 13 / 40]);
+      pointer(handle, 'pointerdown', at);
+      pointer(handle, 'pointerup', at);
+    } finally {
+      document.elementFromPoint = real;
+    }
+    expect(seen).toEqual(['none']); // the handle took no pointer events for the look-up …
+    expect(handle.querySelector('circle')!.style.pointerEvents).toBe(''); // … and does again
+    const off = handOffOf(parentDown);
+    expect(off).toEqual({ kind: 'pass', target: other });
+    expect(onRotate).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-rotate-preview]')).toBeNull();
+  });
+
+  it('a press over the floor or empty paper keeps the press (the handle turns the item)', () => {
+    const onRotate = vi.fn();
+    const parentDown = vi.fn();
+    const { handle } = drawHandle(onRotate, parentDown);
+    const floor = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    floor.setAttribute('data-sel-kind', 'room');
+    floor.setAttribute('data-sel-id', 'rom-1');
+    const real = document.elementFromPoint;
+    for (const under of [floor, null]) {
+      document.elementFromPoint = () => under;
+      try {
+        const at = toClient([2, 2 - 13 / 40]);
+        pointer(handle, 'pointerdown', at);
+        pointer(handle, 'pointerup', at);
+      } finally {
+        document.elementFromPoint = real;
+      }
+      expect(handOffOf(parentDown)?.kind).toBe('held');
+    }
+    expect(onRotate).toHaveBeenCalledTimes(2);
   });
 
   it('a drag turns the front towards the pointer in 15° steps, previewed, applied once on release', () => {

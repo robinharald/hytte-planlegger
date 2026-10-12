@@ -3,7 +3,9 @@
  * The plan's furniture hand-off (phase 2b; PlanView.tsx, furnitureDrop.ts, FurnitureLayer.tsx): the layer order
  * (furniture hit areas above the room-label hit areas, below walls and openings), the library's drag preview and
  * drop through DOM events, the visible-centre answer, the Møbler tool acting as Velg while no item is armed, and the
- * rotate handle of the selected item.
+ * rotate handle of the selected item. Fix round: the handle never covers other things (a click on the table under a
+ * chair's handle selects the table; on touch it is hidden at the phone's starting zoom), a pinch with one finger on
+ * it zooms, and a library tap with nothing selected places in the part of the plan the user sees, in a room.
  */
 import { act } from 'react';
 import type { ComponentProps } from 'react';
@@ -15,7 +17,8 @@ import { catalogItem } from '../furniture/catalog';
 import type { Vec2 } from '../model/types';
 import { createPlanFixture, createPlanFixtureSite } from './fixture';
 import { FURNITURE_DRAG_EVENT, dispatchFurnitureDrag, dispatchFurnitureDrop, requestPlanCentre } from './furnitureDrop';
-import { rectFootprint } from './furniturePlacement';
+import { rectFootprint, roomAt } from './furniturePlacement';
+import { placeFurniture } from '../ui/furniturePlacer';
 import { PlanView } from './PlanView';
 import { svgElementAt } from './svgHitTest';
 
@@ -298,5 +301,303 @@ describe('the Møbler tool and the rotate handle', () => {
     expect(inBed(labelAt(render(baseProps({ derived: createPlanFixture() }))))).toBe(true);
     // … with it, beside it.
     expect(inBed(labelAt(render(baseProps())))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round after the phase-2b review: the rotate handle never covers other things, a pinch with a finger on it
+// zooms, and a library tap with nothing selected lands in the part of the plan the user sees.
+// ---------------------------------------------------------------------------
+
+/** A derived item of the plan fixture (no collisions; `roomId` as given). */
+function furnitureItem(id: string, catalogId: string, position: Vec2, rotationDeg: number, size: { w: number; d: number; h: number }, roomId?: string): DerivedFurniture {
+  const footprint = rectFootprint(position, rotationDeg, size.w, size.d);
+  const xs = footprint.map((p) => p[0]);
+  const ys = footprint.map((p) => p[1]);
+  return {
+    id,
+    item: { id, catalogId, position, rotationDeg, levelId: 'main', size, isNew: true },
+    catalog: catalogItem(catalogId) ?? null,
+    footprint,
+    bbox: { min: [Math.min(...xs), Math.min(...ys)], max: [Math.max(...xs), Math.max(...ys)] },
+    levelId: 'main',
+    ...(roomId ? { roomId } : {}),
+    floorZ: 0,
+    z: 0,
+    clearances: [],
+    collisions: [],
+    blocksDoors: [],
+    needsDrain: false,
+    isNew: true,
+  };
+}
+
+/** Pointer events of any type and id (touch by default). */
+function finger(el: Element, type: string, at: Vec2, pointerId: number, pointerType = 'touch') {
+  el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: at[0], clientY: at[1], pointerId, button: 0, pointerType, isPrimary: pointerId === 1 }));
+}
+
+describe('the rotate handle never covers other things', () => {
+  // As the seed's Spiseplass: a 2.6 × 1.0 table, a chair 0.125 m south of it facing it (its handle lies on the table).
+  const table = furnitureItem('f-table', 'spisebord-8', [5.5, 3.0], 0, { w: 2.6, d: 1.0, h: 0.74 }, 'rom-kjokken');
+  const chair = furnitureItem('f-chair', 'stol', [4.7, 2.15], 180, { w: 0.45, d: 0.45, h: 0.85 }, 'rom-kjokken');
+  const dining = (): DerivedVariant => ({ ...createPlanFixture(), furniture: [bed(), table, chair] });
+  /** The browser's hit test (jsdom has none): the topmost element of the plan under a client point. */
+  const hitTest = (svg: SVGSVGElement) => {
+    document.elementFromPoint = (x: number, y: number) => svgElementAt(svg, [x, y]);
+  };
+
+  it('with the dining chair selected, a click on the table where the handle is drawn selects the table (no turn)', () => {
+    const onSelect = vi.fn();
+    const actions = editActions();
+    const svg = render(baseProps({ derived: dining(), editable: true, editActions: actions, selection: { kind: 'furniture', id: 'f-chair', levelId: 'main' }, onSelect }));
+    hitTest(svg);
+    const handle = svg.querySelector('[data-furniture-rotate="f-chair"]')!;
+    expect(handle).not.toBeNull();
+    const c = handle.querySelector('circle')!;
+    const at = scr(svg, [Number(c.getAttribute('cx')), Number(c.getAttribute('cy'))]);
+    // The handle's middle lies on the table, and the handle is what a click there hits.
+    const [px, py] = [Number(c.getAttribute('cx')), Number(c.getAttribute('cy'))];
+    expect(px > 4.2 && px < 6.8 && py > 2.5 && py < 3.5).toBe(true);
+    const target = svgElementAt(svg, at)!;
+    expect(target.closest('[data-furniture-rotate]')).not.toBeNull();
+    act(() => {
+      pointer(target, 'pointerdown', at);
+      pointer(svg, 'pointerup', at);
+    });
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'furniture', id: 'f-table', levelId: 'main' });
+    expect(actions.rotateFurniture).not.toHaveBeenCalled();
+    expect(actions.beginDrag).not.toHaveBeenCalled();
+  });
+
+  it('a click on a rug under the handle (its middle, which belongs to the room) does what it does without the handle', () => {
+    const onSelect = vi.fn();
+    const actions = editActions();
+    // A rug in front of the bed, under its handle (the handle's middle 7.5 px inside the rug's edge).
+    const rug = furnitureItem('f-rug', 'teppe', [12, 0.55], 0, { w: 1.6, d: 0.7, h: 0.01 }, 'rom-soverom');
+    const svg = render(baseProps({ derived: { ...createPlanFixture(), furniture: [rug, bed()] }, editable: true, editActions: actions, selection: { kind: 'furniture', id: 'f-seng', levelId: 'main' }, onSelect }));
+    hitTest(svg);
+    const c = svg.querySelector('[data-furniture-rotate="f-seng"] circle')!;
+    const at = scr(svg, [Number(c.getAttribute('cx')), Number(c.getAttribute('cy'))]);
+    expect(svgElementAt(svg, at)!.closest('[data-furniture-rotate]')).not.toBeNull();
+    act(() => {
+      pointer(svgElementAt(svg, at)!, 'pointerdown', at);
+      pointer(svg, 'pointerup', at);
+    });
+    expect(actions.rotateFurniture).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'room', id: 'rom-soverom' }));
+  });
+
+  it('over the floor the handle still turns the item, and the plan neither selects nor pans', () => {
+    const onSelect = vi.fn();
+    const actions = editActions();
+    const svg = render(baseProps({ editable: true, editActions: actions, selection: { kind: 'furniture', id: 'f-seng', levelId: 'main' }, onSelect }));
+    hitTest(svg);
+    const c = svg.querySelector('[data-furniture-rotate="f-seng"] circle')!;
+    const at = scr(svg, [Number(c.getAttribute('cx')), Number(c.getAttribute('cy'))]);
+    const before = rootMatrix(svg);
+    act(() => {
+      pointer(svgElementAt(svg, at)!, 'pointerdown', at);
+      pointer(svgElementAt(svg, at)!, 'pointerup', at);
+    });
+    expect(actions.rotateFurniture).toHaveBeenCalledWith('f-seng', 90);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(rootMatrix(svg)).toEqual(before);
+  });
+
+  it('on touch at the phone starting zoom (11.6 px/m) there is no handle; zoomed in it covers at most 0.3 m', () => {
+    const sel = { kind: 'furniture' as const, id: 'f-seng', levelId: 'main' };
+    let svg = render(baseProps({ editable: true, editActions: editActions(), selection: sel, coarsePointer: true }));
+    // Zoom out to 11.6 px/m with the wheel around the middle.
+    const zoomTo = (target: number) => {
+      for (let i = 0; i < 200 && Math.abs(rootMatrix(svg)[0] - target) > 0.05; i++) {
+        const s0 = rootMatrix(svg)[0];
+        act(() => void svg.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 500, clientY: 350, deltaY: s0 > target ? 20 : -20 })));
+      }
+    };
+    zoomTo(11.6);
+    expect(rootMatrix(svg)[0]).toBeLessThan(12);
+    expect(svg.querySelector('[data-furniture-rotate]')).toBeNull();
+    zoomTo(60);
+    svg = render(baseProps({ editable: true, editActions: editActions(), selection: sel, coarsePointer: true }));
+    const r = Number(svg.querySelector('[data-rotate-hit="f-seng"]')!.getAttribute('r'));
+    expect(r).toBeLessThanOrEqual(0.3 + 1e-9);
+  });
+});
+
+describe('a pinch with one finger on the rotate handle', () => {
+  const sel = { kind: 'furniture' as const, id: 'f-seng', levelId: 'main' };
+
+  it('handle first, then a finger on the selected item: the plan zooms, the item neither moves nor turns', () => {
+    const actions = editActions();
+    const svg = render(baseProps({ editable: true, editActions: actions, selection: sel }));
+    const handle = svg.querySelector('[data-furniture-rotate="f-seng"] circle')!;
+    const a0 = scr(svg, [Number(handle.getAttribute('cx')), Number(handle.getAttribute('cy'))]);
+    const b0 = scr(svg, [12, 2.2]);
+    const s0 = Number(svg.getAttribute('data-scale'));
+    const bedPath = svg.querySelector('[data-furniture-id="f-seng"] path')!;
+    act(() => {
+      finger(handle, 'pointerdown', a0, 1);
+      finger(bedPath, 'pointerdown', b0, 2);
+    });
+    // Spread: finger A moves down (it stays captured by the handle until the pinch takes it), B up.
+    for (let k = 1; k <= 4; k++) {
+      act(() => {
+        finger(handle, 'pointermove', [a0[0], a0[1] + 10 * k], 1);
+        finger(svg, 'pointermove', [b0[0], b0[1] - 10 * k], 2);
+      });
+    }
+    act(() => {
+      finger(svg, 'pointerup', [a0[0], a0[1] + 40], 1);
+      finger(svg, 'pointerup', [b0[0], b0[1] - 40], 2);
+    });
+    expect(Number(svg.getAttribute('data-scale'))).toBeGreaterThan(s0 * 1.2);
+    expect(actions.beginDrag).not.toHaveBeenCalled();
+    expect(actions.updateDrag).not.toHaveBeenCalled();
+    expect(actions.rotateFurniture).not.toHaveBeenCalled();
+    expect(svg.querySelector('[data-rotate-preview]')).toBeNull();
+  });
+
+  it('a finger on the selected item first, then one on the handle: also a pinch, no drag, no turn', () => {
+    const actions = editActions();
+    const svg = render(baseProps({ editable: true, editActions: actions, selection: sel }));
+    const handle = svg.querySelector('[data-furniture-rotate="f-seng"] circle')!;
+    const a0 = scr(svg, [Number(handle.getAttribute('cx')), Number(handle.getAttribute('cy'))]);
+    const b0 = scr(svg, [12, 2.2]);
+    const s0 = Number(svg.getAttribute('data-scale'));
+    act(() => {
+      finger(svg.querySelector('[data-furniture-id="f-seng"] path')!, 'pointerdown', b0, 1);
+      finger(handle, 'pointerdown', a0, 2);
+    });
+    for (let k = 1; k <= 4; k++) {
+      act(() => {
+        finger(svg, 'pointermove', [b0[0], b0[1] - 10 * k], 1);
+        finger(handle, 'pointermove', [a0[0], a0[1] + 10 * k], 2);
+      });
+    }
+    act(() => {
+      finger(svg, 'pointerup', [b0[0], b0[1] - 40], 1);
+      finger(handle, 'pointerup', [a0[0], a0[1] + 40], 2);
+    });
+    expect(Number(svg.getAttribute('data-scale'))).toBeGreaterThan(s0 * 1.2);
+    expect(actions.beginDrag).not.toHaveBeenCalled();
+    expect(actions.rotateFurniture).not.toHaveBeenCalled();
+  });
+
+  it('a lone finger on the handle still turns the item and neither pans nor taps the plan', () => {
+    const actions = editActions();
+    const onSelect = vi.fn();
+    const svg = render(baseProps({ editable: true, editActions: actions, selection: sel, onSelect }));
+    const handle = svg.querySelector('[data-furniture-rotate="f-seng"] circle')!;
+    const a0 = scr(svg, [Number(handle.getAttribute('cx')), Number(handle.getAttribute('cy'))]);
+    const before = rootMatrix(svg);
+    // A drag to the east of the bed: front east = rotation 90.
+    const east = scr(svg, [14, 2.1]);
+    act(() => finger(handle, 'pointerdown', a0, 1));
+    act(() => finger(handle, 'pointermove', [(a0[0] + east[0]) / 2, (a0[1] + east[1]) / 2], 1));
+    act(() => finger(handle, 'pointermove', east, 1));
+    act(() => finger(handle, 'pointerup', east, 1));
+    expect(actions.rotateFurniture).toHaveBeenCalledWith('f-seng', 90);
+    expect(rootMatrix(svg)).toEqual(before);
+    expect(onSelect).not.toHaveBeenCalled();
+    // The plan forgot the pointer: the next tap elsewhere is a tap again.
+    tapAt(svg.querySelector('[data-plan-paper]')!, scr(svg, [20, 10]));
+    expect(onSelect).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe('library tap with nothing selected: where the plan says to place', () => {
+  const STRIP = 700 - 345; // a 345 px bottom sheet over the 700 px plan
+  const insets = { top: 0, right: 0, bottom: 345, left: 0 };
+
+  it('the middle of the uncovered strip (not the svg middle under the sheet), in a room', () => {
+    const svg = render(baseProps({ viewportInsets: insets }));
+    const c = requestPlanCentre()!.centre!;
+    const at = scr(svg, c);
+    expect(at[0]).toBeCloseTo(500, 6);
+    expect(at[1]).toBeCloseTo(STRIP / 2, 6);
+    expect(roomAt(createPlanFixture(), 'ground', c)).not.toBeNull();
+    // Without insets: the middle of the plan (in a room too).
+    const plain = render(baseProps());
+    expect(scr(plain, requestPlanCentre()!.centre!)[1]).toBeCloseTo(350, 6);
+  });
+
+  it('the svg cut to the window: a plan partly scrolled off the screen answers the middle of what is on it', () => {
+    const svg = render(baseProps());
+    const at = (top: number) => () => ({ left: 0, top, right: 1000, bottom: top + 700, width: 1000, height: 700, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+    // Scrolled up 100 px: svg y 100 … 700 visible, its middle 400.
+    svg.getBoundingClientRect = at(-100);
+    let c = requestPlanCentre()!.centre!;
+    expect(scr(svg, c)[1]).toBeCloseTo(400, 6);
+    expect(roomAt(createPlanFixture(), 'ground', c)).not.toBeNull();
+    // Starting 372 px down a 768 px window (the phone): svg y 0 … 396 visible, its middle 198.
+    expect(window.innerHeight).toBe(768);
+    svg.getBoundingClientRect = at(372);
+    c = requestPlanCentre()!.centre!;
+    expect(scr(svg, c)[1]).toBeCloseTo(198, 6);
+    expect(roomAt(createPlanFixture(), 'ground', c)).not.toBeNull();
+  });
+
+  it('place → delete → place: both land in a room on screen (no drift under the sheet onto the lawn)', () => {
+    for (const bottom of [345, 572]) {
+      const strip = 700 - bottom;
+      const props = (over: Partial<Props>) => baseProps({ viewportInsets: { top: 0, right: 0, bottom, left: 0 }, editable: true, editActions: editActions(), ...over });
+      let derived = createPlanFixture();
+      let svg = render(props({ derived, selection: null }));
+      for (let round = 0; round < 3; round++) {
+        let added: DerivedFurniture | null = null;
+        const placed = placeFurniture(
+          {
+            derived,
+            storeyId: 'ground',
+            selection: null,
+            addFurniture: (catalogId, p, opts) => {
+              const size = opts.size ?? { w: 1, d: 1, h: 1 };
+              added = furnitureItem(`f-new-${round}`, catalogId, p, opts.rotationDeg ?? 0, size, roomAt(derived, 'ground', p)?.id);
+              return added.id;
+            },
+            select: () => {},
+            planCentre: () => {
+              const c = requestPlanCentre();
+              return c?.centre ? { centre: c.centre, storeyId: c.storeyId } : null;
+            },
+          },
+          'kommode',
+          { kind: 'tap' },
+        );
+        expect(placed, `inset ${bottom}, round ${round}`).not.toBeNull();
+        expect(placed!.room, `inset ${bottom}, round ${round}: in a room`).not.toBeNull();
+        // Selected: the plan reveals it above the sheet (pans, never zooms) …
+        derived = { ...derived, furniture: [added!] };
+        svg = render(props({ derived, selection: { kind: 'furniture', id: added!.id, levelId: 'main' } }));
+        const box = added!.footprint.map((p) => scr(svg, p));
+        expect(Math.max(...box.map((p) => p[1])), `inset ${bottom}, round ${round}: on screen`).toBeLessThanOrEqual(strip);
+        // … then Slett: nothing selected, and the next tap goes through the plan again.
+        derived = { ...derived, furniture: [] };
+        svg = render(props({ derived, selection: null }));
+        const next = requestPlanCentre()!.centre!;
+        expect(roomAt(derived, 'ground', next), `inset ${bottom}, round ${round}: next centre in a room`).not.toBeNull();
+      }
+    }
+  });
+
+  it('the strip over no room: the last room used, else the building', () => {
+    // A thin strip far north of the building (the sheet covers all but 40 px): the svg middle maps outside the rooms.
+    const thin = { top: 0, right: 0, bottom: 660, left: 0 };
+    let svg = render(baseProps({ viewportInsets: thin }));
+    const seen = (): Vec2 => {
+      const [s, , , , tx, ty] = rootMatrix(svg);
+      return [(500 - tx) / s, -(20 - ty) / s];
+    };
+    expect(roomAt(createPlanFixture(), 'ground', seen())).toBeNull();
+    // Nothing used yet: the building's middle, in a room.
+    const first = requestPlanCentre()!.centre!;
+    expect(roomAt(createPlanFixture(), 'ground', first)).not.toBeNull();
+    // The bed in Soverom was selected (no sheet open: no reveal), then the selection cleared: its room.
+    svg = render(baseProps({ selection: { kind: 'furniture', id: 'f-seng', levelId: 'main' } }));
+    svg = render(baseProps({ viewportInsets: thin, selection: null }));
+    expect(roomAt(createPlanFixture(), 'ground', seen())).toBeNull();
+    const c = requestPlanCentre()!.centre!;
+    expect(roomAt(createPlanFixture(), 'ground', c)?.id).toBe('rom-soverom');
   });
 });

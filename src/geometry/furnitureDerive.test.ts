@@ -247,6 +247,29 @@ describe('collisions', () => {
     ]);
   });
 
+  it('a chair pulled in under a table is no collision (centre ≤ 0.25 m inside the edge, partly outside); wholly inside or deeper it is', () => {
+    // The seed's dining table fu-spiseplass-1: 2.6 × 1.0 at (14.2, 4.95), south edge y 4.45.
+    const collisionsOf = (d: DerivedVariant, id: string) => d.furniture.find((f) => f.id === id)?.collisions;
+    const tucked = seeded([item('stol', [14.2, 4.6], { id: 'tucked' })]); // centre 0.15 m in, back 0.075 m out
+    expect(collisionsOf(tucked, 'tucked')).toEqual([]);
+    expect(collisionsOf(tucked, 'fu-spiseplass-1')).toEqual([]);
+    expect(furnitureWarnings(tucked)).toEqual([]);
+    // At the table's east end, turned to face it: the same.
+    const end = seeded([item('stol', [15.62, 4.95], { id: 'end', rotationDeg: 270 })]);
+    expect(collisionsOf(end, 'end')).toEqual([]);
+    // Wholly inside the table, even near its edge (centre 0.23 m in), or in its middle: a collision.
+    const edge = seeded([item('stol', [14.2, 4.68], { id: 'edge' })]);
+    expect(collisionsOf(edge, 'edge')).toEqual(['fu-spiseplass-1']);
+    expect(furnitureWarnings(edge)).toEqual([{ kind: 'furniture-overlap', furnitureIds: ['fu-spiseplass-1', 'edge'] }]);
+    expect(collisionsOf(seeded([item('stol', [14.2, 4.95], { id: 'mid' })]), 'mid')).toEqual(['fu-spiseplass-1']);
+    // Not a seat: a chest of drawers there collides.
+    expect(collisionsOf(seeded([item('kommode', [14.2, 4.6], { id: 'k' })]), 'k')).toEqual(['fu-spiseplass-1']);
+    // An outdoor chair (0.6 deep) under an outdoor table: 0.2 m in is fine, 0.27 m in (still 0.03 m out) is too deep.
+    const table = item('utebord', [1.5, 2], { id: 'table', size: { w: 1, d: 1, h: 0.74 } });
+    expect(furnitureWarnings(small([table, item('utestol', [1.5, 1.7], { id: 'in' })]))).toEqual([]);
+    expect(furnitureWarnings(small([table, item('utestol', [1.5, 1.77], { id: 'deep' })]))).toEqual([{ kind: 'furniture-overlap', furnitureIds: ['table', 'deep'] }]);
+  });
+
   it('a coffee table may stand in the free corner of a corner sofa, not on its chaise', () => {
     // Sofa 2.7 × 1.6 at (1.55, 2): back strip y 1.9 … 2.8, chaise x 2.0 … 2.9, y 1.2 … 1.9.
     const sofa = item('hjornesofa', [1.55, 2], { id: 'sofa' });

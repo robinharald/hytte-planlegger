@@ -9,13 +9,13 @@
  * (y = +d/2; what stands against a wall: a bed's head, a sofa's back, a WC's cistern) — the convention of
  * model/unitTemplates.ts. Every symbol is built from the item's own size, so a stretched item keeps its look.
  *
- * Primitives stay inside the footprint, except the chairs of a dining table that is smaller than a table with its
- * chairs (they straddle the table's edge, half hidden under it: `overflow` says how far).
+ * Primitives stay inside the footprint (`symbolOverflow` is 0 for every entry). A dining table is the table alone: its
+ * chairs are items of their own (Stol), as in 3D, so the plan never shows a seat that is not there.
  *
  * Styles (FurnitureSymbol.tsx maps them to strokes / fills): 'outline' the body (paper fill, main stroke), 'line' a
  * detail line, 'thin' a hairline, 'dashed' a dashed hairline (things above the cut: wall cabinets, a bunk's upper
  * bed), 'soft' a softly filled part (pillows, cushions, backrests, a cistern), 'paper' a paper-filled part drawn over
- * other parts (a dining table over its chairs), 'glass' a glass pane (blue).
+ * other parts, 'glass' a glass pane (blue).
  */
 import { catalogItem } from '../../furniture/catalog';
 import type { Vec2 } from '../../model/types';
@@ -512,75 +512,12 @@ function island(w: number, d: number): SymbolPrim[] {
   return out;
 }
 
-/** Chairs around a table: [x, y, rotation of the chair's front towards the table]. */
-function tableSeats(n: number, tw: number, td: number): { x: number; y: number; facing: 'n' | 's' | 'e' | 'w' }[] {
-  const long = tw >= td ? 'x' : 'y';
-  const ends = n >= 6 ? 2 : 0;
-  const perSide = Math.max(1, Math.floor((n - ends) / 2));
-  const seats: { x: number; y: number; facing: 'n' | 's' | 'e' | 'w' }[] = [];
-  const L = long === 'x' ? tw : td;
-  const S = long === 'x' ? td : tw;
-  for (const v of between(-L / 2, L / 2, perSide)) {
-    if (long === 'x') {
-      seats.push({ x: v, y: -S / 2, facing: 'n' }, { x: v, y: S / 2, facing: 's' });
-    } else {
-      seats.push({ x: -S / 2, y: v, facing: 'e' }, { x: S / 2, y: v, facing: 'w' });
-    }
-  }
-  if (ends) {
-    if (long === 'x') seats.push({ x: -L / 2, y: 0, facing: 'e' }, { x: L / 2, y: 0, facing: 'w' });
-    else seats.push({ x: 0, y: -L / 2, facing: 'n' }, { x: 0, y: L / 2, facing: 's' });
-  }
-  return seats;
-}
-
-/** A dining chair seat with its back away from `facing`, centred at (cx, cy). */
-function chairAt(cx: number, cy: number, facing: 'n' | 's' | 'e' | 'w', size: number): SymbolPrim[] {
-  const h = size / 2;
-  const b = size * 0.18;
-  const seat = rect(cx - h, cy - h, cx + h, cy + h, 'line', size * 0.12);
-  switch (facing) {
-    case 'n':
-      return [seat, rect(cx - h, cy - h, cx + h, cy - h + b, 'soft')];
-    case 's':
-      return [seat, rect(cx - h, cy + h - b, cx + h, cy + h, 'soft')];
-    case 'e':
-      return [seat, rect(cx - h, cy - h, cx - h + b, cy + h, 'soft')];
-    default:
-      return [seat, rect(cx + h - b, cy - h, cx + h, cy + h, 'soft')];
-  }
-}
-
-/** How far (m) a dining table's chairs reach out of the item's footprint (see the header). */
-export const CHAIR_OVERFLOW = 0.3;
-const CHAIR = 0.42;
-/** A table item at least this deep (both sides) holds its chairs inside the footprint. */
-const TABLE_WITH_CHAIRS_MIN = 1.5;
-
-function diningTable(w: number, d: number, n: number): SymbolPrim[] {
+/** A dining table: the table top alone (its chairs are items of their own, see the header). */
+function diningTable(w: number, d: number): SymbolPrim[] {
   const W = w / 2;
   const D = d / 2;
-  const withChairs = Math.min(w, d) >= TABLE_WITH_CHAIRS_MIN;
-  // The table itself: the whole footprint, or inset by the chairs when the footprint includes them.
-  const inset = withChairs ? CHAIR * 0.6 : 0;
-  const long = w >= d ? 'x' : 'y';
-  const ends = n >= 6;
-  const ix = long === 'x' ? (ends ? inset : 0) : inset;
-  const iy = long === 'x' ? inset : ends ? inset : 0;
-  const tw = w - 2 * ix;
-  const td = d - 2 * iy;
-  const out: SymbolPrim[] = [];
-  const size = Math.min(CHAIR, Math.max(0.2, (long === 'x' ? tw : td) / Math.max(1, Math.floor(n / 2)) - 0.08));
-  for (const s of tableSeats(n, tw, td)) {
-    // Straddling the table edge: a third under the table (hidden by its paper fill), the rest outside.
-    const out1 = size * 0.2;
-    const cx = s.facing === 'e' ? s.x - out1 : s.facing === 'w' ? s.x + out1 : s.x;
-    const cy = s.facing === 'n' ? s.y - out1 : s.facing === 's' ? s.y + out1 : s.y;
-    out.push(...chairAt(cx, cy, s.facing, size));
-  }
-  out.push(rect(-W + ix, -D + iy, W - ix, D - iy, 'paper', Math.min(0.03, tw * 0.05)));
-  out.push(rect(-W + ix + 0.03, -D + iy + 0.03, W - ix - 0.03, D - iy - 0.03, 'thin'));
-  return out;
+  const i = Math.min(0.03, w * 0.05, d * 0.05);
+  return [rect(-W, -D, W, D, 'outline', Math.min(0.03, w * 0.05, d * 0.05)), rect(-W + i, -D + i, W - i, D - i, 'thin')];
 }
 
 function chair(w: number, d: number): SymbolPrim[] {
@@ -921,7 +858,7 @@ function rawPrims(catalogId: string, sw: number, sd: number): SymbolPrim[] {
     case 'island':
       return island(sw, sd);
     case 'diningTable':
-      return diningTable(sw, sd, def.count ?? 4);
+      return diningTable(sw, sd);
     case 'chair':
       return chair(sw, sd);
     case 'toilet':
@@ -973,9 +910,9 @@ function rawPrims(catalogId: string, sw: number, sd: number): SymbolPrim[] {
   }
 }
 
-/** How far (m) the symbol may reach outside the footprint (dining tables smaller than table + chairs). */
-export function symbolOverflow(catalogId: string, w: number, d: number): number {
-  return symbolFor(catalogId).kind === 'diningTable' && Math.min(w, d) < TABLE_WITH_CHAIRS_MIN ? CHAIR_OVERFLOW : 0;
+/** How far (m) the symbol may reach outside the footprint: nowhere (dining tables no longer draw chairs). */
+export function symbolOverflow(_catalogId: string, _w: number, _d: number): number {
+  return 0;
 }
 
 /** Bounding box of a primitive list (local frame), or null when empty. */

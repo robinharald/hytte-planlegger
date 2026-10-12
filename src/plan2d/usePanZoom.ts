@@ -13,9 +13,18 @@
  *    the gesture (no pan, no tap: a refused drag on the locked base proposal);
  *  - a release below the threshold is a tap (`onTap`, with the down target).
  * A second pointer turns the gesture into a pinch (never a tap); an element drag in progress is cancelled first.
- * pointercancel, lostpointercapture (while the pointer is still tracked) and `cancelGesture()` (Esc) cancel: an
- * element drag gets `controller.cancel()`. Mouse/pen moves without a pressed pointer go to `controller.hover`
- * (null when the pointer leaves the SVG). Right-button presses are left to the context menu. No HTML5 drag-and-drop.
+ * pointercancel, lostpointercapture (while the pointer is still tracked; only the SVG's own capture) and
+ * `cancelGesture()` (Esc) cancel: an element drag gets `controller.cancel()`. Mouse/pen moves without a pressed pointer
+ * go to `controller.hover` (null when the pointer leaves the SVG). Right-button presses are left to the context menu.
+ * No HTML5 drag-and-drop.
+ *
+ * Presses that an element inside the plan handles itself (the furniture rotate handle) still reach the tracker, marked
+ * on the native event before it bubbles to the SVG:
+ *  - `holdPointer(e, cancel)`: the element keeps the press (its own capture, its own tap / drag). The tracker only
+ *    counts the pointer and follows its position (no claim, pan or tap), so a second pointer turns the gesture into
+ *    a pinch: then every held press is cancelled (`cancel()`) and its pointer captured by the SVG;
+ *  - `passPointer(e, target)`: the element lets the press through: the tracker handles it as a press on `target`
+ *    (what lies under the element).
  *
  * The wheel listener is attached natively with `passive: false` (React registers wheel as passive, so
  * `preventDefault()` in `onWheel` would not stop the page from scrolling).
@@ -44,6 +53,26 @@ export interface PointerInfo {
 }
 
 export type TapInfo = PointerInfo;
+
+/** How an element inside the plan handed a pointer-down on to the tracker (see the header). */
+export type PointerHandOff = { kind: 'held'; cancel: () => void } | { kind: 'pass'; target: Element | null };
+
+const handOffs = new WeakMap<Event, PointerHandOff>();
+
+/** The element under the pointer keeps this press (see the header); `cancel` drops it when the gesture becomes a pinch. */
+export function holdPointer(e: Event, cancel: () => void): void {
+  handOffs.set(e, { kind: 'held', cancel });
+}
+
+/** The element under the pointer lets this press through, as a press on `target` (see the header). */
+export function passPointer(e: Event, target: Element | null): void {
+  handOffs.set(e, { kind: 'pass', target });
+}
+
+/** How a pointer-down was handed on (null: an ordinary press). */
+export function pointerHandOff(e: Event): PointerHandOff | null {
+  return handOffs.get(e) ?? null;
+}
 
 /** Element drags on top of pan/zoom (usePlanEditing.ts implements it). */
 export interface GestureController {
@@ -77,6 +106,8 @@ interface Gesture {
   dragging: boolean;
   /** The controller swallowed the gesture: it neither pans nor taps. */
   blocked: boolean;
+  /** An element inside the plan keeps the press (`holdPointer`): no claim, pan or tap until a second pointer. */
+  held?: boolean;
 }
 
 function capture(el: Element, id: number, on: boolean): void {
@@ -94,6 +125,8 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
   const viewRef = useRef(initial);
   const pointers = useRef(new Map<number, Vec2>());
   const gesture = useRef<Gesture | null>(null);
+  /** Held presses (`holdPointer`) by pointer id: their element's cancel. */
+  const held = useRef(new Map<number, () => void>());
   const onTapRef = useRef(onTap);
   const controllerRef = useRef(controller);
   useLayoutEffect(() => {
@@ -147,11 +180,19 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
     (e: ReactPointerEvent<SVGSVGElement>) => {
       // Mouse: left or middle button; the right button is left to the context menu.
       if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 1) return;
+      const handOff = pointerHandOff(e.nativeEvent);
+      const target = handOff?.kind === 'pass' ? handOff.target : e.target instanceof Element ? e.target : null;
       const p = local(e.clientX, e.clientY);
       const wasEmpty = pointers.current.size === 0;
       pointers.current.set(e.pointerId, p);
+      if (handOff?.kind === 'held') held.current.set(e.pointerId, handOff.cancel);
       if (wasEmpty) {
-        const down = info(e, e.target instanceof Element ? e.target : null);
+        const down = info(e, target);
+        if (handOff?.kind === 'held') {
+          // The element keeps the press and its capture: only count the pointer.
+          gesture.current = { down, moved: false, multi: false, claimed: false, dragging: false, blocked: false, held: true };
+          return;
+        }
         // Only the primary (left) button grabs elements; the middle button always pans.
         const claimed = e.button === 0 && !!controllerRef.current && controllerRef.current.claim(down);
         gesture.current = { down, moved: false, multi: false, claimed, dragging: false, blocked: false };
@@ -162,6 +203,14 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
         g.blocked = false;
         g.claimed = false;
         g.multi = true;
+        g.held = false;
+        // A pinch: the held presses are dropped and their pointers follow the SVG from now on.
+        const drop = [...held.current.entries()];
+        held.current.clear();
+        for (const [id, cancel] of drop) {
+          cancel();
+          if (id !== e.pointerId) capture(e.currentTarget, id, true);
+        }
       }
       capture(e.currentTarget, e.pointerId, true);
     },
@@ -187,6 +236,11 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
         }
       }
       if (!g) return;
+      if (g.held) {
+        // A held press (its element turns, drags, ...): only follow the pointer, for a pinch that may come.
+        pointers.current.set(e.pointerId, p);
+        return;
+      }
       // A press the controller claimed (on the selection or a handle) follows a finger from 6 px; pans and taps
       // elsewhere keep 10 px (editModel.ts dragThresholdPx).
       if (!g.moved && Math.hypot(p[0] - g.down.screen[0], p[1] - g.down.screen[1]) > dragThresholdPx(g.down.pointerType, g.claimed)) {
@@ -217,6 +271,7 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
   const finish = useCallback(
     (e: ReactPointerEvent<SVGSVGElement>, cancelled: boolean) => {
       const had = pointers.current.delete(e.pointerId);
+      held.current.delete(e.pointerId);
       capture(e.currentTarget, e.pointerId, false);
       if (!had) return;
       const g = gesture.current;
@@ -238,15 +293,20 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
         controllerRef.current?.end(info(e, g.down.target));
         return;
       }
-      if (!g.moved && !g.multi && onTapRef.current) onTapRef.current({ ...info(e, g.down.target) });
+      if (!g.moved && !g.multi && !g.held && onTapRef.current) onTapRef.current({ ...info(e, g.down.target) });
     },
     [info],
   );
 
   const onPointerUp = useCallback((e: ReactPointerEvent<SVGSVGElement>) => finish(e, false), [finish]);
   const onPointerCancel = useCallback((e: ReactPointerEvent<SVGSVGElement>) => finish(e, true), [finish]);
-  /** Fired after our own release on pointer-up too; it only cancels while the pointer is still tracked. */
+  /**
+   * Fired after our own release on pointer-up too; it only cancels while the pointer is still tracked, and only for the
+   * SVG's own capture (an element inside that loses its capture, the rotate handle when a pinch takes its pointer,
+   * bubbles here too).
+   */
   const onLostPointerCapture = useCallback((e: ReactPointerEvent<SVGSVGElement>) => {
+    if (e.target !== e.currentTarget) return;
     if (pointers.current.has(e.pointerId)) finish(e, true);
   }, [finish]);
   const onPointerLeave = useCallback((e: ReactPointerEvent<SVGSVGElement>) => {
@@ -258,6 +318,7 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
     const el = svgRef.current;
     if (el) for (const id of pointers.current.keys()) capture(el, id, false);
     pointers.current.clear();
+    held.current.clear();
     return abort();
   }, [abort, svgRef]);
 

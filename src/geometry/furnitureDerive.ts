@@ -22,7 +22,9 @@
  * Collisions (tolerance 5 mm: shapes that only touch, or overlap by at most 5 mm, do not collide; separating-axis
  * tests on convex pieces, never polygon clipping):
  *  - 'flat' items (rugs, drains) never collide with anything and never block a door;
- *  - furniture ↔ furniture: same derived level, z ranges [z, z + h] overlapping;
+ *  - furniture ↔ furniture: same derived level, z ranges [z, z + h] overlapping; a seat (SEATING: stol, utestol)
+ *    pulled in under a table (TABLES: spisebord-*, utebord, salongbord, kjokkenoy) is no collision while its centre is
+ *    at most TUCK_DEPTH_M inside the table's edge and part of it is still outside the table (`tuckedUnder`);
  *  - furniture ↔ walls: non-ghost, non-divider walls whose `levelIds` include the item's level. A wall is solid except
  *    in its doors and windows that the item fits through vertically (sill at or below the item's bottom, head at or
  *    above its top): a rug or a chair in a doorway is not "in the wall", a cabinet under a window is;
@@ -57,6 +59,12 @@ import { pointInPolygon } from './polygon';
 
 /** Overlaps up to this (m) do not count as a collision (touching items, a back snapped onto a wall face). */
 export const COLLISION_TOLERANCE = 0.005;
+/** Seats that may be pulled in under a table (see the header). */
+export const SEATING: ReadonlySet<string> = new Set(['stol', 'utestol']);
+/** Tables a seat may be pulled in under. */
+export const TABLES: ReadonlySet<string> = new Set(['spisebord-4', 'spisebord-6', 'spisebord-8', 'utebord', 'salongbord', 'kjokkenoy']);
+/** How far (m) inside a table's edge a pulled-in seat's centre may be. */
+export const TUCK_DEPTH_M = 0.25;
 /** Segments per door swing arc. */
 const ARC_SEGMENTS = 8;
 /** Segments of a hot tub's circle. */
@@ -520,6 +528,7 @@ export function deriveFurniture(items: FurnitureItem[], ctx: FurnitureContext): 
       if (b.flat || a.df.levelId !== b.df.levelId) continue;
       if (!zOverlap(a.z0, a.z1, b.z0, b.z1, tol) || !boxesOverlap(a.box, b.box, tol)) continue;
       if (!piecesOverlap(a.parts, b.parts, tol)) continue;
+      if (tuckedUnder(a.df.item, b.df.item) || tuckedUnder(b.df.item, a.df.item)) continue;
       a.df.collisions.push(b.df.id);
       b.df.collisions.push(a.df.id);
       overlaps.push([a.df.id, b.df.id]);
@@ -570,6 +579,25 @@ export function deriveFurniture(items: FurnitureItem[], ctx: FurnitureContext): 
   for (const pair of overlaps) warnings.push({ kind: 'furniture-overlap', furnitureIds: pair });
   for (const b of blocked) warnings.push({ kind: 'door-blocked', openingId: b.openingId, by: b.by });
   return { furniture: work.map((w) => w.df), warnings };
+}
+
+/**
+ * A seat pulled in under a table (see the header): `seat` is SEATING, `table` is one of TABLES, the seat's centre is
+ * at most TUCK_DEPTH_M inside the table's rectangle, and the seat is not wholly inside it.
+ */
+export function tuckedUnder(seat: FurnitureItem, table: FurnitureItem): boolean {
+  if (!SEATING.has(seat.catalogId) || !TABLES.has(table.catalogId)) return false;
+  const t = sizeOf(table);
+  const [u, v] = planToLocal(table, seat.position);
+  // Depth of the seat's centre inside the table's edge (negative: outside).
+  const depth = Math.min(t.w / 2 - Math.abs(u), t.d / 2 - Math.abs(v));
+  if (depth > TUCK_DEPTH_M + 1e-9) return false;
+  const tol = COLLISION_TOLERANCE;
+  const inside = furnitureFootprint(seat).every((p) => {
+    const [pu, pv] = planToLocal(table, p);
+    return Math.abs(pu) <= t.w / 2 + tol && Math.abs(pv) <= t.d / 2 + tol;
+  });
+  return !inside;
 }
 
 const sameIds = (a: Id[], b: Id[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);

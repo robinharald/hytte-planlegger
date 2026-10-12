@@ -2,8 +2,7 @@
  * Furniture of the current storey (docs/phase2-plan.md §4 "2D symbols", §3.1 handles). Each item is its catalogue
  * symbol (furnitureSymbols.ts, FurnitureSymbol.tsx) turned by `rotationDeg` about its position, in the item colour's
  * light fill; selectable as { kind: 'furniture', id, levelId } through its footprint only (the first `path` of the
- * item's group, which also carries the selection / collision stroke; the symbol itself takes no pointer events, so the
- * chairs drawn around a dining table do not catch taps outside the table).
+ * item's group, which also carries the selection / collision stroke; the symbol itself takes no pointer events).
  *
  *  - Selected: accent outline and a light accent wash on top of the symbol, and the catalogue name (when it fits).
  *    The name is otherwise only written on items without a catalogue entry (plain boxes) — symbols speak for
@@ -23,7 +22,15 @@
  * circle with an accent border on a short stem outside the middle of the item's FRONT edge. A tap turns the item 90°
  * (`onRotate(id, 90)`, like «Roter 90°»); a drag turns the item's front towards the pointer in 15° steps (1° with Alt),
  * previewed as a dashed outline with the angle, and applied once on release (`onRotate(id, degrees)`: one undo step).
- * Its pointer events never reach the plan's pan / select gestures.
+ *  - Hit area: the drawn circle only. On touch (`coarse`) its radius is at most ROTATE_HANDLE_MAX_M in plan metres;
+ *    below the zoom where a touch handle of ROTATE_HANDLE_MIN_TOUCH_PX would cover more than that, it is not drawn
+ *    (the mini-bar's «Roter» remains) — `rotateHandleRadiusPx`.
+ *  - It never covers other things: a press whose point lies on another item's footprint (`items`; a rug too), an
+ *    opening, a wall (band), a ghost, a post, a railing or a room's name (what the plan would hit without the handle,
+ *    `elementUnderHandle`) goes through to the plan as a press on what lies there (usePanZoom.ts `passPointer`): the
+ *    tap selects what it would select without the handle.
+ *  - A press it keeps is still reported to the plan's gesture tracker (usePanZoom.ts `holdPointer`), which neither
+ *    pans nor taps with it; a second finger turns the gesture into a pinch and the handle drops its press (no turn).
  */
 import { memo, useId, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
@@ -31,7 +38,9 @@ import type { DerivedFurniture } from '../../model/derived';
 import type { Vec2 } from '../../model/types';
 import type { PlanSelection } from '../editTypes';
 import { domId, polygonPath } from '../svg';
-import { isSelected, selAttrs } from '../selection';
+import { pointInPolygon } from '../../geometry/polygon';
+import { isSelected, selAttrs, selectionFromTarget } from '../selection';
+import { holdPointer, passPointer } from '../usePanZoom';
 import { ACCENT, COLORS, FONT_PX, NSS, PAPER, STROKE } from '../style';
 import { FurnitureSymbol } from './FurnitureSymbol';
 import { COLLISION, ROTATE_STEP_DEG, ROTATE_STEP_FINE_DEG, codeFits, labelFits, rotateHandle, rotationToward, toPlan } from './furnitureLayerModel';
@@ -190,6 +199,10 @@ export interface FurnitureRotateHandleProps {
   scale: number;
   /** Handle radius (px): 7, 14 on a coarse pointer. */
   handleR: number;
+  /** A coarse (touch) pointer: the radius is capped in plan metres, and the handle hidden when too small (see the header). */
+  coarse?: boolean;
+  /** The storey's items: a press on another one's footprint goes through to the plan (see the header). */
+  items?: readonly DerivedFurniture[];
   /** Viewport point → plan point (PlanView's clientToPlan); null outside the plan. */
   clientToPlan: (clientX: number, clientY: number) => Vec2 | null;
   onRotate: (furnitureId: string, degrees: number) => void;
@@ -208,6 +221,56 @@ interface RotateGesture {
 const ROTATE_DRAG_PX = 4;
 const ROTATE_DRAG_TOUCH_PX = 8;
 
+/** Largest radius (plan metres) of the rotate handle on touch. */
+export const ROTATE_HANDLE_MAX_M = 0.3;
+/** Smallest radius (px) of a touch rotate handle; below it the handle is not drawn. */
+export const ROTATE_HANDLE_MIN_TOUCH_PX = 10;
+
+/**
+ * Radius (px) of the rotate handle at `scale` px/m: `handleR` with a fine pointer; on touch at most
+ * ROTATE_HANDLE_MAX_M, and null (not drawn) when that is less than ROTATE_HANDLE_MIN_TOUCH_PX.
+ */
+function rotateHandleRadiusPx(handleR: number, scale: number, coarse: boolean): number | null {
+  if (!coarse) return handleR;
+  const s = scale > 0 ? scale : 1;
+  const r = Math.min(handleR, ROTATE_HANDLE_MAX_M * s);
+  return r >= ROTATE_HANDLE_MIN_TOUCH_PX ? r : null;
+}
+
+/**
+ * What the plan would hit at a client point without the rotate handle (`layer`: its group): the handle's elements
+ * take no pointer events for the look-up. Null without a layout (jsdom without a stub).
+ */
+function elementUnderHandle(layer: Element, clientX: number, clientY: number): Element | null {
+  const doc = layer.ownerDocument;
+  if (typeof doc?.elementFromPoint !== 'function') return null;
+  const els = [layer, ...layer.querySelectorAll('*')].filter((el): el is SVGElement | HTMLElement => 'style' in el);
+  const before = els.map((el) => el.style.pointerEvents);
+  for (const el of els) el.style.pointerEvents = 'none';
+  try {
+    const hit = doc.elementFromPoint(clientX, clientY);
+    return hit && !layer.contains(hit) ? hit : null;
+  } finally {
+    els.forEach((el, i) => {
+      el.style.pointerEvents = before[i];
+    });
+  }
+}
+
+/**
+ * Whether a press on the rotate handle of item `itemId` belongs to what lies under it: another item, an opening, a
+ * wall, a ghost, structure, a railing, … or a room's name. The floor the handle stands on (a room, a block, a deck)
+ * and empty paper keep the press.
+ */
+function passesThroughHandle(under: Element | null, itemId: string): boolean {
+  if (!under) return false;
+  if (typeof under.closest === 'function' && under.closest('[data-room-label-hit]')) return true;
+  const sel = selectionFromTarget(under);
+  if (!sel) return false;
+  if (sel.kind === 'furniture') return sel.id !== itemId;
+  return sel.kind !== 'room' && sel.kind !== 'block' && sel.kind !== 'deck';
+}
+
 function rectOf(it: { position: Vec2; rotationDeg: number; size: { w: number; d: number } }): Vec2[] {
   const { w, d } = it.size;
   return (
@@ -220,11 +283,12 @@ function rectOf(it: { position: Vec2; rotationDeg: number; size: { w: number; d:
   ).map((q) => toPlan(it, q));
 }
 
-export function FurnitureRotateHandle({ item, scale, handleR, clientToPlan, onRotate, title }: FurnitureRotateHandleProps) {
+export function FurnitureRotateHandle({ item, scale, handleR: baseR, coarse = false, items, clientToPlan, onRotate, title }: FurnitureRotateHandleProps) {
   const gesture = useRef<RotateGesture | null>(null);
   const [preview, setPreview] = useState<number | null>(null);
   const size = item.item.size ?? { w: 1, d: 1, h: 1 };
   const geo = { position: item.item.position, rotationDeg: item.item.rotationDeg, size };
+  const handleR = rotateHandleRadiusPx(baseR, scale, coarse) ?? 0;
   const h = rotateHandle(geo, scale, handleR);
   const s = scale > 0 ? scale : 1;
 
@@ -235,9 +299,21 @@ export function FurnitureRotateHandle({ item, scale, handleR, clientToPlan, onRo
   const stepOf = (e: { altKey: boolean }) => (e.altKey ? ROTATE_STEP_FINE_DEG : ROTATE_STEP_DEG);
   const onPointerDown = (e: ReactPointerEvent<SVGGElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    e.stopPropagation();
+    // On something else (another item, a door, a wall, a room's name): the plan gets the press there.
+    const under = elementUnderHandle(e.currentTarget.closest('[data-layer="furniture-rotate"]') ?? e.currentTarget, e.clientX, e.clientY);
+    const at = items ? clientToPlan(e.clientX, e.clientY) : null;
+    const onOther = !!at && !!items && items.some((f) => f.id !== item.id && f.footprint.length >= 3 && pointInPolygon(at, f.footprint));
+    if (onOther || passesThroughHandle(under, item.id)) {
+      passPointer(e.nativeEvent, under);
+      return;
+    }
     e.preventDefault();
-    gesture.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, touch: e.pointerType === 'touch', moved: false };
+    const pointerId = e.pointerId;
+    gesture.current = { pointerId, x: e.clientX, y: e.clientY, touch: e.pointerType === 'touch', moved: false };
+    // The plan counts the pointer (a second finger makes a pinch, which drops this press) but neither pans nor taps.
+    holdPointer(e.nativeEvent, () => {
+      if (gesture.current?.pointerId === pointerId) end();
+    });
     try {
       e.currentTarget.setPointerCapture?.(e.pointerId);
     } catch {
@@ -247,7 +323,6 @@ export function FurnitureRotateHandle({ item, scale, handleR, clientToPlan, onRo
   const onPointerMove = (e: ReactPointerEvent<SVGGElement>) => {
     const g = gesture.current;
     if (!g || g.pointerId !== e.pointerId) return;
-    e.stopPropagation();
     if (!g.moved && Math.hypot(e.clientX - g.x, e.clientY - g.y) < (g.touch ? ROTATE_DRAG_TOUCH_PX : ROTATE_DRAG_PX)) return;
     g.moved = true;
     const p = clientToPlan(e.clientX, e.clientY);
@@ -256,7 +331,6 @@ export function FurnitureRotateHandle({ item, scale, handleR, clientToPlan, onRo
   const onPointerUp = (e: ReactPointerEvent<SVGGElement>) => {
     const g = gesture.current;
     if (!g || g.pointerId !== e.pointerId) return;
-    e.stopPropagation();
     let turn = 90;
     if (g.moved) {
       const p = clientToPlan(e.clientX, e.clientY);
@@ -266,10 +340,11 @@ export function FurnitureRotateHandle({ item, scale, handleR, clientToPlan, onRo
     if (turn !== 0) onRotate(item.id, turn);
   };
   const onCancel = (e: ReactPointerEvent<SVGGElement>) => {
-    if (!gesture.current) return;
-    e.stopPropagation();
+    if (!gesture.current || gesture.current.pointerId !== e.pointerId) return;
     end();
   };
+
+  if (handleR <= 0) return null;
 
   const turned = preview !== null && preview !== 0 ? { ...geo, rotationDeg: geo.rotationDeg + preview } : null;
   const arcR = handleR * 0.55;
@@ -289,13 +364,12 @@ export function FurnitureRotateHandle({ item, scale, handleR, clientToPlan, onRo
         onPointerCancel={onCancel}
         onLostPointerCapture={onCancel}
       >
-        {/* 'fill' only: a stroke here would be 1 plan metre wide (no stroke-width in the scaled plan), covering the item. */}
-        <circle cx={n4(h.centre[0])} cy={n4(h.centre[1])} r={n4((handleR + 4) / s)} fill="transparent" pointerEvents="fill" data-rotate-hit={item.id} />
-        <circle cx={n4(h.centre[0])} cy={n4(h.centre[1])} r={n4(h.r)} fill="#ffffff" stroke={ACCENT} strokeWidth={2} pointerEvents="all" {...NSS}>
+        {/* The hit area is the drawn circle (its 2 px border included), nothing more. */}
+        <circle cx={n4(h.centre[0])} cy={n4(h.centre[1])} r={n4(h.r)} fill="#ffffff" stroke={ACCENT} strokeWidth={2} pointerEvents="all" data-rotate-hit={item.id} {...NSS}>
           {title && <title>{title}</title>}
         </circle>
         <ScreenText x={h.centre[0]} y={h.centre[1]} scale={s}>
-          <path d={arrow} fill="none" stroke={ACCENT} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+          <path d={arrow} fill="none" stroke={ACCENT} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
         </ScreenText>
       </g>
       {label && (

@@ -42,10 +42,15 @@
  *   plan point at the middle of the view (tap-to-place without a selected room). Phase 2b: the same hand-off as DOM
  *   events (furnitureDrop.ts), so the library needs no handle: a drag over the plan shows the item where it will land
  *   (furniturePlacement.ts `dropPlacement`, drawn by FurnitureLayer as a ghost), the release calls `onDropFurniture`,
- *   and the shown plan answers the library's "visible plan centre" question. While the Møbler tool has no item armed
+ *   and the shown plan answers the library's "visible plan centre" question with the middle of the part of the plan
+ *   the user can see (the svg box cut to the window, less `viewportInsets`: the area the reveal uses), when that lies
+ *   in a room of the storey; else the middle of the last room used here (the room of the last selected item or the last
+ *   selected room), else the building's middle (`placementCentre`). While the Møbler tool has no item armed
  *   (`toolOptions.furnitureItem`) the plan behaves as Velg, so placed items can be selected, dragged and turned with
  *   the library open. The selected item gets a rotate handle on its front edge (FurnitureLayer.tsx
- *   `FurnitureRotateHandle`, `editActions.rotateFurniture`).
+ *   `FurnitureRotateHandle`, `editActions.rotateFurniture`; on touch only from the zoom where it covers at most
+ *   0.3 m); a press it keeps still reaches the gesture tracker (a second finger makes a pinch), one on something else
+ *   goes through to the plan.
  * - View: fitted to `derived.bounds`, grown by the dimension lines when they are shown, plus a 1.5 m margin —
  *   on mount, when the viewport is first measured and when the variant changes (not on every edit); a
  *   container resize refits while the user has not panned or zoomed since the last fit, else keeps the plan
@@ -61,7 +66,7 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DerivedVariant } from '../model/derived';
-import type { Site, Vec2 } from '../model/types';
+import type { Id, Site, Vec2 } from '../model/types';
 import type { Selection } from '../state/selection';
 import { BlockLayer } from './layers/BlockLayer';
 import { DimensionLayer } from './layers/DimensionLayer';
@@ -73,7 +78,7 @@ import type { FurnitureGhost } from './layers/FurnitureLayer';
 import { collidingFurnitureIds, furnitureLabelObstacles, labelsOverFurniture, layoutLabelsClearOfFurniture } from './layers/furnitureLayerModel';
 import { FURNITURE_DRAG_EVENT, FURNITURE_DROP_EVENT, PLAN_CENTRE_EVENT, furnitureDragDetail, furnitureDropDetail } from './furnitureDrop';
 import type { PlanCentreDetail } from './furnitureDrop';
-import { catalogPlacementSpec, dropPlacement } from './furniturePlacement';
+import { catalogPlacementSpec, dropPlacement, roomAt } from './furniturePlacement';
 
 import { GridLayer } from './layers/GridLayer';
 import { LabelHitLayer, LabelLayer } from './layers/LabelLayer';
@@ -199,6 +204,47 @@ function anchorKey(a: SelectionBarAnchor | null): string {
 const REVEAL_MARGIN_PX = 12;
 
 const insetsKey = (i: ViewportInsets | undefined) => (i ? [i.top, i.right, i.bottom, i.left].map((v) => Math.round(Number(v) || 0)).join(',') : '');
+
+/**
+ * The middle (svg px) of the part of the plan the user can see: the svg box (`box`, viewport px) cut to the window
+ * (`win`, when known), less `insets` — per axis, the whole box's middle when nothing of it is left.
+ */
+function uncoveredCentre(box: { left: number; top: number; width: number; height: number }, win: { w: number; h: number }, insets: ViewportInsets | undefined): Vec2 {
+  const n = (v: number | undefined) => Math.max(0, Number(v) || 0);
+  const span = (lo: number, hi: number, whole: number) => (hi > lo ? (lo + hi) / 2 : whole / 2);
+  const winW = win.w > 0 ? win.w - box.left : Infinity;
+  const winH = win.h > 0 ? win.h - box.top : Infinity;
+  return [
+    span(Math.max(n(insets?.left), -box.left), Math.min(box.width - n(insets?.right), winW), box.width),
+    span(Math.max(n(insets?.top), -box.top), Math.min(box.height - n(insets?.bottom), winH), box.height),
+  ];
+}
+
+/** The last room furniture was used in (see the header). */
+interface UsedRoom {
+  id: Id;
+  levelId: Id;
+}
+
+/**
+ * Where a library tap with nothing selected places (see the header): `at` when it lies in a room of the storey; else
+ * the middle (label point) of the last room used, when it is still there on this storey; else the middle of the
+ * storey's rooms (the building), or the room nearest to it when that falls in none.
+ */
+function placementCentre(derived: DerivedVariant, storeyId: Id, at: Vec2, last: UsedRoom | null): Vec2 {
+  if (roomAt(derived, storeyId, at)) return at;
+  const rooms = derived.rooms.filter((r) => r.storeyId === storeyId && r.polygon.length >= 3);
+  const used = last ? rooms.find((r) => r.id === last.id && r.levelId === last.levelId) : undefined;
+  if (used) return used.labelPoint;
+  if (rooms.length === 0) return at;
+  const pts = rooms.flatMap((r) => r.polygon);
+  const xs = pts.map((q) => q[0]);
+  const ys = pts.map((q) => q[1]);
+  const mid: Vec2 = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+  if (roomAt(derived, storeyId, mid)) return mid;
+  const d = (q: Vec2) => Math.hypot(q[0] - mid[0], q[1] - mid[1]);
+  return rooms.reduce((best, r) => (d(r.labelPoint) < d(best.labelPoint) ? r : best)).labelPoint;
+}
 
 export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanView(props, ref) {
   const { derived, site, planStorey, showLabels, showDims, showGrid, showRoofPlan, highlightNew } = props;
@@ -350,6 +396,17 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   useLayoutEffect(() => {
     handOff.current = { derived, storeyId, editable, coarse };
   });
+  // The last room used (the room of a selected item, or a selected room): a library tap's fallback.
+  const usedRoom = useRef<UsedRoom | null>(null);
+  useLayoutEffect(() => {
+    if (selection?.kind === 'furniture') {
+      const f = derived.furniture.find((x) => x.id === selection.id);
+      if (f?.roomId) usedRoom.current = { id: f.roomId, levelId: f.levelId };
+    } else if (selection?.kind === 'room') {
+      const r = derived.rooms.find((x) => x.id === selection.id && (selection.levelId === undefined || x.levelId === selection.levelId));
+      if (r) usedRoom.current = { id: r.id, levelId: r.levelId };
+    }
+  }, [selection, derived]);
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
@@ -385,8 +442,12 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
       // Only a shown plan answers (a hidden pane keeps its size but is `visibility: hidden`).
       if (!detail || detail.centre || !svg || getComputedStyle(svg).visibility === 'hidden') return;
       const r = svg.getBoundingClientRect();
-      detail.centre = screenToPlan(getView(), [(r.width || w) / 2, (r.height || h) / 2]);
-      detail.storeyId = handOff.current.storeyId;
+      // The middle of what the user sees (not under the bottom sheet or off the screen), in a room (see the header).
+      const box = { left: r.left, top: r.top, width: r.width || w, height: r.height || h };
+      const seen = screenToPlan(getView(), uncoveredCentre(box, { w: window.innerWidth, h: window.innerHeight }, cb.current.viewportInsets));
+      const cur = handOff.current;
+      detail.centre = placementCentre(cur.derived, cur.storeyId, seen, usedRoom.current);
+      detail.storeyId = cur.storeyId;
       detail.scale = getView().s;
     };
     document.addEventListener(FURNITURE_DRAG_EVENT, onDrag);
@@ -607,7 +668,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           {showRoofPlan && <RoofPlanLayer roofs={data.roofs} />}
           <LabelLayer labels={labels} scale={scale} highlightNew={highlightNew} />
           {showDims && <DimensionLayer dimensions={data.dimensions} scale={view.s} />}
-          {rotateItem && <FurnitureRotateHandle item={rotateItem} scale={view.s} handleR={sizes.handleR} clientToPlan={clientToPlan} onRotate={onRotateFurniture} title={planStrings.edit.rotateHandle} />}
+          {rotateItem && <FurnitureRotateHandle item={rotateItem} scale={view.s} handleR={sizes.handleR} coarse={coarse} items={data.furniture} clientToPlan={clientToPlan} onRotate={onRotateFurniture} title={planStrings.edit.rotateHandle} />}
         </g>
         <NorthArrow bearing={site.planNorthBearing} cx={north[0]} cy={north[1]} />
         <ScaleBar scale={view.s} x={scaleBarAt[0]} y={scaleBarAt[1]} />

@@ -1,6 +1,6 @@
 /**
  * The 2D symbol registry (furnitureSymbols.ts): every catalogue id has its own symbol, symbols stay inside the
- * footprint (dining-table chairs excepted, within CHAIR_OVERFLOW), follow the item's size, and the rotate-handle /
+ * footprint (dining tables draw no chairs: those are Stol items), follow the item's size, and the rotate-handle /
  * collision / label helpers of the layer (furnitureLayerModel.ts).
  */
 import { describe, expect, it } from 'vitest';
@@ -8,7 +8,7 @@ import type { DerivedFurniture, ModelWarning } from '../../model/derived';
 import { labelFonts } from '../labelLayout';
 import { bodyFill, codeFits, collidingFurnitureIds, furnitureLabelObstacles, labelFits, labelsOverFurniture, layoutLabelsClearOfFurniture, rotateHandle, rotationToward, toPlan, wrap180 } from './furnitureLayerModel';
 import { FURNITURE_CATALOG } from '../../furniture/catalog';
-import { CATALOG_SYMBOL_KINDS, CHAIR_OVERFLOW, FURNITURE_SYMBOLS, hasSymbol, primsBounds, symbolFor, symbolOverflow, symbolPrims } from './furnitureSymbols';
+import { CATALOG_SYMBOL_KINDS, FURNITURE_SYMBOLS, hasSymbol, primsBounds, symbolFor, symbolOverflow, symbolPrims } from './furnitureSymbols';
 import type { SymbolPrim } from './furnitureSymbols';
 
 /** The catalogue ids of phase 2b (append-only; docs/workflows/phase2b-furniture-offline.workflow.js). */
@@ -154,19 +154,22 @@ describe('symbol registry', () => {
     for (const g of glass) expect(g.k === 'line' && Math.max(g.a[1], g.b[1])).toBeLessThan(-0.4);
   });
 
-  it('draws the chairs of a dining table: straddling a bare table, inside a table-with-chairs footprint', () => {
-    const chairs = (id: string, w: number, d: number) => symbolPrims(id, w, d).filter((p) => p.k === 'rect' && p.s === 'line').length;
-    expect(chairs('spisebord-4', 1.4, 0.9)).toBe(4);
-    expect(chairs('spisebord-6', 1.8, 0.9)).toBe(6);
-    expect(chairs('spisebord-8', 2.4, 1.0)).toBe(8);
-    expect(symbolOverflow('spisebord-6', 1.8, 0.9)).toBe(CHAIR_OVERFLOW);
-    expect(symbolOverflow('spisebord-6', 2.6, 1.8)).toBe(0);
-    expect(symbolOverflow('seng-150', 1.5, 2)).toBe(0);
-    // The table top is drawn over the chairs.
-    const prims = symbolPrims('spisebord-4', 1.4, 0.9);
-    const lastPaper = prims.map((p) => p.s).lastIndexOf('paper');
-    const lastChair = prims.map((p) => p.s).lastIndexOf('line');
-    expect(lastPaper).toBeGreaterThan(lastChair);
+  it('draws a dining table alone, inside its footprint: its chairs are Stol items (no phantom seats)', () => {
+    for (const [id, w, d] of [['spisebord-4', 1.2, 0.8], ['spisebord-6', 1.8, 0.9], ['spisebord-8', 2.6, 1.0], ['spisebord-6', 2.6, 1.8]] as const) {
+      const prims = symbolPrims(id, w, d);
+      // No chair seats (the old symbol drew one 'line' rect per chair) and no backrests.
+      expect(prims.filter((p) => p.s === 'line' || p.s === 'soft'), `${id} ${w}×${d}`).toEqual([]);
+      expect(prims.filter((p) => p.k === 'rect' && p.s === 'outline'), `${id} ${w}×${d}`).toHaveLength(1);
+      const b = primsBounds(prims)!;
+      expect(b.min[0]).toBeGreaterThanOrEqual(-w / 2 - 1e-9);
+      expect(b.max[0]).toBeLessThanOrEqual(w / 2 + 1e-9);
+      expect(b.min[1]).toBeGreaterThanOrEqual(-d / 2 - 1e-9);
+      expect(b.max[1]).toBeLessThanOrEqual(d / 2 + 1e-9);
+      expect(symbolOverflow(id, w, d)).toBe(0);
+    }
+    // The table top covers the whole footprint.
+    const top = symbolPrims('spisebord-8', 2.6, 1.0).find((p) => p.k === 'rect' && p.s === 'outline')!;
+    expect(top.k === 'rect' && [top.x, top.y, top.w, top.h]).toEqual([-1.3, -0.5, 2.6, 1.0]);
   });
 
   it('writes appliance codes', () => {
