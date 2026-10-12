@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { nb, warningText } from '../i18n/nb';
 import type { ModelWarning } from '../model/derived';
 import type { Variant } from '../model/types';
-import { placeUnit } from '../state/editActions';
+import { placeUnit, rotateBlock } from '../state/editActions';
 import { createAppStore, selectActiveVariant } from '../state/store';
 import { undoHow } from './device';
 import { hintFor } from './hints';
@@ -163,11 +163,16 @@ describe('warnings name walls and openings by type and place', () => {
     for (const t of texts) expect(t).not.toMatch(/d-sov-ny|win-kjk-n|w-104-103|w-gang-n|op-/);
   });
 
-  /** "Mitt forslag" with a Vedskjul placed at each point (the real editor action), optionally listed before the other blocks. */
-  function withShed(at: [number, number][], shedsFirst = false): { variant: Variant } {
+  /**
+   * "Mitt forslag" with a Vedskjul placed at each point (the real editor action), optionally listed before the other
+   * blocks, and turned 90° `turns` times after placing (placement turns an open front away from the wing; two turns
+   * put it back against the wing).
+   */
+  function withShed(at: [number, number][], shedsFirst = false, turns = 0): { variant: Variant } {
     const store = createAppStore({ ...seed.project, variants: [...seed.project.variants, seed.variant], activeVariantId: seed.variant.id });
     const sheds = at.map((p) => placeUnit(store, 'vedskjul', p));
     if (sheds.some((id) => !id)) throw new Error('no shed');
+    for (const id of sheds) for (let i = 0; i < turns; i++) rotateBlock(store, id!, 90);
     const v = selectActiveVariant(store.getState());
     const isShed = (id: string) => sheds.includes(id);
     const variant = shedsFirst ? { ...v, blocks: [...v.blocks.filter((b) => isShed(b.id)), ...v.blocks.filter((b) => !isShed(b.id))] } : v;
@@ -186,7 +191,9 @@ describe('warnings name walls and openings by type and place', () => {
     expect(covered.map((w) => (w.kind === 'opening-on-removed-edge' ? w.openingId : ''))).toContain('win-sov-n');
     expect(textsOf(first.variant)).toContain('Vinduet i ytterveggen mot øst i Soverom (ny fløy) sitter i en vegg som nå er dekket av «Vedskjul».');
 
-    const placed = withShed([AT_WING]);
+    // Placed, the shed turns its open front away from the wing; turned back by hand, its front is the one covered.
+    expect(textsOf(withShed([AT_WING]).variant).join(' | ')).not.toMatch(/Åpningen i ytterveggen .* i Vedskjul/);
+    const placed = withShed([AT_WING], false, 2);
     const texts = textsOf(placed.variant);
     expect(texts).toContain('Åpningen i ytterveggen mot vest i Vedskjul sitter i en vegg som nå er dekket av «Ny tverrfløy».');
     for (const t of texts) expect(t).not.toMatch(/op-|blk-|win-|en vegg som er fjernet/);
@@ -197,7 +204,11 @@ describe('warnings name walls and openings by type and place', () => {
   });
 
   it('a roof that does not meet its neighbour names the end by compass direction', () => {
-    const { variant } = withShed([AT_WING]);
+    // A placed shed against the wing's gable end gives no roof warning (roof.ts: units do not carry a ridge on); a
+    // drawn block there does.
+    const { variant: withUnit } = withShed([AT_WING]);
+    expect(textsOf(withUnit).join(' | ')).not.toMatch(/møter ikke nabotaket/);
+    const variant = { ...withUnit, blocks: withUnit.blocks.map((b) => (b.template ? { ...b, template: undefined } : b)) };
     // The wing's ridge runs along plan y; its high (end) end faces plan +y, which bears 106°: east.
     expect(textsOf(variant)).toContain('Taket på «Ny tverrfløy» møter ikke nabotaket i enden mot øst.');
     const bare = (_kind: string, id: string) => id;

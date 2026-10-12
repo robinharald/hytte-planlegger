@@ -325,6 +325,18 @@ describe('ridgeExtension (rules and degenerate cases)', () => {
     expect(buildRoofsWithWarnings(v2).warnings).toEqual(roofWarnings(v2));
   });
 
+  it('a placed unit (Nytt bygg) against a gable end: the same free gable, but no roof-no-meet', () => {
+    const highX = block('highX', [0, 2, 4, 6], gable({ ridgeAxis: 'x', pitchDeg: 45 }));
+    const shed = block('shed', [4, 2, 8, 6], gable({ ridgeAxis: 'x', pitchDeg: 5 }), { eaveHeight: 1, template: 'vedskjul' });
+    const v = variantOf([highX, shed]);
+    expect(ridgeExtension(highX, v)).toMatchObject({ end: 0.35, endFree: true, endNoMeet: false, startNoMeet: false });
+    expect(roofWarnings(v)).toEqual([]);
+    // The roofs are the same as with a drawn block there (only the warning differs).
+    const drawn = variantOf([highX, { ...shed, template: undefined }]);
+    expect(roofWarnings(drawn)).toEqual([{ kind: 'roof-no-meet', blockId: 'highX', end: 'end' }]);
+    expect(buildRoofs(v).map((r) => r.outline)).toEqual(buildRoofs(drawn).map((r) => r.outline));
+  });
+
   it('collinear blocks with equal ridges meet at the shared edge (extension 0)', () => {
     const a = block('a', [0, 0, 5, 6], gable());
     const b = block('b', [5, 0, 10, 6], gable());

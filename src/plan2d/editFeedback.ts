@@ -11,6 +11,7 @@
  *  - ghost: a ring `Vec2[]`, rings `Vec2[][]`, a MultiPolygon `Vec2[][][]`, `{ polygon }`, `{ polygons }`,
  *    `{ rings }`, `{ outline }` or a segment `{ a, b }`; a drag preview's `target` (the dragged element's moving
  *    outline) takes the same shapes (`normalizePreview`);
+ *  - hint: a non-empty string `hint` (a drag's text for the hint line, e.g. a clamped wall drag) is kept;
  *  - snap results: `{ point, indicators, chips }` (or `p` / `snapped` for the point), else a bare Vec2;
  *  - ids: a string, or `{ id }`.
  * Anything else is ignored; nothing here throws.
@@ -119,7 +120,9 @@ export function readGhost(raw: unknown): Vec2[][] {
 export function normalizeFeedback(raw: unknown): PlanFeedback {
   if (!isRec(raw)) return EMPTY_FEEDBACK;
   const { markers, guides } = readIndicators(raw.indicators);
-  return { markers, guides, chips: readChips(raw.chips), ghost: readGhost(raw.ghost) };
+  const fb: PlanFeedback = { markers, guides, chips: readChips(raw.chips), ghost: readGhost(raw.ghost) };
+  if (typeof raw.hint === 'string' && raw.hint.length > 0) fb.hint = raw.hint;
+  return fb;
 }
 
 /**

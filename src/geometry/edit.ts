@@ -120,7 +120,10 @@
  * faces the deck or nothing better does; a side whose outside probe 0.6 m out lies on a deck piece and in no block).
  * Furniture whose centre the new unit covers is pushed out past its nearest side (`pushFurnitureOut`), and whole-block
  * moves, turns and deletes take only the furniture standing in the block's own rooms (`furnitureOfBlock`): a Vedskjul
- * placed over the terrace table and moved later leaves the table (fix round after 2b).
+ * placed over the terrace table and moved later leaves the table (fix round after 2b). Final fix round after 2b: only
+ * furniture outside every block is pushed (never the house's), clear of walls and door swings; a block moved or turned
+ * onto terrace furniture pushes it out too (`EditContext.pushed`), so a unit never takes it over; a Vedskjul placed
+ * with its open front against another block turns half round.
  *
  * Rooms (§3.5): `reconcileRooms(baseDerived, next, nextDerived, { carried })` — each Room stays with a face of its
  * storey that overlaps its previous inner polygon (unchanged faces are kept without clipping; a room a whole-block
@@ -171,6 +174,7 @@ import {
   signedArea,
   withClipFallback,
 } from './polygon';
+import { convexOverlap, convexPieces, furnitureFootprint, swingSector } from './furnitureDerive';
 import { resolveJunctions } from './walls';
 import type { EdgeJunction } from './walls';
 
@@ -260,6 +264,11 @@ export interface EditContext {
    * hands it to `reconcileRooms`, which matches those rooms by their previous polygon transformed the same way.
    */
   carried?: Map<Id, PlanTransform>;
+  /**
+   * Out: furniture a whole-block edit pushed out of the block (moveBlock, rotateBlock; fix round 2b, final): what stood
+   * where the block went and was not its own. The caller toasts it.
+   */
+  pushed?: Id[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1298,42 +1307,14 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
   const o = addc(w0.a, delta);
   const changes = new Map<Id, WallChange>();
   const ends: Record<'a' | 'b', Vec2> = { a: addc(w0.a, delta), b: addc(w0.b, delta) };
-  const plans = (['a', 'b'] as const).map((end) => {
-    const p = w0[end];
-    const { supports, followers, through } = endClass(ctx, w0, p, self);
-    // A coincident wall's point on the moved line (a non-parallel one keeps its direction; null for a parallel one).
-    const onMoved = (c: { wall: Wall; end: 'a' | 'b' }): Vec2 | null => {
-      const other = c.end === 'a' ? c.wall.b : c.wall.a;
-      return isParallel(sub(c.wall.b, c.wall.a), dir) ? null : lineIntersection(other, sub(p, other), o, dir);
-    };
-    // … and whether that point extends it beyond this end (so it still covers the old corner: nothing there comes loose).
-    const extended = (c: { wall: Wall; end: 'a' | 'b' }): boolean => {
-      const x = onMoved(c);
-      return x !== null && dot(sub(x, p), sub(p, c.end === 'a' ? c.wall.b : c.wall.a)) > TINY;
-    };
-    const anchored = anchorOnLine(supports, o, dir);
-    const clamped = anchored !== null && anchored.err > COINCIDE;
-    // A clamped end may instead slide onto a non-parallel coincident wall that runs on towards the moved line, which
-    // then stays as it is (a T-junction; fix round after 2b: w-wing-w moved east slides along w-sauna-n, which it would
-    // otherwise have to shorten).
-    const slide = clamped
-      ? ([...followers, ...through]
-          .map((c) => {
-            const x = onMoved(c);
-            const other = c.end === 'a' ? c.wall.b : c.wall.a;
-            return x && dot(sub(x, p), sub(other, p)) > TINY && dist(x, p) <= dist(other, p) - MIN_WALL_LENGTH ? copy(x) : null;
-          })
-          .find((x) => x !== null) ?? null)
-      : null;
-    return { end, p, followers, through, onMoved, extended, anchored, clamped, slide, carriers: [...followers, ...through].some(extended) };
-  });
+  const plans = wallEndPlans(ctx, w0, delta, self);
   // A support that ends short of the moved line (clamped, e.g. the floor step and w-103-102 under w-103-korr's east end
   // when the wall moves south) would pin that end and turn the wall. When a non-parallel coincident wall can carry the
   // corner by getting LONGER (w-103-102, even though it runs on to the loft), the end moves as a node with the
   // coincident walls and the wall keeps its direction; a parallel one (w-vf-korr continuing the wall) stays and meets
   // the carried wall as a T-junction (polish round, phase 2b). Only when no end stays clamped (else the wall would turn
   // anyway) and never by shortening a wall (w-wing-w east: w-sauna-n would leave the wing's edge): as before then.
-  const carry = plans.some((pl) => pl.clamped) && plans.every((pl) => !pl.clamped || pl.carriers);
+  const carry = cornerCarried(plans);
   // Never one end sliding while the other is pinned (fix round after 2b, generalising the w-103-korr rule): when an end
   // stays clamped (its supports end short of the moved line and no coincident wall carries it), the move is cut back to
   // the largest part of `delta` that every end can follow, so the wall stays parallel (w-peis-n 1 m south stops on
@@ -1390,6 +1371,61 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
   w.b = copy(ends.b);
   pullBackOpenings(draft, ctx, [...changedWall(draft, wallId, w0.a, w0.b), ...applyWallChanges(draft, ctx, changes)]);
   return true;
+}
+
+/** Whether the clamped ends of a wall move (`wallEndPlans`) are all carried by a coincident wall that gets longer. */
+function cornerCarried(plans: readonly { clamped: boolean; carriers: boolean }[]): boolean {
+  return plans.some((pl) => pl.clamped) && plans.every((pl) => !pl.clamped || pl.carriers);
+}
+
+/**
+ * The part of `delta` that applyMoveWall moves wall `wallId` by (fix round 2b, final: the drag preview draws the same
+ * clamp): 1 when the move is not cut back, t ∈ (0, 1) when an end whose support runs out cuts it to t·delta, 0 when the
+ * move is refused (an end cannot follow at all: lw-split north).
+ */
+export function wallMoveFraction(ctx: EditContext, wallId: Id, delta: Vec2): number {
+  const w0 = ctx.base.walls.find((w) => w.id === wallId);
+  if (!w0 || w0.status === 'removed' || len(delta) < TINY) return 1;
+  const self = new Set([wallId]);
+  const plans = wallEndPlans(ctx, w0, delta, self);
+  if (cornerCarried(plans) || !plans.some((pl) => pl.clamped && !pl.slide)) return 1;
+  const t = followableFraction(ctx, w0, delta, self);
+  return t * len(delta) > SAME ? t : 0;
+}
+
+/** Per end of wall `w0` moved by `delta` (applyMoveWall): its supports and coincident walls, and how the end can follow. */
+function wallEndPlans(ctx: EditContext, w0: Wall, delta: Vec2, self: ReadonlySet<Id>) {
+  const dir = sub(w0.b, w0.a);
+  const o = addc(w0.a, delta);
+  return (['a', 'b'] as const).map((end) => {
+    const p = w0[end];
+    const { supports, followers, through } = endClass(ctx, w0, p, self);
+    // A coincident wall's point on the moved line (a non-parallel one keeps its direction; null for a parallel one).
+    const onMoved = (c: { wall: Wall; end: 'a' | 'b' }): Vec2 | null => {
+      const other = c.end === 'a' ? c.wall.b : c.wall.a;
+      return isParallel(sub(c.wall.b, c.wall.a), dir) ? null : lineIntersection(other, sub(p, other), o, dir);
+    };
+    // … and whether that point extends it beyond this end (so it still covers the old corner: nothing there comes loose).
+    const extended = (c: { wall: Wall; end: 'a' | 'b' }): boolean => {
+      const x = onMoved(c);
+      return x !== null && dot(sub(x, p), sub(p, c.end === 'a' ? c.wall.b : c.wall.a)) > TINY;
+    };
+    const anchored = anchorOnLine(supports, o, dir);
+    const clamped = anchored !== null && anchored.err > COINCIDE;
+    // A clamped end may instead slide onto a non-parallel coincident wall that runs on towards the moved line, which
+    // then stays as it is (a T-junction; fix round after 2b: w-wing-w moved east slides along w-sauna-n, which it would
+    // otherwise have to shorten).
+    const slide = clamped
+      ? ([...followers, ...through]
+          .map((c) => {
+            const x = onMoved(c);
+            const other = c.end === 'a' ? c.wall.b : c.wall.a;
+            return x && dot(sub(x, p), sub(other, p)) > TINY && dist(x, p) <= dist(other, p) - MIN_WALL_LENGTH ? copy(x) : null;
+          })
+          .find((x) => x !== null) ?? null)
+      : null;
+    return { end, p, followers, through, onMoved, extended, anchored, clamped, slide, carriers: [...followers, ...through].some(extended) };
+  });
 }
 
 /**
@@ -2229,59 +2265,110 @@ function furnitureOfBlock(v: Variant, ctx: Pick<EditContext, 'derived'> | undefi
 /** Clearance (m) between a unit's cladding and the furniture `pushFurnitureOut` moves out of it. */
 const PUSH_GAP = 0.02;
 
+/** Farther pushes `pushFurnitureOut` tries past each side when the nearest spot is taken: steps (m) and how many. */
+const PUSH_STEP = 0.05;
+const PUSH_STEPS = 40;
+
+/** What `pushFurnitureOut` leaves alone besides the house: the block that moves (moveBlock / rotateBlock) and its own items. */
+interface PushOpts {
+  /** The unit (new or moving): its pointer-down place, walls and doors are no obstacles; its doors where it now stands are. */
+  blockId?: Id;
+  /** Items that go with the block (its own, `furnitureOfBlock`): never pushed. */
+  own?: (f: FurnitureItem) => boolean;
+}
+
 /**
- * A unit placed over furniture (fix round after 2b): every item on the unit's storey whose centre lies inside the
- * unit's outer outline (the axis rectangle grown by the cladding) is pushed straight out past the nearest side, by the
- * smallest move that clears the cladding by PUSH_GAP and puts it neither into another block nor onto another item of
- * that storey (bounding boxes; else the smallest move). So a unit never owns what stood there before it
- * (`furnitureOfBlock`). Items whose centre is outside stay (the collision warning shows them). Returns the ids of the
- * items it moved.
+ * A unit placed, moved or turned over furniture (fix round after 2b; final fix round: moves and turns too, never the
+ * house's furniture): every item on the unit's storey whose centre lies inside the unit's outer outline (the axis
+ * rectangle grown by the cladding) and that stands outside every block — on the deck or the ground: no derived room,
+ * centre in no other block — is pushed straight out past one side, by the smallest move that clears the cladding by
+ * PUSH_GAP and puts it into no other block, onto no other item of that storey (bounding boxes), into no wall and no door
+ * swing (the house's, and the unit's own doors where it now stands); farther out past the same sides in PUSH_STEP steps
+ * when the nearest spot is taken; else the smallest move into no block. A unit placed over the house therefore leaves
+ * the house's furniture alone (its block-overlap warning shows it) but still pushes terrace furniture out, so it never
+ * owns what stood there before it (`furnitureOfBlock`). Items whose centre is outside stay (the collision warning shows
+ * them). Returns the ids of the items it moved.
  */
-function pushFurnitureOut(draft: Variant, ctx: EditContext, poly: Vec2[], outerOffset: number, levelId: Id): Id[] {
+function pushFurnitureOut(draft: Variant, ctx: EditContext, poly: Vec2[], outerOffset: number, levelId: Id, opts: PushOpts = {}): Id[] {
   type Box = { min: Vec2; max: Vec2 };
   const storey = storeyOfLevel(draft, levelId);
   const ub = bbox(poly);
+  const others = ctx.base.blocks.filter((b) => b.id !== opts.blockId).map((b) => ({ block: b, axis: b.polygon.map((x) => x.p) }));
   const lo: Vec2 = [ub.min[0] - outerOffset, ub.min[1] - outerOffset];
   const hi: Vec2 = [ub.max[0] + outerOffset, ub.max[1] + outerOffset];
-  const blocks: Box[] = ctx.base.blocks.map((b) => {
-    const bb = bbox(b.polygon.map((x) => x.p));
+  const onStorey = draft.furniture.filter((f) => storeyOfLevel(draft, f.levelId) === storey);
+  const derivedOf = new Map(ctx.derived.furniture.map((f) => [f.id, f]));
+  const pushable = onStorey.filter((f) => {
+    const c = f.position;
+    if (!(c[0] > lo[0] && c[0] < hi[0] && c[1] > lo[1] && c[1] < hi[1])) return false;
+    // Only what stands outside every block: never the house's furniture, nor what is in another unit's room.
+    return !opts.own?.(f) && derivedOf.get(f.id)?.roomId === undefined && !others.some((o) => pointInPolygon(c, o.axis));
+  });
+  if (pushable.length === 0) return [];
+  const blocks: Box[] = others.map(({ block: b, axis }) => {
+    const bb = bbox(axis);
     const o = b.wall.outerOffset;
     return { min: [bb.min[0] - o, bb.min[1] - o], max: [bb.max[0] + o, bb.max[1] + o] };
   });
-  const onStorey = draft.furniture.filter((f) => storeyOfLevel(draft, f.levelId) === storey);
-  const footprints = new Map(ctx.derived.furniture.map((f) => [f.id, f.footprint]));
-  /** An item's footprint box where it stands now (the derived footprint shifted by any move since the base). */
-  const boxOf = (f: FurnitureItem): Box => {
-    const f0 = ctx.base.furniture.find((x) => x.id === f.id);
-    const fp = footprints.get(f.id);
-    if (fp && f0) {
-      const b = bbox(fp);
-      const d = sub(f.position, f0.position);
-      return { min: add(b.min, d), max: add(b.max, d) };
+  // Walls and door swings of the storey (not the moving unit's own at its old place), and the unit's doors where it is now.
+  const solid: Vec2[][] = [];
+  for (const w of ctx.derived.walls) {
+    if (w.isGhost || (storey !== undefined && !w.storeyIds.includes(storey))) continue;
+    if (w.source.kind === 'blockEdge' && w.source.blockId === opts.blockId) continue;
+    if (!w.isDivider && w.footprint.length >= 3) solid.push(...convexPieces(w.footprint));
+    for (const o of w.openings) {
+      if (o.isGhost) continue;
+      for (const s of [o.swing, o.swing2]) if (s) solid.push(swingSector(s));
     }
-    const r = Math.max(f.size.w, f.size.d) / 2;
-    return { min: [f.position[0] - r, f.position[1] - r], max: [f.position[0] + r, f.position[1] + r] };
-  };
+  }
+  const unitBlock = opts.blockId === undefined ? undefined : draft.blocks.find((b) => b.id === opts.blockId);
+  if (unitBlock) {
+    const pts = unitBlock.polygon.map((v) => copy(v.p));
+    for (const o of draft.openings) {
+      if (o.host.kind !== 'blockEdge' || o.host.blockId !== unitBlock.id || !SWINGING.has(o.type)) continue;
+      const edgeId = o.host.edgeId;
+      const i = unitBlock.polygon.findIndex((v) => v.id === edgeId);
+      if (i < 0) continue;
+      const a = pts[i];
+      const u = unit(sub(pts[(i + 1) % pts.length], a));
+      const n = scale(outwardNormal(pts, i), outerOffset + o.width);
+      const s0 = add(a, scale(u, o.offset - o.width / 2));
+      const s1 = add(a, scale(u, o.offset + o.width / 2));
+      solid.push([s0, s1, add(s1, n), add(s0, n)]);
+    }
+  }
+  const solidBoxes = solid.map((p) => bbox(p));
+  /** Every item's footprint box where it stands now (kept up to date as items are pushed). */
+  const boxes = new Map<Id, Box>(onStorey.map((f) => [f.id, bbox(furnitureFootprint(f))]));
+  const boxOf = (f: FurnitureItem): Box => boxes.get(f.id) ?? bbox(furnitureFootprint(f));
   const overlaps = (p: Box, q: Box) => p.min[0] < q.max[0] && p.max[0] > q.min[0] && p.min[1] < q.max[1] && p.max[1] > q.min[1];
   const moved: Id[] = [];
-  for (const f of onStorey) {
+  for (const f of pushable) {
     const c = f.position;
-    if (!(c[0] > lo[0] && c[0] < hi[0] && c[1] > lo[1] && c[1] < hi[1])) continue;
     const fb = boxOf(f);
-    const moves = (
-      [
-        [hi[0] - fb.min[0] + PUSH_GAP, 0],
-        [lo[0] - fb.max[0] - PUSH_GAP, 0],
-        [0, hi[1] - fb.min[1] + PUSH_GAP],
-        [0, lo[1] - fb.max[1] - PUSH_GAP],
-      ] as Vec2[]
-    ).sort((p, q) => len(p) - len(q));
+    const sides = [
+      [hi[0] - fb.min[0] + PUSH_GAP, 0],
+      [lo[0] - fb.max[0] - PUSH_GAP, 0],
+      [0, hi[1] - fb.min[1] + PUSH_GAP],
+      [0, lo[1] - fb.max[1] - PUSH_GAP],
+    ] as Vec2[];
+    const nearest = [...sides].sort((p, q) => len(p) - len(q));
+    const moves: Vec2[] = [];
+    for (const m of sides) for (let k = 0; k <= PUSH_STEPS; k++) moves.push(add(m, scale(unit(m), k * PUSH_STEP)));
+    moves.sort((p, q) => len(p) - len(q));
+    const inBlock = (d: Vec2) => {
+      const nb: Box = { min: add(fb.min, d), max: add(fb.max, d) };
+      return blocks.some((o) => overlaps(nb, o));
+    };
     const clear = (d: Vec2) => {
       const nb: Box = { min: add(fb.min, d), max: add(fb.max, d) };
-      return !blocks.some((o) => overlaps(nb, o)) && !onStorey.some((g) => g !== f && overlaps(nb, boxOf(g)));
+      if (inBlock(d) || onStorey.some((g) => g !== f && overlaps(nb, boxOf(g)))) return false;
+      const ring: Vec2[] = [nb.min, [nb.max[0], nb.min[1]], nb.max, [nb.min[0], nb.max[1]]];
+      return !solid.some((p, k) => overlaps(nb, solidBoxes[k]) && convexOverlap(ring, p));
     };
-    const d = moves.find(clear) ?? moves[0];
+    const d = moves.find(clear) ?? moves.find((m) => !inBlock(m)) ?? nearest[0];
     f.position = addc(c, d);
+    boxes.set(f.id, { min: add(fb.min, d), max: add(fb.max, d) });
     moved.push(f.id);
   }
   return moved;
@@ -2329,9 +2416,12 @@ export function applyMoveBlock(draft: Variant, ctx: EditContext, blockId: Id, de
     ctx.carried?.set(r.id, (p) => add(p, delta));
   }
   // Only its own furniture (in its rooms), not what stood on the terrace before it (furnitureOfBlock).
-  const own = furnitureOfBlock(ctx.base, ctx, b0, axis, storeys);
-  for (const f of draft.furniture) if (own(f)) f.position = addc(f.position, delta);
+  const own = new Set(draft.furniture.filter(furnitureOfBlock(ctx.base, ctx, b0, axis, storeys)).map((f) => f.id));
+  for (const f of draft.furniture) if (own.has(f.id)) f.position = addc(f.position, delta);
   for (const s of draft.structure) if (structureInside(s, axis)) translateStructure(s, delta);
+  // What it now stands on and did not own goes out of it, as at placement (final fix round after 2b: a unit moved onto
+  // the terrace table took it over, carried it on the next move and deleted it with itself).
+  pushOutOfMoved(draft, ctx, b0, own);
   healGhosts(draft);
   return true;
 }
@@ -2502,9 +2592,9 @@ export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, 
     r.anchor = T(r.anchor);
     ctx.carried?.set(r.id, T);
   }
-  const own = furnitureOfBlock(ctx.base, ctx, b0, axis, storeys);
+  const own = new Set(draft.furniture.filter(furnitureOfBlock(ctx.base, ctx, b0, axis, storeys)).map((f) => f.id));
   for (const f of draft.furniture) {
-    if (!own(f)) continue;
+    if (!own.has(f.id)) continue;
     f.position = T(f.position);
     f.rotationDeg = (((f.rotationDeg + deg) % 360) + 360) % 360;
   }
@@ -2521,8 +2611,21 @@ export function applyRotateBlock(draft: Variant, ctx: EditContext, blockId: Id, 
       s.max = [Math.max(p[0], q[0]), Math.max(p[1], q[1])];
     }
   }
+  // Turned onto terrace furniture: pushed out as at placement (final fix round after 2b).
+  pushOutOfMoved(draft, ctx, b0, own);
   healGhosts(draft);
   return true;
+}
+
+/**
+ * After a whole-block move or turn (final fix round after 2b): the items the block did not own (`own`, its furniture
+ * before the edit) that now stand in it are pushed out (`pushFurnitureOut`), recorded in `ctx.pushed`.
+ */
+function pushOutOfMoved(draft: Variant, ctx: EditContext, b0: Block, own: ReadonlySet<Id>): void {
+  const b = draft.blocks.find((x) => x.id === b0.id);
+  if (!b) return;
+  const pushed = pushFurnitureOut(draft, ctx, b.polygon.map((v) => copy(v.p)), b0.wall.outerOffset, b0.levelId, { blockId: b0.id, own: (f) => own.has(f.id) });
+  if (pushed.length > 0) ctx.pushed?.push(...pushed);
 }
 
 /**
@@ -2749,13 +2852,23 @@ function onDeck(derived: DerivedVariant, p: Vec2): boolean {
 
 /**
  * Place a unit from a template (header: "Units"). `at` is the centre, `rotation90` quarter turns. Null for an
- * unknown template.
+ * unknown template. A unit with an open front placed with that front against another block (a shed attached to the
+ * wing by its front) is turned half round, which keeps its footprint: the front faces away from the block (final fix
+ * round after 2b; a door goes on a free deck-facing edge anyway, `deckFacingEdge`).
  */
 export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: string, at: Vec2, rotation90: number, ids: Partial<PlacedUnit> = {}): PlacedUnit | null {
   const t = unitTemplate(templateId);
   if (!t) return null;
-  const rot = quarterTurns(rotation90);
-  const poly = unitFootprint(t, at, rot);
+  let rot = quarterTurns(rotation90);
+  let poly = unitFootprint(t, at, rot);
+  if (t.openFront) {
+    const axes = ctx.base.blocks.map((b) => b.polygon.map((v) => v.p));
+    const against = (i: number) => axes.some((ax) => collinearRanges(poly[i], poly[(i + 1) % poly.length], ax).length > 0);
+    if (against(0) && !against(2)) {
+      rot = quarterTurns(rot + 2);
+      poly = unitFootprint(t, at, rot);
+    }
+  }
   const blockId = ids.blockId ?? newId('blk');
   const vertexIds = poly.map(() => newId('v'));
   const levelId = draft.levels.some((l) => l.id === 'main') ? 'main' : (draft.levels[0]?.id ?? 'main');
@@ -2825,23 +2938,29 @@ export function applyPlaceUnit(draft: Variant, ctx: EditContext, templateId: str
     openingId = o.id;
   }
   // What stood there goes out of the unit, so the unit never carries or deletes it later (fix round after 2b).
-  const pushed = pushFurnitureOut(draft, ctx, poly, wall.outerOffset, levelId);
+  const pushed = pushFurnitureOut(draft, ctx, poly, wall.outerOffset, levelId, { blockId });
   return pushed.length > 0 ? { blockId, roomId: room.id, openingId, pushedFurniture: pushed } : { blockId, roomId: room.id, openingId };
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
 
-/** Index of the unit edge facing the deck: the front (0) when its outside probe is on a deck, else the first that is. */
+/**
+ * Index of the unit edge facing the deck: the front (0) when its outside probe is on a deck, else the first that is;
+ * with none on a deck, the first whose probe is in no block (final fix round after 2b: not the edge against the wing).
+ */
 function deckFacingEdge(ctx: EditContext, poly: Vec2[]): number {
   const order = [0, 2, 1, 3].filter((i) => i < poly.length);
   const axes = ctx.base.blocks.map((b) => b.polygon.map((v) => v.p));
+  let free = -1;
   for (const i of order) {
     const a = poly[i];
     const b = poly[(i + 1) % poly.length];
     const probe = add(scale(add(a, b), 0.5), scale(outwardNormal(poly, i), DECK_PROBE));
-    if (onDeck(ctx.derived, probe) && !axes.some((ax) => pointInPolygon(probe, ax))) return i;
+    const inBlock = axes.some((ax) => pointInPolygon(probe, ax));
+    if (onDeck(ctx.derived, probe) && !inBlock) return i;
+    if (free < 0 && !inBlock) free = i;
   }
-  return 0;
+  return Math.max(0, free);
 }
 
 // ---------------------------------------------------------------------------

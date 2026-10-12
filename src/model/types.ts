@@ -141,6 +141,19 @@ export interface Variant {
    * `treesOf(project, variant)` (geometry/derive.ts). Optional, no schema bump: older documents have none.
    */
   trees?: Tree[];
+  /**
+   * Rooms a merge removed (final fix round after 2b), newest first, each with the anchors of the rooms alive with it
+   * before the merge: "Ta tilbake" gives a merged-away name its face back when a later restore splits the face, also
+   * after a reload (state/editActions.ts; dropped from the list when the room is back). Undefined = none. Optional, no
+   * schema bump: older documents have none.
+   */
+  mergedRooms?: MergedRoom[];
+}
+
+/** A Room record a merge removed, with the anchors (by room id) of the rooms alive with it then (`Variant.mergedRooms`). */
+export interface MergedRoom {
+  room: Room;
+  peers: Record<Id, Vec2>;
 }
 
 export interface VariantMeta {

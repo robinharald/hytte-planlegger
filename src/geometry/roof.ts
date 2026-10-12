@@ -23,7 +23,9 @@
  *     ridge line. The extended region beyond the axis line is clipped in plan to the union of the other roofed
  *     blocks' polygons (their axis lines, i.e. inside their walls — not their roof outlines: a lower roof running in
  *     under a higher roof would otherwise poke out of the other block's gable under its overhang) and gets no barge
- *     board. Not found within 30 m → free gable (overhangGable) + `roof-no-meet`.
+ *     board. Not found within 30 m → free gable (overhangGable) + `roof-no-meet`, unless every block at that end is a
+     placed unit (`Block.template`: a shed, bod, … standing against a gable end is not meant to carry the ridge on;
+     the gable simply rises above it, so no warning).
  *  3. `Roof.extend.start/end` replaces the distance at that end. If the end is adjacent, the region beyond the axis
  *     line is still clipped to the other blocks and carries no barge board; otherwise it is a free gable.
  *
@@ -443,7 +445,7 @@ function walkToMeet(start: Vec2, dir: Vec2, ridgeZ: number, shapes: BaseShape[])
   return null;
 }
 
-function extensionOf(m: RoofModel, others: { polygon: Vec2[]; shape: BaseShape | null }[]): RidgeExtension {
+function extensionOf(m: RoofModel, others: Neighbour[]): RidgeExtension {
   if (m.degenerate || m.roof.type === 'flat') {
     return { start: m.overhang, end: m.overhang, startFree: true, endFree: true, startNoMeet: false, endNoMeet: false };
   }
@@ -453,20 +455,29 @@ function extensionOf(m: RoofModel, others: { polygon: Vec2[]; shape: BaseShape |
   const endResult = (end: End): { dist: number; free: boolean; noMeet: boolean } => {
     const u0 = end === 'start' ? uMin : uMax;
     const mid = toPlan(axis, u0, (vMin + vMax) / 2);
-    const adjacent = others.some((o) => nearPolygon(mid, o.polygon, ADJ_TOL));
+    const near = others.filter((o) => nearPolygon(mid, o.polygon, ADJ_TOL));
+    const adjacent = near.length > 0;
     const override = m.roof.extend?.[end];
     if (typeof override === 'number' && Number.isFinite(override)) return { dist: override, free: !adjacent, noMeet: false };
     if (!adjacent) return { dist: gable, free: true, noMeet: false };
     const d = walkToMeet(toPlan(axis, u0, m.ridgeV), alongDir(axis, end === 'start' ? -1 : 1), m.params.ridgeZ, shapes);
-    return d === null ? { dist: gable, free: true, noMeet: true } : { dist: d, free: false, noMeet: false };
+    // No meeting: the same free gable as a lone end; the warning only when a drawn block stands there.
+    return d === null ? { dist: gable, free: true, noMeet: near.some((o) => !o.unit) } : { dist: d, free: false, noMeet: false };
   };
   const s = endResult('start');
   const e = endResult('end');
   return { start: s.dist, end: e.dist, startFree: s.free, endFree: e.free, startNoMeet: s.noMeet, endNoMeet: e.noMeet };
 }
 
-function othersOf(ctx: { models: RoofModel[]; base: (BaseShape | null)[] }, i: number): { polygon: Vec2[]; shape: BaseShape | null }[] {
-  return ctx.models.flatMap((o, j) => (j === i ? [] : [{ polygon: o.points, shape: ctx.base[j] }]));
+/** Another block as the extension walk sees it; `unit`: placed from a unit template (Nytt bygg). */
+interface Neighbour {
+  polygon: Vec2[];
+  shape: BaseShape | null;
+  unit: boolean;
+}
+
+function othersOf(ctx: { models: RoofModel[]; base: (BaseShape | null)[] }, i: number): Neighbour[] {
+  return ctx.models.flatMap((o, j) => (j === i ? [] : [{ polygon: o.points, shape: ctx.base[j], unit: typeof o.block.template === 'string' && o.block.template !== '' }]));
 }
 
 function roofContext(blocks: Block[], levels: Level[]): RoofContext {

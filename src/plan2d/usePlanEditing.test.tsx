@@ -143,6 +143,53 @@ describe('updateInterval and previewFeedback', () => {
   });
 });
 
+describe('a drag hint (DragFeedback.hint) on the hint line', () => {
+  it('shows the hint while a frame carries one, and goes back to the tool hint when it is gone or the drag ends', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] });
+    const STUCK = 'Veggen kan ikke flyttes lenger hit – enden står fast';
+    /** The wall stops at y 3.5 (plan): past it every frame says so, as state/editActions.ts does for a clamped wall. */
+    const actions = {
+      beginDrag: vi.fn<Fn>(() => SESSION),
+      previewDrag: vi.fn<Fn>((_s, p) => ({ indicators: [], chips: [], ghost: [BASE], target: [BASE], ...((p as Vec2)[1] > 3.5 ? { hint: STUCK } : {}) })),
+      updateDrag: vi.fn<Fn>((_s, p) => ({ indicators: [], chips: [], ghost: [BASE], ...((p as Vec2)[1] > 3.5 ? { hint: STUCK } : {}) })),
+      endDrag: vi.fn<Fn>(),
+      cancelDrag: vi.fn<Fn>(),
+    };
+    const hints: (string | null)[] = [];
+    const svg = render(baseProps({ editable: true, editActions: actions, selection: WALL_SEL, onHint: (h) => hints.push(h) }));
+    const frame = () => act(() => void vi.advanceTimersByTime(16));
+    const at = scr(svg, [8.5, 3]);
+    const to = (y: number) => scr(svg, [8.5, y]);
+    act(() => {
+      pointer(svg.querySelector('[data-wall-id="w-bad-s"]')!, 'pointerdown', at);
+      pointer(svg, 'pointermove', to(3.2));
+    });
+    frame();
+    expect(hints.at(-1) ?? null).toBeNull();
+    act(() => pointer(svg, 'pointermove', to(4.2)));
+    frame();
+    expect(hints.at(-1)).toBe(STUCK);
+    // Back inside the reach: the hint goes.
+    act(() => pointer(svg, 'pointermove', to(3.3)));
+    frame();
+    expect(hints.at(-1)).toBeNull();
+    act(() => pointer(svg, 'pointermove', to(4.5)));
+    frame();
+    expect(hints.at(-1)).toBe(STUCK);
+    act(() => pointer(svg, 'pointerup', to(4.5)));
+    frame();
+    expect(actions.endDrag).toHaveBeenCalledTimes(1);
+    expect(hints.at(-1)).toBeNull();
+  });
+
+  it('normalizeFeedback keeps a non-empty string hint and previewFeedback passes it on', () => {
+    expect(normalizeFeedback({ ghost: [BASE], hint: 'x' }).hint).toBe('x');
+    expect(normalizeFeedback({ ghost: [BASE], hint: '' }).hint).toBeUndefined();
+    expect(normalizeFeedback({ ghost: [BASE], hint: 3 }).hint).toBeUndefined();
+    expect(previewFeedback(normalizePreview({ ghost: [BASE], target: [BASE], hint: 'y' }), [BASE]).hint).toBe('y');
+  });
+});
+
 describe('adaptive drag: previewDrag every frame, updateDrag at most every T ms', () => {
   /** A drag API whose updateDrag takes `cost` ms on the mocked clock (performance.now). */
   function slowActions(clock: { t: number }, cost: number) {

@@ -184,4 +184,9 @@ export interface PlanFeedback {
    * over the dashed base outline (the element at pointer-down). Absent: every ghost ring is drawn dashed, as before.
    */
   target?: Vec2[][];
+  /**
+   * A short text for the hint line while the drag lasts (the edit API's `DragFeedback.hint`, e.g. «Veggen kan ikke
+   * flyttes lenger hit – enden står fast» when a wall drag is cut short). Absent: the tool's own hint.
+   */
+  hint?: string;
 }

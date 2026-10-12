@@ -41,8 +41,8 @@
  * Where the plan is silent: `insertDeckVertex` takes (edgeId, p) or (deckId, edgeId, p) (the two UI sides use
  * both); `resizeRoom` returns the refusal ('block-edge' → "Endres under bygningsdelen", also as a toast); `nudge` of a
  * wall moves it across itself like a drag; `restoreGhost` also brings back Room records deleted earlier in this
- * session (found in the undo history) whose anchor lies in a face that is unnamed after the restore, and for a wall
- * that is not just its ghost translated (an endpoint drag) it first drags each end back with the endpoint cascades
+ * session (found in the undo history) or merged away earlier (kept on the variant, `Variant.mergedRooms`) whose
+ * anchor lies in a face that is unnamed after the restore, and for a wall that is not just its ghost translated (an endpoint drag) it first drags each end back with the endpoint cascades
  * (leaving alone the existing walls the forward step did not touch: no ghost); a translated wall is moved back the
  * same way (`keep`: the untouched existing walls, the walls no step since the first touch changed — from the undo
  * history, `unchangedSince` — and new walls on its end whose line misses the ghost's end, `keepOnMoveBack`), so a
@@ -105,6 +105,7 @@ import {
   reviveRoomRecords,
   roomResizeMove,
   wallEndsFree,
+  wallMoveFraction,
 } from '../geometry/edit';
 import type { BlockPatch, DeckPatch, EditContext, OpeningPatch, PlanTransform, RoomMerge, RoomPatch, RoomTombstone, WallPatch } from '../geometry/edit';
 import { backEdge } from '../geometry/furnitureDerive';
@@ -116,7 +117,7 @@ import type { DerivedVariant } from '../model/derived';
 import { catalogPlacementSpec, convexOverlap, insideRoom, placementObstacles, rectFootprint, tapPlacement } from '../plan2d/furniturePlacement';
 import type { Obstacle, PlacementSpec } from '../plan2d/furniturePlacement';
 import { catalogItem, clampSize, placementSize } from '../furniture/catalog';
-import type { FurnitureItem, Id, OpeningHost, OpeningType, Project, Room, RoomType, Site, Tree, Variant, Vec2, Wall } from '../model/types';
+import type { FurnitureItem, Id, MergedRoom, OpeningHost, OpeningType, Project, Room, RoomType, Site, Tree, Variant, Vec2, Wall } from '../model/types';
 import { unitFootprint, unitTemplate } from '../model/unitTemplates';
 import { appStore } from './appStore';
 import { EDIT_STRINGS } from './editStrings';
@@ -215,6 +216,8 @@ interface RunResult<R> {
   result: R;
   merges: RoomMerge[];
   variant: Variant;
+  /** Furniture a whole-block edit pushed out of the block (EditContext.pushed). */
+  pushed: Id[];
 }
 
 /** One edit of the active variant (see the header). Null when read-only or locked. */
@@ -227,9 +230,10 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
   if (!derived) return null;
   const from = opts.from ?? { variant: base, derived };
   const carried = new Map<Id, PlanTransform>();
+  const pushed: Id[] = [];
   let result: R | undefined;
   const next = produce(from.variant, (draft) => {
-    result = recipe(draft as Variant, { base: from.variant, derived: from.derived, carried });
+    result = recipe(draft as Variant, { base: from.variant, derived: from.derived, carried, pushed });
     // Anything back on its ghost is existing again (geometry/edit.ts healGhosts).
     healGhosts(draft as Variant);
   });
@@ -260,11 +264,63 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
           });
         }
       }
+      final = withMergedRooms(final, base, merges);
     }
   }
   if (final !== current) store.getState().replaceVariant(current.id, final, { transaction: opts.transaction });
   if (opts.toastMerges !== false) mergeToasts(store, merges);
-  return { result: result as R, merges, variant: final };
+  return { result: result as R, merges, variant: final, pushed };
+}
+
+/** How many merged-away rooms a variant keeps (`Variant.mergedRooms`), newest first. */
+const MERGED_ROOMS_KEPT = 40;
+
+/**
+ * The rooms a merge removed are kept on the variant with the anchors of the rooms of their storey alive with them
+ * before the edit (`Variant.mergedRooms`, final fix round after 2b), so "Ta tilbake" can give a merged-away name its
+ * face back also after a reload, when the undo history is gone (`roomsFromHistory` covers the session). Rooms that are
+ * back are dropped from the list; at most MERGED_ROOMS_KEPT are kept.
+ */
+function withMergedRooms(v: Variant, before: Variant, merges: readonly RoomMerge[]): Variant {
+  const live = new Set(v.rooms.map((r) => r.id));
+  const gone = merges.map((m) => m.removed).filter((r, i, all) => !live.has(r.id) && all.findIndex((x) => x.id === r.id) === i);
+  const old = v.mergedRooms ?? [];
+  const kept = old.filter((m) => !live.has(m.room.id) && !gone.some((r) => r.id === m.room.id));
+  if (gone.length === 0 && kept.length === old.length) return v;
+  const storeyOf = (levelId: Id) => before.levels.find((l) => l.id === levelId)?.storeyId;
+  const peersOf = (room: Room): Record<Id, Vec2> => {
+    const out: Record<Id, Vec2> = {};
+    for (const r of before.rooms) if (storeyOf(r.levelId) === storeyOf(room.levelId)) out[r.id] = copy(r.anchor);
+    return out;
+  };
+  const next: MergedRoom[] = [...gone.map((r) => ({ room: JSON.parse(JSON.stringify(r)) as Room, peers: peersOf(r) })), ...kept].slice(0, MERGED_ROOMS_KEPT);
+  return produce(v, (d) => {
+    if (next.length > 0) d.mergedRooms = next;
+    else delete d.mergedRooms;
+  });
+}
+
+/** The undo history's tombstones (`roomsFromHistory`) and then the variant's stored ones (`Variant.mergedRooms`). */
+function roomTombstones(store: EditStore, v: Variant): RoomTombstone[] {
+  const out = roomsFromHistory(store);
+  const have = new Set([...v.rooms.map((r) => r.id), ...out.map((t) => t.room.id)]);
+  for (const m of v.mergedRooms ?? []) {
+    if (have.has(m.room.id)) continue;
+    have.add(m.room.id);
+    out.push({ room: m.room, peers: new Map(Object.entries(m.peers)) });
+  }
+  return out;
+}
+
+/** "«Utebord» er flyttet ut av «Vedskjul»." with Angre: furniture an edit of block `blockId` pushed out of it. */
+function pushedToast(store: EditStore, v: Variant, blockId: Id, pushed: readonly Id[]): void {
+  if (pushed.length === 0) return;
+  const unitName = v.blocks.find((b) => b.id === blockId)?.name ?? '';
+  const names = pushed.map((id) => {
+    const f = v.furniture.find((x) => x.id === id);
+    return f ? (catalogItem(f.catalogId)?.name ?? f.catalogId) : id;
+  });
+  store.getState().showToast({ text: EDIT_STRINGS.furniturePushedOut(unitName, names), undo: true });
 }
 
 /**
@@ -384,7 +440,7 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       // Not just translated (an endpoint drag, or a move and an endpoint drag): drag each end back to the ghost's
       // end with the endpoint cascades (coincident ends, T-junctions), one end after the other. Continuations the
       // forward step carried sideways stay out of that and go back whole afterwards (fix round after 2b).
-      carried = carriedSideways(v, live, g);
+      carried = carriedSideways(v, live, g, ghostStep(store, v, id));
       still = new Set([...unchangedSince(store, v, id), ...carried]);
       if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g, still);
       neighbours = neighbourEnds(v, live, g).filter((n) => !carried.includes(n.wallId));
@@ -422,7 +478,7 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       }
       return applyRestoreEdgeGhost(d, ctx, id);
     },
-    { revive: () => roomsFromHistory(store), from },
+    { revive: () => roomTombstones(store, v), from },
   );
   return changed(r);
 }
@@ -546,23 +602,57 @@ function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[])
  * Walls the forward step of `live` (ghost `g`) carried along sideways (fix round after 2b, geometry/edit.ts
  * `carryParallel`: a continuation in line, such as the loft piece lw-106-top beside w-106-korr): new, with a ghost
  * that ends on one of g's ends, parallel to that ghost but off its line. "Ta tilbake" keeps them out of the cascades
- * back (an endpoint drag back would turn them) and then moves each back whole (`bringBackCarried`).
+ * back (an endpoint drag back would turn them) and then moves each back whole (`bringBackCarried`). Only walls that
+ * step actually moved (final fix round after 2b: a wall in line that the user moved in a step of its own — also on
+ * another floor — stays where they put it): from the undo history (`step`, the states either side of the step that
+ * made g), else (no history, after a reload) only one moved across by exactly as much as `live` at that end.
  */
-function carriedSideways(v: Variant, live: Wall, g: Wall): Id[] {
+function carriedSideways(v: Variant, live: Wall, g: Wall, step: GhostStep | null): Id[] {
   const out: Id[] = [];
   for (const w of v.walls) {
     if (w.id === live.id || w.status !== 'new') continue;
     const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
-    if (!wg || !(['a', 'b'] as const).some((e) => dist(wg.a, g[e]) <= COINCIDE_M || dist(wg.b, g[e]) <= COINCIDE_M)) continue;
+    const e = wg ? (['a', 'b'] as const).find((k) => dist(wg.a, g[k]) <= COINCIDE_M || dist(wg.b, g[k]) <= COINCIDE_M) : undefined;
+    if (!wg || !e) continue;
     const u = sub(w.b, w.a);
     const ug = sub(wg.b, wg.a);
     const lu = Math.hypot(u[0], u[1]);
     const lg = Math.hypot(ug[0], ug[1]);
     if (lu < 1e-9 || lg < 1e-9 || Math.abs(u[0] * ug[1] - u[1] * ug[0]) > 1e-9 * lu * lg) continue;
     const n = leftNormal(unit(ug));
-    if (Math.abs(dot(sub(w.a, wg.a), n)) > 1e-9) out.push(w.id);
+    const across = dot(sub(w.a, wg.a), n);
+    if (Math.abs(across) <= 1e-9) continue;
+    if (step) {
+      const w0 = step.before.walls.find((x) => x.id === w.id);
+      const w1 = step.after.walls.find((x) => x.id === w.id);
+      if (!w1 || (w0 && w0.status === w1.status && dist(w0.a, w1.a) < 1e-9 && dist(w0.b, w1.b) < 1e-9)) continue;
+    } else if (Math.abs(across - dot(sub(live[e], g[e]), n)) > 1e-6) continue;
+    out.push(w.id);
   }
   return out;
+}
+
+/** The variant just before the step that made a ghost and just after it (`ghostStep`). */
+interface GhostStep {
+  before: Variant;
+  after: Variant;
+}
+
+/**
+ * The states either side of the undo step that made the ghost `ghostId` (the newest run of history states that have
+ * it, back to the one before): `after` is the current variant when the newest step made it. Null when the history
+ * does not reach back that far (after a reload).
+ */
+function ghostStep(store: EditStore, v: Variant, ghostId: Id): GhostStep | null {
+  const past = store.getState().history().past;
+  let after = v;
+  for (let i = past.length - 1; i >= 0; i--) {
+    const pv = past[i].variants.find((x) => x.id === v.id);
+    if (!pv) return null;
+    if (!pv.walls.some((w) => w.id === ghostId)) return { before: pv, after };
+    after = pv;
+  }
+  return null;
 }
 
 /**
@@ -621,7 +711,10 @@ export function moveBlockVertex(store: EditStore, blockId: Id, vertexId: Id, p: 
   return changed(run(store, (d, ctx) => applyMoveBlockVertex(d, ctx, blockId, vertexId, p), opts));
 }
 
-/** Move a whole block; refused (toast) for a block with existing area. */
+/**
+ * Move a whole block; refused (toast) for a block with existing area. Furniture it now stands on and did not own is
+ * pushed out of it, with the toast of `placeUnit` (final fix round after 2b; geometry/edit.ts `pushFurnitureOut`).
+ */
 export function moveBlock(store: EditStore, blockId: Id, delta: Vec2, opts: { transaction?: string } = {}): boolean {
   const v = editable(store);
   if (!v) return false;
@@ -630,7 +723,9 @@ export function moveBlock(store: EditStore, blockId: Id, delta: Vec2, opts: { tr
     store.getState().showToast({ text: EDIT_STRINGS.existingBlockMove });
     return false;
   }
-  return changed(run(store, (d, ctx) => applyMoveBlock(d, ctx, blockId, delta), opts), (x) => x === true);
+  const r = run(store, (d, ctx) => applyMoveBlock(d, ctx, blockId, delta), opts);
+  if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
+  return changed(r, (x) => x === true);
 }
 
 /**
@@ -652,25 +747,20 @@ export function rotateBlock(store: EditStore, blockId: Id, deg: 90 | -90): boole
     return false;
   }
   if (!block.template) return false;
-  return changed(run(store, (d, ctx) => applyRotateBlock(d, ctx, blockId, q === 1 ? 90 : -90)), (x) => x === true);
+  const r = run(store, (d, ctx) => applyRotateBlock(d, ctx, blockId, q === 1 ? 90 : -90));
+  if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
+  return changed(r, (x) => x === true);
 }
 
 /**
  * Place a unit from a template, centred on `at`, turned by `rotation90` quarter turns. Returns the new block id.
- * Furniture that stood there is pushed out of the unit (geometry/edit.ts `pushFurnitureOut`), with a toast that names
- * it ("«Utebord» er flyttet ut av «Vedskjul».", Angre undoes the placement).
+ * Furniture that stood there is pushed out of the unit (geometry/edit.ts `pushFurnitureOut`; only what stands outside
+ * every block, never the house's furniture), with a toast that names it ("«Utebord» er flyttet ut av
+ * «Vedskjul».", Angre undoes the placement). A shed placed with its open front against a block turns half round.
  */
 export function placeUnit(store: EditStore, templateId: string, at: Vec2, rotation90 = 0): Id | null {
   const r = run(store, (d, ctx) => applyPlaceUnit(d, ctx, templateId, at, rotation90));
-  const pushed = r?.result?.pushedFurniture ?? [];
-  if (r?.result && pushed.length > 0) {
-    const unit = r.variant.blocks.find((b) => b.id === r.result?.blockId)?.name ?? '';
-    const names = pushed.map((id) => {
-      const f = r.variant.furniture.find((x) => x.id === id);
-      return f ? (catalogItem(f.catalogId)?.name ?? f.catalogId) : id;
-    });
-    store.getState().showToast({ text: EDIT_STRINGS.furniturePushedOut(unit, names), undo: true });
-  }
+  if (r?.result) pushedToast(store, r.variant, r.result.blockId, r.result.pushedFurniture ?? []);
   return r?.result?.blockId ?? null;
 }
 
@@ -1173,6 +1263,24 @@ function duplicateOffsets(): readonly (readonly [number, number])[] {
 
 const round6 = (v: number) => Math.round(v * 1e6) / 1e6 || 0;
 
+/** Rooms whose outline comes this close (m) to the original's room are its neighbours (only a wall between them). */
+const DUP_NEIGHBOUR_GAP_M = 0.6;
+
+/** Smallest distance (m) between two polygons' outlines (0 when a vertex of one lies inside the other). */
+function polygonGap(a: readonly Vec2[], b: readonly Vec2[]): number {
+  let best = Infinity;
+  for (const [p, q] of [
+    [a, b],
+    [b, a],
+  ] as const) {
+    for (const v of p) {
+      if (pointInPolygon(v, q as Vec2[])) return 0;
+      for (let i = 0; i < q.length; i++) best = Math.min(best, distancePointSegment(v, q[i], q[(i + 1) % q.length]));
+    }
+  }
+  return best;
+}
+
 /**
  * Where a copy of `item` goes (`duplicateFurniture`): the nearest free spot beside the original, "free" as for a tap
  * in the library (plan2d/furniturePlacement.ts): inside the original's room, clear of the walls, structure, door zones,
@@ -1182,10 +1290,13 @@ const round6 = (v: number) => Math.round(v * 1e6) / 1e6 || 0;
  *  - free and flat items, and wall items without a free wall spot: the original's turn, on a 5 cm grid in the item's
  *    own frame around it, nearest first (beside before in front / behind), within DUP_REACH_M; outside the rooms on the
  *    deck the original stands on, if any;
- *  - nothing free (a full room): the same search clear of the walls, structure and the original only.
- * Null when even that finds nothing (the caller keeps the fixed offset).
+ *  - nothing free in the room (final fix round): the same in the neighbouring rooms (outlines within
+ *    DUP_NEIGHBOUR_GAP_M of the room's), nearest the original first, and anywhere free in such a room beyond the
+ *    grid's reach; the copy then gets that room's level (`levelId`).
+ * Null when nothing is free (`duplicateFurniture` refuses with a toast): a copy never stands in a wall or on another
+ * item (before, a full room fell back to a spot that overlapped other furniture, or to a fixed offset into the walls).
  */
-export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem): { position: Vec2; rotationDeg: number } | null {
+export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem): { position: Vec2; rotationDeg: number; levelId?: Id } | null {
   const df = derived.furniture.find((x) => x.id === item.id);
   if (!df || df.footprint.length < 3) return null;
   const size = { w: item.size?.w ?? 1, d: item.size?.d ?? 1, h: item.size?.h ?? 1 };
@@ -1193,11 +1304,6 @@ export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem)
   const storeyId = room?.storeyId ?? derived.levels.find((l) => l.id === df.levelId)?.storeyId;
   if (!storeyId) return null;
   const spec: PlacementSpec = { ...catalogPlacementSpec(item.catalogId, item.sizeVariant), size };
-  if (room && !spec.flat && spec.mode !== 'free') {
-    // Tap placement searches from the room's label point: start it at the original instead.
-    const p = tapPlacement(derived, storeyId, spec, item.position, { ...room, labelPoint: item.position });
-    if (p.free) return { position: p.position, rotationDeg: p.rotationDeg };
-  }
   const z0 = spec.elevation ?? 0;
   const xs = df.footprint.map((q) => q[0]);
   const ys = df.footprint.map((q) => q[1]);
@@ -1206,37 +1312,61 @@ export function duplicatePlacement(derived: DerivedVariant, item: FurnitureItem)
   const t = (item.rotationDeg * Math.PI) / 180;
   const c = Math.cos(t);
   const sn = Math.sin(t);
-  // First a free spot; in a full room, a spot clear of the walls, structure and the original only (the copy then
-  // shows its overlap with the other furniture, but stands in no wall and not on the original).
-  for (const strict of [true, false]) {
-    const obstacles = [...placementObstacles(derived, storeyId, [z0, z0 + size.h], new Set([item.id]), strict ? spec.flat : true), own];
-    const clear = (fp: Vec2[]) => {
-      const bx0 = Math.min(...fp.map((q) => q[0]));
-      const bx1 = Math.max(...fp.map((q) => q[0]));
-      const by0 = Math.min(...fp.map((q) => q[1]));
-      const by1 = Math.max(...fp.map((q) => q[1]));
-      return !obstacles.some((o) => bx0 < o.box.max[0] && o.box.min[0] < bx1 && by0 < o.box.max[1] && o.box.min[1] < by1 && convexOverlap(fp, o.polygon));
-    };
+  const obstacles = [...placementObstacles(derived, storeyId, [z0, z0 + size.h], new Set([item.id]), spec.flat), own];
+  const clear = (fp: Vec2[]) => {
+    const bx0 = Math.min(...fp.map((q) => q[0]));
+    const bx1 = Math.max(...fp.map((q) => q[0]));
+    const by0 = Math.min(...fp.map((q) => q[1]));
+    const by1 = Math.max(...fp.map((q) => q[1]));
+    return !obstacles.some((o) => bx0 < o.box.max[0] && o.box.min[0] < bx1 && by0 < o.box.max[1] && o.box.min[1] < by1 && convexOverlap(fp, o.polygon));
+  };
+  type DRoom = DerivedVariant['rooms'][number];
+  // A free spot in room `r` (null: outside the rooms, on the original's deck if any), nearest the original first;
+  // `anywhere`: else wherever the room has one (a neighbouring room beyond the grid's reach).
+  const spotIn = (r: DRoom | null, anywhere: boolean): { position: Vec2; rotationDeg: number } | null => {
+    if (r && !spec.flat && spec.mode !== 'free') {
+      // Tap placement searches from the room's label point: start it at the original instead.
+      const p = tapPlacement(derived, storeyId, spec, item.position, { ...r, labelPoint: item.position });
+      if (p.free) return { position: p.position, rotationDeg: p.rotationDeg };
+    }
     for (const [i, j] of duplicateOffsets()) {
       const u = i * DUP_STEP_M;
       const v = j * DUP_STEP_M;
       const at: Vec2 = [round6(item.position[0] + c * u - sn * v), round6(item.position[1] + sn * u + c * v)];
-      if (room && !pointInPolygon(at, room.polygon)) continue;
+      if (r && !pointInPolygon(at, r.polygon)) continue;
       const fp = rectFootprint(at, item.rotationDeg, size.w, size.d);
-      if (room ? !insideRoom(fp, room) : deck && !fp.every((q) => pointInPolygon(q, deck.polygon))) continue;
+      if (r ? !insideRoom(fp, r) : deck && !fp.every((q) => pointInPolygon(q, deck.polygon))) continue;
       if (clear(fp)) return { position: at, rotationDeg: item.rotationDeg };
     }
+    if (r && anywhere) {
+      const p = tapPlacement(derived, storeyId, spec, r.labelPoint, r);
+      if (p.free) return { position: p.position, rotationDeg: p.rotationDeg };
+    }
+    return null;
+  };
+  const here = spotIn(room, false);
+  if (here || !room) return here;
+  const away = (r: DRoom) => (pointInPolygon(item.position, r.polygon) ? 0 : Math.min(...r.polygon.map((q, i) => distancePointSegment(item.position, q, r.polygon[(i + 1) % r.polygon.length]))));
+  const neighbours = derived.rooms
+    .filter((r) => r.storeyId === storeyId && r.polygon.length >= 3 && !(r.id === room.id && r.levelId === room.levelId) && polygonGap(room.polygon, r.polygon) <= DUP_NEIGHBOUR_GAP_M)
+    .map((r) => ({ r, d: away(r) }))
+    .sort((a, b) => a.d - b.d);
+  for (const { r } of neighbours) {
+    const there = spotIn(r, true);
+    if (there) return { ...there, levelId: r.levelId };
   }
   return null;
 }
 
 /**
  * Copy an item (same size, colour and level) to the nearest free spot beside the original (`duplicatePlacement`: a
- * back-to-wall item against the nearest free wall spot, anything else with the original's turn), else 0.3 m east and
- * 0.3 m south with the same turn; returns the copy's id.
+ * back-to-wall item against the nearest free wall spot, anything else with the original's turn), else in a
+ * neighbouring room (with that room's level); returns the copy's id. Final fix round: with no free spot there either,
+ * nothing is added and the toast EDIT_STRINGS.duplicateNoSpace says so (before: a fixed 0,3 m offset, into the walls).
  */
 export function duplicateFurniture(store: EditStore, furnitureId: Id): Id | null {
-  return (
+  let noSpace = false as boolean;
+  const id =
     run(
       store,
       (d, ctx) => {
@@ -1244,19 +1374,24 @@ export function duplicateFurniture(store: EditStore, furnitureId: Id): Id | null
         if (!f) return null;
         const src = ctx.base.furniture.find((x) => x.id === furnitureId);
         const at = src ? duplicatePlacement(ctx.derived, src) : null;
+        if (!at) {
+          noSpace = true;
+          return null;
+        }
         return applyAddFurniture(d, {
           catalogId: f.catalogId,
-          position: at ? at.position : [f.position[0] + 0.3, f.position[1] - 0.3],
-          levelId: f.levelId,
+          position: at.position,
+          levelId: at.levelId ?? f.levelId,
           size: { ...f.size },
-          rotationDeg: at ? at.rotationDeg : f.rotationDeg,
+          rotationDeg: at.rotationDeg,
           sizeVariant: f.sizeVariant,
           colour: f.colour,
         });
       },
       FURNITURE_RUN,
-    )?.result ?? null
-  );
+    )?.result ?? null;
+  if (noSpace) store.getState().showToast({ text: EDIT_STRINGS.duplicateNoSpace });
+  return id;
 }
 
 export function deleteFurniture(store: EditStore, furnitureId: Id): boolean {
@@ -1490,6 +1625,11 @@ export interface DragFeedback {
   chips: DimensionChip[];
   /** The dragged element's outline at the pointer-down base (rings; 2-point rings are segments). */
   ghost: Vec2[][];
+  /**
+   * A short hint for the plan to show while the drag lasts (final fix round after 2b): a wall drag that is cut short or
+   * refused because an end cannot follow (EDIT_STRINGS.wallStuck). Undefined = none.
+   */
+  hint?: string;
 }
 
 export interface DragSession {
@@ -1513,6 +1653,8 @@ export interface DragSession {
   ownerId?: Id;
   /** Room merges of the last update (toasted by endDrag). */
   merges: RoomMerge[];
+  /** Furniture the last update pushed out of a dragged block (toasted by endDrag; final fix round after 2b). */
+  pushed?: Id[];
   done: boolean;
 }
 
@@ -1843,10 +1985,16 @@ function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers)
       const fl = dw?.faceLeft ?? w.thickness / 2;
       const fr = dw?.faceRight ?? w.thickness / 2;
       const exclude = new Set([w.id]);
-      const na = add(w.a, d);
-      const nb = add(w.b, d);
+      // The clamp applyMoveWall applies where an end's support runs out (final fix round after 2b): the outline stops
+      // where the wall will (or stays, when the move is refused), and the plan gets a hint saying why.
+      const t = wallMoveFraction({ base, derived: session.baseDerived }, w.id, d);
+      const moved = t < 1 ? scale(d, t) : d;
+      const na = add(w.a, moved);
+      const nb = add(w.b, moved);
+      const feedback: DragFeedback = { indicators, chips: chipsAcross(ctx, na, nb, fl, fr, { exclude }), ghost: [[copy(w.a), copy(w.b)]] };
+      if (t < 1) feedback.hint = EDIT_STRINGS.wallStuck;
       return {
-        feedback: { indicators, chips: chipsAcross(ctx, na, nb, fl, fr, { exclude }), ghost: [[copy(w.a), copy(w.b)]] },
+        feedback,
         target: [[na, nb]],
         recipe: (dr, c) => applyMoveWall(dr, c, w.id, d),
         resultChips: (v) => {
@@ -2042,7 +2190,10 @@ export function updateDrag(store: EditStore, session: DragSession | null, pointe
   // Openings and outdoor things never change a room face: no room reconciliation (and no derive) per frame.
   const runOpts: RunOpts = { base: session.baseVariant, baseDerived: session.baseDerived, toastMerges: false, reconcile: !NO_ROOM_DRAGS.has(session.kind) };
   const r = run(store, plan.recipe, runOpts);
-  if (r) session.merges = r.merges;
+  if (r) {
+    session.merges = r.merges;
+    session.pushed = r.pushed;
+  }
   return { ...plan.feedback, chips: plan.resultChips ? plan.resultChips(variantOf(r, session)) : plan.feedback.chips };
 }
 
@@ -2201,12 +2352,15 @@ function resizePlan(session: DragSession, pointer: Vec2, fine: boolean): DragPla
   };
 }
 
-/** Commit the drag (one undo step) and toast room merges. */
+/** Commit the drag (one undo step) and toast room merges and furniture a dragged block pushed out of it. */
 export function endDrag(store: EditStore, session: DragSession | null): void {
   if (!session || session.done) return;
   session.done = true;
   store.getState().commitTransaction();
   mergeToasts(store, session.merges);
+  if (session.kind === 'block' && session.ownerId && session.pushed?.length) {
+    pushedToast(store, selectActiveVariant(store.getState()), session.ownerId, session.pushed);
+  }
 }
 
 /** Abandon the drag: back to the pointer-down project, no history entry. */

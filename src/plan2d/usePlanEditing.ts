@@ -796,7 +796,10 @@ export function usePlanEditing(params: PlanEditingParams) {
     return () => window.removeEventListener('keydown', onKey);
   }, [rotates]);
 
-  const hint = toolHint(tool, { wallStarted: toolState.wallStart !== null, measureStarted: toolState.measure !== null && toolState.measure.b === null });
+  // A drag's own hint (a wall drag cut short: «Veggen kan ikke flyttes lenger hit …») wins while the drag lasts; it
+  // goes away with the next frame that has none, and when the drag ends.
+  const dragHint = drag.on ? drag.feedback.hint : undefined;
+  const hint = dragHint ?? toolHint(tool, { wallStarted: toolState.wallStart !== null, measureStarted: toolState.measure !== null && toolState.measure.b === null });
   useEffect(() => {
     p.current.onHint?.(hint);
   }, [hint]);

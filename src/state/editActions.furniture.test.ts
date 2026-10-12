@@ -11,6 +11,7 @@ import type { DerivedVariant } from '../model/derived';
 import { createForslagD } from '../model/seed/forslagD';
 import type { Variant, Vec2 } from '../model/types';
 import * as A from './editActions';
+import { nb } from '../i18n/nb';
 import { EDIT_STRINGS } from './editStrings';
 import { createAppStore, selectActiveVariant } from './store';
 import { deriveForState } from './useDerived';
@@ -174,14 +175,34 @@ describe('placing and editing', () => {
     const [a, b] = backEdge(copy.item);
     const onEdge = (p: Vec2) => room.polygon.some((q, i) => distancePointSegment(p, q, room.polygon[(i + 1) % room.polygon.length]) < 1e-6);
     expect(onEdge(a) && onEdge(b)).toBe(true);
-    // The kitchen's tall cabinet has no free spot left: the copy overlaps other furniture but stands in no wall and
-    // not on the original.
+    // The kitchen's tall cabinet has no free spot left in Kjøkken: the copy goes to the room next door (final fix
+    // round; before, it overlapped the counter and the island), free of walls and furniture.
     const tall = A.duplicateFurniture(store, 'fu-kjokken-1') as string;
     const d2 = D(store);
     const tallCopy = d2.furniture.find((f) => f.id === tall)!;
-    expect(tallCopy.roomId).toBe('room-kjokken');
-    expect(d2.warnings.filter((w) => w.kind === 'furniture-in-wall' && w.furnitureId === tall)).toEqual([]);
-    expect(tallCopy.collisions).not.toContain('fu-kjokken-1');
+    expect(tallCopy.roomId).toBeDefined();
+    expect(tallCopy.roomId).not.toBe('room-kjokken');
+    expect(tallCopy.collisions).toEqual([]);
+    expect(tallCopy.blocksDoors).toEqual([]);
+    expect(d2.warnings.filter((w) => JSON.stringify(w).includes(tall))).toEqual([]);
+  });
+
+  it('duplicate with no free spot in the room nor next to it (fu-sov1-1): refused with the toast, never into a wall', () => {
+    const store = proposal();
+    expect(D(store).furniture.find((f) => f.id === 'fu-sov1-1')?.roomId).toBe('room-sov1');
+    // Before: the copy went 0.3 m east and south, into w-104-103, w-103-korr and w-104-diag (+5 warnings). Now no
+    // second bed fits in Soverom 1 or the rooms next to it (Soverom 2, Bad, the lower corridor): nothing is added.
+    const before = D(store).warnings.length;
+    const n = V(store).furniture.length;
+    expect(A.duplicateFurniture(store, 'fu-sov1-1')).toBeNull();
+    expect(V(store).furniture.length).toBe(n);
+    expect(steps(store)).toBe(0);
+    expect(store.getState().toasts.map((t) => t.text)).toContain(nb.editor.duplicateNoSpace);
+    expect(D(store).warnings.length).toBe(before);
+    // The review's other copies into walls (a bed, the corner sofa, the log stack) are refused the same way.
+    for (const id of ['fu-sov2-1', 'fu-stue-2', 'fu-ved-1']) expect(A.duplicateFurniture(store, id), id).toBeNull();
+    expect(V(store).furniture.length).toBe(n);
+    expect(D(store).warnings.filter((w) => w.kind === 'furniture-in-wall' || w.kind === 'furniture-overlap')).toEqual([]);
   });
 });
 

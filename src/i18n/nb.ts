@@ -1215,6 +1215,16 @@ export const nb = {
     tooSmall: 'Så langt går det ikke – da blir det for lite.',
     /** duplicateBlock: name of the copy. */
     copyName: (name: string) => `${name} (kopi)`,
+    /**
+     * «Dupliser» / Ctrl+D (editActions `duplicateFurniture`): no free spot for a copy in the item's room nor in the
+     * rooms next to it, so nothing is added.
+     */
+    duplicateNoSpace: 'Ingen ledig plass til en kopi.',
+    /**
+     * Drag hint (`DragFeedback.hint`) while a wall drag is cut short or refused because an end of the wall cannot
+     * follow (its support runs out, e.g. lw-split north).
+     */
+    wallStuck: 'Veggen kan ikke flyttes lenger hit – enden står fast',
     /** A unit placed over furniture pushed it out of the unit: "«Utebord» er flyttet ut av «Vedskjul»." */
     furniturePushedOut: (unit: string, items: readonly string[]) => {
       const q = items.map((n) => `«${n}»`);

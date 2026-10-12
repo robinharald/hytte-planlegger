@@ -975,10 +975,12 @@ describe('other actions', () => {
     expect(A.rotateFurniture(store, f, 90)).toBe(true);
     expect(A.moveFurniture(store, f, [18, 5])).toBe(true);
     expect(A.setFurnitureProps(store, f, { colour: 'grå' })).toBe(true);
-    const copyId = A.duplicateFurniture(store, f) as string;
-    expect(V(store).furniture.find((x) => x.id === copyId)).toMatchObject({ position: [18.3, 4.7], rotationDeg: 90, colour: 'grå' });
+    // «Dupliser»: no free spot for a second 150 bed in Soverom (ny fløy) nor in the rooms next to it, so nothing is
+    // added (final fix round; before, a fixed 0.3 m offset). editActions.furniture.test.ts covers the copies.
+    const count = V(store).furniture.length;
+    expect(A.duplicateFurniture(store, f)).toBeNull();
+    expect(V(store).furniture.length).toBe(count);
     expect(A.deleteFurniture(store, f)).toBe(true);
-    expect(D(store).furniture.find((x) => x.id === copyId)?.roomId).toBe('room-sov-ny');
   });
 
   it('setWallProps: a thicker existing wall is rebuilt (new + ghost); heights are not; a divider loses its openings', () => {
