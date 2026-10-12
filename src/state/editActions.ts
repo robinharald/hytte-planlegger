@@ -35,12 +35,16 @@
  * both); `resizeRoom` returns the refusal ('block-edge' → "Endres under bygningsdelen", also as a toast); `nudge` of a
  * wall moves it across itself like a drag; `restoreGhost` also brings back Room records deleted earlier in this
  * session (found in the undo history) whose anchor lies in a face that is unnamed after the restore, and for a wall
- * that is not just its ghost translated (an endpoint drag) it first drags each end back with the endpoint cascades;
+ * that is not just its ghost translated (an endpoint drag) it first drags each end back with the endpoint cascades
+ * (leaving alone the existing walls the forward step did not touch: no ghost); after a wall restore it also drags back
+ * the ends of neighbours the forward step left just beside the wall's line (`neighbourEnds`: their ghost end is on the
+ * restored ghost, their live end within 5 cm of the moved wall or on the line it was moved to);
  * `moveBlock` / a whole-block drag of a block with existing area is refused like `deleteBlock`; `rotateBlock(store,
- * id, 90 | −90)` turns a placed unit (template blocks only); `nameFace` returns the derived room id to select;
+ * id, 90 | −90)` turns a placed unit (template blocks only; one standing against a wall or a deck edge keeps that
+ * contact, geometry/edit.ts `contactTurn`); `nameFace` returns the derived room id to select;
  * `deleteDeckVertex` toasts EDIT_STRINGS.deckVertexCrosses when the outline would cross itself.
  */
-import { produce } from 'immer';
+import { current, isDraft, produce } from 'immer';
 import { useMemo } from 'react';
 import { deriveVariant, treesOf } from '../geometry/derive';
 import {
@@ -329,6 +333,7 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
   }
   let parallelSame = false;
   let from: RunOpts['from'];
+  let neighbours: NeighbourEnd[] = [];
   // Opening ghosts parked on removed walls (the ghost being restored, or the ghosts of walls a cascade touched): restored
   // when their host goes (the endpoint cascade back may already have healed the wall itself).
   const parked = new Map<Id, Id>();
@@ -347,6 +352,7 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       // Not just translated (an endpoint drag, or a move and an endpoint drag): drag each end back to the ghost's
       // end with the endpoint cascades (coincident ends, T-junctions), one end after the other.
       if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g);
+      neighbours = neighbourEnds(v, live, g);
     }
   }
   const r = run(
@@ -361,11 +367,14 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
         const had = d.walls.some((w) => w.id === id && w.status === 'removed');
         const ok = applyRestoreWall(d, id);
         healGhosts(d);
+        // Neighbours the forward step left just off the wall's line: their ends back onto the junction too.
+        bringBackNeighbours(d, s.project.site, neighbours);
         // Openings the cascade moved on the walls it touched (their ghosts sat on those walls' ghosts): back too.
         for (const [oid, hostId] of parked) if (!d.walls.some((w) => w.id === hostId)) applyRestoreOpening(d, oid);
         healGhosts(d);
-        // The endpoint cascade may already have healed the ghost (the wall is back on it).
-        return ok || (!had && from !== undefined);
+        // The cascade back (endpoints, or the move with its clamped openings pulled back) may already have healed the
+        // ghost: the wall is back on it.
+        return ok || (!had && (from !== undefined || parallelSame));
       }
       if (ref.type === 'opening') {
         const ok = applyRestoreOpening(d, id);
@@ -379,6 +388,71 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
   return changed(r);
 }
 
+/** A neighbour's end that "Ta tilbake" drags back onto its ghost's end (see neighbourEnds). */
+interface NeighbourEnd {
+  wallId: Id;
+  end: 'a' | 'b';
+  to: Vec2;
+}
+
+/** How near (m) the moved wall's live line a neighbour's end must be to count as carried by it. */
+const NEIGHBOUR_REACH = 0.05;
+
+/**
+ * The ends of OTHER walls that the forward step of the moved wall `live` (ghost `g`) carried and that its cascades
+ * back would not catch: walls with their own ghost whose ghost end lies on `g` (the junction the restored wall
+ * returns to) while their live end is elsewhere, within 5 cm of `live`. (A free node's followers end on the nominal
+ * moved line; when the wall's other end was clamped by its support the wall itself turned a little, so they end ~1–3
+ * cm beside it — neither coincident nor on it: w-104-103 after w-103-korr −0.2, w-104-diag after w-105-diag +0.2.)
+ */
+function neighbourEnds(v: Variant, live: Wall, g: Wall): NeighbourEnd[] {
+  const out: NeighbourEnd[] = [];
+  for (const w of v.walls) {
+    if (w.id === live.id || w.status === 'removed') continue;
+    const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
+    if (!wg) continue;
+    for (const end of ['a', 'b'] as const) {
+      if (dist(w[end], wg[end]) < 1e-9) continue;
+      if (distancePointSegment(wg[end], g.a, g.b) > 0.01) continue;
+      if (distancePointSegment(w[end], live.a, live.b) > NEIGHBOUR_REACH && !onNominalLine(w[end], live, g)) continue;
+      out.push({ wallId: w.id, end, to: copy(wg[end]) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether p lies on the line the forward step moved the wall to (the ghost's direction through one of the live ends,
+ * within 1 cm), within the live wall's span: where a free node's followers end when the wall turned.
+ */
+function onNominalLine(p: Vec2, live: Wall, g: Wall): boolean {
+  const u = unit(sub(g.b, g.a));
+  const n = leftNormal(u);
+  const tb = dot(sub(live.b, live.a), u);
+  const t = dot(sub(p, live.a), u);
+  if (t < Math.min(0, tb) - 0.01 || t > Math.max(0, tb) + 0.01) return false;
+  return (['a', 'b'] as const).some((e) => Math.abs(dot(sub(p, live[e]), n)) <= 0.01);
+}
+
+/** Existing walls without a ghost: the forward step did not touch them, so a drag back must not either. */
+function untouched(v: Variant): Set<Id> {
+  const ghosts = new Set(v.walls.filter((w) => w.status === 'removed').map((w) => w.id));
+  return new Set(v.walls.filter((w) => w.status === 'existing' && !ghosts.has(`${w.id}/ghost`)).map((w) => w.id));
+}
+
+/** Drag each neighbour end (that is not back yet) to its ghost end with the endpoint cascades, then heal. */
+function bringBackNeighbours(d: Variant, site: Site, neighbours: NeighbourEnd[]): void {
+  for (const n of neighbours) {
+    const w = d.walls.find((x) => x.id === n.wallId && x.status !== 'removed');
+    if (!w || dist(w[n.end], n.to) < 1e-9) continue;
+    const base = isDraft(d) ? current(d) : (JSON.parse(JSON.stringify(d)) as Variant);
+    const derived = deriveOf(site, base);
+    if (!derived) continue;
+    applyMoveWallEndpoint(d, { base, derived }, n.wallId, n.end, n.to, { keep: untouched(base) });
+    healGhosts(d);
+  }
+}
+
 /**
  * The variant with the ends of `wallId` dragged back to the ends of its ghost `g` (applyMoveWallEndpoint with its
  * cascades, each end from the state after the other one), and its derived model; undefined when nothing moved.
@@ -390,8 +464,9 @@ function endpointsBack(site: Site, v: Variant, wallId: Id, g: Wall): RunOpts['fr
     const w = cur.walls.find((x) => x.id === wallId);
     if (!w || !curDerived || dist(w[end], g[end]) < 1e-9) continue;
     const ctx: EditContext = { base: cur, derived: curDerived };
+    const keep = untouched(cur);
     const next = produce(cur, (d) => {
-      applyMoveWallEndpoint(d as Variant, ctx, wallId, end, g[end]);
+      applyMoveWallEndpoint(d as Variant, ctx, wallId, end, g[end], { keep });
       healGhosts(d as Variant);
     });
     if (next === cur) continue;

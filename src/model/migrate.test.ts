@@ -292,7 +292,7 @@ describe('migrateProject: v1 → v2', () => {
     expect(b.size).toEqual({ w: 1.5, d: 2, h: 0.5 });
   });
 
-  it('the frozen phase-1 Forslag D migrates to exactly the current seed variant, except the lock', () => {
+  it('the frozen phase-1 Forslag D migrates to exactly the current seed variant, except the lock and the glass part', () => {
     expect(FROZEN_SCHEMA_VERSION).toBe(1);
     expect(FROZEN_SEED_REVISION).toBe(3);
     const p = migrateProject(frozenSchema1Project());
@@ -302,7 +302,9 @@ describe('migrateProject: v1 → v2', () => {
     expect(p.variants[0].outdoor).toEqual(seed.variants[0].outdoor);
     const { locked, ...rest } = seed.variants[0];
     expect(locked).toBe(true);
-    expect(p.variants[0]).toEqual(rest);
+    // Revision 5 gave the glass bump its existing part; the frozen revision-3 seed has none (a part-less existing
+    // block gets one from its outline on its first edit, edit.ts todayPart).
+    expect(p.variants[0]).toEqual({ ...rest, blocks: rest.blocks.map((b) => (b.id === 'blk-glass' ? { ...b, parts: [] } : b)) });
   });
 });
 

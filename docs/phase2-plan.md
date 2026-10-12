@@ -82,7 +82,7 @@ edge under the gap centre; a gap without steps covering a whole edge → `noRail
 catalogue preset). Freeze today's seed variant first as `src/model/seed/frozen/forslagD.schema1.json`; `decodeDeltaPayload` uses it
 as the base when `raw.v < CURRENT_SCHEMA_VERSION`. Back up an older autosave to `hytte-planlegger:project.backup-v1` before the first
 write. `OUTDOOR_COLLECTIONS = ['decks', 'hotTubs']`. `sharePayloadJson` drops the `seedRevision !== SEED_REVISION → full` early return.
-The seed engineer bumps `SEED_REVISION` once per seed content change (deck v2 → 4; furniture → 5). The bundled Forslag D variant gets
+The seed engineer bumps `SEED_REVISION` once per seed content change (deck v2 → 4; the glass bump's existing part → 5 in the second fix round after 2a; furniture → 6). The bundled Forslag D variant gets
 `locked: true`. Tests as in revision 2 (phase-1 delta link keeps railing + 3 steps; full v1 migrates; rev-3 project delta < 2 kB).
 
 ### Derived additions (`src/model/derived.ts`)

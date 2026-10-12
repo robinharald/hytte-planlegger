@@ -129,7 +129,7 @@ describe('createForslagD', () => {
     expect(project.id).toBe('hytte-merkesvatnet');
     expect(project.name).toBe('Hytta ved Merkesvatnet');
     expect(project.seedRevision).toBe(SEED_REVISION);
-    expect(SEED_REVISION).toBe(4);
+    expect(SEED_REVISION).toBe(5);
     expect(project.variants).toHaveLength(1);
     // The bundled base proposal is read-only (docs/phase2-plan.md §1.1).
     expect(variant.locked).toBe(true);
@@ -188,6 +188,10 @@ describe('blocks', () => {
       { otherBlockId: 'blk-wing', policy: 'open' },
     ]);
     expect(blockById.get('blk-bod')!.parts.map((p) => [p.id, p.isNew])).toEqual([['part-bod-old', false], ['part-bod-new', true]]);
+    // Revision 5: the glass bump's existing part covers its whole outline (growth from an edit is new).
+    const glass = blockById.get('blk-glass')!;
+    expect(glass.parts.map((p) => [p.id, p.isNew])).toEqual([['part-glass-old', false]]);
+    expect(glass.parts[0].polygon).toEqual(blockPolygon(glass));
     // only the new wing has a flat ceiling (2.4); the rest is open to the roof
     expect(Object.fromEntries(variant.blocks.map((b) => [b.id, b.ceilingHeight]))).toEqual({
       'blk-main': undefined,

@@ -10,7 +10,8 @@ host line a→b that the leaf opens into (left = (−dy, dx) = inside for exteri
 
 ## Project
 id `hytte-merkesvatnet`, name "Hytta ved Merkesvatnet", `seedRevision = SEED_REVISION` (1 at the first build, 2 after the
-review fixes of 2026-10-11, 3 after Robin's terrace cut; bump on every content change), one variant
+review fixes of 2026-10-11, 3 after Robin's terrace cut, 4 for schema 2, 5 for the glass bump's existing part; bump on
+every content change), one variant
 `forslag-d` named "Forslag D" with settings `{ defaultExteriorWall: { thickness 0.27, outerOffset 0.11 },
 defaultInteriorThickness 0.12, areaLimit null }`.
 
@@ -28,7 +29,7 @@ stop there). The other blocks are open to the roof (no `ceilingHeight`).
 | id | name | polygon (CCW) | level | roof | isNew | parts | junctions |
 |---|---|---|---|---|---|---|---|
 | blk-main | Hytta, hoveddel | (0,0) (16,0) (16,6.2) (0,6.2) | main | gable, ridgeAxis x, pitch 28, ridgeHeight 3.87, drive pitch | false | part-main-old "Eksisterende" [0,12]×[0,6.2] existing; part-stue-ext "Stue forlenget" [12,16]×[0,6.2] new | blk-glass: open; blk-bod: wall; blk-wing: open |
-| blk-glass | Glassutbygg (leseskrok) | (5,-2) (9,-2) (9,0) (5,0) | main | gable, ridgeAxis y, pitch 28, ridgeHeight 3.28, drive pitch | false | — | — |
+| blk-glass | Glassutbygg (leseskrok) | (5,-2) (9,-2) (9,0) (5,0) | main | gable, ridgeAxis y, pitch 28, ridgeHeight 3.28, drive pitch | false | part-glass-old "Glassutbygg i dag" [5,9]×[-2,0] existing (SEED_REVISION 5; before: no parts) | — |
 | blk-bod | Bod-fløy | (5,6.2) (9,6.2) (9,12.1) (5,12.1) | main | gable, ridgeAxis y, pitch 28, ridgeHeight 3.28, drive pitch | false | part-bod-old "Bod-fløy i dag" [5,9]×[6.2,10.1] existing; part-bod-new "Ny bod + ved" [5,9]×[10.1,12.1] new | — |
 | blk-wing | Ny tverrfløy | (16,-2) (20.8,-2) (20.8,6.2) (16,6.2) | main | gable, ridgeAxis y, pitch ≈34.5, ridgeHeight 3.87, drive height; ceilingHeight 2.4 | true | — | — |
 

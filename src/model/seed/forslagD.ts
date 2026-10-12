@@ -51,9 +51,11 @@ import type {
 /**
  * Bump when the seed content changes; the app offers "Hent ny Forslag D" to projects with an older revision.
  * 3: terrace from x 9 (phase 1, frozen in frozen/forslagD.schema1.json). 4: schema 2 — the deck carries its glass railing
- * and its three steps (hosted on deck edges), the variant is locked (the base proposal).
+ * and its three steps (hosted on deck edges), the variant is locked (the base proposal). 5: the glass bump (Leseskrok)
+ * has an explicit existing part `part-glass-old` over its whole outline (fix round 2 after 2a), so what an edit adds
+ * to it is new like on the other blocks of today's cabin (areas, colours and ghosts unchanged for the seed).
  */
-export const SEED_REVISION = 4;
+export const SEED_REVISION = 5;
 export const SEED_PROJECT_ID = 'hytte-merkesvatnet';
 export const SEED_VARIANT_ID = 'forslag-d';
 /** Id of the bundled terrain asset (src/model/seed/terrain-merkesvatnet.json). */
@@ -241,7 +243,8 @@ function buildBlocks(): Block[] {
     polygon: blockVertices('glass'),
     ...common(),
     floorZones: [],
-    parts: [],
+    // Today's glass bump, all of it (revision 5): growth from an edit is the new implicit remainder.
+    parts: [part('part-glass-old', 'Glassutbygg i dag', RECT.glass, false)],
     isNew: false,
     roof: gableRoof('y', WING_RIDGE, 'pitch', PITCH_DEG),
     junctions: [],

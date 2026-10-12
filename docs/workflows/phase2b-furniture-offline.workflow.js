@@ -36,7 +36,7 @@ ${CATALOG_IDS}
 TASK: furniture catalogue, derive stage, collisions, seed furnishing, furniture actions. OWNERSHIP: src/furniture/catalog.ts (+test), src/geometry/
 furnitureDerive.ts (+test) wired into the existing furniture stage of src/geometry/derive.ts (edit only that stage), src/state/editActions.ts
 furniture action BODIES (addFurniture with size from the preset and levelId via levelAt, moveFurniture/rotateFurniture/duplicate/delete/setProps,
-items following a moved wall face; all refuse a locked variant), src/model/seed/furniture.ts (+test) and a SEED_REVISION bump by one in forslagD.ts (4 → 5 unless the fix round already bumped it).
+items following a moved wall face; all refuse a locked variant), src/model/seed/furniture.ts (+test) and a SEED_REVISION bump by one in forslagD.ts (5 → 6: the second fix round after 2a already made it 5 for the glass bump's existing part).
 Implement §4 exactly (unchanged from revision 2): FurnitureCatalogItem fields (sizes, stretch, clearance, snap, mount, elevation, needsDrain, symbol,
 model), the item list with realistic Norwegian names and sizes, DerivedFurniture (footprint, bbox, levelId, roomId, floorZ, z, clearances, collisions,
 blocksDoors, needsDrain), collision rules (same level, z-range overlap, not 'flat', walls by levelIds, doors by level, stairs/chimney/posts/hot tub,
