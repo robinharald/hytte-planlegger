@@ -368,7 +368,7 @@ describe('handles', () => {
   const radius = (svg: SVGSVGElement, key: string) => Number(svg.querySelector(`[data-handle="${key}"] circle`)!.getAttribute('r'));
   const width = (svg: SVGSVGElement, sel: string) => Number(svg.querySelector(sel)!.getAttribute('stroke-width'));
 
-  it('are 7 px with 12 px corridors, 14 px with 24 px corridors on a coarse pointer', () => {
+  it('are 7 px with 12 px corridors, 14 px on a coarse pointer with corridors of 24 px but at most 0.25 m', () => {
     const actions = mockActions();
     const fine = render(baseProps({ editable: true, editActions: actions, selection: WALL_SEL }));
     expect(radius(fine, 'we:a')).toBe(7);
@@ -378,6 +378,17 @@ describe('handles', () => {
     const coarse = render(baseProps({ editable: true, editActions: actions, selection: WALL_SEL, coarsePointer: true }));
     expect(radius(coarse, 'we:a')).toBe(14);
     expect(radius(coarse, 'we:b')).toBe(14);
+    // Fitted (about 41 px/m): 24 px would be 0.6 m, so the band is 0.25 m on screen.
+    const s = rootMatrix(coarse)[0];
+    expect(s).toBeLessThan(96);
+    expect(width(coarse, '[data-wall-corridor="w-bad-s"]')).toBeCloseTo(0.25 * s, 0);
+    expect(width(coarse, '[data-opening-corridor="d-bad"]')).toBeCloseTo(0.25 * s, 0);
+    // Zoomed in past 96 px/m the band is the 24 px of the plan again.
+    act(() => {
+      coarse.dispatchEvent(new WheelEvent('wheel', { deltaY: -500, clientX: 500, clientY: 350, bubbles: true, cancelable: true }));
+      coarse.dispatchEvent(new WheelEvent('wheel', { deltaY: -500, clientX: 500, clientY: 350, bubbles: true, cancelable: true }));
+    });
+    expect(rootMatrix(coarse)[0]).toBeGreaterThan(96);
     expect(width(coarse, '[data-wall-corridor="w-bad-s"]')).toBe(24);
     expect(width(coarse, '[data-opening-corridor="d-bad"]')).toBe(24);
   });
@@ -616,11 +627,25 @@ describe('tools', () => {
   it('Dør/vindu: a click on a block edge hosts the opening on the edge', () => {
     const actions = mockActions();
     const svg = render(baseProps({ editable: true, editActions: actions, tool: 'opening' }));
-    tapAt(svg, scr(svg, [14.05, 1.5]));
+    tapAt(svg, scr(svg, [14.05, 0.62]));
     const [host, offset, type] = actions.addOpening.mock.calls[0] as [unknown, number, unknown];
     expect(host).toEqual({ kind: 'blockEdge', blockId: 'blk-b', edgeId: 'b-se' });
-    expect(offset).toBeCloseTo(1.5, 1);
+    expect(offset).toBeCloseTo(0.6, 9);
     expect(type).toBe('window');
+  });
+
+  it('Dør/vindu: an opening that would overlap one already in the wall goes to the nearest free place on the 10 cm grid', () => {
+    // b-se holds win-sov at offset 2 (1,0 m wide: 1,5–2,5). A 1,1 m window wanted at 1,5 would overlap it.
+    const actions = mockActions();
+    const svg = render(baseProps({ editable: true, editActions: actions, tool: 'opening' }));
+    tapAt(svg, scr(svg, [14.05, 1.5]));
+    expect(actions.addOpening.mock.calls[0][1]).toBeCloseTo(0.9, 9);
+    // A 0,9 m door wanted at 2,3: the nearest free centre is 3,0 (2,5 + 0,45 → the next 10 cm step).
+    const doors = mockActions();
+    const svg2 = render(baseProps({ editable: true, editActions: doors, tool: 'opening', toolOptions: { openingType: 'door' } }));
+    tapAt(svg2, scr(svg2, [14.05, 2.3]));
+    expect(doors.addOpening.mock.calls[0][1]).toBeCloseTo(3, 9);
+    expect(doors.addOpening.mock.calls[0][2]).toBe('door');
   });
 
   it('Dør/vindu: a refused placement keeps the tool', () => {

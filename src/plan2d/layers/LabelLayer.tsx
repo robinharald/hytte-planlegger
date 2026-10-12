@@ -7,11 +7,15 @@
  * when needed; details are compacted to "name / m²", then dropped, then the name is wrapped, else no label until
  * the user zooms in), so labels never cross a wall or overlap each other.
  * Text is laid out in screen pixels through ScreenText, so it stays the same size at any zoom.
+ * Each drawn label's text box is a hit area of its room (`data-room-label-hit`, selection { kind: 'room', id, levelId }),
+ * above the walls and openings: a tap on a room's name selects the room even inside a wall's or door's hit band
+ * (phones, zoomed out). Everything else in the layer takes no pointer events.
  */
 import { memo } from 'react';
 import type { DerivedRoom } from '../../model/derived';
 import type { Vec2 } from '../../model/types';
 import { labelFonts, layoutRoomLabels } from '../labelLayout';
+import { selAttrs } from '../selection';
 import { labelDensity } from '../svg';
 import { COLORS, PAPER } from '../style';
 import { ScreenText } from './ScreenText';
@@ -31,11 +35,12 @@ export const LabelLayer = memo(function LabelLayer({ rooms, scale, highlightNew,
   return (
     <g data-layer="labels" pointerEvents="none">
       {density !== 'none' &&
-        layoutRoomLabels(rooms, density, scale, labelFonts(scale), obstacles).map(({ room: r, label: { lines, nameLines, kind, font, ys }, at }) => {
+        layoutRoomLabels(rooms, density, scale, labelFonts(scale), obstacles).map(({ room: r, label: { lines, nameLines, kind, font, ys, w, h }, at }) => {
           const unnamed = !r.room;
           const nameColour = unnamed ? COLORS.labelMuted : r.isNew && highlightNew ? COLORS.labelNew : COLORS.labelName;
           return (
             <ScreenText key={`${r.levelId}/${r.id}`} x={at[0]} y={at[1]} scale={scale} data-room-label={r.id} data-label-kind={kind}>
+              <rect x={-w / 2} y={-h / 2} width={w} height={h} fill="none" pointerEvents="fill" data-room-label-hit={r.id} {...selAttrs('room', r.id, r.levelId)} />
               {lines.map((text, i) => {
                 const isName = i < nameLines;
                 return (

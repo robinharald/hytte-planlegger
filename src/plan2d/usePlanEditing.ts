@@ -5,10 +5,17 @@
  *
  * Gestures ("Trykk for å velge, dra det valgte for å flytte"), tool Velg with `editable`:
  *  - a press on a drag handle, or on the SELECTED element (editModel.ts `hitsSelection`, or its own hit area), is
- *    claimed; past the threshold `beginDrag(target, pointerDownPlan, handle?)` starts a session — null/false from
- *    `beginDrag` (nothing to drag, locked variant) lets the gesture pan instead; every move calls
- *    `updateDrag(session, p, modifiers)` and draws the returned feedback; pointer-up `endDrag`; Esc, pointercancel,
- *    lostpointercapture and a second finger `cancelDrag`;
+ *    claimed (editModel.ts `pressTarget`: a press inside the element's own body moves it even over a handle);
+ *    past the threshold `beginDrag(target, pointerDownPlan, handle?)` starts a session — null/false from
+ *    `beginDrag` (nothing to drag) lets the gesture pan instead; pointer moves are coalesced to ONE
+ *    `updateDrag(session, p, modifiers)` per animation frame (the overlay keeps the last feedback in between; the
+ *    first update right at the start, the last position flushed on pointer-up before `endDrag`); pointer-up
+ *    `endDrag`; Esc, pointercancel, lostpointercapture and a second finger `cancelDrag` (a queued update is dropped);
+ *  - a handle drawn away from the point it acts on (`PlanHandle.anchor`: wall ends and opening jambs sit just outside
+ *    the object) shifts every pointer position it passes by `anchor − p`;
+ *  - the locked base proposal (`derived.locked`, not editable): a drag that starts on the selected element is an edit
+ *    attempt — once it passes the threshold it calls `onLocked()` (else `beginDrag`, which refuses with the locked
+ *    toast) once, and the gesture neither pans nor drags;
  *  - a "+" handle inserts a deck vertex (`insertDeckVertex(edgeId, midpoint)`) on a tap (the new vertex is selected
  *    when the action returns its id); a drag from it calls `beginDrag({ kind: 'deckEdge', id: edgeId }, p, 'insert')`,
  *    which inserts and drags in one undo step (the session's `selection` is the new vertex, selected right away);
@@ -20,7 +27,8 @@
  *    and waits for the next start (the tool stays until Esc / Velg); a zero-length wall (< 1 cm) is ignored;
  *  - Dør/vindu: a tap on a wall or block edge (editModel.ts `wallAt`, hit corridor) calls
  *    `addOpening(host, offset, toolOptions.openingType ?? 'window')` with the centre on the 10 cm grid along the host
- *    (1 cm with Alt); a tap elsewhere does nothing;
+ *    (1 cm with Alt), moved to the nearest free centre when the new opening (its type's default size) would overlap
+ *    an opening already in that wall piece (editModel.ts `freeOpeningOffset`); a tap elsewhere does nothing;
  *  - Nytt bygg: a ghost of the template follows the mouse (snapped); a tap calls `placeUnit(template, centre,
  *    rotation90)`; the R key turns the ghost when the toolbar does not set `unitRotation90`;
  *  - Mål: two taps measure (snapped); the result stays until the next tap starts a new one, Esc clears it;
@@ -40,9 +48,22 @@ import type { RefObject } from 'react';
 import type { DerivedVariant, DerivedWall } from '../model/derived';
 import { levelAt } from '../model/derived';
 import type { Id, Vec2 } from '../model/types';
+import { openingDefaults } from '../geometry/edit';
 import { isEditableTarget } from '../ui/keys';
 import { EMPTY_FEEDBACK, normalizeFeedback, normalizeSnap, resultId, sessionOrNull } from './editFeedback';
-import { bodyDragTarget, gridSnap, hitsSelection, pointerSizes, quarterTurns, unitFootprint, unitSize, wallAt } from './editModel';
+import {
+  bodyDragTarget,
+  freeOpeningOffset,
+  gridSnap,
+  hitsSelection,
+  pointerSizes,
+  pressTarget,
+  quarterTurns,
+  snapRadiusM,
+  unitFootprint,
+  unitSize,
+  wallAt,
+} from './editModel';
 import type { PlanHandle, WallHit } from './editModel';
 import { editStrings } from './editStrings';
 import type { PlanDragModifiers, PlanEditActions, PlanFeedback, PlanSelection, PlanSnapOptions, PlanTool, PlanToolOptions } from './editTypes';
@@ -51,10 +72,12 @@ import { sameElement, selectionFromTarget } from './selection';
 import type { GestureController, PointerInfo } from './usePanZoom';
 import type { View } from './viewport';
 
-/** What the hook needs from usePanZoom (filled in by PlanView after both hooks ran). */
+/** What the hook needs from usePanZoom and the rendered view (filled in by PlanView after both hooks ran). */
 export interface PanZoomBridge {
   getView(): View;
   cancelGesture(): boolean;
+  /** The drag handles drawn now (they depend on the zoom, so PlanView computes them after usePanZoom). */
+  getHandles(): readonly PlanHandle[];
 }
 
 export interface PlanEditingParams {
@@ -63,7 +86,6 @@ export interface PlanEditingParams {
   /** Walls with a footprint on the current storey (opening hosts). */
   pieces: DerivedWall[];
   selection: PlanSelection | null;
-  handles: PlanHandle[];
   editable: boolean;
   tool: PlanTool;
   toolOptions: PlanToolOptions;
@@ -74,6 +96,8 @@ export interface PlanEditingParams {
   onToolChange?: (tool: PlanTool) => void;
   onHint?: (hint: string | null) => void;
   onDropFurniture?: (catalogId: string, planPoint: Vec2) => void;
+  /** The locked base proposal refused a drag of the selection (shows the locked toast); else `beginDrag` is asked. */
+  onLocked?: () => void;
 }
 
 /** What the overlay draws for the editing state. */
@@ -95,7 +119,22 @@ interface Pending {
   body: PlanSelection | null;
   /** A "+" drag whose new vertex id is read from the next derived model (the action returned none). */
   insert?: { deckId: Id; before: readonly Id[]; down: Vec2 };
+  /** A press on the selection of the locked base proposal: the drag is refused (toast), it does not pan. */
+  locked?: boolean;
 }
+
+/** One animation frame (falls back to a 16 ms timer where there is no requestAnimationFrame). */
+export function nextFrame(cb: () => void): number {
+  return typeof requestAnimationFrame === 'function' ? requestAnimationFrame(cb) : (setTimeout(cb, 16) as unknown as number);
+}
+
+export function cancelFrame(id: number): void {
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id);
+  else clearTimeout(id);
+}
+
+/** Identity of a pointer update (position and the modifiers that change the result). */
+const updateKey = (info: PointerInfo) => `${info.plan[0]},${info.plan[1]},${info.altKey},${info.shiftKey},${info.ctrlKey},${info.metaKey},${info.pointerType}`;
 
 /** The tool that is effectively active: only Mål works without `editable`. */
 export function effectiveTool(tool: PlanTool, editable: boolean): PlanTool {
@@ -178,6 +217,10 @@ export function usePlanEditing(params: PlanEditingParams) {
 
   const session = useRef<unknown>(null);
   const pending = useRef<Pending | null>(null);
+  /** Pointer shift of the grabbed handle (`anchor − p`), [0, 0] for body drags. */
+  const grab = useRef<Vec2>([0, 0]);
+  /** The coalesced drag update: the queued frame, the newest pointer and the last one applied. */
+  const frame = useRef<{ id: number | null; next: PointerInfo | null; last: string | null }>({ id: null, next: null, last: null });
 
   /** The current tool state (fresh when it belongs to another tool). */
   const currentTool = useCallback((): ToolState => {
@@ -194,10 +237,11 @@ export function usePlanEditing(params: PlanEditingParams) {
   );
 
   const view = () => p.current.bridge.current?.getView() ?? { s: 1, tx: 0, ty: 0 };
+  const handlesNow = (): readonly PlanHandle[] => p.current.bridge.current?.getHandles() ?? [];
 
   const modifiers = (info: PointerInfo): PlanDragModifiers => {
     const coarse = p.current.coarse || info.pointerType === 'touch';
-    return { alt: info.altKey, shift: info.shiftKey, ctrl: info.ctrlKey, meta: info.metaKey, coarse, snapRadiusM: pointerSizes(coarse).snap / view().s };
+    return { alt: info.altKey, shift: info.shiftKey, ctrl: info.ctrlKey, meta: info.metaKey, coarse, snapRadiusM: snapRadiusM(coarse, view().s) };
   };
 
   /** Half the hit corridor, in metres at the current zoom. */
@@ -216,43 +260,108 @@ export function usePlanEditing(params: PlanEditingParams) {
     }
   };
 
-  /** End the drag session: commit (endDrag) or restore (cancelDrag). Reads refs and stable setters only. */
-  const closeSession = useCallback((commit: boolean) => {
-    const s = session.current;
-    session.current = null;
-    pending.current = null;
-    if (s !== null) {
-      const actions = p.current.actions;
-      if (commit) actions?.endDrag?.(s);
-      else actions?.cancelDrag?.(s);
-    }
-    setDrag({ on: false, feedback: EMPTY_FEEDBACK });
+  /** Drop the queued drag update; returns the pointer it held (null when none). */
+  const dropFrame = useCallback((): PointerInfo | null => {
+    const f = frame.current;
+    if (f.id !== null) cancelFrame(f.id);
+    const next = f.next;
+    f.id = null;
+    f.next = null;
+    return next;
   }, []);
+
+  /** Apply one drag update now (reads refs and stable setters only, so a queued frame may call any render's copy). */
+  const applyUpdate = (now: PointerInfo) => {
+    const { actions } = p.current;
+    if (session.current === null || !actions?.updateDrag) return;
+    frame.current.last = updateKey(now);
+    const g = grab.current;
+    const at: Vec2 = [now.plan[0] + g[0], now.plan[1] + g[1]];
+    setDrag({ on: true, feedback: normalizeFeedback(actions.updateDrag(session.current, at, modifiers(now))) });
+  };
+
+  /** Queue a drag update for the next animation frame (the newest pointer wins; an unchanged one is skipped). */
+  const queueUpdate = (now: PointerInfo) => {
+    const f = frame.current;
+    if (f.id === null && f.last === updateKey(now)) return;
+    f.next = now;
+    if (f.id === null) {
+      f.id = nextFrame(() => {
+        frame.current.id = null;
+        const n = frame.current.next;
+        frame.current.next = null;
+        if (n) applyUpdate(n);
+      });
+    }
+  };
+
+  /** End the drag session: commit (endDrag) or restore (cancelDrag). Reads refs and stable setters only. */
+  const closeSession = useCallback(
+    (commit: boolean) => {
+      dropFrame();
+      frame.current.last = null;
+      grab.current = [0, 0];
+      const s = session.current;
+      session.current = null;
+      pending.current = null;
+      if (s !== null) {
+        const actions = p.current.actions;
+        if (commit) actions?.endDrag?.(s);
+        else actions?.cancelDrag?.(s);
+      }
+      setDrag({ on: false, feedback: EMPTY_FEEDBACK });
+    },
+    [dropFrame],
+  );
+  useEffect(() => () => void dropFrame(), [dropFrame]);
+
+  /** The locked base proposal: a drag of the selection is an edit attempt — the locked toast, once. */
+  const refuseLocked = (body: PlanSelection | null, at: Vec2) => {
+    const { onLocked, actions } = p.current;
+    if (onLocked) {
+      onLocked();
+      return;
+    }
+    if (!body || !actions?.beginDrag) return;
+    // The editor core refuses the locked variant with its toast; should it ever hand out a session, drop it.
+    const s = sessionOrNull(actions.beginDrag(body, at));
+    if (s !== null) actions.cancelDrag?.(s);
+  };
 
   const controller: GestureController = {
     claim(down) {
       pending.current = null;
-      const { editable, actions, selection, handles, derived } = p.current;
-      if (effectiveTool(p.current.tool, editable) !== 'select' || !editable || !actions?.beginDrag) return false;
-      const h = handleFromTarget(down.target, handles);
-      if (h) {
-        if (!h.drag && !h.insert) return false;
-        pending.current = { handle: h, body: null };
+      const { editable, actions, selection, derived, onLocked } = p.current;
+      if (effectiveTool(p.current.tool, editable) !== 'select') return false;
+      const onSelected = sameElement(selectionFromTarget(down.target), selection);
+      if (!editable) {
+        // The locked base proposal: a drag starting on the selected element is refused with the toast, not panned.
+        if (!derived.locked || (!onLocked && !actions?.beginDrag)) return false;
+        const body = bodyDragTarget(derived, selection);
+        if (!body || !(onSelected || hitsSelection(derived, selection, down.plan, tolM()))) return false;
+        pending.current = { handle: null, body, locked: true };
         return true;
       }
-      const body = bodyDragTarget(derived, selection);
-      if (!body) return false;
-      const on = sameElement(selectionFromTarget(down.target), selection) || hitsSelection(derived, selection, down.plan, tolM());
-      if (!on) return false;
-      pending.current = { handle: null, body };
+      if (!actions?.beginDrag) return false;
+      const insetM = pointerSizes(p.current.coarse).handleR / view().s;
+      const t = pressTarget(derived, selection, handleFromTarget(down.target, handlesNow()), onSelected, down.plan, tolM(), insetM);
+      if (!t) return false;
+      pending.current = t.kind === 'handle' ? { handle: t.handle, body: null } : { handle: null, body: t.target };
       return true;
     },
     start(down, now) {
       const pend = pending.current;
       const { actions, onSelect } = p.current;
+      if (pend?.locked) {
+        pending.current = null;
+        refuseLocked(pend.body, down.plan);
+        return 'block';
+      }
       if (!pend || !actions?.beginDrag) return false;
       let target: PlanSelection | null = pend.body;
       const h = pend.handle;
+      frame.current.last = null;
+      grab.current = [0, 0];
       if (h?.insert) {
         const { deckId, edgeId } = h.insert;
         // One undo step: the editor core inserts the vertex and drags it in one transaction.
@@ -262,7 +371,7 @@ export function usePlanEditing(params: PlanEditingParams) {
           onSelect(oneSel);
           session.current = one;
           setDrag({ on: true, feedback: EMPTY_FEEDBACK });
-          controller.move(now);
+          applyUpdate(now);
           return true;
         }
         if (one !== null) actions.cancelDrag?.(one);
@@ -280,16 +389,20 @@ export function usePlanEditing(params: PlanEditingParams) {
         onSelect(target);
       } else if (h) {
         target = h.drag;
+        // A handle drawn beside the point it acts on: drag as if that point itself was grabbed.
+        if (h.anchor) grab.current = [h.anchor[0] - h.p[0], h.anchor[1] - h.p[1]];
       }
       if (!target) return false;
-      const s = sessionOrNull(actions.beginDrag(target, down.plan, h?.handle));
+      const g = grab.current;
+      const s = sessionOrNull(actions.beginDrag(target, [down.plan[0] + g[0], down.plan[1] + g[1]], h?.handle));
       if (s === null) {
         pending.current = null;
+        grab.current = [0, 0];
         return false;
       }
       session.current = s;
       setDrag({ on: true, feedback: EMPTY_FEEDBACK });
-      controller.move(now);
+      applyUpdate(now);
       return true;
     },
     move(now) {
@@ -304,11 +417,16 @@ export function usePlanEditing(params: PlanEditingParams) {
         const s = sessionOrNull(actions.beginDrag({ kind: 'deckVertex', id: newId }, ins.down, undefined));
         if (s === null) return;
         session.current = s;
+        applyUpdate(now);
+        return;
       }
-      if (!actions?.updateDrag) return;
-      setDrag({ on: true, feedback: normalizeFeedback(actions.updateDrag(session.current, now.plan, modifiers(now))) });
+      // One update per animation frame: a building drag derives the whole variant (≈ 40–60 ms).
+      queueUpdate(now);
     },
     end() {
+      // Flush the last position before committing.
+      const last = dropFrame();
+      if (last) applyUpdate(last);
       closeSession(true);
     },
     cancel() {
@@ -354,7 +472,7 @@ export function usePlanEditing(params: PlanEditingParams) {
   };
 
   const onTap = (info: PointerInfo) => {
-    const { editable, actions, toolOptions, derived, storeyId, pieces, handles, onSelect, onToolChange, onDropFurniture } = p.current;
+    const { editable, actions, toolOptions, derived, storeyId, pieces, onSelect, onToolChange, onDropFurniture } = p.current;
     const cur = currentTool();
     switch (cur.tool) {
       case 'wall': {
@@ -376,10 +494,17 @@ export function usePlanEditing(params: PlanEditingParams) {
         if (!actions?.addOpening) return;
         const hit = wallAt(pieces, info.plan, tolM());
         if (!hit) return;
-        // The centre on the 10 cm grid along the host (1 cm with Alt), like a drag (the action clamps it into the wall).
+        // The centre on the 10 cm grid along the host (1 cm with Alt), like a drag (the action clamps it into the wall),
+        // moved to the nearest free place when it would overlap an opening already in that wall (its default size,
+        // the sill measured from the wall's level).
         const step = info.altKey ? 0.01 : 0.1;
-        const offset = Math.round(Math.round(hit.offset / step) * step * 1000) / 1000;
-        const r = actions.addOpening(hit.host, offset, toolOptions.openingType ?? 'window');
+        const type = toolOptions.openingType ?? 'window';
+        const size = openingDefaults(type);
+        const level = derived.levels.find((l) => l.id === hit.wall.levelId);
+        const z: [number, number] | null = level ? [level.elevation + size.sill, level.elevation + size.sill + size.height] : null;
+        const wanted = Math.round(Math.round(hit.offset / step) * step * 1000) / 1000;
+        const offset = freeOpeningOffset(hit.wall, wanted, size.width, z, step);
+        const r = actions.addOpening(hit.host, offset, type);
         if (!placed(r)) return;
         patchTool({ openingHover: null });
         const id = resultId(r);
@@ -410,7 +535,7 @@ export function usePlanEditing(params: PlanEditingParams) {
         return;
       }
       default: {
-        const h = editable ? handleFromTarget(info.target, handles) : null;
+        const h = editable ? handleFromTarget(info.target, handlesNow()) : null;
         if (h) {
           if (h.insert) {
             const id = resultId(actions?.insertDeckVertex?.(h.insert.edgeId, h.p));

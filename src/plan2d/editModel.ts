@@ -18,6 +18,22 @@
  *    `Variant.ghosts` id. `restoreGhost(id)` takes that id.
  *  - Unit ghosts use model/unitTemplates.ts (the footprint `placeUnit` builds: centred on `at`, quarter turns CCW);
  *    an unknown template id gets a 3 × 3 m ghost.
+ *
+ * Small things at small zooms (UX review of phase 2a):
+ *  - Handles never hide what they belong to: with the screen scale given, `handlesFor` leaves out the end / corner /
+ *    edge handles of an object shorter on screen than HANDLE_MIN_DIAMETERS handle diameters (an opening's width, a
+ *    stored wall's or an exterior piece's edge length, the smaller side of a block's bounding box), and draws the end
+ *    handles of walls and openings just OUTSIDE their ends (`anchor` = the end / jamb they act on; the plan maps the
+ *    pointer by anchor − p, so a drag acts as if the end itself was grabbed). Decks keep their handles.
+ *  - `pressTarget` decides what a press on the selection grabs: a press inside the object's own body
+ *    (`pressInBody`: an opening's footprint, a stored wall's footprint between its ends, an exterior piece away from
+ *    its end vertices, a block's axis polygon away from its outline by one handle radius) moves the object even when
+ *    it lands on a handle; handles win only outside the body.
+ *  - Touch: the wall / opening hit band (`hitBandPx`) is at most TOUCH_BAND_MAX_M wide in plan metres, so a tap well
+ *    inside a room selects the room when zoomed out; zoomed in it is the 24 px band again.
+ *  - Dør/vindu: `freeOpeningOffset` moves a new opening that would overlap an existing one on the same wall piece (along
+ *    the wall and in height, like the 'opening-overlap' warning) to the nearest free centre on the 10 cm grid (1 cm
+ *    with Alt) within the piece; with no free place it keeps the tapped centre (the warning shows the overlap).
  */
 import type { DerivedBlock, DerivedDeck, DerivedOpening, DerivedVariant, DerivedWall } from '../model/derived';
 import type { Id, OpeningHost, Vec2 } from '../model/types';
@@ -61,6 +77,27 @@ export function pointerSizes(coarse: boolean): PointerSizes {
 
 export function dragThresholdPx(pointerType: string): number {
   return pointerType === 'touch' ? DRAG_THRESHOLD_TOUCH_PX : DRAG_THRESHOLD_PX;
+}
+
+/** Touch: the wall / opening hit band is at most this wide (plan metres) when zoomed out. */
+export const TOUCH_BAND_MAX_M = 0.25;
+/** End / corner / edge handles are left out on objects shorter on screen than this many handle diameters. */
+export const HANDLE_MIN_DIAMETERS = 3;
+
+/**
+ * Width (screen px) of the invisible wall / opening hit bands at `scale` px/m: 12 px with a fine pointer; on a coarse
+ * pointer 24 px, but never wider than TOUCH_BAND_MAX_M in plan metres (zoomed out, 24 px would be metres wide and
+ * catch every tap inside a room). Rounded to 0.1 px so the layers only re-render when it changes visibly.
+ */
+export function hitBandPx(coarse: boolean, scale: number): number {
+  if (!coarse) return CORRIDOR_PX;
+  const band = Number.isFinite(scale) && scale > 0 ? Math.min(CORRIDOR_COARSE_PX, TOUCH_BAND_MAX_M * scale) : CORRIDOR_COARSE_PX;
+  return Math.round(band * 10) / 10;
+}
+
+/** Snap radius in plan metres for the pointer kind at `scale` px/m (12 px, 24 px coarse; geometry/snap.ts caps lines). */
+export function snapRadiusM(coarse: boolean, scale: number): number {
+  return pointerSizes(coarse).snap / scale;
 }
 
 const roundTo = (v: number, step: number) => {
@@ -191,6 +228,11 @@ export interface PlanHandle {
   shape: HandleShape;
   /** Centre (for 'edge': the edge midpoint). */
   p: Vec2;
+  /**
+   * The point the handle acts on when it is drawn away from it (wall ends and opening jambs sit just outside the
+   * object): a drag maps the pointer by `anchor − p`. Absent: `p` itself.
+   */
+  anchor?: Vec2;
   /** The edge for 'edge' corridors and 'insert' handles. */
   a?: Vec2;
   b?: Vec2;
@@ -241,18 +283,48 @@ function deckHandles(d: DerivedDeck, sel: PlanSelection): PlanHandle[] {
   return [...edges, ...inserts, ...vertices];
 }
 
-/** Drag handles of the selection, bottom to top (vertices last, so they win where handles overlap). */
-export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'outdoor'>, sel: PlanSelection | null): PlanHandle[] {
+/** The screen the handles are drawn on: zoom (px/m) and handle radius (px). */
+export interface HandleScreen {
+  scale: number;
+  handleR: number;
+}
+
+/** Is a length (m) too short on screen for handles at its ends (fewer than HANDLE_MIN_DIAMETERS diameters)? */
+function tooSmall(lengthM: number, screen: HandleScreen | undefined): boolean {
+  return !!screen && screen.scale > 0 && lengthM * screen.scale < HANDLE_MIN_DIAMETERS * 2 * screen.handleR;
+}
+
+/** The smaller side (m) of a polygon's bounding box. */
+function minSide(points: readonly Vec2[]): number {
+  const b = boundsOf(points);
+  return b ? Math.min(b.max[0] - b.min[0], b.max[1] - b.min[1]) : 0;
+}
+
+/**
+ * End handles of a segment s→e (wall ends 'a' / 'b', opening jambs 'start' / 'end'): with a screen, drawn one handle
+ * radius beyond the end (outside the object), acting on the end itself (`anchor`).
+ */
+function endHandle(end: Vec2, outward: Vec2, screen: HandleScreen | undefined): { p: Vec2; anchor?: Vec2 } {
+  if (!screen || !(screen.scale > 0)) return { p: end };
+  return { p: add(end, outward, screen.handleR / screen.scale), anchor: end };
+}
+
+/**
+ * Drag handles of the selection, bottom to top (vertices last, so they win where handles overlap). With `screen`
+ * (the plan always passes it), the handles of objects too small on screen are left out and wall / opening end
+ * handles sit just outside the ends (see the header).
+ */
+export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'outdoor'>, sel: PlanSelection | null, screen?: HandleScreen): PlanHandle[] {
   if (!sel) return [];
   switch (sel.kind) {
     case 'block': {
       const b = derived.blocks.find((x) => x.block.id === sel.id);
-      return b ? blockHandles(b, sel) : [];
+      return b && !tooSmall(minSide(b.block.polygon.map((v) => v.p)), screen) ? blockHandles(b, sel) : [];
     }
     case 'blockEdge':
     case 'blockVertex': {
       const b = findBlockOfVertex(derived.blocks, sel.id);
-      return b ? blockHandles(b, sel) : [];
+      return b && !tooSmall(minSide(b.block.polygon.map((v) => v.p)), screen) ? blockHandles(b, sel) : [];
     }
     case 'wall': {
       const w = derived.walls.find((x) => x.id === sel.id) ?? derived.walls.find((x) => x.source.kind === 'wall' && x.source.wallId === sel.id);
@@ -262,24 +334,38 @@ export function handlesFor(derived: Pick<DerivedVariant, 'walls' | 'blocks' | 'o
         const poly = derived.blocks.find((x) => x.block.id === src.blockId)?.block.polygon ?? [];
         const i = poly.findIndex((v) => v.id === src.edgeId);
         if (i < 0) return [];
-        return [poly[i], poly[(i + 1) % poly.length]].map((v) => {
+        const ends = [poly[i], poly[(i + 1) % poly.length]];
+        if (tooSmall(dist(ends[0].p, ends[1].p), screen)) return [];
+        return ends.map((v) => {
           const s: PlanSelection = { kind: 'blockVertex', id: v.id };
           return { key: `bv:${v.id}`, shape: 'vertex' as const, p: v.p, drag: s, tap: s, active: false, title: editStrings.handleVertex };
         });
       }
+      if (tooSmall(dist(w.a, w.b), screen)) return [];
+      const u = unit(w.a, w.b) ?? [1, 0];
       const target: PlanSelection = { kind: 'wall', id: src.wallId };
-      return (['a', 'b'] as const).map((end) => ({ key: `we:${end}`, shape: 'end' as const, p: w[end], drag: target, handle: end, tap: null, active: false, title: editStrings.handleWallEnd }));
+      return (['a', 'b'] as const).map((end) => ({
+        key: `we:${end}`,
+        shape: 'end' as const,
+        ...endHandle(w[end], end === 'a' ? [-u[0], -u[1]] : u, screen),
+        drag: target,
+        handle: end,
+        tap: null,
+        active: false,
+        title: editStrings.handleWallEnd,
+      }));
     }
     case 'opening': {
       const hit = findOpening(derived, sel.id);
       if (!hit || hit.opening.isGhost) return [];
       const { wall, opening } = hit;
+      if (tooSmall(opening.width, screen)) return [];
       const u = unit(wall.a, wall.b) ?? [1, 0];
       const target: PlanSelection = { kind: 'opening', id: opening.id };
       return (['start', 'end'] as const).map((end) => ({
         key: `oe:${end}`,
         shape: 'end' as const,
-        p: add(wall.a, u, opening.offset + (end === 'start' ? -1 : 1) * (opening.width / 2)),
+        ...endHandle(add(wall.a, u, opening.offset + (end === 'start' ? -1 : 1) * (opening.width / 2)), end === 'start' ? [-u[0], -u[1]] : u, screen),
         drag: target,
         handle: end,
         tap: null,
@@ -415,6 +501,79 @@ export function hitsSelection(derived: DerivedVariant, sel: PlanSelection | null
   }
 }
 
+/** Parameter (m) of p's projection along a → b, and the segment length. */
+function along(p: Vec2, a: Vec2, b: Vec2): { s: number; L: number } {
+  const L = dist(a, b);
+  const u = unit(a, b);
+  return { s: u ? (p[0] - a[0]) * u[0] + (p[1] - a[1]) * u[1] : 0, L };
+}
+
+/**
+ * Is plan point p inside the selected object's own BODY, where a press moves the object even over a handle?
+ * `insetM` = one handle radius in metres: corner / vertex handles keep the band of that width along a block's outline
+ * and at the ends of an exterior piece. Openings: their footprint (jamb to jamb); stored walls: their footprint
+ * between the ends; other kinds: never (their handles always win).
+ */
+export function pressInBody(derived: DerivedVariant, sel: PlanSelection | null, p: Vec2, insetM: number): boolean {
+  if (!sel) return false;
+  switch (sel.kind) {
+    case 'opening': {
+      const hit = findOpening(derived, sel.id);
+      if (!hit || hit.opening.isGhost) return false;
+      const { wall, opening } = hit;
+      if (opening.footprint.length >= 3) return pointInPolygon(p, opening.footprint);
+      const { s } = along(p, wall.a, wall.b);
+      const half = opening.width / 2;
+      return s > opening.offset - half && s < opening.offset + half && distancePointSegment(p, wall.a, wall.b) <= Math.max(wall.faceLeft, wall.faceRight);
+    }
+    case 'wall':
+    case 'blockEdge': {
+      return selectedPieces(derived, sel).some((w) => {
+        if (w.isGhost || w.footprint.length < 3 || !pointInPolygon(p, w.footprint)) return false;
+        const { s, L } = along(p, w.a, w.b);
+        const inset = w.source.kind === 'blockEdge' ? insetM : 0;
+        return s > inset && s < L - inset;
+      });
+    }
+    case 'block': {
+      const b = derived.blocks.find((x) => x.block.id === sel.id);
+      const poly = b?.block.polygon.map((v) => v.p) ?? [];
+      if (poly.length < 3 || !pointInPolygon(p, poly)) return false;
+      return poly.every((q, i) => distancePointSegment(p, q, poly[(i + 1) % poly.length]) > insetM);
+    }
+    default:
+      return false;
+  }
+}
+
+/** What a press on the selection grabs: a handle, the body (a move of `target`), or nothing (null: the press pans). */
+export type PressTarget = { kind: 'handle'; handle: PlanHandle } | { kind: 'body'; target: PlanSelection } | null;
+
+/**
+ * Decide a press (tool Velg, editable): `handle` = the handle under the pointer (DOM), `onSelected` = the pointer is on
+ * the selected element's own hit area (DOM). A press inside the object's body moves it even over a handle
+ * (`pressInBody`, `insetM` = one handle radius in metres); otherwise a handle wins; otherwise the selected element
+ * moves when the press is on it or within `tolM` of its geometry (`hitsSelection`).
+ */
+export function pressTarget(
+  derived: DerivedVariant,
+  selection: PlanSelection | null,
+  handle: PlanHandle | null,
+  onSelected: boolean,
+  p: Vec2,
+  tolM: number,
+  insetM: number,
+): PressTarget {
+  const body = bodyDragTarget(derived, selection);
+  if (handle) {
+    if (!handle.drag && !handle.insert) return null;
+    if (body && handle.shape !== 'insert' && handle.shape !== 'edge' && pressInBody(derived, selection, p, insetM)) return { kind: 'body', target: body };
+    return { kind: 'handle', handle };
+  }
+  if (!body) return null;
+  return onSelected || hitsSelection(derived, selection, p, tolM) ? { kind: 'body', target: body } : null;
+}
+
 // ---------------------------------------------------------------------------
 // Dør/vindu: the wall under a click
 // ---------------------------------------------------------------------------
@@ -448,6 +607,42 @@ export function wallAt(walls: readonly DerivedWall[], p: Vec2, tolM: number): Wa
     bestD = d;
   }
   return best;
+}
+
+/** Overlaps up to this much (m) are touching, not overlapping (the 'opening-overlap' warning's tolerance). */
+const OPENING_TOUCH = 0.001;
+
+const cleanStep = (v: number) => {
+  const c = Math.round(v * 1e6) / 1e6;
+  return c === 0 ? 0 : c;
+};
+
+/**
+ * Dør/vindu: the centre (HOST offset, as `addOpening` takes it) for a new opening of `width` (m) wanted at
+ * `hostOffset` on the derived wall piece `wall`, moved off the existing openings of that piece it would overlap
+ * along the wall and in height (`z` = the new opening's absolute sill and head; null = every opening counts). The
+ * nearest free centre on the `step` grid (clamped into the piece, like the action does) wins; with none free, or no
+ * overlap to begin with, `hostOffset` comes back unchanged.
+ */
+export function freeOpeningOffset(wall: DerivedWall, hostOffset: number, width: number, z: [number, number] | null, step: number): number {
+  const s0 = wall.source.kind === 'blockEdge' ? wall.source.s0 : 0;
+  const lo = s0 + width / 2;
+  const hi = s0 + dist(wall.a, wall.b) - width / 2;
+  if (hi < lo - 1e-9) return hostOffset;
+  const clamp = (c: number) => Math.min(hi, Math.max(lo, c));
+  const busy: [number, number][] = wall.openings
+    .filter((o) => !o.isGhost && (!z || Math.min(o.headZ, z[1]) - Math.max(o.sillZ, z[0]) > OPENING_TOUCH))
+    .map((o) => [s0 + o.offset - o.width / 2 - width / 2, s0 + o.offset + o.width / 2 + width / 2]);
+  const free = (c: number) => busy.every(([a, b]) => c <= a + OPENING_TOUCH || c >= b - OPENING_TOUCH);
+  const want = clamp(hostOffset);
+  if (free(want)) return hostOffset;
+  let best: number | null = null;
+  for (const [a, b] of busy) {
+    for (const c of [cleanStep(Math.floor(a / step + 1e-9) * step), cleanStep(Math.ceil(b / step - 1e-9) * step)].map(clamp)) {
+      if (free(c) && (best === null || Math.abs(c - want) < Math.abs(best - want) - 1e-9)) best = c;
+    }
+  }
+  return best ?? hostOffset;
 }
 
 // ---------------------------------------------------------------------------

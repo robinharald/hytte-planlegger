@@ -149,6 +149,55 @@ describe('line, polygon, footprint and circle snaps', () => {
   });
 });
 
+describe('gentle line snapping (UX review of phase 2a: snapping fought short drags)', () => {
+  const ex = (...ids: string[]) => new Set(ids);
+
+  it("snapLineOffset: the line's own start and lines collinear with it are no targets; a 5 cm hold keeps it", () => {
+    // The block's south edge (y 0) runs along the deck's north edge: before, a 0.1 m drag snapped back onto it.
+    const south = (offset: number) => snapLineOffset(ctx, [0, 0], [6, 0], offset, { radius: 0.12, excludeIds: ex('blk-1/v-sw') }).offset;
+    expect(south(0.1)).toBeCloseTo(0.1, 9);
+    expect(south(-0.1)).toBeCloseTo(-0.1, 9);
+    // Within START_HOLD_M of the start it stays put (an off-grid line is not pushed onto the grid by a touch).
+    expect(snapLineOffset(ctx, [0, 0.03], [6, 0.03], 0.04, { radius: 0.12 }).offset).toBe(0);
+  });
+
+  it('snapLineOffset: target lines reach at most 0.25 m whatever the radius; a line 3 cm away still snaps', () => {
+    // w-1 (x 3) dragged west: the block's west edge (x 0) 0.3 m from the pointer → the grid; 0.2 m → snapped.
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 2.7, { radius: 1, excludeIds: ex('w-1') }).offset).toBeCloseTo(2.7, 9);
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 2.8, { radius: 1, excludeIds: ex('w-1') }).offset).toBeCloseTo(3, 9);
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 2.97, { radius: 0.12, excludeIds: ex('w-1') }).offset).toBeCloseTo(3, 9);
+  });
+
+  it('snapLineOffset: a snap never takes back more than half of the drag', () => {
+    const line = (y: number, id: string) => ({ a: [0, y] as [number, number], b: [5, y] as [number, number], kind: 'wall' as const, id });
+    const custom = { ...ctx, lines: [line(0.05, 'near-start'), line(0.62, 'ahead')], axisLines: [] };
+    // A 0.3 m drag: the line 5 cm from the start would take back 0.25 m (> 0.15) → the grid.
+    expect(snapLineOffset(custom, [0, 0], [5, 0], 0.3, { radius: 0.5 }).offset).toBeCloseTo(0.3, 9);
+    // A short drag just past it still snaps back onto it (0.03 m ≤ half of 0.08 m).
+    expect(snapLineOffset(custom, [0, 0], [5, 0], 0.08, { radius: 0.5 }).offset).toBeCloseTo(0.05, 9);
+    // Snaps forward are not limited by the drag length: a 0.4 m drag, a line 0.22 m ahead.
+    expect(snapLineOffset(custom, [0, 0], [5, 0], 0.4, { radius: 0.5 }).offset).toBeCloseTo(0.62, 9);
+  });
+
+  it('Alt (fine) turns line snapping off, not only the 10 cm grid', () => {
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 2.95, { radius: 0.1, fine: true, excludeIds: ex('w-1') }).offset).toBeCloseTo(2.95, 9);
+    // No hold with Alt either: 1 cm steps from the start.
+    expect(snapLineOffset(ctx, [3, 0], [3, 4], 0.03, { radius: 0.1, fine: true, excludeIds: ex('w-1') }).offset).toBeCloseTo(0.03, 9);
+    const r = snap(ctx, [3.06, 1.234], { radius: 0.12, fine: true });
+    expect(r.kind).toBe('grid');
+    expect(r.point).toEqual([3.06, 1.23]);
+  });
+
+  it('snap: target lines are capped at 0.25 m; points and the ortho guides through `from` keep the full radius', () => {
+    expect(snap(ctx, [3.3, 1.23], { radius: 0.5 }).kind).toBe('grid');
+    expect(snap(ctx, [3.2, 1.23], { radius: 0.5 })).toMatchObject({ kind: 'line', point: [3, 1.2] });
+    expect(snap(ctx, [3.25, 3.7], { radius: 0.5 })).toMatchObject({ kind: 'point', point: [3, 4] });
+    const ortho = snap(ctx, [5.23, 5.4], { radius: 0.5, from: [1, 5] });
+    expect(ortho.kind).toBe('line');
+    expect(ortho.point[1]).toBeCloseTo(5, 9);
+  });
+});
+
 describe('rays and chips', () => {
   it('rayToWall / chipsAt / chipsAcross', () => {
     const hit = rayToWall(ctx, [1.5, 2], [1, 0]);

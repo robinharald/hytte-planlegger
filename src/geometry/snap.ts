@@ -13,10 +13,19 @@
  * candidate line (the point slides along it; on an axis-parallel line the free coordinate snaps to the grid) > grid.
  * Ghost walls (status 'removed') are never targets. Walls of other storeys are not targets; blocks and decks are.
  *
+ * Line snapping is gentle so short drags are not pulled back (UX review of phase 2a): target lines (wall lines, block
+ * axis edges, deck edges, their extensions and perpendiculars) only reach `min(radius, LINE_SNAP_MAX_M)` — the UI's
+ * 12 / 24 px are about 0.5 / 2 m when zoomed out — and `fine` (Alt, "fest til 1 cm") turns them off altogether, not
+ * only the 10 cm grid. Point targets and the ortho guides through `from` keep the full radius.
+ *
  * Other snaps
  *  - `snapLineOffset`: a line dragged across itself (wall move, block / deck edge move): its perpendicular position
- *    snaps to parallel target lines within the radius whose extent lies within EXTENSION_REACH, else to the grid
- *    (the absolute coordinate when the line is axis-parallel).
+ *    snaps to parallel target lines within `min(radius, LINE_SNAP_MAX_M)` whose extent lies within EXTENSION_REACH,
+ *    else to the grid (the absolute coordinate when the line is axis-parallel). The line's own starting position and
+ *    every target collinear with it (within COLLINEAR_EPS, e.g. a divider continuing the dragged wall) are not
+ *    targets, and a snap never pulls the line back by more than half of the drag; instead the line stays where it
+ *    was while the pointer is within START_HOLD_M of it (so an off-grid wall touched without moving across does not
+ *    jump to the grid). With `fine` there are no line targets and no hold.
  *  - `snapPolygon`: a polygon moved as a whole (unit placement, block move) snaps axis to axis: each of its edges to
  *    parallel block axis edges / deck edges that overlap it along the line (within the radius); the best snap and the
  *    best snap in a non-parallel direction are combined; directions without a snap use the grid (vertex 0).
@@ -36,6 +45,12 @@ export const GRID_STEP_FINE = 0.01;
 export const EXTENSION_REACH = 6;
 /** Rays for dimension chips stop here (m). */
 export const CHIP_REACH = 20;
+/** Target lines snap within at most this distance (m), whatever the pointer radius (zoomed out it is metres wide). */
+export const LINE_SNAP_MAX_M = 0.25;
+/** A dragged line stays at its start while the pointer is this close (m) to it (`snapLineOffset`). */
+export const START_HOLD_M = 0.05;
+/** Targets this close (m) to a dragged line's start count as collinear with it (`snapLineOffset`). */
+export const COLLINEAR_EPS = 0.005;
 /** Lines closer than this (sin of the angle) to parallel are parallel. */
 const PARALLEL_SIN = Math.sin((0.5 * Math.PI) / 180);
 const TINY = 1e-9;
@@ -116,9 +131,9 @@ export interface SnapContextOptions {
 }
 
 export interface SnapOptions {
-  /** Snap radius in plan metres. */
+  /** Snap radius in plan metres (target lines: at most LINE_SNAP_MAX_M). */
   radius: number;
-  /** Alt: 0.01 m grid. */
+  /** Alt: 0.01 m grid and no target lines (points and the ortho guides through `from` stay). */
   fine?: boolean;
   /** Snap to the grid when nothing else is near (default true). */
   grid?: boolean;
@@ -256,8 +271,9 @@ interface LineCand {
 
 function lineCandidates(ctx: SnapContext, p: Vec2, opts: SnapOptions): LineCand[] {
   const out: LineCand[] = [];
-  const r = opts.radius;
-  if (opts.lines !== false) {
+  // Target lines reach at most LINE_SNAP_MAX_M; the ortho guides through `from` keep the full radius.
+  const r = Math.min(opts.radius, LINE_SNAP_MAX_M);
+  if (opts.lines !== false && opts.fine !== true) {
     for (const t of ctx.lines) {
       const d = sub(t.b, t.a);
       const L = len(d);
@@ -284,8 +300,8 @@ function lineCandidates(ctx: SnapContext, p: Vec2, opts: SnapOptions): LineCand[
     const f = opts.from;
     const dx = Math.abs(p[0] - f[0]);
     const dy = Math.abs(p[1] - f[1]);
-    if (dy <= r) out.push({ o: f, u: [1, 0], kind: 'align', d: dy, anchor: f });
-    if (dx <= r) out.push({ o: f, u: [0, 1], kind: 'align', d: dx, anchor: f });
+    if (dy <= opts.radius) out.push({ o: f, u: [1, 0], kind: 'align', d: dy, anchor: f });
+    if (dx <= opts.radius) out.push({ o: f, u: [0, 1], kind: 'align', d: dx, anchor: f });
   }
   return out;
 }
@@ -384,9 +400,11 @@ function extentAlong(o: Vec2, u: Vec2, a: Vec2, b: Vec2): [number, number] {
 }
 
 /**
- * Snap the perpendicular position of the segment a–b moved by `offset` along its left normal: to parallel lines
- * (ctx.lines, or ctx.axisLines with `axisOnly`) within the radius, else to the grid. `excludeIds` are target ids
- * left out (the moved element itself).
+ * Snap the perpendicular position of the segment a–b (the line's START position) moved by `offset` along its left
+ * normal: to parallel lines (ctx.lines, or ctx.axisLines with `axisOnly`) within `min(radius, LINE_SNAP_MAX_M)`,
+ * else to the grid. `excludeIds` are target ids left out (the moved element itself); targets collinear with a–b are
+ * left out too, and an offset within START_HOLD_M keeps the line at its start (see the header). `fine` (Alt): grid
+ * only (0.01 m).
  */
 export function snapLineOffset(
   ctx: SnapContext,
@@ -400,16 +418,24 @@ export function snapLineOffset(
   const u = unit(d);
   const n = leftNormal(u);
   const [e0, e1] = [0, len(d)];
+  const lineR = Math.min(opts.radius, LINE_SNAP_MAX_M);
+  if (opts.fine !== true && Math.abs(offset) <= Math.min(lineR, START_HOLD_M)) return { offset: 0, indicators: [] };
   let best: { c: number; t: SnapLineTarget } | null = null;
-  let bestD = opts.radius;
-  for (const t of opts.axisOnly ? ctx.axisLines : ctx.lines) {
+  let bestD = lineR;
+  for (const t of opts.fine === true ? [] : opts.axisOnly ? ctx.axisLines : ctx.lines) {
     if (opts.excludeIds?.has(t.id)) continue;
     const td = sub(t.b, t.a);
     if (len(td) < TINY || !parallel(u, td)) continue;
     const [t0, t1] = extentAlong(a, u, t.a, t.b);
     if (t1 < e0 - EXTENSION_REACH || t0 > e1 + EXTENSION_REACH) continue;
     const c = dot(sub(t.a, a), n);
+    // The dragged line's own start (and anything collinear with it, e.g. a divider continuing a wall) is no target:
+    // otherwise a short drag snaps straight back to where it started.
+    if (Math.abs(c) <= COLLINEAR_EPS) continue;
     const dd = Math.abs(c - offset);
+    // A snap never takes back more than half of the drag (a target between the start and the pointer, or behind the
+    // start): w-104-103 dragged 0.3 m east must not fall back onto w-105-106's line 5 cm from where it started.
+    if ((c - offset) * offset < 0 && dd > Math.abs(offset) / 2) continue;
     if (dd <= bestD) {
       best = { c, t };
       bestD = dd;

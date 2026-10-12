@@ -8,7 +8,8 @@
  *    or a handle); the down target is kept (pointer capture retargets later events to the SVG);
  *  - nothing happens until the pointer moves more than the threshold (5 px mouse / pen, 10 px touch, editModel.ts
  *    `dragThresholdPx`); then a claimed press calls `controller.start(down, now)` — true starts an element drag
- *    (`move` per pointer move, `end` on pointer-up), false (or an unclaimed press) pans;
+ *    (`move` per pointer move, `end` on pointer-up), false (or an unclaimed press) pans, 'block' swallows the rest of
+ *    the gesture (no pan, no tap: a refused drag on the locked base proposal);
  *  - a release below the threshold is a tap (`onTap`, with the down target).
  * A second pointer turns the gesture into a pinch (never a tap); an element drag in progress is cancelled first.
  * pointercancel, lostpointercapture (while the pointer is still tracked) and `cancelGesture()` (Esc) cancel: an
@@ -47,8 +48,8 @@ export type TapInfo = PointerInfo;
 export interface GestureController {
   /** Pointer-down with one pointer: true when the press may start an element drag. */
   claim(down: PointerInfo): boolean;
-  /** A claimed press passed the threshold: start the drag (true) or let the gesture pan (false). */
-  start(down: PointerInfo, now: PointerInfo): boolean;
+  /** A claimed press passed the threshold: start the drag (true), let the gesture pan (false) or swallow it ('block'). */
+  start(down: PointerInfo, now: PointerInfo): boolean | 'block';
   move(now: PointerInfo): void;
   end(now: PointerInfo): void;
   cancel(): void;
@@ -73,6 +74,8 @@ interface Gesture {
   claimed: boolean;
   /** An element drag is in progress. */
   dragging: boolean;
+  /** The controller swallowed the gesture: it neither pans nor taps. */
+  blocked: boolean;
 }
 
 function capture(el: Element, id: number, on: boolean): void {
@@ -150,11 +153,12 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
         const down = info(e, e.target instanceof Element ? e.target : null);
         // Only the primary (left) button grabs elements; the middle button always pans.
         const claimed = e.button === 0 && !!controllerRef.current && controllerRef.current.claim(down);
-        gesture.current = { down, moved: false, multi: false, claimed, dragging: false };
+        gesture.current = { down, moved: false, multi: false, claimed, dragging: false, blocked: false };
       } else if (gesture.current) {
         const g = gesture.current;
         if (g.dragging) controllerRef.current?.cancel();
         g.dragging = false;
+        g.blocked = false;
         g.claimed = false;
         g.multi = true;
       }
@@ -184,7 +188,15 @@ export function usePanZoom(svgRef: RefObject<SVGSVGElement | null>, initial: Vie
       if (!g) return;
       if (!g.moved && Math.hypot(p[0] - g.down.screen[0], p[1] - g.down.screen[1]) > dragThresholdPx(g.down.pointerType)) {
         g.moved = true;
-        if (g.claimed && controllerRef.current) g.dragging = controllerRef.current.start(g.down, info(e, g.down.target));
+        if (g.claimed && controllerRef.current) {
+          const started = controllerRef.current.start(g.down, info(e, g.down.target));
+          g.dragging = started === true;
+          g.blocked = started === 'block';
+        }
+      }
+      if (g.blocked) {
+        pointers.current.set(e.pointerId, p);
+        return;
       }
       // Below the threshold the stored position stays at pointer-down, so a pan starts without losing the first
       // few pixels.

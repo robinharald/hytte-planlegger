@@ -127,6 +127,7 @@ export interface PlanOverlay {
 /**
  * Where the phone mini-bar (Egenskaper · Roter · Slett) goes: above the selected element (§3.1). `x` / `y` are
  * viewport (client) pixels, like ui/overlay.ts `ScreenPoint` (`onSelectionBar={setSelectionAnchor}` works as is).
+ * Re-reported whenever it changes: after pans, zooms and edits, and on window scroll / resize (once per frame).
  */
 export interface SelectionBarAnchor {
   /** Top-centre of the element's screen box (clamped to the plan), viewport pixels. */
@@ -137,6 +138,8 @@ export interface SelectionBarAnchor {
   localY: number;
   /** The element's screen box (px, wrapper-relative, y down). */
   box: { x0: number; y0: number; x1: number; y1: number };
+  /** The element's screen bounding box in viewport (client) pixels, not clamped (flip the bar below it, etc.). */
+  rect: { top: number; left: number; width: number; height: number };
 }
 
 // ---------------------------------------------------------------------------

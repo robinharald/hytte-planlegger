@@ -20,8 +20,14 @@
  * - Editing (all props optional; without `editable` + `editActions` the plan is the phase-1 viewer, which is what
  *   the locked Forslag D gets — Mål still works there): gestures and tools in usePlanEditing.ts, handles and hit
  *   tests in editModel.ts. `overlay` draws temporary dimensions for the properties panel; `onSelectionBar` reports
- *   where the phone mini-bar goes (top-centre of the selection's screen box, null while dragging or when nothing
- *   visible is selected; called only when it changes); `onHint` reports the hint line text of the active tool.
+ *   where the phone mini-bar goes (top-centre of the selection's screen box plus that box as `rect`, null while
+ *   dragging or when nothing visible is selected; called only when it changes, re-checked after every render — so
+ *   after every pan and zoom — and once per animation frame on window scroll and resize); `onHint` reports the hint
+ *   line text of the active tool. On the locked base proposal a drag that starts on the selection calls `onLocked`
+ *   (else the refusing `editActions.beginDrag`) instead of panning. `viewportInsets` keeps the selection out from
+ *   under the toolbar / bottom sheet by panning minimally when the selection or the insets change.
+ * - Touch: the invisible wall / opening hit bands are at most 0.25 m wide in plan metres (editModel.ts `hitBandPx`)
+ *   and each drawn room label is a hit area of its room (LabelLayer), so a tap inside a room selects the room.
  * - Furniture library drags (no HTML5 drag-and-drop): the library tracks its own pointer and calls the handle's
  *   `furnitureDragOver(catalogId, clientX, clientY)` while moving (a drop marker) and `dropFurniture(…)` on release,
  *   which calls `onDropFurniture(catalogId, planPoint)` when the point is over the plan. `visibleCenter()` gives the
@@ -62,7 +68,7 @@ import { StructureLayer } from './layers/StructureLayer';
 import { WallLayer } from './layers/WallLayer';
 import { NORTH_ARROW_BOX, NORTH_ARROW_MARGIN, fitBounds, legendBox, placeCornerOverlay, scaleBarBox } from './drawing';
 import { chipText, mid } from './editFeedback';
-import { handlesFor, openingCornerDimension, pointerSizes, selectionBounds, wallsById } from './editModel';
+import { handlesFor, hitBandPx, openingCornerDimension, pointerSizes, selectionBounds, wallsById } from './editModel';
 import type { PlanHandle } from './editModel';
 import type { PlanEditActions, PlanOverlay, PlanSelection, PlanTool, PlanToolOptions, SelectionBarAnchor } from './editTypes';
 import { storeyData } from './storeyData';
@@ -71,10 +77,10 @@ import { FAINT_OPACITY, FONT, PAPER } from './style';
 import { useCoarsePointer } from './useCoarsePointer';
 import { useElementSize } from './useElementSize';
 import { usePanZoom } from './usePanZoom';
-import { effectiveTool, usePlanEditing } from './usePlanEditing';
+import { cancelFrame, effectiveTool, nextFrame, usePlanEditing } from './usePlanEditing';
 import type { PanZoomBridge } from './usePlanEditing';
 import type { View } from './viewport';
-import { fitView, pan, planToScreen, rootTransform, screenToPlan, snapRectOut, visiblePlanRect } from './viewport';
+import { fitView, pan, planToScreen, revealPan, rootTransform, screenToPlan, snapRectOut, visiblePlanRect } from './viewport';
 
 export interface PlanViewProps {
   derived: DerivedVariant;
@@ -109,6 +115,26 @@ export interface PlanViewProps {
   onDropFurniture?: (catalogId: string, planPoint: Vec2) => void;
   /** Force the coarse-pointer sizes (default: the `(pointer: coarse)` media query). */
   coarsePointer?: boolean;
+  /**
+   * The locked base proposal (`derived.locked`) refused a drag that started on the selected element: show the locked
+   * toast. Called once per such gesture, which then neither pans nor drags. Without it the plan asks
+   * `editActions.beginDrag`, whose refusal shows the same toast.
+   */
+  onLocked?: () => void;
+  /**
+   * Parts of the plan's own box covered by other UI (screen px: the toolbar on top, the bottom sheet below, …). When
+   * the selection or the insets change, the plan pans (never zooms) just enough to bring the selection's bounding box
+   * into the uncovered part (with a 12 px margin), and does nothing when it already fits.
+   */
+  viewportInsets?: ViewportInsets;
+}
+
+/** See `PlanViewProps.viewportInsets`. */
+export interface ViewportInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
 }
 
 export interface PlanViewHandle {
@@ -138,8 +164,13 @@ const NO_HANDLES: PlanHandle[] = [];
 const NO_OPTIONS: PlanToolOptions = {};
 
 function anchorKey(a: SelectionBarAnchor | null): string {
-  return a ? [a.x, a.y, a.localX, a.localY, a.box.x0, a.box.y0, a.box.x1, a.box.y1].map((v) => Math.round(v)).join(',') : 'none';
+  return a ? [a.x, a.y, a.localX, a.localY, a.box.x0, a.box.y0, a.box.x1, a.box.y1, a.rect.left, a.rect.top].map((v) => Math.round(v)).join(',') : 'none';
 }
+
+/** Margin (px) kept between the selection and the edge of the uncovered part of the plan (`viewportInsets`). */
+const REVEAL_MARGIN_PX = 12;
+
+const insetsKey = (i: ViewportInsets | undefined) => (i ? [i.top, i.right, i.bottom, i.left].map((v) => Math.round(Number(v) || 0)).join(',') : '');
 
 export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanView(props, ref) {
   const { derived, site, planStorey, showLabels, showDims, showGrid, showRoofPlan, highlightNew } = props;
@@ -171,11 +202,11 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
   const onToolChange = useCallback((t: PlanTool) => cb.current.onToolChange?.(t), []);
   const onHint = useCallback((text: string | null) => cb.current.onHint?.(text), []);
   const onDropFurniture = useCallback((id: string, p: Vec2) => cb.current.onDropFurniture?.(id, p), []);
+  const onLocked = useCallback(() => cb.current.onLocked?.(), []);
 
   const data = useMemo(() => storeyData(derived, planStorey), [derived, planStorey]);
   const storeyId = data.ctx?.storeyId ?? planStorey;
   const handlesOn = editable && effectiveTool(tool, editable) === 'select';
-  const handles = useMemo(() => (handlesOn ? handlesFor(derived, selection) : NO_HANDLES), [handlesOn, derived, selection]);
 
   const bridge = useRef<PanZoomBridge | null>(null);
   const editing = usePlanEditing({
@@ -183,7 +214,6 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     storeyId,
     pieces: data.pieces,
     selection,
-    handles,
     editable,
     tool,
     toolOptions,
@@ -194,12 +224,25 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     onToolChange,
     onHint,
     onDropFurniture,
+    onLocked: props.onLocked ? onLocked : undefined,
   });
 
   const { view, setView, getView, handlers, cancelGesture } = usePanZoom(svgRef, fitView(fitRect, w, h, FIT_MARGIN_M), editing.onTap, editing.controller);
+  // Handles depend on the zoom: those of objects too small on screen are left out (editModel.ts `handlesFor`).
+  const scale = view.s;
+  const handles = useMemo(
+    () => (handlesOn ? handlesFor(derived, selection, { scale, handleR: sizes.handleR }) : NO_HANDLES),
+    [handlesOn, derived, selection, scale, sizes.handleR],
+  );
+  const handlesRef = useRef<readonly PlanHandle[]>(handles);
   useLayoutEffect(() => {
-    bridge.current = { getView, cancelGesture };
+    handlesRef.current = handles;
+  }, [handles]);
+  useLayoutEffect(() => {
+    bridge.current = { getView, cancelGesture, getHandles: () => handlesRef.current };
   }, [getView, cancelGesture]);
+  // Touch: wall / opening hit bands at most 0.25 m wide in plan metres (taps inside rooms select the room).
+  const band = hitBandPx(coarse, scale);
 
   /** The view the last fit produced; while it is still current the user has not panned or zoomed. */
   const fittedView = useRef<View | null>(null);
@@ -268,29 +311,82 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     [fit, clientToPlan, getView, w, h, setDropPreview, cancel],
   );
 
-  // Phone mini-bar anchor: top-centre of the selection's screen box (clamped to the view), only when it changes.
+  // Phone mini-bar anchor: top-centre of the selection's screen box (clamped to the view) and the box itself in
+  // viewport pixels, only when it changes; checked after every render (pans and zooms re-render) and once per frame
+  // on window scroll / resize (the plan's box moves on the page without a render).
   const dragging = editing.overlay.dragging;
   const lastAnchor = useRef<string | null>(null);
-  useEffect(() => {
+  const anchorInput = useRef({ derived, selection, dragging, w, h });
+  const reportAnchor = useCallback(() => {
     const report = cb.current.onSelectionBar;
     if (!report) return;
+    const { derived: d, selection: sel, dragging: busy, w: W, h: H } = anchorInput.current;
     let anchor: SelectionBarAnchor | null = null;
-    const b = dragging ? null : selectionBounds(derived, selection);
+    const b = busy ? null : selectionBounds(d, sel);
     if (b) {
-      const p0 = planToScreen(view, b.min);
-      const p1 = planToScreen(view, b.max);
+      const v = getView();
+      const p0 = planToScreen(v, b.min);
+      const p1 = planToScreen(v, b.max);
       const box = { x0: Math.min(p0[0], p1[0]), y0: Math.min(p0[1], p1[1]), x1: Math.max(p0[0], p1[0]), y1: Math.max(p0[1], p1[1]) };
-      if (box.x1 >= 0 && box.y1 >= 0 && box.x0 <= w && box.y0 <= h) {
-        const localX = Math.min(w, Math.max(0, (box.x0 + box.x1) / 2));
-        const localY = Math.min(h, Math.max(0, box.y0));
+      if (box.x1 >= 0 && box.y1 >= 0 && box.x0 <= W && box.y0 <= H) {
+        const localX = Math.min(W, Math.max(0, (box.x0 + box.x1) / 2));
+        const localY = Math.min(H, Math.max(0, box.y0));
         const r = svgRef.current?.getBoundingClientRect();
-        anchor = { x: (r?.left ?? 0) + localX, y: (r?.top ?? 0) + localY, localX, localY, box };
+        const left = r?.left ?? 0;
+        const top = r?.top ?? 0;
+        anchor = { x: left + localX, y: top + localY, localX, localY, box, rect: { left: left + box.x0, top: top + box.y0, width: box.x1 - box.x0, height: box.y1 - box.y0 } };
       }
     }
     const key = anchorKey(anchor);
     if (key === lastAnchor.current) return;
     lastAnchor.current = key;
     report(anchor);
+  }, [getView]);
+  useEffect(() => {
+    anchorInput.current = { derived, selection, dragging, w, h };
+    reportAnchor();
+  });
+  useEffect(() => {
+    let id: number | null = null;
+    const onMove = () => {
+      if (id !== null) return;
+      id = nextFrame(() => {
+        id = null;
+        reportAnchor();
+      });
+    };
+    window.addEventListener('scroll', onMove, { capture: true, passive: true });
+    window.addEventListener('resize', onMove);
+    return () => {
+      window.removeEventListener('scroll', onMove, { capture: true });
+      window.removeEventListener('resize', onMove);
+      if (id !== null) cancelFrame(id);
+    };
+  }, [reportAnchor]);
+
+  // Keep the selection clear of the UI covering the plan (`viewportInsets`): when the selection or the insets change,
+  // pan just enough to bring its bounding box into the uncovered part (never zoom; nothing when it already fits).
+  const revealKey = `${selection ? `${selection.kind}:${selection.id}:${selection.levelId ?? ''}` : ''}|${insetsKey(props.viewportInsets)}`;
+  const lastReveal = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (lastReveal.current === revealKey) return;
+    const insets = cb.current.viewportInsets;
+    if (!insets || !selection || dragging) {
+      lastReveal.current = revealKey;
+      return;
+    }
+    // A selection the derived model does not have yet (a new element) is revealed on a later render.
+    const b = selectionBounds(derived, selection);
+    if (!b) return;
+    lastReveal.current = revealKey;
+    const v = getView();
+    const p0 = planToScreen(v, b.min);
+    const p1 = planToScreen(v, b.max);
+    const box = { x0: Math.min(p0[0], p1[0]), y0: Math.min(p0[1], p1[1]), x1: Math.max(p0[0], p1[0]), y1: Math.max(p0[1], p1[1]) };
+    const m = REVEAL_MARGIN_PX;
+    const area = { x0: insets.left + m, y0: insets.top + m, x1: w - insets.right - m, y1: h - insets.bottom - m };
+    const [dx, dy] = revealPan(box, area);
+    if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5) setView(pan(v, dx, dy));
   });
 
   const cornerFor = overlay?.cornerDimensionFor ?? null;
@@ -369,9 +465,9 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           <RoomLayer rooms={data.rooms} selection={selection} />
           <FurnitureLayer items={data.furniture} selection={selection} scale={view.s} showClearances={showClearances} />
           <OtherStoreyLayer unions={data.otherUnions} />
-          <WallLayer unions={data.unions} pieces={data.pieces} dividers={data.dividers} cuts={data.cuts} bounds={bounds} highlightNew={highlightNew} selection={selection} corridorPx={sizes.corridor} />
-          <GhostLayer ghosts={derived.ghosts} highlightNew={highlightNew} selection={selection} corridorPx={sizes.corridor} />
-          <OpeningLayer openings={data.openings} highlightNew={highlightNew} selection={selection} corridorPx={sizes.corridor} />
+          <WallLayer unions={data.unions} pieces={data.pieces} dividers={data.dividers} cuts={data.cuts} bounds={bounds} highlightNew={highlightNew} selection={selection} corridorPx={band} />
+          <GhostLayer ghosts={derived.ghosts} highlightNew={highlightNew} selection={selection} corridorPx={band} />
+          <OpeningLayer openings={data.openings} highlightNew={highlightNew} selection={selection} corridorPx={band} />
           <StructureLayer elements={data.structure} selection={selection} scale={view.s} stairModes={data.stairModes} />
           <g opacity={outdoorActive ? undefined : FAINT_OPACITY}>
             <RailingLayer railings={derived.outdoor.railings} steps={derived.outdoor.steps} selection={selection} selectable={outdoorActive} corridorPx={sizes.corridor} />

@@ -103,3 +103,27 @@ export function wheelZoomFactor(deltaY: number, deltaMode: number): number {
   const f = Math.exp(-deltaY * k);
   return Math.min(2, Math.max(0.5, f));
 }
+
+/**
+ * Screen shift (px) along one axis that brings the span [a0, a1] into [lo, hi] with the least movement: none when it
+ * already fits; a span larger than the range is moved until it covers the range (its nearer end on the range edge).
+ */
+function revealShift(a0: number, a1: number, lo: number, hi: number): number {
+  if (hi <= lo) return 0;
+  if (a1 - a0 <= hi - lo) {
+    if (a0 < lo) return lo - a0;
+    if (a1 > hi) return hi - a1;
+    return 0;
+  }
+  if (a0 > lo) return lo - a0;
+  if (a1 < hi) return hi - a1;
+  return 0;
+}
+
+/**
+ * The smallest pan (screen px, y down) that brings a screen box into the visible area `area` (both
+ * `{ x0, y0, x1, y1 }`): [0, 0] when it already lies inside (see `revealShift` for boxes larger than the area).
+ */
+export function revealPan(box: { x0: number; y0: number; x1: number; y1: number }, area: { x0: number; y0: number; x1: number; y1: number }): Vec2 {
+  return [revealShift(box.x0, box.x1, area.x0, area.x1), revealShift(box.y0, box.y1, area.y0, area.y1)];
+}
