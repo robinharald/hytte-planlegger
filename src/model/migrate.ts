@@ -26,12 +26,13 @@
  *    they are free (for Forslag D they all run along buildings, so nothing changes there);
  *  - then `railings` is deleted and `deck.noRailingEdges` / `deck.steps` default to [];
  *  - furniture items without a valid `size` get the catalogue preset (`furnitureSizeFallback`; phase 1 never stored
- *    furniture, so this only matters for hand-made files until the phase-2b catalogue replaces the table).
+ *    furniture, so this only matters for hand-made files).
  * The variant fields `notes`, `locked`, `meta`, `ghosts` and the block fields `template`, `templateFrontEdgeId`,
  * `floorMaterial` are optional and get no defaults; in particular a migrated variant is NOT locked (only the bundled
  * Forslag D carries `locked: true`; a user's old copy stays editable).
  */
 import { CURRENT_SCHEMA_VERSION, type Project } from './types';
+import { placementSize } from '../furniture/catalog';
 
 export class SchemaTooNewError extends Error {
   readonly schemaVersion: number;
@@ -205,13 +206,11 @@ const dist = (a: Pt, b: Pt): number => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const ON_PATH = 0.001;
 
 /**
- * Size of a furniture item without a stored size: the catalogue preset. Phase 1 never stored furniture and the
- * catalogue arrives in phase 2b, so this is a neutral 1 × 1 × 1 m box until then.
+ * Size of a furniture item without a stored size: the catalogue preset (`sizeVariant`, else the entry's default), or
+ * a neutral 1 × 1 × 1 m box for an id the catalogue does not know.
  */
 export function furnitureSizeFallback(catalogId: string, sizeVariant?: string): { w: number; d: number; h: number } {
-  void catalogId;
-  void sizeVariant;
-  return { w: 1, d: 1, h: 1 };
+  return placementSize(catalogId, sizeVariant)?.size ?? { w: 1, d: 1, h: 1 };
 }
 
 function isSize(v: unknown): v is { w: number; d: number; h: number } {

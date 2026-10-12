@@ -46,14 +46,17 @@ describe('sceneParts (group memo keys)', () => {
     expect(p1.furniture.furniture.map((f) => f.id)).toContain('f-chair');
   });
 
-  it('a deck edit changes the outdoor group but not the building or the furniture', () => {
+  it('a deck edit changes the outdoor group but not the building (nor the furniture unless some stands on the deck)', () => {
     const deck = base.outdoor.decks[0];
     const moved = { ...deck, topHeight: deck.topHeight - 0.1 };
     const d2 = deriveVariant({ ...base, outdoor: { ...base.outdoor, decks: [moved, ...base.outdoor.decks.slice(1)] } }, site, null);
     const p2 = sceneParts(d2, p0);
-    expect(changedGroups(p0, p2)).toEqual(['outdoor']);
+    // The seed's outdoor lounge (revision 6) stands on the deck and goes down with it.
+    expect(changedGroups(p0, p2)).toEqual(['outdoor', 'furniture']);
     expect(p2.building).toBe(p0.building);
-    expect(p2.furniture).toBe(p0.furniture);
+    expect(p2.furniture.furniture.find((f) => f.id === 'fu-terrasse-1')?.floorZ).toBeCloseTo(deck.topHeight - 0.1, 9);
+    // The furniture indoors is shared (the same derived objects).
+    expect(p2.furniture.furniture.find((f) => f.id === 'fu-stue-2')).toBe(p0.furniture.furniture.find((f) => f.id === 'fu-stue-2'));
     // a hot-tub move too
     const tub = base.outdoor.hotTubs[0];
     const d3 = deriveVariant({ ...base, outdoor: { ...base.outdoor, hotTubs: [{ ...tub, centre: [tub.centre[0] + 1, tub.centre[1]] }] } }, site, null);

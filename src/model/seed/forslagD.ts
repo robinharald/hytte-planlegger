@@ -47,15 +47,17 @@ import type {
   WallBuildUp,
   WallKind,
 } from '../types';
+import { buildFurniture } from './furniture';
 
 /**
  * Bump when the seed content changes; the app offers "Hent ny Forslag D" to projects with an older revision.
  * 3: terrace from x 9 (phase 1, frozen in frozen/forslagD.schema1.json). 4: schema 2 — the deck carries its glass railing
  * and its three steps (hosted on deck edges), the variant is locked (the base proposal). 5: the glass bump (Leseskrok)
  * has an explicit existing part `part-glass-old` over its whole outline (fix round 2 after 2a), so what an edit adds
- * to it is new like on the other blocks of today's cabin (areas, colours and ghosts unchanged for the seed).
+ * to it is new like on the other blocks of today's cabin (areas, colours and ghosts unchanged for the seed). 6: the
+ * seed is furnished (phase 2b, `./furniture.ts`, ported from the old model's buildD150()).
  */
-export const SEED_REVISION = 5;
+export const SEED_REVISION = 6;
 export const SEED_PROJECT_ID = 'hytte-merkesvatnet';
 export const SEED_VARIANT_ID = 'forslag-d';
 /** Id of the bundled terrain asset (src/model/seed/terrain-merkesvatnet.json). */
@@ -736,7 +738,7 @@ export function createForslagDVariant(now: string = SEED_TIMESTAMP): Variant {
     walls,
     openings: buildOpenings(walls),
     rooms: buildRooms(),
-    furniture: [],
+    furniture: buildFurniture(),
     outdoor: buildOutdoor(),
     structure: buildStructure(),
     settings: {

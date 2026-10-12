@@ -11,6 +11,7 @@
  * `walls` / `openings` for the plan (dashed, "Fjernet") but take no part in room detection, areas or 3D. Moved
  * existing block edges leave `ghosts` (outline segments).
  */
+import type { FurnitureCatalogItem } from '../furniture/catalog';
 import type {
   Block,
   BlockPart,
@@ -398,11 +399,8 @@ export type DerivedStructure =
       isNew: boolean;
     };
 
-/** Catalogue data a derived furniture item carries (phase 2b widens this with the full catalogue entry). */
-export interface DerivedFurnitureCatalog {
-  id: string;
-  name: string;
-}
+/** Catalogue data a derived furniture item carries: the full catalogue entry (src/furniture/catalog.ts). */
+export type DerivedFurnitureCatalog = FurnitureCatalogItem;
 
 export interface DerivedFurniture {
   id: Id;
@@ -412,16 +410,25 @@ export interface DerivedFurniture {
   /** Plan footprint: the item's size rectangle rotated by rotationDeg about its position (CCW). */
   footprint: Vec2[];
   bbox: { min: Vec2; max: Vec2 };
+  /**
+   * The level the item stands on: the level of the room under its centre on the item's storey (geometry wins over the
+   * stored `item.levelId`). A centre in a wall or doorway takes the floor there; one over a void (or outside every
+   * floor) keeps the stored level.
+   */
   levelId: Id;
   /** Room (derived room id) on the item's storey containing the item's position. */
   roomId?: Id;
-  /** Floor z under the item (its level's elevation). */
+  /** Floor z under the item: its level's elevation, else the deck top (on the deck), else the terrain. */
   floorZ: number;
-  /** Bottom z of the item (floorZ + the catalogue elevation; = floorZ until phase 2b). */
+  /** Bottom z of the item (floorZ + the catalogue elevation, e.g. a wall cabinet). */
   z: number;
-  /** Clearance zones (plan polygons) in front of the item. */
+  /** Clearance zones (plan polygons) in front of / around the item. */
   clearances: Vec2[][];
-  /** Ids of furniture items whose footprints collide with this one. */
+  /**
+   * Ids of what the item's footprint collides with (same level and overlapping z range): other furniture, walls,
+   * structure (chimney, posts, stairs) and hot tubs. Flat items (rugs, drains) never collide. A door or window the item
+   * fits through vertically counts as open.
+   */
   collisions: Id[];
   /** Ids of doors whose swing this item blocks. */
   blocksDoors: Id[];

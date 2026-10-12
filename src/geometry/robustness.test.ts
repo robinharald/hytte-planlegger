@@ -93,6 +93,8 @@ describe('Forslag D rotated and perturbed', () => {
   it('blk-main vertex 0 moved to (0.071, 0.043) derives and finds every room', () => {
     const v = createForslagD().variants[0];
     v.blocks[0].polygon[0].p = [0.071, 0.043];
+    // The building alone: the seed's furniture (revision 6) would stand a few cm into the tilted walls.
+    v.furniture = [];
     const d = deriveVariant(v, site, null);
     expectRoomsFound(d);
     expect(d.warnings).toEqual([]);

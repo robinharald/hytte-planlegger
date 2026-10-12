@@ -1,7 +1,7 @@
 /**
  * Schema 2 / phase 2 additions to deriveVariant (docs/phase2-plan.md §2 "Derived additions"): the memo split into
  * building / outdoor / furniture stages (shared instances, timing), block junctions, wall-piece ranges, ghosts,
- * opening levels, the locked flag, levelAt, the implicit remainder of a block with parts, the furniture placeholder
+ * opening levels, the locked flag, levelAt, the implicit remainder of a block with parts, the furniture stage
  * and the deck warnings.
  */
 import { produce } from 'immer';
@@ -70,10 +70,12 @@ describe('deriveVariant: stages memoised on the sub-collections', () => {
       expect(b[key], key).toBe(a[key]);
     }
     expect(b.outdoor).toBe(a.outdoor);
-    expect(b.furniture).toHaveLength(1);
-    expect(a.furniture).toEqual([]);
-    // The furniture stage resolves the room on the item's storey.
-    expect(b.furniture[0]).toMatchObject({ id: 'seng', levelId: 'main', floorZ: 0, z: 0, catalog: null, roomId: 'room-sov-ny' });
+    // The seed is furnished (revision 6): one more item.
+    expect(b.furniture).toHaveLength(a.furniture.length + 1);
+    // The furniture stage resolves the catalogue entry and the room on the item's storey.
+    const seng = b.furniture.find((f) => f.id === 'seng');
+    expect(seng).toMatchObject({ id: 'seng', levelId: 'main', floorZ: 0, z: 0, roomId: 'room-sov-ny' });
+    expect(seng?.catalog?.id).toBe('seng-150');
   });
 
   it('an outdoor-only edit (the hot tub) keeps the building and recomputes the outdoor', () => {
@@ -145,7 +147,8 @@ describe('deriveVariant: stages memoised on the sub-collections', () => {
       }
       return min;
     };
-    const blockEdge = best(10, (k) =>
+    // 20 runs: under the full parallel suite (editActions.restore.test.ts alone runs ~50 s) 10 were not always enough.
+    const blockEdge = best(20, (k) =>
       produce(base, (v) => {
         const wing = v.blocks.find((x) => x.id === 'blk-wing')!;
         for (const vx of wing.polygon) if (vx.p[0] > 20) vx.p = [20.8 + 0.01 * (k + 1), vx.p[1]];
@@ -302,7 +305,7 @@ describe('deriveVariant: derived additions', () => {
     expect(d.warnings).toEqual([{ kind: 'deck-steps-blocked', stepsId: 'under-house', deckId: 'deck' }]);
   });
 
-  it('furniture placeholder: footprint = the size rectangle rotated about the position; bbox and room', () => {
+  it('furniture: footprint = the size rectangle rotated about the position; bbox, room and clearances', () => {
     const f = item('bed', [3, 2], { rotationDeg: 90 });
     const fp = furnitureFootprint(f);
     const xs = fp.map((p) => p[0]);
@@ -314,7 +317,9 @@ describe('deriveVariant: derived additions', () => {
     expect(area(fp)).toBeCloseTo(3, 9);
     const v = { ...makeVariant('v', 'v'), furniture: [item('bed', [1.5, 2]), item('out', [20, 20])] };
     const d = deriveVariant(v, site, null);
-    expect(d.furniture[0]).toMatchObject({ id: 'bed', roomId: 'room-1', item: v.furniture[0], clearances: [], collisions: [], blocksDoors: [], needsDrain: false });
+    expect(d.furniture[0]).toMatchObject({ id: 'bed', roomId: 'room-1', item: v.furniture[0], collisions: [], blocksDoors: [], needsDrain: false });
+    // A 150 bed wants 0,6 m at both long sides (furniture/catalog.ts).
+    expect(d.furniture[0].clearances).toHaveLength(2);
     expect(d.furniture[0].bbox).toEqual({ min: [0.75, 1], max: [2.25, 3] });
     expect(d.furniture[1].roomId).toBeUndefined();
   });

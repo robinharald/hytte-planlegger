@@ -129,7 +129,7 @@ describe('createForslagD', () => {
     expect(project.id).toBe('hytte-merkesvatnet');
     expect(project.name).toBe('Hytta ved Merkesvatnet');
     expect(project.seedRevision).toBe(SEED_REVISION);
-    expect(SEED_REVISION).toBe(5);
+    expect(SEED_REVISION).toBe(6);
     expect(project.variants).toHaveLength(1);
     // The bundled base proposal is read-only (docs/phase2-plan.md §1.1).
     expect(variant.locked).toBe(true);
@@ -137,7 +137,8 @@ describe('createForslagD', () => {
     expect(variant.id).toBe('forslag-d');
     expect(variant.name).toBe('Forslag D');
     expect(variant.settings).toEqual({ defaultExteriorWall: { thickness: 0.27, outerOffset: 0.11 }, defaultInteriorThickness: 0.12, areaLimit: null });
-    expect(variant.furniture).toEqual([]);
+    // Furnished since revision 6 (seed/furniture.ts; its own tests in furniture.test.ts).
+    expect(variant.furniture.length).toBeGreaterThan(40);
   });
 
   it('survives a JSON round trip unchanged', () => {

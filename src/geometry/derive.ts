@@ -10,7 +10,7 @@
  *    stair), the opening warnings — an opening drag re-derives only this (well under 1 ms on the seed);
  *  - trees (building, `treesOf(project, variant)` = the variant's own trees, else the site's): placed on the terrain;
  *  - outdoor (building, outdoor.decks, outdoor.hotTubs): step 6 (decks trimmed by the building), BYA, bounds;
- *  - furniture (building, furniture): step 9.
+ *  - furniture (building, openings, outdoor, furniture): step 9.
  * The assembled DerivedVariant reuses the stage results, so an edit of the furniture or of the outdoor collections
  * keeps the building's arrays (walls, rooms, floors …) as the same instances, and an opening edit keeps everything but
  * `walls` (the walls without openings stay the same objects), `floors` and `warnings`. `locked` and `ghosts` come straight
@@ -53,9 +53,11 @@
  *     outline, top = lowest floor, bottom = groundZ − 0.3), the variant's trees (treesOf, terrain baseZ) and water (waterLevel −
  *     floorElevation), dimensions, bounds (outer outlines + stored deck outlines), wall unions per storey and status,
  *     `area-limit`.
- *  9. Furniture — placeholder until phase 2b: footprint = the size rectangle rotated by rotationDeg about the
- *     position (`furnitureFootprint`), floorZ = z = the level's elevation, roomId = the room of the item's storey
- *     containing the position, catalog null, no clearances / collisions / warnings.
+ *  9. Furniture (`deriveFurniture`, geometry/furnitureDerive.ts): footprint = the size rectangle rotated by rotationDeg
+ *     about the position (`furnitureFootprint`), the catalogue entry, the room of the item's storey under its centre
+ *     (whose level is the item's derived level), floorZ (room level, else deck top, else terrain), z = floorZ + the
+ *     catalogue elevation, clearances, collisions (furniture, walls, structure, hot tubs) and blocked doors, and the
+ *     furniture warnings.
  *
  * Dimensions: per cardinal side the "profile" of the block axis polygons seen from that side. Its breakpoints are
  * the block and part vertex coordinates; consecutive intervals with the same outermost edge (same position, block
@@ -86,6 +88,7 @@ import type { FloorMaterial, FurnitureItem, GroundWork, Id, Level, Opening, Proj
 import { blockPartRegions, computeBuildingAreas, computeBya, partitionRough, splitAreaByParts } from './areas';
 import type { PartRegion } from './areas';
 import { locateLevel } from './levels';
+import { deriveFurniture, shareUnchanged } from './furnitureDerive';
 import { deriveOutdoorWithWarnings, deriveStructure } from './outdoor';
 import {
   area,
@@ -863,57 +866,44 @@ function outdoorStage(variant: Variant, site: Site, terrain: TerrainAsset | null
   return { ...result, fallbacks };
 }
 
-/** Furniture stage (placeholder until phase 2b): footprint = the size rectangle rotated about the position. */
+/**
+ * Furniture stage (building, openings, outdoor, furniture): geometry/furnitureDerive.ts — catalogue data, level / room /
+ * floor resolution, clearances, collisions with furniture, walls (with their openings), structure and hot tubs, door
+ * swings, and the furniture warnings. Cheap (well under 1 ms on the furnished seed), so a furniture drag re-derives only
+ * this.
+ */
 interface FurnitureStage {
   furniture: DerivedFurniture[];
   warnings: ModelWarning[];
 }
 
 /** The item's size rectangle (w along its local x, d along local y) rotated by rotationDeg (CCW) about its position. */
-export function furnitureFootprint(item: FurnitureItem): Vec2[] {
-  const w = item.size?.w ?? 1;
-  const d = item.size?.d ?? 1;
-  const t = (item.rotationDeg * Math.PI) / 180;
-  const c = Math.cos(t);
-  const s = Math.sin(t);
-  const [x, y] = item.position;
-  const corners: Vec2[] = [
-    [-w / 2, -d / 2],
-    [w / 2, -d / 2],
-    [w / 2, d / 2],
-    [-w / 2, d / 2],
-  ];
-  return corners.map(([u, v]): Vec2 => [x + u * c - v * s, y + u * s + v * c]);
-}
+export { furnitureFootprint } from './furnitureDerive';
 
-function furnitureStage(items: FurnitureItem[], building: BuildingStage): FurnitureStage {
-  const levels = new Map(building.levels.map((l) => [l.id, l]));
-  const furniture = items.map((item): DerivedFurniture => {
-    const level = levels.get(item.levelId);
-    const floorZ = level?.elevation ?? 0;
-    const footprint = furnitureFootprint(item);
-    const room = building.rooms.find(
-      (r) => r.storeyId === level?.storeyId && r.polygon.length >= 3 && inPolygonWithHoles(item.position, r.polygon, r.holes),
-    );
-    const out: DerivedFurniture = {
-      id: item.id,
-      item,
-      catalog: null,
-      footprint,
-      bbox: bbox(footprint),
-      levelId: item.levelId,
-      floorZ,
-      z: floorZ,
-      clearances: [],
-      collisions: [],
-      blocksDoors: [],
-      needsDrain: false,
-      isNew: item.isNew,
-    };
-    if (room) out.roomId = room.id;
-    return out;
-  });
-  return { furniture, warnings: [] };
+/** The last few furniture stages per `variant.furniture` array (structural sharing across building / deck edits). */
+const lastFurniture = new WeakMap<FurnitureItem[], FurnitureStage[]>();
+
+function furnitureStage(items: FurnitureItem[], building: BuildingStage, opened: OpeningStage, outdoor: OutdoorStage): FurnitureStage {
+  const next = stage(
+    'furniture',
+    () =>
+      deriveFurniture(items, {
+        levels: building.levels,
+        storeys: building.storeys,
+        rooms: building.rooms,
+        walls: opened.walls,
+        blocks: building.blocks,
+        structure: building.structure,
+        decks: outdoor.outdoor.decks,
+        hotTubs: outdoor.outdoor.hotTubs,
+        terrainZ: building.terrainZ,
+      }),
+    () => ({ furniture: [], warnings: [] }),
+  );
+  const prevs = lastFurniture.get(items) ?? [];
+  const out = shareUnchanged(prevs, next);
+  lastFurniture.set(items, [out, ...prevs.filter((p) => p !== out)].slice(0, 4));
+  return out;
 }
 
 /** Memo over a fixed-length list of object identities (nested WeakMaps). */
@@ -965,7 +955,7 @@ function computeVariant(variant: Variant, site: Site, terrain: TerrainAsset | nu
   );
   const opened = openingMemo.get([building, variant.openings], () => openingStage(variant.openings, building));
   const outdoor = outdoorMemo.get([building, variant.outdoor.decks, variant.outdoor.hotTubs], () => outdoorStage(variant, site, terrain, building));
-  const furniture = furnitureMemo.get([building, variant.furniture], () => furnitureStage(variant.furniture, building));
+  const furniture = furnitureMemo.get([building, opened, outdoor, variant.furniture], () => furnitureStage(variant.furniture, building, opened, outdoor));
   const trees = treesOf({ site }, variant);
   const derivedSite = siteMemo.get([building, trees], () => ({
     ...building.site,
