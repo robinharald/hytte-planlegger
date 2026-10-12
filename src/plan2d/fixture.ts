@@ -25,6 +25,7 @@ import type {
   DerivedRailing,
   DerivedRoof,
   DerivedRoom,
+  DerivedSteps,
   DerivedStructure,
   DerivedVariant,
   DerivedWall,
@@ -147,6 +148,7 @@ function derivedBlock(block: Block, outer: Vec2[], inner: Vec2[], extra: Pick<De
     }),
     axisDims: { w: box.max[0] - box.min[0], h: box.max[1] - box.min[1] },
     lowestFloorZ: 0,
+    junctions: [],
     ...extra,
   };
 }
@@ -233,6 +235,8 @@ function derivedOpening(g: WallGeom, host: OpeningHost, spec: OpeningSpec): Deri
     type: spec.type,
     status: spec.status,
     isNew: spec.status === 'new',
+    isGhost: spec.status === 'removed',
+    levelId: spec.levelId ?? g.levelId,
     offset: spec.offset,
     width: spec.width,
     sillZ,
@@ -274,9 +278,10 @@ function derivedWall(spec: WallSpec): DerivedWall {
   const host: OpeningHost = spec.source.kind === 'blockEdge' ? { kind: 'blockEdge', blockId: spec.source.blockId, edgeId: spec.source.edgeId } : { kind: 'wall', wallId: spec.source.wallId };
   const openings = (spec.openings ?? []).map((o) => derivedOpening(g, host, o));
   const isButt = (x: EndExt) => x.right === 0 && x.left === 0;
+  const length = Math.hypot(spec.b[0] - spec.a[0], spec.b[1] - spec.a[1]);
   return {
     id: spec.id,
-    source: spec.source,
+    source: spec.source.kind === 'blockEdge' ? { ...spec.source, s1: spec.source.s0 + length } : spec.source,
     a: spec.a,
     b: spec.b,
     thickness: spec.faceLeft + spec.faceRight,
@@ -288,6 +293,7 @@ function derivedWall(spec: WallSpec): DerivedWall {
     isDivider,
     status: spec.status,
     isNew: spec.status === 'new',
+    isGhost: spec.status === 'removed',
     levelId: 'main',
     levelIds: spec.levelIds,
     storeyIds: spec.storeyIds,
@@ -321,7 +327,7 @@ const FIXED_23 = [
 
 function edge(blockId: Id, edgeId: Id): { id: Id; source: WallSource } {
   const partId = `${blockId}-rest`;
-  return { id: `${blockId}/${edgeId}/${partId}/base`, source: { kind: 'blockEdge', blockId, edgeId, partId, zoneId: null } };
+  return { id: `${blockId}/${edgeId}/${partId}/base`, source: { kind: 'blockEdge', blockId, edgeId, partId, zoneId: null, s0: 0, s1: 0 } };
 }
 
 function makeWalls(): DerivedWall[] {
@@ -657,12 +663,19 @@ function makeRoofs(): DerivedRoof[] {
 const DECK_POLY: Vec2[] = rect(9, -3, 15, -OUT);
 const DECK_TOP = -0.05;
 
+function makeSteps(): DerivedSteps[] {
+  const z = DECK_TOP;
+  const treads = [0, 1, 2, 3].map((i) => ({ polygon: rect(11, -3 - 0.3 * (i + 1), 12.2, -3 - 0.3 * i), z: z - 0.15 * (i + 1) }));
+  return [
+    { id: 'deck-1/steps/0', deckId: 'deck-1', edgeId: 'deck-1-v0', at: [11.6, -3], outward: [0, -1], width: 1.2, topZ: z, bottomZ: -0.8, risers: 5, riserHeight: 0.15, going: 0.3, treads, blocked: false },
+  ];
+}
+
 function makeRailing(): DerivedRailing {
   const z = DECK_TOP;
   const p3 = (x: number, y: number): Vec3 => [x, y, z];
-  const treads = [0, 1, 2, 3].map((i) => ({ polygon: rect(11, -3 - 0.3 * (i + 1), 12.2, -3 - 0.3 * i), z: z - 0.15 * (i + 1) }));
   return {
-    id: 'rail-1',
+    id: 'deck-1/railing',
     deckId: 'deck-1',
     baseZ: z,
     height: 1.05,
@@ -674,7 +687,6 @@ function makeRailing(): DerivedRailing {
       { a: p3(15, -3), b: p3(15, -OUT) },
     ],
     posts: [p3(9, -OUT), p3(9, -1.555), p3(9, -3), p3(10, -3), p3(11, -3), p3(12.2, -3), p3(13.6, -3), p3(15, -3), p3(15, -1.555), p3(15, -OUT)],
-    steps: [{ id: 'rail-1/steps/0', at: [11.6, -3], outward: [0, -1], width: 1.2, topZ: z, bottomZ: -0.8, risers: 5, riserHeight: 0.15, going: 0.3, treads }],
     isNew: true,
   };
 }
@@ -788,6 +800,7 @@ export function createPlanFixture(): DerivedVariant {
   const rooms = makeRooms();
   return {
     variantId: 'var-fixture',
+    locked: false,
     levels: LEVELS.map((l) => ({ ...l })),
     storeys: [
       { id: 'ground', name: 'Plan 1', levelIds: ['main'] },
@@ -801,12 +814,31 @@ export function createPlanFixture(): DerivedVariant {
     groundWorks: [],
     roofs: makeRoofs(),
     outdoor: {
-      decks: [{ id: 'deck-1', polygon: DECK_POLY, topZ: DECK_TOP, thickness: 0.15, skirtBottomZ: [-0.9, -0.9, -0.6, -0.6], boardDirection: 'x', isNew: true }],
+      decks: [
+        {
+          id: 'deck-1',
+          polygon: DECK_POLY,
+          vertexIds: DECK_POLY.map((_, i) => `deck-1-v${i}`),
+          pieces: [[DECK_POLY]],
+          topZ: DECK_TOP,
+          thickness: 0.15,
+          skirtBottomZ: [[-0.9, -0.9, -0.6, -0.6]],
+          boardDirection: 'x',
+          isNew: true,
+          freeRuns: [
+            { edgeId: 'deck-1-v0', a: [9, -3], b: [15, -3], s0: 0, s1: 6 },
+            { edgeId: 'deck-1-v1', a: [15, -3], b: [15, -OUT], s0: 0, s1: 3 - OUT },
+            { edgeId: 'deck-1-v3', a: [9, -OUT], b: [9, -3], s0: 0, s1: 3 - OUT },
+          ],
+        },
+      ],
       railings: [makeRailing()],
+      steps: makeSteps(),
       hotTubs: [{ id: 'tub-1', centre: [14, -1.9], diameter: 1.6, baseZ: DECK_TOP, rimZ: DECK_TOP + 1.05, isNew: true }],
     },
     structure: makeStructure(),
     furniture: [],
+    ghosts: [],
     foundations: blocks.map((blk) => ({ blockId: blk.block.id, polygon: blk.outer, topZ: 0, bottomZ: blk.groundZ - 0.3 })),
     dimensions: makeDimensions(),
     site: { trees: [{ tree: { ...TREE }, baseZ: -1.5 }], waterZ: -4 },

@@ -11,9 +11,12 @@ import { COLORS, FLOOR_NEW_MIX, FLOOR_TINT, FONT_PX, NEW } from './style';
 import { DIM_TEXT_MIN, SMALL_TEXT_BELOW, dimensionGeometry, niceScaleLength, ringPath } from './svg';
 import type { Rect } from './viewport';
 
-/** Wall union paint: existing dark; new tinted only with "highlight new"; removed dashed grey without fill. */
-export function wallPaint(status: ElementStatus, highlightNew: boolean): { fill: string; stroke: string; dash?: string } {
-  if (status === 'removed') return { fill: 'none', stroke: COLORS.wallRemoved, dash: '4 3' };
+/** Opacity of the grey fill of removed ("Fjernet") wall unions and opening ghosts. */
+export const REMOVED_FILL_OPACITY = 0.18;
+
+/** Wall union paint: existing dark; new tinted only with "highlight new"; removed dashed grey over a faint grey fill. */
+export function wallPaint(status: ElementStatus, highlightNew: boolean): { fill: string; stroke: string; dash?: string; fillOpacity?: number } {
+  if (status === 'removed') return { fill: COLORS.wallRemoved, fillOpacity: REMOVED_FILL_OPACITY, stroke: COLORS.wallRemoved, dash: '4 3' };
   if (status === 'new' && highlightNew) return { fill: COLORS.wallNewFill, stroke: COLORS.wallNewStroke };
   return { fill: COLORS.wallExisting, stroke: COLORS.wallExisting };
 }
@@ -244,4 +247,16 @@ export function stairUpLabelAt(stair: Pick<Stair, 'footprint' | 'arrow'>, scale:
   const c: Vec2 = [b[0] - u[0] * back, b[1] - u[1] * back];
   const box = { x0: c[0] - halfW / scale, y0: c[1] - halfH / scale, x1: c[0] + halfW / scale, y1: c[1] + halfH / scale };
   return boxFitsRegion(box, { polygon: stair.footprint, holes: [], obstacles: [] }) ? c : null;
+}
+
+/** Size (px) of the "Vis hva som er nytt" legend (layers/Legend.tsx) and its margin from the bottom-right corner. */
+export const LEGEND_W = 108;
+export const LEGEND_H = 3 * 18 + 2 * 8 - 4;
+export const LEGEND_MARGIN = 12;
+
+/** Screen box of the legend in a width × height viewport (bottom-right corner). */
+export function legendBox(width: number, height: number): ScreenBox {
+  const x1 = width - LEGEND_MARGIN;
+  const y1 = height - LEGEND_MARGIN;
+  return { x0: x1 - LEGEND_W, y0: y1 - LEGEND_H, x1, y1 };
 }

@@ -14,6 +14,7 @@ import {
   STAIR_ARROW_PX,
   stairPlan,
   stairUpLabelAt,
+  REMOVED_FILL_OPACITY,
   wallPaint,
 } from './drawing';
 import { COLORS, FLOOR_TINT, FONT_PX, NEW } from './style';
@@ -32,7 +33,7 @@ describe('scale bar label', () => {
 
 describe('wall paint and opening cuts', () => {
   it('paints walls by status and the highlight toggle', () => {
-    expect(wallPaint('removed', true)).toEqual({ fill: 'none', stroke: COLORS.wallRemoved, dash: '4 3' });
+    expect(wallPaint('removed', true)).toEqual({ fill: COLORS.wallRemoved, fillOpacity: REMOVED_FILL_OPACITY, stroke: COLORS.wallRemoved, dash: '4 3' });
     expect(wallPaint('removed', false).dash).toBe('4 3');
     expect(wallPaint('new', true)).toEqual({ fill: COLORS.wallNewFill, stroke: COLORS.wallNewStroke });
     expect(wallPaint('new', false).fill).toBe(COLORS.wallExisting);

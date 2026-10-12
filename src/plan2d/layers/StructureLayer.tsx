@@ -7,7 +7,7 @@
  */
 import { memo } from 'react';
 import type { DerivedStructure } from '../../model/derived';
-import type { Selection } from '../../state/selection';
+import type { PlanSelection } from '../editTypes';
 import { STAIR_ARROW_PX, stairPlan, stairUpLabelAt } from '../drawing';
 import type { StairMode } from '../drawing';
 import { arrowHead, hatchSegments, labelDensity, polygonPath, ringPath, segmentsPath } from '../svg';
@@ -19,7 +19,7 @@ import { ScreenText } from './ScreenText';
 
 export interface StructureLayerProps {
   elements: DerivedStructure[];
-  selection: Selection | null;
+  selection: PlanSelection | null;
   /** Current zoom (px/m): arrow heads and the "opp" label keep a constant screen size. */
   scale: number;
   /** Drawing mode per stair id (default 'full'). */

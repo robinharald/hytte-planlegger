@@ -14,8 +14,10 @@
  *  - 'ceiling' floors (flat ceilings of blocks with Block.ceilingHeight) are above the plan cut: not drawn.
  *  - Stairs are drawn where they cross the cut ('full') and on the storey they arrive at ('upper'), see
  *    visibility.ts; the footprints of stairs, chimneys and posts on the storey are label obstacles.
+ *  - Furniture is drawn on the storey of its level (`DerivedFurniture.levelId`); items on a level that does not
+ *    exist are drawn on the storey with the main floor (like the outdoor elements).
  */
-import type { DerivedDimension, DerivedFloor, DerivedOpening, DerivedRoom, DerivedStructure, DerivedVariant, DerivedWall } from '../model/derived';
+import type { DerivedDimension, DerivedFloor, DerivedFurniture, DerivedOpening, DerivedRoom, DerivedStructure, DerivedVariant, DerivedWall } from '../model/derived';
 import type { ElementStatus, Id, Vec2 } from '../model/types';
 import type { StairMode } from './drawing';
 import { stairModeOnStorey, storeyContext, structureOnStorey } from './visibility';
@@ -47,6 +49,8 @@ export interface StoreyData {
   /** Footprints room labels must keep clear of (stairs, chimneys, posts on this storey). */
   labelObstacles: Vec2[][];
   dimensions: DerivedDimension[];
+  /** Furniture standing on this storey's levels. */
+  furniture: DerivedFurniture[];
   /** False on storeys without the main floor: outdoor elements are drawn faint there. */
   outdoorActive: boolean;
 }
@@ -67,6 +71,7 @@ const EMPTY: Omit<StoreyData, 'ctx'> = {
   stairModes: {},
   labelObstacles: [],
   dimensions: [],
+  furniture: [],
   outdoorActive: true,
 };
 
@@ -124,6 +129,8 @@ export function storeyData(derived: DerivedVariant, planStorey: string): StoreyD
   const structure = derived.structure.filter((s) => structureOnStorey(s, ctx));
   const stairModes: Record<Id, StairMode> = {};
   for (const s of structure) if (s.kind === 'stair') stairModes[s.id] = stairModeOnStorey(s, ctx) ?? 'full';
+  const outdoorActive = ctx.levels.some((l) => isMainFloor(l.elevation)) || !derived.levels.some((l) => isMainFloor(l.elevation));
+  const known = new Set(derived.levels.map((l) => l.id));
   return {
     ctx,
     walls,
@@ -139,6 +146,7 @@ export function storeyData(derived: DerivedVariant, planStorey: string): StoreyD
     stairModes,
     labelObstacles: structure.map(structureFootprint).filter((p): p is Vec2[] => p !== null),
     dimensions: derived.dimensions.filter((d) => d.levelId === undefined || levelIds.includes(d.levelId)),
-    outdoorActive: ctx.levels.some((l) => isMainFloor(l.elevation)) || !derived.levels.some((l) => isMainFloor(l.elevation)),
+    furniture: derived.furniture.filter((f) => (known.has(f.levelId) ? levelIds.includes(f.levelId) : outdoorActive)),
+    outdoorActive,
   };
 }

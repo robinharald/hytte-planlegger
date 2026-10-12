@@ -1,12 +1,13 @@
 /**
  * Decks (wood tint, board hatch when zoomed in), hot tubs and site trees. Selectable unless `selectable` is
- * false (storeys other than the main floor draw them faint, see storeyData.ts).
+ * false (storeys other than the main floor draw them faint, see storeyData.ts). A deck is drawn as its `pieces` (the
+ * stored outline trimmed by the buildings, holes where a unit stands on it; even-odd fill).
  */
 import { memo, useId } from 'react';
 import type { DerivedDeck, DerivedHotTub } from '../../model/derived';
 import type { Tree } from '../../model/types';
-import type { Selection } from '../../state/selection';
-import { domId, polygonPath } from '../svg';
+import type { PlanSelection } from '../editTypes';
+import { domId, multiPolygonPath } from '../svg';
 import { isSelected, selAttrs } from '../selection';
 import type { SelKind } from '../selection';
 import { ACCENT, COLORS, NSS, STROKE } from '../style';
@@ -15,7 +16,7 @@ export interface OutdoorLayerProps {
   decks: DerivedDeck[];
   hotTubs: DerivedHotTub[];
   trees: { tree: Tree; baseZ: number }[];
-  selection: Selection | null;
+  selection: PlanSelection | null;
   /** Draw deck boards (only worth it when zoomed in). */
   hatch: boolean;
   selectable: boolean;
@@ -62,19 +63,21 @@ export const OutdoorLayer = memo(function OutdoorLayer({ decks, hotTubs, trees, 
         );
       })}
       {decks.map((d) => {
-        const on = isSelected(selection, 'deck', d.id);
-        const path = polygonPath(d.polygon);
+        // A selected vertex or edge of the deck keeps the deck outlined (its handles show which one).
+        const on = isSelected(selection, 'deck', d.id) || (!!selection && (selection.kind === 'deckVertex' || selection.kind === 'deckEdge') && d.vertexIds.includes(selection.id));
+        const path = multiPolygonPath(d.pieces);
         return (
           <g key={d.id} data-deck-id={d.id} {...sel('deck', d.id)}>
             <path
               d={path}
               fill={COLORS.deck}
+              fillRule="evenodd"
               stroke={on ? ACCENT : COLORS.deckStroke}
               strokeWidth={on ? STROKE.selected : STROKE.thin}
               pointerEvents={selectable ? 'fill' : 'none'}
               {...NSS}
             />
-            {hatch && <path d={path} fill={`url(#${d.boardDirection === 'x' ? patX : patY})`} pointerEvents="none" />}
+            {hatch && <path d={path} fill={`url(#${d.boardDirection === 'x' ? patX : patY})`} fillRule="evenodd" pointerEvents="none" />}
           </g>
         );
       })}

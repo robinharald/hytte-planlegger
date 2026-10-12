@@ -113,7 +113,7 @@ describe('PlanView rendering', () => {
     expect(win.querySelectorAll('line')).toHaveLength(5);
     expect(svg.querySelector('[data-opening-id="win-hems"]')).toBeNull();
     const removed = svg.querySelector('[data-opening-id="win-old"] path')!;
-    expect(removed.getAttribute('stroke-dasharray')).toBe('3 3');
+    expect(removed.getAttribute('stroke-dasharray')).toBe('3 2');
   });
 
   it('draws walls by status, dividers dashed and keeps strokes non-scaling', () => {
@@ -128,6 +128,31 @@ describe('PlanView rendering', () => {
       if (el.closest('pattern') || el.tagName === 'text') continue; // text halos live in screen px already
       expect(el.getAttribute('vector-effect')).toBe('non-scaling-stroke');
     }
+  });
+
+  it('draws ghosts (removed walls and openings, moved block edges) dashed only with "highlight new"', () => {
+    const derived = { ...createPlanFixture(), ghosts: [{ id: 'g-1', a: [0, 0] as [number, number], b: [0, 6] as [number, number] }] };
+    const on = render(baseProps({ derived, highlightNew: true }));
+    expect(on.querySelector('[data-wall-status="removed"]')).not.toBeNull();
+    expect(on.querySelector('[data-wall-id="w-rives"]')).not.toBeNull();
+    expect(on.querySelector('[data-opening-id="win-old"]')).not.toBeNull();
+    expect(on.querySelector('[data-ghost-id="g-1"]')!.getAttribute('stroke-dasharray')).toBe('5 3');
+    const off = render(baseProps({ derived, highlightNew: false }));
+    expect(off.querySelector('[data-wall-status="removed"]')).toBeNull();
+    expect(off.querySelector('[data-wall-id="w-rives"]')).toBeNull();
+    expect(off.querySelector('[data-opening-id="win-old"]')).toBeNull();
+    expect(off.querySelector('[data-ghost-id]')).toBeNull();
+  });
+
+  it('draws a deck as its pieces (holes where a unit stands), even-odd', () => {
+    const derived = createPlanFixture();
+    const deck = derived.outdoor.decks[0];
+    const hole: [number, number][] = [[10, -2], [10, -1], [11, -1], [11, -2]];
+    derived.outdoor.decks[0] = { ...deck, pieces: [[deck.pieces[0][0], hole]] };
+    const svg = render(baseProps({ derived }));
+    const path = svg.querySelector('[data-deck-id="deck-1"] path')!;
+    expect(path.getAttribute('fill-rule')).toBe('evenodd');
+    expect((path.getAttribute('d') ?? '').match(/M/g)).toHaveLength(2);
   });
 
   it('paints new walls like existing ones when "highlight new" is off', () => {

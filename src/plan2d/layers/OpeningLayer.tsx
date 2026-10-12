@@ -3,12 +3,16 @@
  * jambs + open leaf + swing arc from DerivedOpening.swing (arc drawn as an SVG path), double doors with a second
  * leaf and arc from DerivedOpening.swing2 (hinged at the other jamb); sliding doors as two
  * offset leaves; frameless openings as a gap with thin jamb lines; removed openings as a dashed footprint over
- * the (uncut) wall ("rives"). Every opening has an invisible footprint hit area for selection.
+ * the (uncut) wall ("Fjernet" ghosts, only while "highlight new" is on). Every drawn opening has an invisible
+ * footprint hit area for selection, plus a corridor between its jambs `corridorPx` wide on screen (12 px, 24 px on a
+ * coarse pointer; docs/phase2-plan.md §3.1) drawn as a path so the symbol's line count stays as it was. A removed
+ * opening is selected as { kind: 'ghost', id: opening id } (outlined dashed in the accent colour).
  */
 import { memo } from 'react';
 import type { DerivedOpening, DerivedWall } from '../../model/derived';
 import type { Vec2 } from '../../model/types';
-import type { Selection } from '../../state/selection';
+import type { PlanSelection } from '../editTypes';
+import { REMOVED_FILL_OPACITY } from '../drawing';
 import { faceLine, jambLine, openingFrame, polygonPath, slidingLines, swingArcPath, windowLines } from '../svg';
 import { isSelected, selAttrs } from '../selection';
 import { ACCENT, COLORS, NSS, STROKE } from '../style';
@@ -18,7 +22,9 @@ export interface OpeningLayerProps {
   /** Openings of the current storey with their host walls (storeyData.ts). */
   openings: PlacedOpening[];
   highlightNew: boolean;
-  selection: Selection | null;
+  selection: PlanSelection | null;
+  /** Width (screen px) of the hit corridor between the jambs (default 12). */
+  corridorPx?: number;
 }
 
 function Seg({ s, stroke, width }: { s: [Vec2, Vec2]; stroke: string; width: number }) {
@@ -108,32 +114,45 @@ function OpeningSymbol(props: { wall: DerivedWall; o: DerivedOpening; ink: strin
   }
 }
 
-export const OpeningLayer = memo(function OpeningLayer({ openings, highlightNew, selection }: OpeningLayerProps) {
+export const OpeningLayer = memo(function OpeningLayer({ openings, highlightNew, selection, corridorPx = 12 }: OpeningLayerProps) {
   return (
     <g data-layer="openings">
       {openings.map(({ wall, opening: o }) => {
-        const sel = isSelected(selection, 'opening', o.id);
         const removed = o.status === 'removed';
+        if (removed && !highlightNew) return null;
+        const sel = removed ? isSelected(selection, 'ghost', o.id) : isSelected(selection, 'opening', o.id);
         const ink = o.isNew && highlightNew ? COLORS.openingNew : COLORS.opening;
         const hit = o.footprint.length >= 3 ? polygonPath(o.footprint) : '';
+        const f = openingFrame(wall, o);
+        const attrs = removed ? selAttrs('ghost', o.id) : selAttrs('opening', o.id, o.opening.levelId ?? wall.levelId);
         return (
-          <g key={o.id} data-opening-id={o.id} data-opening-type={o.type} data-opening-status={o.status} {...selAttrs('opening', o.id, o.opening.levelId ?? wall.levelId)}>
+          <g key={o.id} data-opening-id={o.id} data-opening-type={o.type} data-opening-status={o.status} {...attrs}>
             <g pointerEvents="none">
               {removed
-                ? hit && <path d={hit} fill="none" stroke={COLORS.wallRemoved} strokeWidth={STROKE.thin} strokeDasharray="3 3" {...NSS} />
+                ? hit && <path d={hit} fill={COLORS.wallRemoved} fillOpacity={REMOVED_FILL_OPACITY} stroke={COLORS.wallRemoved} strokeWidth={STROKE.wall} strokeDasharray="3 2" {...NSS} />
                 : <OpeningSymbol wall={wall} o={o} ink={ink} />}
             </g>
             {hit && (
               <path
                 d={hit}
-                fill={sel ? ACCENT : 'none'}
-                fillOpacity={sel ? 0.3 : undefined}
+                fill={sel && !removed ? ACCENT : 'none'}
+                fillOpacity={sel && !removed ? 0.3 : undefined}
                 stroke={sel ? ACCENT : 'none'}
                 strokeWidth={STROKE.selected}
+                strokeDasharray={sel && removed ? '3 3' : undefined}
                 pointerEvents="fill"
                 {...NSS}
               />
             )}
+            <path
+              d={`M${f.start[0]} ${f.start[1]}L${f.end[0]} ${f.end[1]}`}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={corridorPx}
+              pointerEvents="stroke"
+              data-opening-corridor={o.id}
+              {...NSS}
+            />
           </g>
         );
       })}

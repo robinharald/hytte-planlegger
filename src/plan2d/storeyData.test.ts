@@ -78,8 +78,9 @@ describe('plan fixture', () => {
     const keys = d.wallUnion.map((u) => `${u.storeyId}/${u.status}`).sort();
     expect(keys).toEqual(['ground/existing', 'ground/new', 'ground/removed', 'loft/existing']);
     for (const u of d.wallUnion) expect(u.polygons.length).toBeGreaterThan(0);
-    expect(d.outdoor.railings[0].steps).toHaveLength(1);
-    expect(d.outdoor.railings[0].steps[0].treads.length).toBeGreaterThan(0);
+    expect(d.outdoor.railings).toHaveLength(1);
+    expect(d.outdoor.steps).toHaveLength(1);
+    expect(d.outdoor.steps[0].treads.length).toBeGreaterThan(0);
   });
 
   it('returns a fresh object on every call', () => {

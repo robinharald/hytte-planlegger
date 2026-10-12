@@ -1,12 +1,12 @@
 /** Room hit areas (inner polygons with holes); the selected room gets a light accent fill (outline: SelectionLayer). */
 import { memo } from 'react';
 import type { DerivedRoom } from '../../model/derived';
-import type { Selection } from '../../state/selection';
+import type { PlanSelection } from '../editTypes';
 import { polygonPath } from '../svg';
 import { isRoomSelected, selAttrs } from '../selection';
 import { ACCENT } from '../style';
 
-export const RoomLayer = memo(function RoomLayer({ rooms, selection }: { rooms: DerivedRoom[]; selection: Selection | null }) {
+export const RoomLayer = memo(function RoomLayer({ rooms, selection }: { rooms: DerivedRoom[]; selection: PlanSelection | null }) {
   return (
     <g data-layer="rooms">
       {rooms.map((r) => {

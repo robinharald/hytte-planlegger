@@ -4,12 +4,12 @@
  */
 import { memo } from 'react';
 import type { DerivedBlock, DerivedRoom } from '../../model/derived';
-import type { Selection } from '../../state/selection';
+import type { PlanSelection } from '../editTypes';
 import { polygonPath } from '../svg';
 import { isRoomSelected } from '../selection';
 import { ACCENT, NSS, STROKE } from '../style';
 
-export const SelectionLayer = memo(function SelectionLayer({ rooms, blocks, selection }: { rooms: DerivedRoom[]; blocks: DerivedBlock[]; selection: Selection | null }) {
+export const SelectionLayer = memo(function SelectionLayer({ rooms, blocks, selection }: { rooms: DerivedRoom[]; blocks: DerivedBlock[]; selection: PlanSelection | null }) {
   if (!selection) return null;
   const room = selection.kind === 'room' ? rooms.find((r) => isRoomSelected(selection, r)) : undefined;
   const block = selection.kind === 'block' ? blocks.find((b) => b.block.id === selection.id) : undefined;

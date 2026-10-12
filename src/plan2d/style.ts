@@ -17,7 +17,8 @@ export const COLORS = {
   /** Light tint of NEW (#c8742a) for new wall fill. */
   wallNewFill: '#e9b48c',
   wallNewStroke: '#8a4d1c',
-  wallRemoved: '#9a9a9a',
+  /** "Fjernet" ghosts (removed walls / openings, moved block edges): dashed, with a faint fill of the same grey. */
+  wallRemoved: '#6f6f6f',
   divider: '#6b6b6b',
   otherStorey: '#b9c0b7',
   opening: '#2b2b2b',
