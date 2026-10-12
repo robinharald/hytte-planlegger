@@ -13,7 +13,9 @@ const ONEDRIVE = 'C:\\Users\\robin\\OneDrive\\Byggeprosjekt hytte'
 
 const COMMON = `You are an engineer on phase 2b of a cabin-planner web app. Repository: ${REPO} (Vite 8 + React 19 + TypeScript 6 strict,
 \`verbatimModuleSyntax\` → \`import type\`, no enums; zustand + zundo + immer; vitest; Playwright; vite-plugin-pwa 2 and firebase 13 installed).
-Phase 2a (editor) is integrated and green. READ FIRST, completely: docs/phase2-plan.md revision 3 (§4 furniture, §5 shared proposals/offline, §3.6
+Phase 2a (editor) and its fix round are integrated and green — read STATUS.md «Fase 2a» and «Fikserunde 2a» first: trees are per proposal
+(\`Variant.trees\`, copy-on-write, helper \`treesOf\`), PlanView has \`viewportInsets\` for bottom sheets, undo toasts bind to their history entry,
+the plan highlights new parts while 3D has its own switch (highlightNew3d, default off). READ FIRST, completely: docs/phase2-plan.md revision 3 (§4 furniture, §5 shared proposals/offline, §3.6
 Edit API), docs/architecture.md, src/model/types.ts, src/model/derived.ts, src/state/editActions.ts (furniture action signatures are declared there),
 STATUS.md. Reference material under ${ONEDRIVE} is read-only. Rules: only create/modify files in your OWNERSHIP list (read anything); no git
 commands; no dev server; vitest is fine; English code, Norwegian UI strings in src/i18n/nb.ts (owned by the shared-store engineer in this round —
@@ -34,7 +36,7 @@ ${CATALOG_IDS}
 TASK: furniture catalogue, derive stage, collisions, seed furnishing, furniture actions. OWNERSHIP: src/furniture/catalog.ts (+test), src/geometry/
 furnitureDerive.ts (+test) wired into the existing furniture stage of src/geometry/derive.ts (edit only that stage), src/state/editActions.ts
 furniture action BODIES (addFurniture with size from the preset and levelId via levelAt, moveFurniture/rotateFurniture/duplicate/delete/setProps,
-items following a moved wall face; all refuse a locked variant), src/model/seed/furniture.ts (+test) and the SEED_REVISION bump 4 → 5 in forslagD.ts.
+items following a moved wall face; all refuse a locked variant), src/model/seed/furniture.ts (+test) and a SEED_REVISION bump by one in forslagD.ts (4 → 5 unless the fix round already bumped it).
 Implement §4 exactly (unchanged from revision 2): FurnitureCatalogItem fields (sizes, stretch, clearance, snap, mount, elevation, needsDrain, symbol,
 model), the item list with realistic Norwegian names and sizes, DerivedFurniture (footprint, bbox, levelId, roomId, floorZ, z, clearances, collisions,
 blocksDoors, needsDrain), collision rules (same level, z-range overlap, not 'flat', walls by levelIds, doors by level, stairs/chimney/posts/hot tub,
@@ -53,7 +55,8 @@ ${CATALOG_IDS}
 TASK: furniture in the plan and the library panel. OWNERSHIP: src/plan2d/layers/FurnitureLayer.tsx (+symbols module), src/ui/FurnitureLibrary.tsx
 (+styles), src/ui/properties/FurnitureProps.tsx, their tests. Implement §3.2 library behaviour (replaces the left column when the Møbler tool is
 active; categories as an accordion with Norwegian names; search box; items show a small symbol + name + default size; TAP places in the selected room
-else the plan centre, pushed to the nearest free wall per the snap rule; drag into the plan with pointer events, no HTML5 DnD; bottom sheet on phones),
+else the plan centre, pushed to the nearest free wall per the snap rule; drag into the plan with pointer events, no HTML5 DnD; on phones the
+library is a bottom sheet using the same BottomSheet component and the same \`viewportInsets\` hand-off to PlanView as Egenskaper does),
 §4 2D symbols (recognisable: bed with pillow and duvet line, bunk bed, wardrobe with door lines, sofa with cushions, armchair, tables with chairs,
 kitchen cabinets with counter line, fridge, toilet, sink, shower with glass lines, bathtub, washer/dryer circles, stove, sauna benches, shelves,
 outdoor lounge, grill), clearance zones as faint hatched areas when ui.showClearances, selection/rotation handle (rotate handle on the front edge),
@@ -76,13 +79,21 @@ cheap (chairs). Tests: every catalogue id has a builder; builders return finite 
   agent(`${COMMON}
 
 TASK: shared family proposals, saving, offline PWA. OWNERSHIP: src/state/familyStore.ts (+ familyStore.local.ts, familyStore.firestore.ts, tests with a
-fake adapter), src/state/firebaseConfig.ts (placeholder: \`export const firebaseConfig: FirebaseOptions | null = null\` until Robin pastes his config;
-read docs/firebase-oppsett.md), firestore.rules, src/state/persistence.ts (+tests) and appStore/link flow, src/ui/ProposalsMenu.tsx, src/ui/ShareDialog.tsx,
+fake adapter), src/state/persistence.ts (+tests) and appStore/link flow, src/ui/ProposalsMenu.tsx, src/ui/ShareDialog.tsx,
 src/ui/StatusPill.tsx, src/ui/TrashPanel.tsx, src/ui/RevisionsPanel.tsx, src/ui/UpdateToast.tsx, src/ui/InstallCard.tsx, src/ui/TopBar.tsx edits,
 src/i18n/nb.ts, vite.config.ts (PWA plugin + base), index.html (manifest/apple-touch-icon), public/ icons (generate 180/192/512 PNGs from
 public/favicon.svg with a one-off node script using sharp if present in node_modules, else write them with a tiny PNG encoder; commit the PNGs),
-playwright.config.ts (projects: desktop, iphone, pwa against \`npm run build && npx vite preview --port 4173 --strictPort\` with baseURL
-http://localhost:4173/hytte-planlegger/), e2e/offline.spec.ts, e2e/proposals.spec.ts.
+playwright.config.ts (keep the existing projects 'chromium' and 'iphone' with their test filters against the dev server on 5173; ADD a 'pwa'
+project that runs \`npm run build && npx vite preview --port 4173 --strictPort\` with the matching baseURL), e2e/offline.spec.ts, e2e/proposals.spec.ts.
+FIREBASE IS ALREADY SET UP: src/state/firebaseConfig.ts holds Robin's real project config (do not edit it; the \`null\` → local-only path must keep
+working for tests and forks), and firestore.rules is ALREADY PUBLISHED in his Firebase project exactly as the file reads (anonymous signed-in users
+may read/write /families/{familyId}/** when the id is 24–64 chars; everything else denied). Fit your document layout under /families/{familyId}/...
+to those rules. Do not change firestore.rules unless unavoidable; if you do, say so IN CAPITALS in your report because Robin must publish the new
+rules by hand. You may probe the real Firestore from Node or Playwright with a throwaway family id (≥ 24 random chars, prefix 'e2e-') and must
+delete everything you created; never touch other families. The vite base is currently './' (relative) and .github/workflows/deploy.yml only
+uploads dist to GitHub Pages at https://robinharald.github.io/hytte-planlegger/: either keep the relative base if the manifest scope/start_url
+and the service-worker registration work with it, or switch to '/hytte-planlegger/' in production and '/' in dev as the plan says — the Pages
+site, \`npm run dev\` and the existing e2e projects must all keep working.
 Implement §5 exactly: the FamilyStore interface (listProposals (live subscription), getProposal, saveProposal (debounced autosave with the conflict
 guard "«X» ble endret av Pappa … [Hent endringene] [Lagre over]"), createProposal (copy of Forslag D or another), renameProposal, deleteProposal
 (soft, Papirkurv 30 days), restoreProposal, listRevisions/restoreRevision (max 20, ≤ 1 per 5 min), whoAmI name prompt stored locally); the local
@@ -92,9 +103,9 @@ firestore.rules per §5; the proposals menu in the top bar (Forslag D first and 
 status pill texts, "Send forslaget" (navigator.share with the family deep link, fallback copy, both links labelled), Papirkurv, Tidligere versjoner
 under Mer, the old \`#d=\` links imported as a new proposal, first-run card texts, navigator.storage.persist(), iOS home-screen card, PWA per §5
 (registerType 'prompt', injectRegister false, useRegisterSW toast "Ny versjon av appen er klar. [Oppdater]" saving first, too-new notices wired to
-update, hourly/visibilitychange checks, controllerchange notice, workbox globPatterns/navigateFallback/cleanupOutdatedCaches, base
-'/hytte-planlegger/' in production and '/' in dev — check the GitHub Pages deploy workflow still serves it). docs/firebase-oppsett.md: keep it in sync
-with what the code expects. Tests: familyStore local + fake Firestore adapter (save/list/delete/restore/revisions/conflict), persistence, Playwright
+update, hourly/visibilitychange checks, controllerchange notice, workbox globPatterns/navigateFallback/cleanupOutdatedCaches, base as decided
+above). docs/firebase-oppsett.md: keep it in sync with what the code expects (it already describes the finished setup; add the family-link format
+and what the status pill texts mean). The proposal document must carry the whole Variant incl. \`trees\` and \`ghosts\`. Tests: familyStore local + fake Firestore adapter (save/list/delete/restore/revisions/conflict), persistence, Playwright
 proposals flow (create, edit, rename, delete with two confirmations, restore from Papirkurv — local mode) and offline (service worker controlling →
 offline → reload → ready, fonts loaded).`, { label: 'shared-store-offline', phase: 'Build', model: 'opus' }),
 ])
@@ -105,20 +116,25 @@ const integration = await agent(`You are the INTEGRATOR of phase 2b on ${REPO}. 
 FURNITURE CORE:\n${catalog}\n\nFURNITURE 2D:\n${library2d}\n\nFURNITURE 3D:\n${models3d}\n\nSHARED STORE / OFFLINE:\n${shared}
 
 1. Wire: library ↔ tool 'furniture', drop → addFurniture, properties, 3D models, clearances toggle in Vis, proposals menu + status pill + share
-   dialog + trash + revisions + update toast + install card, strings in nb.ts; typecheck/lint/tests green. If src/state/firebaseConfig.ts is still null,
-   the app must run in local mode with the pill "Kun på denne enheten (ingen delt plass satt opp)" and everything else working.
+   dialog + trash + revisions + update toast + install card, strings in nb.ts; typecheck/lint/tests green. Firebase IS configured
+   (src/state/firebaseConfig.ts, rules published): with the config the pill must reach «Lagret for alle» after the anonymous sign-in and the first
+   save; offline, or with the config set to null, it reads «Kun på denne enheten …» and everything else keeps working (keep that path tested).
+   Verify against Robin's real Firestore in a browser with a throwaway family id (prefix 'e2e-', ≥ 24 chars): create a proposal in one browser
+   context, open the same \`#f=\` link in a second context and see it, edit it there and see the change arrive in the first; then delete the
+   throwaway family's documents. Unit tests and Playwright use the local/fake adapters only.
 2. Playwright (desktop, iPhone, pwa): tap-place a toilet in Hovedbad (clearance visible), drag it into the door swing → door-blocked warning, rotate,
    duplicate, delete via the button; drag a bed in Soverom (ny fløy) against the wall (snaps back-to-wall); iPhone: tap-place and move a chair, open the
    proposals menu, create and rename a proposal; desktop: delete a proposal with two confirmations and restore it from Papirkurv; pwa: offline reload.
    Screenshots: plan-furnished.png, 3d-inne-furnished.png (Inne + Ovenfra), phone-library.png, proposals-menu.png.
-3. \`npm run build\` (dist uses /hytte-planlegger/ base; manifest + SW emitted; no Firebase chunk loaded in local mode), \`npm run e2e\`; read screenshots;
-   fix (max 6 iterations).
+3. \`npm run build\` (dist must work at https://robinharald.github.io/hytte-planlegger/ — check asset URLs, manifest scope/start_url and the SW
+   registration path for the chosen base; manifest + SW emitted; the Firebase chunk is a separate lazy chunk), \`npm run e2e\` (all projects); read
+   screenshots; fix (max 6 iterations).
 4. STATUS.md / architecture.md / README (furniture, shared proposals, offline, install, Firebase setup pointer) updated; "Neste" lists phase 4/5 leftovers
    (PDF/PNG export, walk mode, sun UI polish, drainage helper, IFC overlay).
 5. Commit in logical commits (English, imperative), each ending with
-   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
    Do NOT push.
-FINAL REPORT: test counts, what works, open issues, exactly what Robin must paste to enable the shared space.`, { label: 'integrate-2b', phase: 'Integrate', model: 'opus' })
+FINAL REPORT: test counts, what works, open issues, the family-link format, and whether firestore.rules changed (then Robin must publish it).`, { label: 'integrate-2b', phase: 'Integrate', model: 'opus' })
 
 phase('Verify')
 const VERIFY_SCHEMA = { type: 'object', properties: {
@@ -137,7 +153,9 @@ doors), seed furnishing matches the old model's layout, performance while draggi
   () => agent(`${VCOMMON}\nLENS: shared proposals, saving, offline and the deploy. Verify the FamilyStore behaviours in local mode and with the fake adapter
 (create/edit/rename/delete twice-confirmed/restore/revisions/conflict guard/Forslag D immutable), the firestore.rules against the data paths, the PWA
 update flow (no auto reload; toast; too-new notices), offline reload with fonts, the production build base path and that the GitHub Pages workflow would
-serve it, migration of a phase-1 autosave and a phase-1 delta link (railing + steps survive), that the Firebase code is not loaded without config, and
-that docs/firebase-oppsett.md matches the code.`, { label: 'verify:shared', phase: 'Verify', schema: VERIFY_SCHEMA, model: 'opus' }),
+serve it, migration of a phase-1 autosave and a phase-1 delta link (railing + steps survive), that the Firebase code is not loaded without config,
+that docs/firebase-oppsett.md matches the code, and — against the REAL Firestore with a throwaway family id (prefix 'e2e-', ≥ 24 chars, delete
+afterwards) — that a proposal round-trips between two browser contexts, that a short id and a foreign path are denied, and that nothing but the
+proposal data (no e-mail, device name or location) is written.`, { label: 'verify:shared', phase: 'Verify', schema: VERIFY_SCHEMA, model: 'opus' }),
 ])
 return { integration, verifiers: verifiers.filter(Boolean) }

@@ -30,13 +30,16 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
 - **Trykk for å velge, dra det valgte for å flytte.** En vegg, en dør, et hjørne eller et helt nytt bygg flyttes ved å
   trykke på det og så dra det. Å dra på noe annet flytter planen; hjulet eller to fingre zoomer. Håndtakene (hvite
   sirkler) flytter hjørner og kanter; «+» på en terrassekant lager et nytt hjørne.
-- **Verktøylinja:** Velg · Vegg (klikk der veggen begynner og der den slutter) · Dør/vindu (velg type, klikk på en
-  vegg) · Nytt bygg (velg Vedskjul, Bod, Badstue, Anneks eller Eget bygg, «Drei», klikk der det skal stå – det fester
-  seg til terrassekanten og veggene) · Møbler (kommer i fase 2b) · Mål (klikk på to punkter) · Angre / Gjør om.
+- **Verktøylinja:** Velg · Vegg (trykk der veggen begynner og der den slutter) · Dør/vindu (velg type, trykk på en
+  vegg) · Nytt bygg (velg Vedskjul, Bod, Badstue, Anneks eller Eget bygg, «Roter», trykk der det skal stå – det fester
+  seg til terrassekanten og veggene; et bygg som står kan roteres med «Roter 90°») · Møbler (kommer i fase 2b) · Mål
+  (trykk på to punkter) · Angre / Gjør om. Angre i en toast angrer bare den handlingen toasten gjelder.
 - **Egenskaper** (øverst til høyre, på telefon som et ark nedenfra) viser målene og lar deg skrive dem inn: «2,4»,
   «2,40» og «2.40» virker, −/+ endrer 10 cm. Dybde og bredde på et rom flytter veggen på den siden.
-- **Vis hva som er nytt** (på som standard): nye deler er oransje, og det som er flyttet eller fjernet fra hytta i dag
-  vises stiplet («Fjernet»). Velg det stiplede og trykk «Ta tilbake» for å sette det tilbake.
+- **Vis hva som er nytt** (på som standard i planen): nye deler er oransje, og det som er flyttet eller fjernet fra
+  hytta i dag vises stiplet («Fjernet»). Velg det stiplede og trykk «Ta tilbake» for å sette det tilbake. 3D viser
+  naturlige farger; «Vis hva som er nytt i 3D» farger det nye der også.
+- Trærne hører til forslaget: å flytte et tre i et forslag endrer ikke Forslag D.
 - Hurtigtaster: Delete, piltastene (1 cm, med Shift 10 cm), R, Ctrl+D, Ctrl+Z / Ctrl+Y og Esc.
 
 ## Kom i gang
@@ -81,9 +84,11 @@ npm run dev        # http://localhost:5173
   planen viser minst 15 romnavn med areal, at arealsummene vises og at «Send forslaget» og «Hjelp» er synlige på
   telefon. `e2e/editing.spec.ts` redigerer et nytt forslag på PC (flytter fløyas yttervegg, setter et vedskjul på
   terrassen og fester det til fløya, tegner en vegg og gir rommet navn, skriver inn en dybde, flytter en dør og sletter
-  en vegg i hytta i dag og tar dem tilbake, sjekker at Forslag D nekter alt, flytter badestampen), og
+  en vegg i hytta i dag og tar dem tilbake, sjekker at Forslag D nekter alt, flytter badestampen, korte drag, Angre i
+  toasten, trær per forslag, vestgavlen flyttet, hele fløya flyttet, et vedskjul rotert), og
   `e2e/phone-editing.spec.ts` gjør det samme på en iPhone 13 med berøring (panorering, dra en vegg, skrive inn et tall
-  i arket nedenfra, sette inn en dør). Skjermbildene i `e2e/screenshots/`
+  i arket nedenfra, sette inn en dør; ved startzoom: trykk på romnavn, dra en dør og et nytt bygg uten å endre
+  størrelsen, arket lar det valgte synes, alle seks verktøy). Skjermbildene i `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
   `e2e/playwright-report/` og `e2e/test-results/` (ikke i git).
 - Typesjekk av testoppsettet: `npx tsc --noEmit -p e2e/tsconfig.json`.

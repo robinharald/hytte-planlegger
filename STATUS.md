@@ -1,13 +1,101 @@
 # Status
 
-Oppdatert 2026-10-12 (fase 2a integrert: skjema 2, redigering i plan og på telefon, 3D-klikk). Integratoren holder denne
-fila oppdatert: gjort / neste / kjente problemer.
+Oppdatert 2026-10-12 (fikserunde 2a integrert etter gjennomgangen av fase 2a). Integratoren holder denne fila
+oppdatert: gjort / neste / kjente problemer.
 
 Faser:
 - **Fase 1** – Forslag D vises riktig i plan og 3D med romskjema og arealer; lagring, versjoner, deling og publisering.
 - **Fase 2a** – redigering: egne forslag, vegger, dører/vinduer, rom, bygningsdeler, nye bygg på terrassen, terrassen,
   badestampen; spøkelser for det som er flyttet/fjernet fra hytta i dag; PC og iPhone (`docs/phase2-plan.md`, rev. 3).
 - **Fase 2b** – møbler, delte forslag for familien (Firestore), offline/PWA.
+
+## Fikserunde 2a (12. okt 2026)
+
+Gjennomgangen av fase 2a (redigering og brukervennlighet, PC og iPhone) fant 10 store og 11 mindre feil. Alle er
+rettet (dra-ytelsen delvis, se «Kjente problemer») i tre parallelle deler (redigeringskjernen, planen, UI) og satt
+sammen her.
+
+### Gjort
+
+- **Rom under redigering** (`geometry/edit.ts`):
+  - En usynlig romdeler dratt rett på et romanker byttet eller mistet rom uten melding (6 av 88 flytt). Et anker på
+    (eller innen 1 cm av) kanten av en flate regnes nå som utenfor og flyttes til flatens etikettpunkt.
+  - Å flytte hele fløya 3 m øst (eller 2 m på skrå) stokket romnavnene. `moveBlock` / `rotateBlock` gir nå rommene
+    de bærer med seg til `reconcileRooms` (`EditContext.carried`), som flytter deres forrige omriss likt før
+    matchingen: alle 27 rom beholder navnet.
+- **Statusbokføring for blokk-kanter**: vinduer og dører i hytta i dag som følger med en flyttet kant eller klemmes
+  av en kortere kant, blir nå «Nytt» og etterlater et spøkelse der de sto (vestgavlen til x −1: `win-104-w`,
+  `win-hems-w1`, `win-hems-w2`). Biter en kant mister (også stumpene på bod-fløya ved nordkanten +1) får
+  kant-spøkelser. Spøkelsene står i et stiplet «gammel vegg»-bånd med spøkelsesvinduer (`ensureGhostHost`). «Ta
+  tilbake» på kant-spøkelset flytter kanten tilbake og setter åpningene på plass.
+- **«Ta tilbake» etter et endepunkt-drag** drar først endene tilbake gjennom de samme kaskadene, så veggene som ble
+  dratt med, trimmet eller forlenget kommer tilbake (før: `dv-kjk-w` dinglet og Vindfang ble slått sammen med
+  Kjøkken). En åpning i hytta i dag som klemmes når en vegg flyttes, bokføres som en flyttet åpning.
+- **Trær per forslag**: trærne lå på tomta, så et tre flyttet i «Mitt forslag» flyttet seg også i Forslag D. Nå får
+  et forslag sin egen kopi (`Variant.trees`) første gang et tre endres; tomta og Forslag D endres aldri. Alle som
+  leser trær går gjennom `treesOf(project, variant)`.
+- **Areal**: stripa der en gammel yttervegg sto, er «ny» også i BRA (som i BYA). Vestgavlen til −1: BRA eks. blir
+  stående på 103,51 (før 104,95), BYA eks. 101,47 som før. Nordkanten +1: BRA eks. 104,72 (før 106,62; den stiger
+  litt fordi det høyere taket gir hemsen mer målbar høyde).
+- **«Fjern hjørne»** som ville gjort at terrassen krysser seg selv, får toasten «Hjørnet kan ikke fjernes –
+  terrassen ville krysse seg selv.» (før: ingenting skjedde).
+- **«Roter 90°»** for nye bygg etter at de er satt ut (`rotateBlock`): i mini-linja, i Egenskaper for bygningsdelen
+  og med R. Rommet, veggene, åpningene og taket dreies med; hytta i dag kan ikke dreies.
+- **«Gi navn»** velger det nye rommet etterpå (før: «Det som var valgt finnes ikke lenger»).
+- **Håndtak skjuler ikke små ting**: ende-, hjørne- og kanthåndtak vises ikke når tingen er kortere enn tre
+  håndtak på skjermen, endehåndtak på vegger og åpninger står utenfor endene, og et trykk inne i tingen flytter den.
+  En dør dratt 1,5 m på telefonen beholder bredden; en ny Vedskjul dras etter kroppen.
+- **Snapping slåss ikke med korte drag**: en vegg snapper aldri tilbake til sin egen linje (eller linjer på linje
+  med den), linjer trekker høyst 0,25 m, en snap tar aldri tilbake mer enn halve draget, og Alt slår av
+  linjesnapping. `w-gang-n` dratt 0,3 m ved startzoom havner på 3,7.
+- **Trykk på telefonen velger rom**: treffbåndet rundt vegger og åpninger er min(24 px, 0,25 m) ved berøring, og
+  romnavnet i planen er et treff for rommet: 23 av 24 rom ved startzoom (før 6). Unntaket er Korridor (øvre), der
+  etikettpunktet ligger i trappa.
+- **Forslag D**: et drag av det valgte viser låsetoasten én gang og verken panorerer eller flytter.
+- **Dra-sløyfa**: pekerbevegelser samles til én oppdatering per skjermbilde; drag av åpninger og ting ute (terrasse,
+  trapp, badestamp, trær) hopper over romavstemmingen og dens avledning (0 ekstra avledninger per bilde).
+- **Telefon**: Egenskaper-arket åpner lavt (40 % av høyden, bare de viktigste feltene; «Vis mer» gir resten), siden
+  rulles så verktøylinja står øverst, og planen panorerer så det valgte står synlig over arket (`viewportInsets`).
+  Mini-linja følger det valgte når siden rulles, legger seg under det når det ikke er plass over, og dekker aldri
+  verktøylinja, hjelpelinja eller arket. Alle seks verktøy får plass på 390 px (ikon over navn).
+- **Toaster**: én melding per handling («Slettet. «Soverom 1» og «Bad» er nå ett rom.») med én Angre, som bare
+  angrer den handlingen og bare så lenge den er siste steg; neste endring lukker toasten. «Nytt forslag» har ingen
+  Angre lenger og lukker førstegangskortet; toaster legger seg over kortet så lenge det er åpent.
+- **Advarsler**: nye advarsler vises én gang som toast «Ny advarsel: …» med «Vis», og verktøylinja har et merke med
+  antallet. Teksten sier hva og hvor («døra i veggen mellom Gang og Soverom (ny fløy)», retning etter virkelig nord),
+  aldri en intern id. Dør/vindu som ville overlappe en åpning i samme veggbit flyttes til nærmeste ledige plass.
+- **Ordbruk**: «Trykk» overalt, «Roter» som eneste verb for å dreie, «Angre» på telefon og «Angre eller Ctrl+Z» med
+  tastatur, én kilde per tekst (hjelpelinje, tegnforklaring, låsetekst), spøkelser merkes «Fra hytta i dag»,
+  Romskjema og overskrift sier «i dag», Møbler-hintet sier at biblioteket kommer i neste oppdatering. Hjelpelinja og
+  førstegangskortet sier at Forslag D er det faste grunnlaget og at «+ Nytt forslag» lager en kopi.
+- **3D** har sin egen bryter «Vis hva som er nytt i 3D», av som standard (naturlige farger); planen beholder «Vis hva
+  som er nytt» på (`PREFS_VERSION` 4).
+- **Tester**: `npm test` 1184 tester i 63 filer, alle grønne (1089 før runden); `npm run typecheck`, `npm run lint`,
+  `npm run build` og `npx tsc --noEmit -p e2e/tsconfig.json` rene. `npm run e2e` 22 av 22 grønne:
+  - `editing.spec.ts` (PC) har fått: (i) kort drag 0,3 m av `w-gang-n` → 3,7; (j) toastens Angre etter sletting av
+    `w-104-103` angrer bare slettingen, og en ny endring tar bort knappen; (k) et tre flyttet i «Mitt forslag» –
+    tomta og Forslag D er uendret; (l) vestgavlen til −1 – de tre vinduene blir nye med spøkelser; (m) hele fløya 3 m
+    øst – alle rom beholder navnet; (n) Vedskjul rotert 90°. (g) sjekker toasten etter hvert forsøk for seg (dra det
+    valgte: toast og ingen panorering), (c) at det nye rommet er valgt etter «Gi navn».
+  - `phone-editing.spec.ts` (iPhone) ved startzoom: trykk på 8 romnavn velger rommet (minst 7), en dør dratt 1,5 m
+    beholder bredden, en ny Vedskjul dratt etter kroppen beholder størrelsen, arket for en vegg lar veggen stå synlig
+    over arket, alle seks verktøy synes.
+  - Nye/oppdaterte skjermbilder: `plan-editing.png`, `plan-ghosts.png`, `phone-edit.png`, `phone-sheet.png` (lavt
+    ark), `phone-tools.png` (ny); 3D-bildene er i naturlige farger.
+
+### Avgjort i fikserunden (Robin kan endre)
+
+- **Trær per forslag, kopi ved første endring** (`Variant.trees`, valgfritt felt, ingen skjemaendring): Forslag D og
+  tomta endres aldri; et forslag uten egne trær viser tomtas.
+- **3D i naturlige farger som standard**; «Vis hva som er nytt i 3D» er en egen bryter. Planen viser det nye som før.
+- **BYA og BRA regner stripa der en gammel vegg sto som ny** (den gamle veggen er borte). En kant som flyttes inntil
+  en eksisterende nabobygningsdel kan krympe den eksisterende delen (bod-fløya når hovedhusets nordkant går +1);
+  bitene den mister får spøkelser.
+- **Snapping**: linjer trekker høyst 0,25 m (uansett zoom), aldri tilbake til sin egen startlinje, og Alt slår av
+  linjesnapping. Punkter (vegg-ender, hjørner) og hjelpelinjene gjennom startpunktet beholder 12 / 24 px.
+- Dør/vindu som settes oppå en åpning i samme veggbit flyttes til nærmeste ledige plass (10 cm-rutenett); finnes
+  ingen, blir den stående og overlapp-advarselen vises.
+- Bygg satt ut med «Nytt bygg» kan roteres 90° om midten; hytta i dag kan ikke (samme regel som flytting).
 
 ## Fase 2a – redigering (integrert 12. okt 2026)
 
@@ -95,8 +183,7 @@ Faser:
 ### Neste
 
 1. Robin ser over skjermbildene og prøver redigeringen (lokalt med `npm run dev`, eller etter push på nettsiden).
-   Spørsmål til Robin: skal 3D starte med naturlige farger? «Vis hva som er nytt» er nå på som standard og farger
-   også det nye oransje i 3D (se `3d-ute-*.png`); alternativet er at 3D ignorerer bryteren eller får sin egen.
+   3D starter nå i naturlige farger med en egen bryter (se «Avgjort i fikserunden»).
 2. Kjøre fase 2b (`docs/workflows/phase2b-furniture-offline.workflow.js`): møbelkatalog (biblioteket er en plassholder
    nå; 3D-mottaket for slipp finnes), delte forslag i Firestore med Papirkurv og revisjoner, statuspillen, «Send
    forslaget» med familielenke, PWA/offline.
@@ -115,11 +202,15 @@ Faser:
   advarselen «stikker opp i taket». Flytt dem i Egenskaper eller i planen.
 - En vegg langs en gulvsone-kant (f.eks. trinnet i korridoren) etterlater en smal flate med «Gi navn» når den flyttes
   (gulvtrinnet står der det står).
-- Flere separate endringer som krymper en vegg under en åpning, klemmer åpningen; den kommer ikke tilbake av seg selv
-  (ett sammenhengende drag gjør det).
-- Snapping med berøring har 24 px radius: med telefonens startzoom er det ca. 2 m, så en vegg kan hoppe til en
-  linje i nærheten. Zoom inn med to fingre for finarbeid (tallfeltene er alltid nøyaktige).
-- Telefon: topplinja med forslagsknappene bruker ca. 250 px før planen begynner.
+- En NY åpning som klemmes av flere separate endringer som krymper veggen, kommer ikke tilbake av seg selv (ett
+  sammenhengende drag gjør det). Åpninger i hytta i dag blir nye med spøkelse, og «Ta tilbake» setter dem på plass.
+- Telefon: topplinja med forslagsknappene bruker ca. 250 px før planen begynner (når Egenskaper-arket åpnes, rulles
+  siden så verktøylinja står øverst).
+- Telefon: et trykk på etikettpunktet til Korridor (øvre) treffer trappa (etikettpunktet ligger i trappa).
+- Dra-ytelse: et bilde der avstemmingen endrer rommene, avleder fortsatt to ganger (krever at byggetrinnet i
+  `derive.ts` deles); drag av vegger og kanter er ca. 40–60 ms per bilde på PC, nå én gang per skjermbilde.
+- BRA eks. kan stige litt når en gammel kant flyttes ut, fordi det høyere taket gir hemsen mer målbar høyde
+  (nordkanten +1: 103,51 → 104,72).
 - Møbler: bare plassholdere (rektangel med navn, 1 × 1 × 1 m uten katalog); biblioteket er tomt (fase 2b).
 - Førstegangskortet sier at alt deles med familien; det gjelder først når fase 2b (Firestore) er på plass.
 - Midtknappen på musa virker som et trykk i plasseringsverktøyene.
