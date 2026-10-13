@@ -2,8 +2,8 @@
 /**
  * Walk mode in the real scene graph (Scene.tsx + WalkControls.tsx) with R3F's reconciler and a stand-in renderer:
  * the start pose in the Stue, keys moving the camera (default-prevented, so the plan's shortcuts stay quiet), Esc
- * ending the walk and the camera coming back, full walls and roofs in the interior mode, no picking while walking,
- * the start at a clicked point, and the shadows switch.
+ * ending the walk with the camera left where the walker stood, «Avslutt» bringing it back, P saving a picture, full
+ * walls and roofs in the interior mode, no picking while walking, the start at a clicked point, and the shadows switch.
  */
 import { _roots, act, advance, createRoot, extend } from '@react-three/fiber';
 import type { ReconcilerRoot } from '@react-three/fiber';
@@ -13,11 +13,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { deriveVariant } from '../geometry/derive';
 import { createForslagD } from '../model/seed/forslagD';
 import type { Selection } from '../state/selection';
+import { walkViewKept } from '../export/walkView';
 import { fromWorld } from './coords';
 import { Scene } from './Scene';
 import type { SceneProps } from './Scene';
 import { WALK_EYE_HEIGHT } from './walk';
-import { recordPick, resetView3dLocal, startWalk, view3dLocal } from './walkState';
+import { recordPick, resetView3dLocal, startWalk, stopWalk, view3dLocal } from './walkState';
+
+const savePng3d = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../export/pngExport', () => ({ savePng3d }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -145,7 +149,7 @@ function byName(root: Object3D, name: string): Object3D | undefined {
 }
 
 describe('walk mode (Scene + WalkControls)', () => {
-  it('starts in the Stue at eye height facing the terrace, walks with W, and Esc brings the orbit camera back', async () => {
+  it('starts in the Stue at eye height facing the terrace, walks with W, and Esc leaves the camera where the walker stood', async () => {
     const m = await mount(props());
     await frames(2);
     const orbit = m.state().camera.position.clone();
@@ -180,16 +184,66 @@ describe('walk mode (Scene + WalkControls)', () => {
     expect(arrow.defaultPrevented).toBe(true);
     key('keyup', 'ArrowLeft', 'ArrowLeft');
 
+    const walker = m.state().camera.position.clone();
+    const looking = new THREE.Vector3();
+    cam.getWorldDirection(looking);
     const esc = key('keydown', 'Escape', 'Escape');
     expect(esc.defaultPrevented).toBe(true);
     expect(view3dLocal.getState().walk).toBeNull();
     await m.rerender(props({ walk: null }));
-    await frames(1);
-    expect(m.state().camera.position.distanceTo(orbit)).toBeLessThan(1e-6);
+    await frames(3);
+    // no easing back: the camera stays at the walker's eye, looking the same way, the orbit target ahead of it
+    expect(m.state().camera.position.distanceTo(walker)).toBeLessThan(1e-6);
+    expect(m.state().camera.position.distanceTo(orbit)).toBeGreaterThan(5);
+    const after = new THREE.Vector3();
+    m.state().camera.getWorldDirection(after);
+    expect(after.angleTo(looking)).toBeLessThan(0.05);
+    expect(controlsOf(m).target.distanceTo(walker)).toBeCloseTo(4, 6);
     expect((m.state().camera as PerspectiveCamera).fov).toBe(42);
     expect(controlsOf(m).enabled).toBe(true);
+    expect(walkViewKept()).toBe(true);
     // keys are left alone again
     expect(key('keydown', 'KeyW', 'w').defaultPrevented).toBe(false);
+  });
+
+  it('keeps the view after Esc also when the camera would ease back (no reduced motion)', async () => {
+    const reduce = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      const m = await mount(props());
+      await frames(2);
+      startWalk();
+      await m.rerender(props({ walk: view3dLocal.getState().walk }));
+      await frames(1);
+      const walker = m.state().camera.position.clone();
+      key('keydown', 'Escape', 'Escape');
+      await m.rerender(props({ walk: null }));
+      clock += 2000; // well past the rig's easing time
+      await frames(3);
+      expect(m.state().camera.position.distanceTo(walker)).toBeLessThan(1e-6);
+    } finally {
+      window.matchMedia = reduce;
+    }
+  });
+
+  it('«Avslutt» brings the orbit camera back; P saves a picture and walks on', async () => {
+    savePng3d.mockClear();
+    const m = await mount(props());
+    await frames(2);
+    const orbit = m.state().camera.position.clone();
+    startWalk();
+    await m.rerender(props({ walk: view3dLocal.getState().walk }));
+    await frames(1);
+    const p = key('keydown', 'KeyP', 'p');
+    expect(p.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(savePng3d).toHaveBeenCalledTimes(1));
+    expect(view3dLocal.getState().walk).not.toBeNull();
+    key('keyup', 'KeyP', 'p');
+    stopWalk(); // «Avslutt»
+    await m.rerender(props({ walk: null }));
+    await frames(1);
+    expect(m.state().camera.position.distanceTo(orbit)).toBeLessThan(1e-6);
+    expect(walkViewKept()).toBe(false);
   });
 
   it('goes to the preset instead when a preset was chosen during the walk', async () => {

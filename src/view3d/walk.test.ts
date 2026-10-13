@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { deriveVariant } from '../geometry/derive';
+import { pointInPolygon } from '../geometry/polygon';
 import type { DerivedOpening, DerivedVariant, DerivedWall } from '../model/derived';
 import { createForslagD } from '../model/seed/forslagD';
 import terrainJson from '../model/seed/terrain-merkesvatnet.json';
@@ -25,6 +26,7 @@ function walk(world: WalkWorld, pose: WalkPose, seconds: number, input = FWD): W
   return out;
 }
 const last = (ps: WalkPose[]) => ps[ps.length - 1];
+const inRoomPolygon = (room: DerivedVariant['rooms'][number], p: Vec2) => pointInPolygon(p, room.polygon) && !room.holes.some((h) => h.length >= 3 && pointInPolygon(p, h));
 
 // ---------------------------------------------------------------------------
 // A small hand-made world
@@ -102,6 +104,7 @@ function world(over: Partial<WalkDerived> = {}, ground: (x: number, y: number) =
     levels: [{ id: 'main', name: 'Hovedplan', storeyId: 'ground', elevation: 0, floorThickness: 0 }],
     bounds: { min: [-10, -10], max: [10, 10] },
     site: { trees: [] },
+    foundations: [],
   };
   return W.buildWalkWorld({ ...base, ...over }, ground);
 }
@@ -239,13 +242,30 @@ describe('floor height', () => {
     const back = last(walk(w, { ...end, heading: Math.PI / 2 }, 4));
     expect(back.pos[1]).toBeGreaterThan(0.5);
     expect(back.feetZ).toBe(-0.02);
-    // with the ground 1.2 m down, the deck edge is a ledge: the walker stays below it, on the terrain
-    const low = world({ floors: [], outdoor: { decks: [deck], railings: [], steps: [], hotTubs: [] } }, (_x, y) => (y < 0 ? -1.2 : -0.4));
-    const off = last(walk(low, pose([2, 2], -Math.PI / 2, -0.02), 2));
-    expect(off.feetZ).toBe(-1.2);
-    const blocked = last(walk(low, { ...off, heading: Math.PI / 2 }, 2));
-    expect(blocked.pos[1]).toBeLessThanOrEqual(W.EDGE_TOLERANCE);
+    // with the ground 1.2 m down, the skirt boards (down to −1.25) close the deck off: the walker on the deck stops at
+    // its edge, and one on the terrain below stops a body radius short of the skirt (never in under the boards)
+    const lowDeck = { ...deck, skirtBottomZ: [[-1.25, -1.25, -0.45, -0.45]] };
+    const low = world({ floors: [], outdoor: { decks: [lowDeck], railings: [], steps: [], hotTubs: [] } }, (_x, y) => (y < 0 ? -1.2 : -0.4));
+    const edge = last(walk(low, pose([2, 2], -Math.PI / 2, -0.02), 2));
+    expect(edge.feetZ).toBe(-0.02);
+    expect(edge.pos[1]).toBeGreaterThanOrEqual(-W.EDGE_TOLERANCE);
+    const blocked = last(walk(low, pose([2, -3], Math.PI / 2, -1.2), 3));
+    expect(blocked.pos[1]).toBeCloseTo(-W.WALK_RADIUS, 6);
     expect(blocked.feetZ).toBe(-1.2);
+  });
+
+  it('a plinth stops the walker below a floor raised over the slope', () => {
+    // a block on a slope: floor at 0 over x 0 … 4, the terrain 1.5 m down in front of it
+    const w = world(
+      {
+        floors: [{ id: 'f', levelId: 'main', polygon: square(0, 0, 4, 4), holes: [], z: 0, thickness: 0.05, material: 'wood', isNew: false, kind: 'room' }],
+        foundations: [{ blockId: 'b', polygon: square(0, 0, 4, 4), topZ: 0, bottomZ: -1.8 }],
+      },
+      () => -1.5,
+    );
+    const end = last(walk(w, pose([2, -3], Math.PI / 2, -1.5), 3));
+    expect(end.pos[1]).toBeCloseTo(-W.WALK_RADIUS, 6);
+    expect(end.feetZ).toBe(-1.5);
   });
 
   it('never goes into open water', () => {
@@ -366,6 +386,57 @@ describe('on the Forslag D seed', () => {
     const up = last(walk(w, { ...down, heading: Math.PI / 2 }, 4));
     expect(up.pos[1]).toBeGreaterThan(-4.6);
     expect(up.feetZ).toBe(-0.02);
+  });
+
+  it('stays out from under the deck: the skirt stops a walker coming up the slope from the south', () => {
+    const p = W.poseAt(w, [20, -9], ground(20, -9), Math.PI / 2, 0);
+    const ps = walk(w, p, 4);
+    for (const q of ps) expect(q.pos[1]).toBeLessThan(-4.6);
+    for (const q of ps) expect(q.feetZ).toBeCloseTo(ground(q.pos[0], q.pos[1]), 9);
+    // …and from the east at y −3
+    const east = last(walk(w, W.poseAt(w, [26, -3], ground(26, -3), Math.PI, 0), 4));
+    expect(east.pos[0]).toBeGreaterThan(23);
+  });
+
+  it('reaches every room from the Stue start, and never stands under the deck or inside a plinth', () => {
+    const start = W.defaultWalkStart(derived, w);
+    // everything built (the decks included) and a metre around it
+    const b = derived.bounds;
+    const box = { x0: b.min[0] - 1, y0: b.min[1] - 1, x1: b.max[0] + 1, y1: b.max[1] + 1 };
+    const STEP = 0.25;
+    const dirs: Vec2[] = Array.from({ length: 8 }, (_, k) => [Math.cos((k * Math.PI) / 4) * STEP, Math.sin((k * Math.PI) / 4) * STEP]);
+    const key = (p: Vec2, z: number) => `${Math.round(p[0] / STEP)},${Math.round(p[1] / STEP)},${Math.round(z * 10)}`;
+    const seen = new Map<string, { pos: Vec2; z: number }>([[key(start.pos, start.feetZ), { pos: start.pos, z: start.feetZ }]]);
+    const queue = [...seen.values()];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      for (const d of dirs) {
+        const r = W.moveWalker(w, cur.pos, cur.z, d);
+        if (Math.hypot(r.pos[0] - cur.pos[0], r.pos[1] - cur.pos[1]) < 0.02) continue;
+        if (r.pos[0] < box.x0 || r.pos[0] > box.x1 || r.pos[1] < box.y0 || r.pos[1] > box.y1) continue;
+        const k = key(r.pos, r.feetZ);
+        if (seen.has(k)) continue;
+        const st = { pos: r.pos, z: r.feetZ };
+        seen.set(k, st);
+        queue.push(st);
+      }
+    }
+    const states = [...seen.values()];
+    const missing = derived.rooms.filter((room) => !states.some((s) => inRoomPolygon(room, s.pos)));
+    expect(derived.rooms).toHaveLength(27);
+    expect(missing.map((r) => r.room?.name ?? r.id)).toEqual([]);
+    // never below a deck's boards (on a deck piece, under its underside) …
+    for (const d of derived.outdoor.decks) {
+      for (const piece of d.pieces) {
+        const under = states.filter((s) => s.z < d.topZ - d.thickness - 1e-6 && pointInPolygon(s.pos, piece[0]) && !piece.slice(1).some((h) => pointInPolygon(s.pos, h)));
+        expect(under.map((s) => `${s.pos.map((v) => v.toFixed(2))} ${s.z.toFixed(2)}`), d.id).toEqual([]);
+      }
+    }
+    // … nor inside a block's outline below its lowest floor
+    for (const f of derived.foundations) {
+      const inside = states.filter((s) => s.z < f.topZ - 0.3 && pointInPolygon(s.pos, f.polygon));
+      expect(inside.map((s) => `${s.pos.map((v) => v.toFixed(2))} ${s.z.toFixed(2)}`), f.blockId).toEqual([]);
+    }
   });
 
   it('starts at the clicked point when entered from a selection', () => {

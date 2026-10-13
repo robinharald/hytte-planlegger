@@ -1,13 +1,15 @@
 /**
  * DOM controls of the walk mode over the 3D canvas (View3D): «Gå rundt» (top right) when not walking; while walking
  * «Avslutt» in the same place and, on touch screens, the joystick in the lower left corner (drag the knob: up =
- * forward; walk.ts `joystickVector`, written to walkState `walkInput`). Inline styles like the rest of View3D's
+ * forward; walk.ts `joystickVector`, written to walkState `walkInput`); under «Avslutt» the camera button that saves
+ * the view as a PNG and walks on (WalkControlsPhoto.tsx, like the P key). Inline styles like the rest of View3D's
  * overlay; 44 px touch targets.
  */
 import { useRef, useState } from 'react';
 import { nb } from '../i18n/nb';
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react';
 import { joystickKnob, joystickVector } from './walk';
+import { WalkPhotoButton } from './WalkControlsPhoto';
 import { setJoystick, startWalk, stopWalk } from './walkState';
 
 /** Joystick base radius (px). */
@@ -32,7 +34,21 @@ const BUTTON_STYLE: CSSProperties = {
   touchAction: 'manipulation',
 };
 
-const EXIT_STYLE: CSSProperties = { ...BUTTON_STYLE, background: '#4f6b55', color: '#fff', borderColor: '#4f6b55', minHeight: 44, padding: '8px 16px' };
+const { position: _position, top: _top, right: _right, zIndex: _zIndex, ...BUTTON_LOOK } = BUTTON_STYLE;
+/** «Avslutt» (placed by WALK_BUTTONS_STYLE). */
+const EXIT_STYLE: CSSProperties = { ...BUTTON_LOOK, background: '#4f6b55', color: '#fff', border: '1px solid #4f6b55', minHeight: 44, padding: '8px 16px' };
+
+/** «Avslutt» with the camera button under it, top right: stacked, so the camera never overlaps a taller «Avslutt». */
+const WALK_BUTTONS_STYLE: CSSProperties = {
+  position: 'absolute',
+  top: 10,
+  right: 10,
+  zIndex: 60,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-end',
+  gap: 8,
+};
 
 const BASE_STYLE: CSSProperties = {
   position: 'absolute',
@@ -61,9 +77,12 @@ export function WalkOverlay(props: { walking: boolean; coarse: boolean }): JSX.E
   }
   return (
     <>
-      <button type="button" style={EXIT_STYLE} title={nb.walk.exitTitle} data-testid="walk-exit" onClick={() => stopWalk()}>
-        {nb.walk.exit}
-      </button>
+      <div style={WALK_BUTTONS_STYLE}>
+        <button type="button" style={EXIT_STYLE} title={nb.walk.exitTitle} data-testid="walk-exit" onClick={() => stopWalk()}>
+          {nb.walk.exit}
+        </button>
+        <WalkPhotoButton />
+      </div>
       {props.coarse && <Joystick />}
     </>
   );

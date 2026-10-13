@@ -803,7 +803,7 @@ export const nb = {
       'På telefonen: trykk for å velge, og bruk linjen over det valgte (Egenskaper · Roter · Slett). Egenskaper åpnes nederst på skjermen med de viktigste feltene; dra i håndtaket eller trykk «Vis mer» for resten.',
       'Advarsler: tallet i verktøylinjen viser hvor mange det er. Når en endring gir en ny advarsel, kommer den som en melding med «Vis».',
       'I 3D viser Ute hele hytta, mens Inne tar av taket og kutter veggene, så du ser inn i rommene. Dra for å snu, rull eller knip for å zoome. Sol og skygge følger valgt dato og klokkeslett ved hytta.',
-      '«Gå rundt» (under kameravinklene, eller knappen oppe til høyre i 3D-bildet) lar deg gå gjennom rommene i øyehøyde. På PC: W A S D eller piltastene, se deg rundt med musa, Shift for å løpe, Esc avslutter. På telefonen: gå med spaken nede til venstre og dra i bildet for å se deg rundt.',
+      '«Gå rundt» (under kameravinklene, eller knappen oppe til høyre i 3D-bildet) lar deg gå gjennom rommene i øyehøyde. På PC: W A S D eller piltastene, se deg rundt med musa, Shift for å løpe, P lagrer bildet, Esc avslutter og lar kameraet stå der du sto. På telefonen: gå med spaken nede til venstre og dra i bildet for å se deg rundt; kameraknappen under «Avslutt» lagrer bildet.',
       'Sol og skygge: trykk Midtsommer, Jevndøgn, Midtvinter eller I dag, og dra i klokkeslettet. Den gule stripa viser når sola er oppe den dagen. Slå av «Skygger» hvis 3D går tregt på telefonen.',
       '«Eksporter» øverst: «Eksporter plan som PDF» lager tegninger i 1:50 eller 1:100 på A3 eller A4, med mål, romnavn, arealer, tittelfelt og romskjema – skriv ut i faktisk størrelse (100 %). «Lagre 3D-bildet som PNG» lagrer det du ser i 3D som et bilde.',
       '«Avløp og sluk» under Vis viser et forslag til avløpsstamme og hvor langt toaletter, dusjer, servanter og vaskemaskiner har til den. Står noe for langt unna, kommer det under Advarsler. Dra stammen langs veggene for å flytte den.',
@@ -831,7 +831,7 @@ export const nb = {
       { keys: 'R', text: 'Roter det valgte møbelet eller nye bygget 90°, eller bygget du er i ferd med å sette ut', active: true },
       { keys: 'Ctrl+D', text: 'Dupliser møbel eller nytt bygg', active: true },
       { keys: 'Alt', text: 'Hold inne mens du drar: fest til 1 cm i stedet for 10 cm', active: true },
-      { keys: 'W A S D', text: 'Gå i «Gå rundt» (også piltastene; Shift for å løpe, Esc avslutter)', active: true },
+      { keys: 'W A S D', text: 'Gå i «Gå rundt» (også piltastene; Shift for å løpe, P lagrer bildet, Esc avslutter)', active: true },
     ],
   },
 
@@ -1507,16 +1507,19 @@ export const nb = {
   walk: {
     /** «Gå rundt» button on the 3D view and chip among the camera angles. */
     start: 'Gå rundt',
-    startTitle: 'Gå rundt i øyehøyde (1,65 m over gulvet). PC: W A S D og musa, Shift for å løpe, Esc avslutter. Telefon: spaken og dra i bildet.',
+    startTitle: 'Gå rundt i øyehøyde (1,65 m over gulvet). PC: W A S D og musa, Shift for å løpe, P lagrer bildet, Esc avslutter. Telefon: spaken og dra i bildet.',
     exit: 'Avslutt',
     exitTitle: 'Avslutt Gå rundt (Esc)',
     /** Hint line while walking on a PC with the mouse locked to the view. */
-    hintDesktop: 'Gå med W A S D, se deg rundt med musa, Esc avslutter',
+    hintDesktop: 'Gå med W A S D, se deg rundt med musa, P lagrer bildet, Esc avslutter',
     /** …when the mouse is not locked (the browser refused, or after a click elsewhere). */
-    hintDesktopUnlocked: 'Gå med W A S D, dra i bildet for å se deg rundt (trykk i bildet for å styre med musa), Esc avslutter',
+    hintDesktopUnlocked: 'Gå med W A S D, dra i bildet for å se deg rundt (trykk i bildet for å styre med musa), P lagrer bildet, Esc avslutter',
     /** …on a phone or tablet. */
     hintTouch: 'Gå med spaken, dra i bildet for å se deg rundt',
     joystick: 'Spak: dra for å gå',
+    /** The camera button under «Avslutt» while walking (view3d/WalkControlsPhoto.tsx) and the P key. */
+    photo: 'Lagre bildet',
+    photoTitle: 'Lagre det du ser nå som PNG-bilde (P), uten å slutte å gå',
   },
 
   /** Phase 3: «Avløp og sluk», the drainage helper (geometry/plumbing.ts, plan2d/layers/PlumbingLayer.tsx, ui/PlumbingToggle.tsx). */

@@ -7,18 +7,22 @@
  *    (walk.ts `selectionWalkStart` / `defaultWalkStart`); the field of view widens to `walkFov` (restored after);
  *  - desktop: the pointer is locked to the canvas (mouse looks); if the browser refuses, a drag looks and a click
  *    locks; W A S D / arrows move, Shift runs (keys are taken in the capture phase and default-prevented, so the
- *    plan's arrow-key nudge and the other shortcuts stay quiet); Esc, or losing the pointer lock (the browser's own
- *    Esc), ends the walk; keys while the 3D pane is hidden end it too;
+ *    plan's arrow-key nudge and the other shortcuts stay quiet); P saves the view as a PNG and walks on
+ *    (export/walkView.ts `saveWalkPhoto`); Esc, or losing the pointer lock (the browser's own Esc), ends the walk
+ *    with the camera left where the walker stood (`keepWalkerView`: the menu's «Lagre 3D-bildet som PNG» then saves
+ *    that view); keys while the 3D pane is hidden end it too;
  *  - touch: the joystick (WalkOverlay, via `walkInput`) moves, a drag that starts on the right 60 % of the canvas
  *    looks;
  *  - every frame with input (or an eye still easing) steps the walker and asks for the next frame (frameloop
  *    'demand'); idle, nothing renders.
- * The orbit controls are disabled meanwhile (Scene.tsx) and the camera rig brings the orbit camera back afterwards.
+ * The orbit controls are disabled meanwhile (Scene.tsx) and the camera rig brings the orbit camera back afterwards
+ * («Avslutt», a camera angle, the Plan tab), except after Esc.
  */
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { Vector3 } from 'three';
-import type { PerspectiveCamera } from 'three';
+import { Quaternion, Vector3 } from 'three';
+import type { Camera, PerspectiveCamera } from 'three';
+import { saveWalkPhoto, setWalkViewKept } from '../export/walkView';
 import type { DerivedVariant } from '../model/derived';
 import type { Site, TerrainAsset } from '../model/types';
 import type { Selection } from '../state/selection';
@@ -42,6 +46,56 @@ export interface WalkControlsProps {
 
 /** Share of the canvas width (from the left) where a touch does not start a look drag (the joystick's side). */
 const TOUCH_LOOK_FROM = 0.4;
+
+/**
+ * Playwright only: `window.__hytteWalkFrom = { x, y, heading }` (plan metres, radians from +x) makes the next walk
+ * start there, on whatever the walker stands on, once (e2e/phase3.spec.ts walks up the slope towards the terrace's
+ * skirt). Nothing in the app sets it.
+ */
+function takeTestWalkStart(world: W.WalkWorld): W.WalkPose | null {
+  const g = globalThis as { __hytteWalkFrom?: { x: number; y: number; heading: number } };
+  const from = g.__hytteWalkFrom;
+  if (!from || !Number.isFinite(from.x) || !Number.isFinite(from.y) || !Number.isFinite(from.heading)) return null;
+  delete g.__hytteWalkFrom;
+  return W.poseAt(world, [from.x, from.y], world.ground(from.x, from.y), from.heading, 0);
+}
+
+/** The part of drei's OrbitControls (three-stdlib) `keepWalkerView` uses. */
+interface OrbitLike {
+  target: Vector3;
+  update(): unknown;
+  dispatchEvent(event: { type: 'start' }): void;
+  addEventListener(type: 'change', listener: () => void): void;
+  removeEventListener(type: 'change', listener: () => void): void;
+}
+
+/** Where the orbit target goes when a walk ends with Esc: this far ahead (more than ORBIT_LIMITS.minDistance). */
+const KEEP_TARGET_M = 4;
+/** …and looking down at least this much (the orbit's polar limit, 0.495π, would otherwise swing the camera). */
+const KEEP_MIN_DOWN = 0.02;
+
+/**
+ * After a walk ended with Esc: the camera stays where the walker stood, looking the same way (a little down at
+ * least), with the orbit target straight ahead. The camera rig (Scene.tsx) has just started easing back; the
+ * controls' 'start' event is its «the user took the camera» (it cancels the easing). Until the camera moves again
+ * the PNG caption names the view «Gå rundt» (export/walkView.ts).
+ */
+function keepWalkerView(camera: Camera, controls: OrbitLike, at: { position: Vector3; quaternion: Quaternion }): void {
+  controls.dispatchEvent({ type: 'start' });
+  camera.position.copy(at.position);
+  camera.quaternion.copy(at.quaternion);
+  const ahead = new Vector3(0, 0, -1).applyQuaternion(at.quaternion);
+  ahead.y = Math.min(ahead.y, -KEEP_MIN_DOWN);
+  controls.target.copy(at.position).addScaledVector(ahead.normalize(), KEEP_TARGET_M);
+  controls.update();
+  camera.updateMatrixWorld();
+  setWalkViewKept(true);
+  const moved = () => {
+    setWalkViewKept(false);
+    controls.removeEventListener('change', moved);
+  };
+  controls.addEventListener('change', moved);
+}
 
 /** Puts a camera at a walk pose (and tells the test probe, walkState.ts `publishWalkProbe`). */
 function applyWalkPose(
@@ -82,6 +136,8 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
   /** The previous frame stepped the walker (else the next one starts with a nominal dt). */
   const stepping = useRef(false);
   const latest = useRef({ world, derived, selection, aspect: width / Math.max(1, height) });
+  /** The walker's camera when Esc ended the walk (kept there afterwards, `keepWalkerView`). */
+  const keep = useRef<{ position: Vector3; quaternion: Quaternion } | null>(null);
   useLayoutEffect(() => {
     latest.current = { world, derived, selection, aspect: width / Math.max(1, height) };
   }, [world, derived, selection, width, height]);
@@ -96,8 +152,10 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
     camera.getWorldDirection(dir);
     const heading = Math.atan2(-dir.z, dir.x);
     const at = fromWorld(camera.position);
-    const start = W.selectionWalkStart(d, w, sel, pickFor(sel), [at[0], at[1]], heading) ?? W.defaultWalkStart(d, w);
+    const start = takeTestWalkStart(w) ?? W.selectionWalkStart(d, w, sel, pickFor(sel), [at[0], at[1]], heading) ?? W.defaultWalkStart(d, w);
     pose.current = start;
+    keep.current = null;
+    setWalkViewKept(false);
     stepping.current = false;
     const fov = camera.fov;
     setFov(camera, W.walkFov(aspect));
@@ -110,6 +168,18 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
       setFov(camera, fov);
       invalidate();
     };
+  }, [session, get, invalidate]);
+
+  // A walk ended with Esc: after the camera rig has started easing back (its layout effect), keep the walker's view.
+  useEffect(() => {
+    if (session !== null) return;
+    const at = keep.current;
+    keep.current = null;
+    const { camera, controls } = get();
+    if (at && controls) {
+      keepWalkerView(camera, controls as unknown as OrbitLike, at);
+      invalidate();
+    }
   }, [session, get, invalidate]);
 
   // The viewport changes shape while walking: keep about 80° across.
@@ -141,8 +211,19 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
         return true;
       }
     };
+    const endKeepingView = () => {
+      keep.current = { position: camera.position.clone(), quaternion: camera.quaternion.clone() };
+      stopWalk();
+    };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || isEditableTarget(e.target)) return;
+      if (e.code === 'KeyP' && shown()) {
+        // a picture of the walk, which goes on
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) saveWalkPhoto();
+        return;
+      }
       if (e.key !== 'Escape' && !W.WALK_KEYS.has(e.code)) return;
       if (!shown()) {
         stopWalk();
@@ -150,7 +231,7 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
       }
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === 'Escape') stopWalk();
+      if (e.key === 'Escape') endKeepingView();
       else {
         pressed.add(e.code);
         invalidate();
@@ -177,7 +258,7 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
       const locked = document.pointerLockElement === el;
       setPointerLocked(locked);
       if (locked) wasLocked = true;
-      else if (wasLocked) stopWalk(); // Esc (the browser takes it) or the window lost focus
+      else if (wasLocked) endKeepingView(); // Esc (the browser takes it) or the window lost focus
     };
     requestLock();
 

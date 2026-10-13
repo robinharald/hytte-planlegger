@@ -1,7 +1,8 @@
 /**
  * «Lagre 3D-bildet som PNG» (brief §6), the top bar's menu entry: the 3D view as it is now with its caption strip
  * (png.ts), saved as «hytta-3d-<dato>.png». On a phone the share sheet gets the file (navigator.share), elsewhere it
- * is downloaded (deliver.ts); `window.__hytte.lastExport` tells the e2e tests (hook.ts).
+ * is downloaded (deliver.ts); `window.__hytte.lastExport` tells the e2e tests (hook.ts). While walking, the P key and
+ * the walk overlay's camera button save it too, and the walk goes on (view3d/WalkControlsPhoto.tsx).
  *
  * Everything from the tap to the share call is synchronous (capture, caption, PNG encoding), so iOS still counts it
  * as the user's tap. When no 3D view has been shown yet, the view switches to 3D first and the image is taken once it
@@ -14,20 +15,25 @@ import { selectActiveVariant } from '../state/store';
 import { showToast } from '../ui/editorBridge';
 import { formatDate } from '../ui/format';
 import { capture3d, hasCapture, whenCaptureReady } from '../view3d/capture';
+import { view3dLocal } from '../view3d/walkState';
 import { coarsePointer, deliverFile } from './deliver';
 import { pngFileName } from './fileNames';
 import { publishLastExport } from './hook';
 import { canvasToPngBlob, composeCaptioned } from './png';
 import type { CaptionTexts } from './png';
+import { walkViewKept } from './walkView';
 
 const S = nb.export;
 
-/** The caption texts for the app's state now. */
-export function captionTexts(state: Pick<AppState, 'project' | 'ui'>, date: Date): CaptionTexts {
+/**
+ * The caption texts for the app's state now. The view is «Gå rundt» while walking (the 3D view then shows every
+ * storey whole: «Ute») and while the camera still stands where a walk ended with Esc (walkView.ts).
+ */
+export function captionTexts(state: Pick<AppState, 'project' | 'ui'>, date: Date, walking: boolean = view3dLocal.getState().walk !== null): CaptionTexts {
   const project = state.project;
   const variant = selectActiveVariant({ project });
-  const mode = state.ui.mode3d === 'inne' ? nb.mode3d.inne : nb.mode3d.ute;
-  const preset = nb.mode3d.presetNames[state.ui.preset] ?? state.ui.preset;
+  const mode = state.ui.mode3d === 'inne' && !walking ? nb.mode3d.inne : nb.mode3d.ute;
+  const preset = walking || walkViewKept() ? nb.walk.start : (nb.mode3d.presetNames[state.ui.preset] ?? state.ui.preset);
   return { title: `${project.name} – ${variant.name}`, sub: `${S.pngView(mode, preset)} · ${formatDate(date.toISOString())}`, brand: S.tbMadeWith };
 }
 

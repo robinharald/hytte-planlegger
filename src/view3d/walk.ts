@@ -14,7 +14,9 @@
  *  - Obstacles (`WalkWorld.segments`): the edges of every standing wall footprint with the passable openings cut out
  *    (doors, glass, sliding and sauna doors and frameless openings whose sill is at most 0.35 m above their floor and
  *    which are at least 1.2 m high; windows, the glass bump's included, stay wall), the railing panels, the hot tubs
- *    and the posts and chimneys. An obstacle blocks when its z range overlaps the body band. `pushOut` moves the
+ *    and the posts and chimneys, and below the decks and floors the deck skirts and the plinths (`addSkirtsAndPlinths`;
+ *    a skirt also keeps the walker on a deck edge more than about 0.65 m above the terrain, like a ledge from below).
+ *    An obstacle blocks when its z range overlaps the body band. `pushOut` moves the
  *    circle out of every blocking segment (a few passes), which makes the walker slide along walls; `moveWalker`
  *    splits a move into sub-steps of at most `WALK_SUBSTEP` (less than the radius, so no wall is tunnelled) and
  *    tries the x and y parts alone when the whole step is refused.
@@ -266,7 +268,37 @@ function surface(polygon: Vec2[], holes: Vec2[][], z: number, bottom: number, wa
   return { polygon, holes, z, bottom, walkable, climb, ...boxOf(polygon) };
 }
 
-export type WalkDerived = Pick<DerivedVariant, 'walls' | 'floors' | 'structure' | 'outdoor' | 'roofs' | 'levels' | 'bounds' | 'site'>;
+export type WalkDerived = Pick<DerivedVariant, 'walls' | 'floors' | 'structure' | 'outdoor' | 'roofs' | 'levels' | 'bounds' | 'site' | 'foundations'>;
+
+/**
+ * What stands below the decks and the floors: each deck piece's skirt (its outer ring, from the skirt bottom — or the
+ * terrain — up to the deck's underside) and each block's plinth (its outer outline, from the foundation's bottom up to
+ * its lowest floor), so a walker on a slope cannot walk in under the deck boards or into a plinth. Where the terrain is
+ * at deck level the skirt is lower than a step (`blocks`), so the deck is still stepped onto.
+ */
+function addSkirtsAndPlinths(derived: WalkDerived, ground: (x: number, y: number) => number, out: WalkSegment[]): void {
+  for (const d of derived.outdoor.decks) {
+    const under = d.topZ - d.thickness;
+    d.pieces.forEach((piece, i) => {
+      const ring = piece[0];
+      if (!ring || ring.length < 3) return;
+      const bottoms = d.skirtBottomZ[i] ?? [];
+      const bottomAt = (k: number) => {
+        const z = bottoms[k] ?? ground(ring[k][0], ring[k][1]);
+        return Number.isFinite(z) ? z : under;
+      };
+      for (let k = 0; k < ring.length; k++) {
+        const a = ring[k];
+        const b = ring[(k + 1) % ring.length];
+        const zLo = Math.min(bottomAt(k), bottomAt((k + 1) % ring.length));
+        if (zLo < under && Math.hypot(b[0] - a[0], b[1] - a[1]) >= 1e-6) out.push({ a, b, zLo, zHi: under, ...boxOf([a, b]) });
+      }
+    });
+  }
+  for (const f of derived.foundations) {
+    if (f.polygon.length >= 3 && f.bottomZ < f.topZ) segmentsOfRing(f.polygon, f.bottomZ, f.topZ, out);
+  }
+}
 
 /** Everything the walker collides with and stands on, from the derived model and the terrain height function. */
 export function buildWalkWorld(derived: WalkDerived, ground: (x: number, y: number) => number): WalkWorld {
@@ -275,6 +307,7 @@ export function buildWalkWorld(derived: WalkDerived, ground: (x: number, y: numb
   for (const w of derived.walls) {
     for (const piece of wallSolidPieces(w, levelZ)) segmentsOfRing(piece, w.baseZ, w.topZ, segments);
   }
+  addSkirtsAndPlinths(derived, ground, segments);
   for (const r of derived.outdoor.railings) {
     for (const p of r.panels) {
       const a: Vec2 = [p.a[0], p.a[1]];
