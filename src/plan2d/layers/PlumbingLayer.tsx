@@ -10,8 +10,14 @@
  *    nearest wall (`snapStackToWall`, out of openings) and the runs and distances follow live (computed here; no store
  *    change during the drag), and the release calls `onMoveStack(id, p)` once (one undo step; a suggested stack is
  *    stored there). A tap picks a stack: a stored one gets a delete button (`onDeleteStack`), a suggested one its
- *    hint; a press anywhere else drops the pick. A press on a stack or the delete button is held for the plan's
- *    gesture tracker (usePanZoom.ts `holdPointer`): it neither pans nor taps, and a second finger still pinches.
+ *    hint in the plan's hint line (`onHint`); a press anywhere else drops the pick. A press on a stack (with a finger:
+ *    on the picked stack only) or the delete button is held for the plan's gesture tracker (usePanZoom.ts
+ *    `holdPointer`): it neither pans nor taps, and a second finger still pinches.
+ *  - Touch, like furniture («Trykk for å velge, dra det valgte for å flytte»): a finger on a stack that is not picked
+ *    is the plan's (a drag pans, a second finger pinches); lifted as a tap (under the plan's 10 px) it picks the
+ *    stack. Its touch target is at most STACK_HIT_MAX_M around it whatever the zoom, so at the starting zoom a tap on
+ *    the toilets next to the stack reaches them (or the wall under them) as without the overlay; the picked stack
+ *    keeps the larger target, so it is easy to drag.
  *  - Read-only (Forslag D, a shared link): drawn without hit areas, so taps reach the plan.
  *
  * Drawn in the plan's flipped root group (plan metres), above the walls; screen sizes are divided by `scale`.
@@ -26,6 +32,7 @@ import type { DerivedVariant } from '../../model/derived';
 import type { Id, Vec2 } from '../../model/types';
 import { polygonPath } from '../svg';
 import { FONT_PX, NSS, PAPER } from '../style';
+import { dragThresholdPx } from '../editModel';
 import { holdPointer } from '../usePanZoom';
 import { COLLISION } from './furnitureLayerModel';
 import { ScreenText } from './ScreenText';
@@ -74,6 +81,8 @@ export interface PlumbingLayerProps {
   clientToPlan?: (clientX: number, clientY: number) => Vec2 | null;
   onMoveStack?: (id: Id, p: Vec2) => void;
   onDeleteStack?: (id: Id) => void;
+  /** The hint line's text while a suggested stack is picked (null when none is). */
+  onHint?: (text: string | null) => void;
 }
 
 interface StackGesture {
@@ -120,7 +129,7 @@ const preventAndHold = (e: ReactPointerEvent<SVGElement>, cancel: () => void) =>
 };
 
 export const PlumbingLayer = memo(function PlumbingLayer(props: PlumbingLayerProps) {
-  const { derived, plumbing, todayRoomIds, storeyId, scale, coarse = false, editable = false, clientToPlan, onMoveStack, onDeleteStack } = props;
+  const { derived, plumbing, todayRoomIds, storeyId, scale, coarse = false, editable = false, clientToPlan, onMoveStack, onDeleteStack, onHint } = props;
   const [drag, setDrag] = useState<{ id: Id; p: Vec2 } | null>(null);
   const [picked, setPicked] = useState<Id | null>(null);
   const gesture = useRef<StackGesture | null>(null);
@@ -144,14 +153,65 @@ export const PlumbingLayer = memo(function PlumbingLayer(props: PlumbingLayerPro
     return () => document.removeEventListener('pointerdown', onDown, true);
   }, [picked]);
 
+  // The hint line says what a picked suggestion is (cleared again when the pick goes).
+  const hintFor = editable && picked !== null && stacks.some((x) => x.id === picked && x.suggested) ? nb.plumbing.suggestedNote : null;
+  const onHintRef = useRef(onHint);
+  useEffect(() => {
+    onHintRef.current = onHint;
+  }, [onHint]);
+  useEffect(() => {
+    if (hintFor === null) return;
+    onHintRef.current?.(hintFor);
+    return () => onHintRef.current?.(null);
+  }, [hintFor]);
+
+  // A finger on a stack that is not picked: the plan pans; a tap (no second finger, under the plan's tap distance)
+  // picks the stack once it is lifted. The plan's tracker has the pointer captured, so this listens on the window.
+  const pending = useRef<{ id: Id; pointerId: number; x: number; y: number } | null>(null);
+  useEffect(() => {
+    const drop = () => {
+      pending.current = null;
+    };
+    const onDown = (e: PointerEvent) => {
+      if (pending.current && e.pointerId !== pending.current.pointerId) drop();
+    };
+    const onMove = (e: PointerEvent) => {
+      const t = pending.current;
+      if (t && t.pointerId === e.pointerId && Math.hypot(e.clientX - t.x, e.clientY - t.y) > dragThresholdPx('touch')) drop();
+    };
+    const onUp = (e: PointerEvent) => {
+      const t = pending.current;
+      if (!t || t.pointerId !== e.pointerId) return;
+      drop();
+      if (Math.hypot(e.clientX - t.x, e.clientY - t.y) <= dragThresholdPx('touch')) setPicked(t.id);
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', drop, true);
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', drop, true);
+    };
+  }, []);
+
   const stackR = (coarse ? STACK_R_COARSE_PX : STACK_R_PX) / s;
   const hitR = Math.max((coarse ? STACK_R_COARSE_PX : STACK_R_PX) + STACK_HIT_MIN_EXTRA_PX, Math.min(coarse ? STACK_HIT_COARSE_PX : STACK_HIT_PX, STACK_HIT_MAX_M * s)) / s;
+  /** A finger's target on a stack that is not picked: never more than STACK_HIT_MAX_M (see the header). */
+  const touchHitR = Math.min(STACK_HIT_COARSE_PX / s, STACK_HIT_MAX_M);
   const delR = (coarse ? DELETE_R_COARSE_PX : DELETE_R_PX) / s;
   const delOff = (coarse ? DELETE_OFFSET_COARSE_PX : DELETE_OFFSET_PX) / s;
 
   const onStackDown = (stack: PlumbingStack) => (e: ReactPointerEvent<SVGElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const pointerId = e.pointerId;
+    if (e.pointerType === 'touch' && picked !== stack.id) {
+      // not picked: the plan's press (pan / pinch); a tap picks it (the window listeners above)
+      pending.current = { id: stack.id, pointerId, x: e.clientX, y: e.clientY };
+      return;
+    }
     gesture.current = { id: stack.id, pointerId, x: e.clientX, y: e.clientY, touch: e.pointerType === 'touch', moved: false, p: stack.p };
     preventAndHold(e, () => {
       if (gesture.current?.pointerId !== pointerId) return;
@@ -274,7 +334,7 @@ export const PlumbingLayer = memo(function PlumbingLayer(props: PlumbingLayerPro
             <circle
               cx={st.p[0]}
               cy={st.p[1]}
-              r={hitR}
+              r={coarse && picked !== st.id ? touchHitR : hitR}
               fill="transparent"
               // 'fill', not 'all': with 'all' the (unset, 1 m wide) stroke took presses half a metre beyond the circle
               pointerEvents="fill"
@@ -292,13 +352,6 @@ export const PlumbingLayer = memo(function PlumbingLayer(props: PlumbingLayerPro
           {!editable && <title>{nb.plumbing.stackReadOnly}</title>}
         </g>
       ))}
-      {pickedStack && pickedStack.suggested && (
-        <ScreenText x={pickedStack.p[0]} y={pickedStack.p[1]} scale={s} data-drain-hint={pickedStack.id}>
-          <text x={0} y={-(stackR * s + 8)} textAnchor="middle" fontSize={FONT_PX.detail} fill={DRAIN_INK} stroke={PAPER} strokeWidth={3} paintOrder="stroke">
-            {nb.plumbing.suggestedNote}
-          </text>
-        </ScreenText>
-      )}
       {pickedStack && !pickedStack.suggested && (
         <g
           data-drain-delete={pickedStack.id}

@@ -3,7 +3,8 @@
  * «Avløp og sluk» in the plan (PlumbingLayer.tsx) and in Vis (ui/PlumbingToggle.tsx): the seed's suggested stack with a
  * dashed run from each fixture of the new wing and today's drains marked; a far toilet in red with its distance; a
  * stack dragged along the walls with the runs following live and one `onMoveStack` on release (the plan's tracker only
- * counts the pointer); a tap picks a stack (delete button / hint), a press elsewhere drops it; read-only has no hit
+ * counts the pointer); a tap picks a stack (delete button / the hint line), a press elsewhere drops it; on touch a drag
+ * on a stack that is not picked is the plan's and its target stays off the toilets beside it; read-only has no hit
  * areas; the Vis toggle shows the lines and «Legg til avløpsstamme» only in a proposal that can be edited.
  */
 import { produce } from 'immer';
@@ -15,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deriveVariant } from '../../geometry/derive';
 import type { VariantPlumbing } from '../../geometry/plumbing';
 import type { DerivedVariant } from '../../model/derived';
+import { nb } from '../../i18n/nb';
 import { createForslagD } from '../../model/seed/forslagD';
 import terrainJson from '../../model/seed/terrain-merkesvatnet.json';
 import type { TerrainAsset, Variant, Vec2 } from '../../model/types';
@@ -168,13 +170,72 @@ describe('PlumbingLayer', () => {
     expect(onDeleteStack).toHaveBeenCalledWith('s1');
   });
 
-  it('a tap on the suggested stack shows its hint instead of a delete button', () => {
-    draw({ editable: true });
+  it('a tap on the suggested stack puts its hint in the hint line instead of a delete button', () => {
+    const onHint = vi.fn<(t: string | null) => void>();
+    draw({ editable: true, onHint });
     const hit = q('[data-drain-hit="suggested-ground"]')!;
     pointer(hit, 'pointerdown', toClient(stackAt('suggested-ground')));
     pointer(hit, 'pointerup', toClient(stackAt('suggested-ground')));
-    expect(q('[data-drain-hint="suggested-ground"]')?.textContent).toContain('Dra den');
+    expect(onHint).toHaveBeenLastCalledWith(nb.plumbing.suggestedNote);
+    // not in the plan (it ran past the plan's edge on a phone)
+    expect(q('[data-drain-hint]')).toBeNull();
     expect(q('[data-drain-delete]')).toBeNull();
+    // the pick goes: so does the hint
+    pointer(document.body, 'pointerdown', [5, 5]);
+    expect(onHint).toHaveBeenLastCalledWith(null);
+  });
+
+  describe('on a touch screen', () => {
+    const touch = (el: Element, type: string, at: [number, number], pointerId = 7) => pointer(el, type, at, { pointerType: 'touch', pointerId });
+    const plumbing: VariantPlumbing = { stacks: [{ id: 's1', p: [18.6, 1.0], storeyId: 'ground' }] };
+
+    it('a drag on a stack that is not picked pans the plan; a tap picks it, then a drag moves it', () => {
+      const onMoveStack = vi.fn();
+      const parentDown = draw({ editable: true, coarse: true, plumbing, onMoveStack });
+      const at = toClient([18.6, 1.0]);
+      const hit = () => q('[data-drain-hit="s1"]')!;
+      touch(hit(), 'pointerdown', at);
+      // the plan's own press (it pans)
+      const e = parentDown.mock.calls.at(-1)?.[0] as ReactPointerEvent | undefined;
+      expect(e && pointerHandOff(e.nativeEvent)).toBeNull();
+      touch(hit(), 'pointermove', [at[0] + 40, at[1]]);
+      touch(hit(), 'pointerup', [at[0] + 40, at[1]]);
+      expect(onMoveStack).not.toHaveBeenCalled();
+      expect(stackAt('s1')[0]).toBeCloseTo(18.6, 6);
+      expect(q('[data-drain-delete="s1"]')).toBeNull();
+      // a second finger makes it a pinch, never a tap
+      touch(hit(), 'pointerdown', at);
+      touch(document.body, 'pointerdown', [5, 5], 8);
+      touch(hit(), 'pointerup', at);
+      expect(q('[data-drain-delete="s1"]')).toBeNull();
+      // a tap picks it
+      touch(hit(), 'pointerdown', at);
+      touch(hit(), 'pointerup', [at[0] + 3, at[1]]);
+      expect(q('[data-drain-delete="s1"]')).not.toBeNull();
+      // now a drag on it is held and moves it along the wall
+      touch(hit(), 'pointerdown', at);
+      const held = parentDown.mock.calls.at(-1)?.[0] as ReactPointerEvent | undefined;
+      expect(held && pointerHandOff(held.nativeEvent)?.kind).toBe('held');
+      touch(hit(), 'pointermove', toClient([18.75, 1.6]));
+      touch(hit(), 'pointerup', toClient([18.75, 1.6]));
+      expect(onMoveStack).toHaveBeenCalledTimes(1);
+      expect(onMoveStack.mock.calls[0][1][1]).toBeCloseTo(1.6, 6);
+    });
+
+    it('at the starting zoom the target of a stack that is not picked leaves the toilets beside it free', () => {
+      const start = 11.56; // px per metre, the phone's starting zoom
+      draw({ editable: true, coarse: true, scale: start });
+      const r = Number(q('[data-drain-hit="suggested-ground"]')!.getAttribute('r'));
+      expect(r).toBeLessThanOrEqual(0.25 + 1e-9);
+      // the WC's toilet stands 0,5 m from the stack (STATUS): outside the target
+      const toilet = seedDerived.furniture.find((f) => f.id === 'fu-wc-1')!;
+      const c = toilet.footprint.reduce<Vec2>((a, p) => [a[0] + p[0] / toilet.footprint.length, a[1] + p[1] / toilet.footprint.length], [0, 0]);
+      const st = stackAt('suggested-ground');
+      expect(Math.hypot(c[0] - st[0], c[1] - st[1])).toBeGreaterThan(r);
+      // zoomed in, a finger-sized target again
+      draw({ editable: true, coarse: true, scale: 80 });
+      expect(Number(q('[data-drain-hit="suggested-ground"]')!.getAttribute('r')) * 80).toBeCloseTo(16, 6);
+    });
   });
 });
 

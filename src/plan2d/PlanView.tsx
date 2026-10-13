@@ -69,14 +69,13 @@
  *   re-renders with the view and the drag feedback (it holds a handful of elements).
  * - In jsdom (no layout) the viewport falls back to 1000 × 700 px so tests see a deterministic zoom.
  */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DerivedVariant } from '../model/derived';
 import type { Id, Site, Vec2 } from '../model/types';
 import type { Selection } from '../state/selection';
 import { BlockLayer } from './layers/BlockLayer';
 import { DimensionLayer } from './layers/DimensionLayer';
 import { IfcLayer } from './layers/IfcLayer';
-import { PlumbingLayer } from './layers/PlumbingLayer';
 import type { PlumbingLayerProps } from './layers/PlumbingLayer';
 import { EditOverlay } from './layers/EditOverlay';
 import type { TempDimension } from './layers/EditOverlay';
@@ -202,6 +201,12 @@ export interface PlanViewHandle {
 export const FALLBACK_W = 1000;
 export const FALLBACK_H = 700;
 export const FIT_MARGIN_M = 1.5;
+/**
+ * «Avløp og sluk» (layers/PlumbingLayer.tsx) is a chunk of its own, loaded the first time the overlay is switched on
+ * (the start bundle stays as small as before the final round; the PWA precaches it, so it works offline).
+ */
+const PlumbingLayer = lazy(() => import('./layers/PlumbingLayer').then((m) => ({ default: m.PlumbingLayer })));
+
 /** Deck boards are drawn from this zoom (px/m) on. */
 const DECK_HATCH_MIN_SCALE = 30;
 /** Grid extent is snapped to this step (m) so small pans do not rebuild the grid. */
@@ -736,7 +741,9 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           <LabelLayer labels={labels} scale={scale} highlightNew={highlightNew} />
           {showDims && <DimensionLayer dimensions={data.dimensions} scale={view.s} />}
           {props.plumbing && (
-            <PlumbingLayer {...props.plumbing} derived={derived} storeyId={storeyId} scale={view.s} coarse={coarse} editable={editable} clientToPlan={clientToPlan} />
+            <Suspense fallback={null}>
+              <PlumbingLayer {...props.plumbing} derived={derived} storeyId={storeyId} scale={view.s} coarse={coarse} editable={editable} clientToPlan={clientToPlan} onHint={onHint} />
+            </Suspense>
           )}
           {rotateItem && <FurnitureRotateHandle item={rotateItem} scale={view.s} handleR={sizes.handleR} coarse={coarse} items={data.furniture} walls={data.pieces} clientToPlan={clientToPlan} onRotate={onRotateFurniture} title={planStrings.edit.rotateHandle} />}
         </g>
