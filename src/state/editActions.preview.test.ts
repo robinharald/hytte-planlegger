@@ -114,7 +114,10 @@ describe('previewDrag', () => {
       expect(counter.calls, name).toBe(0);
       expect(store.getState().project, name).toBe(before);
       times.sort((a, b) => a - b);
-      expect(times[20], `${name}: median ${times[20].toFixed(3)} ms`).toBeLessThanOrEqual(2);
+      // Same CI slack as the derive timing tests: GitHub runners are several times slower than this PC.
+      const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+      const slack = env.CI ? 3 : 1;
+      expect(times[20], `${name}: median ${times[20].toFixed(3)} ms`).toBeLessThanOrEqual(2 * slack);
       A.cancelDrag(store, session);
     }
   });
