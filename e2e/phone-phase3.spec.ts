@@ -68,11 +68,6 @@ test.describe('phase 3 on an iPhone', () => {
     const joystick = page.getByTestId('walk-joystick');
     await expect(joystick).toBeVisible();
     await expect(page.getByTestId('walk-exit')).toBeVisible();
-    // The camera button sits under «Avslutt», inside the view.
-    const exitBox = (await page.getByTestId('walk-exit').boundingBox())!;
-    const photoBox = (await page.getByTestId('walk-photo').boundingBox())!;
-    expect(photoBox.y, 'under «Avslutt»').toBeGreaterThanOrEqual(exitBox.y + exitBox.height);
-    expect(photoBox.height).toBeGreaterThanOrEqual(44);
     await expect.poll(async () => {
       const w = await walkProbe(page);
       return w ? Math.round((w.eyeZ - w.feetZ) * 100) / 100 : null;
@@ -90,6 +85,16 @@ test.describe('phase 3 on an iPhone', () => {
         return stable;
       })
       .toBe(true);
+    // The camera button sits under «Avslutt», inside the view: both read in one frame, after the scroll (fix round 3
+    // after phase 3: read one after the other while the page still scrolled, they failed 6 runs in 9).
+    const [exitBox, photoBox] = await page.evaluate(() =>
+      ['walk-exit', 'walk-photo'].map((id) => {
+        const r = document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
+        return { y: r.top, height: r.height };
+      }),
+    );
+    expect(photoBox.y, 'under «Avslutt»').toBeGreaterThanOrEqual(exitBox.y + exitBox.height);
+    expect(photoBox.height).toBeGreaterThanOrEqual(44);
     const jb = (await joystick.boundingBox())!;
     const vb = (await view.boundingBox())!;
     const vp = page.viewportSize()!;
