@@ -15,9 +15,10 @@
  *    `holdPointer`): it neither pans nor taps, and a second finger still pinches.
  *  - Touch, like furniture («Trykk for å velge, dra det valgte for å flytte»): a finger on a stack that is not picked
  *    is the plan's (a drag pans, a second finger pinches); lifted as a tap (under the plan's 10 px) it picks the
- *    stack. Its touch target is at most STACK_HIT_MAX_M around it whatever the zoom, so at the starting zoom a tap on
- *    the toilets next to the stack reaches them (or the wall under them) as without the overlay; the picked stack
- *    keeps the larger target, so it is easy to drag.
+ *    stack. Its touch target is never smaller than the drawn stack (STACK_TOUCH_MIN_PX, so it can be picked at the
+ *    starting zoom; fix round 3 after phase 3: 0,25 m was 2,9 px there) and, above that, at most STACK_HIT_MAX_M
+ *    around it, so zoomed in a tap on the toilets next to the stack reaches them; the picked stack keeps the larger
+ *    target, so it is easy to drag.
  *  - Read-only (Forslag D, a shared link): drawn without hit areas, so taps reach the plan.
  *
  * Drawn in the plan's flipped root group (plan metres), above the walls; screen sizes are divided by `scale`.
@@ -54,6 +55,8 @@ export const STACK_HIT_COARSE_PX = 16;
  */
 export const STACK_HIT_MAX_M = 0.25;
 const STACK_HIT_MIN_EXTRA_PX = 3;
+/** The least radius (px) of a finger's target on a stack that is not picked: the drawn stack (9 px) with its ring. */
+const STACK_TOUCH_MIN_PX = 10;
 /** The delete button of a picked stack: radius and offset from the stack (px), mouse / touch. */
 const DELETE_R_PX = 9;
 const DELETE_R_COARSE_PX = 14;
@@ -199,8 +202,8 @@ export const PlumbingLayer = memo(function PlumbingLayer(props: PlumbingLayerPro
 
   const stackR = (coarse ? STACK_R_COARSE_PX : STACK_R_PX) / s;
   const hitR = Math.max((coarse ? STACK_R_COARSE_PX : STACK_R_PX) + STACK_HIT_MIN_EXTRA_PX, Math.min(coarse ? STACK_HIT_COARSE_PX : STACK_HIT_PX, STACK_HIT_MAX_M * s)) / s;
-  /** A finger's target on a stack that is not picked: never more than STACK_HIT_MAX_M (see the header). */
-  const touchHitR = Math.min(STACK_HIT_COARSE_PX / s, STACK_HIT_MAX_M);
+  /** A finger's target on a stack that is not picked: the drawn stack at least, else at most STACK_HIT_MAX_M (header). */
+  const touchHitR = Math.max(STACK_TOUCH_MIN_PX / s, Math.min(STACK_HIT_COARSE_PX / s, STACK_HIT_MAX_M));
   const delR = (coarse ? DELETE_R_COARSE_PX : DELETE_R_PX) / s;
   const delOff = (coarse ? DELETE_OFFSET_COARSE_PX : DELETE_OFFSET_PX) / s;
 

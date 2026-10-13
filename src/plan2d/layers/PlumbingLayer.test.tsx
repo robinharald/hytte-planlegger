@@ -222,19 +222,23 @@ describe('PlumbingLayer', () => {
       expect(onMoveStack.mock.calls[0][1][1]).toBeCloseTo(1.6, 6);
     });
 
-    it('at the starting zoom the target of a stack that is not picked leaves the toilets beside it free', () => {
-      const start = 11.56; // px per metre, the phone's starting zoom
-      draw({ editable: true, coarse: true, scale: start });
+    it('the target of a stack that is not picked: never under the drawn stack (10 px), else at most 0,25 m', () => {
+      const hitPx = (scale: number) => {
+        draw({ editable: true, coarse: true, scale });
+        return Number(q('[data-drain-hit="suggested-ground"]')!.getAttribute('r')) * scale;
+      };
+      // The phone's starting zoom (11,56 px/m) and the review's 23,1 and 34,7 px/m: the drawn 9 px stack and its ring
+      // (fix round 3 after phase 3: 0,25 m was a 2,9 px target there, a tap 5 px off picked the wall under it).
+      for (const scale of [11.56, 23.1, 34.7]) expect(hitPx(scale), `${scale}`).toBeCloseTo(10, 6);
+      // Between, the 0,25 m cap: the WC's toilet (0,5 m from the stack) stays outside the target.
+      expect(hitPx(60)).toBeCloseTo(0.25 * 60, 6);
       const r = Number(q('[data-drain-hit="suggested-ground"]')!.getAttribute('r'));
-      expect(r).toBeLessThanOrEqual(0.25 + 1e-9);
-      // the WC's toilet stands 0,5 m from the stack (STATUS): outside the target
       const toilet = seedDerived.furniture.find((f) => f.id === 'fu-wc-1')!;
       const c = toilet.footprint.reduce<Vec2>((a, p) => [a[0] + p[0] / toilet.footprint.length, a[1] + p[1] / toilet.footprint.length], [0, 0]);
       const st = stackAt('suggested-ground');
       expect(Math.hypot(c[0] - st[0], c[1] - st[1])).toBeGreaterThan(r);
-      // zoomed in, a finger-sized target again
-      draw({ editable: true, coarse: true, scale: 80 });
-      expect(Number(q('[data-drain-hit="suggested-ground"]')!.getAttribute('r')) * 80).toBeCloseTo(16, 6);
+      // Zoomed in, a finger-sized target again.
+      expect(hitPx(80)).toBeCloseTo(16, 6);
     });
   });
 });
