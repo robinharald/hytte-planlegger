@@ -234,6 +234,11 @@ export interface LinkedFamilyInfo {
   hereOthers: boolean;
   /** A `&p=` link: that proposal's name there (null when it is not there). */
   proposalName: string | null;
+  /**
+   * Only this device's cache answered for the link's space (a slow or blocked connection): it may be out of date, so
+   * the banner never says the proposal «finnes ikke» from it. Absent once the server answered.
+   */
+  fromCache?: true;
 }
 
 /** A `#f=` link to another space than this device's: shown in a banner until the user answers. */
@@ -818,10 +823,16 @@ function madeHere(family: string): Set<Id> {
   return new Set([...(idsByFamily(FAMILY_KEYS.createdHere)[family] ?? []), ...(idsByFamily(FAMILY_KEYS.carriedIn)[family] ?? [])]);
 }
 
+/**
+ * The banner's facts about the link's space. An empty list from this device's cache only (a slow or blocked
+ * connection, offline: a space never opened here) says nothing about that space: the banner keeps waiting («Henter
+ * plassen i lenken …», no highlighted button) and never says «ingen forslag» or «finnes ikke» from it.
+ */
 function updateLinkedInfo(): void {
   const other = familyUiStore.getState().otherFamily;
   const list = linked?.list;
   if (!other || !list || linked?.id !== other.id || !familyId) return;
+  if (list.fromCache && isEmptyList(list)) return;
   const there = madeHere(other.id);
   const here = madeHere(familyId);
   const hereList = sync?.lastList().proposals ?? [];
@@ -836,6 +847,7 @@ function updateLinkedInfo(): void {
         hereCount: hereList.length,
         hereOthers: hereList.some((x) => !here.has(x.id)),
         proposalName: p?.name ?? null,
+        ...(list.fromCache ? { fromCache: true as const } : {}),
       },
     },
   });
@@ -1318,7 +1330,8 @@ const NAME_WAIT_EVENTS = ['pointerdown', 'pointermove', 'wheel', 'touchstart', '
 /**
  * The first save without a name (shared mode): «Hva heter du?» never interrupts an edit. A card floating in the toast
  * area (ui/StatusPill.tsx `NameCard`: no dialog, no layout shift) is shown once nothing is selected and nothing was
- * edited, selected, touched, panned or pinched for NAME_BANNER_IDLE_MS, and no drag runs.
+ * edited, selected, touched, panned or pinched for NAME_BANNER_IDLE_MS, and no drag runs. A selection while it is
+ * shown takes it away, and the same quiet wait starts again (`hideNameOnSelect`).
  */
 function askNameWhenIdle(): void {
   if (stopNameWait || nameSkipped || familyUiStore.getState().elsewhere) return;
@@ -1336,7 +1349,10 @@ function askNameWhenIdle(): void {
     // Something selected: wait until it is let go (the selection change arms the wait again).
     if (s.ui.selection !== null) return;
     stopNameWait?.();
-    if (!nameSkipped && myName() === null) familyUiStore.setState({ nameBanner: true });
+    if (!nameSkipped && myName() === null) {
+      familyUiStore.setState({ nameBanner: true });
+      hideNameOnSelect();
+    }
   }
   const unsubscribe = appStore.subscribe((s, prev) => {
     if (s.project !== prev.project || s.ui.selection !== prev.ui.selection) arm();
@@ -1355,6 +1371,24 @@ function askNameWhenIdle(): void {
     stopNameWait = null;
   };
   arm();
+}
+
+/**
+ * While «Hva heter du?» is shown: something selected takes the card away, and it comes back only after the same quiet
+ * wait (askNameWhenIdle), not the moment the selection is let go (on a phone that tap lands where the card comes).
+ */
+function hideNameOnSelect(): void {
+  const unsubscribe = appStore.subscribe((s, prev) => {
+    if (s.ui.selection === prev.ui.selection || s.ui.selection === null) return;
+    stopNameWait?.();
+    if (!familyUiStore.getState().nameBanner) return;
+    familyUiStore.setState({ nameBanner: false });
+    askNameWhenIdle();
+  });
+  stopNameWait = () => {
+    unsubscribe();
+    stopNameWait = null;
+  };
 }
 
 /** The links of "Send forslaget" in shared mode: the family link and the proposal's deep link (null locally). */

@@ -1,7 +1,8 @@
 /**
  * Toasts (store `toasts`, docs/phase2-plan.md §3.5 "every delete toasts «Slettet. [Angre]»", §1 rule 1 refusal with
  * "Nytt forslag"): bottom centre (on phones at the top, just below the toolbar and hint line so they never cover the
- * tools or Angre: toastLayout.ts `phoneToastTop`, kept current while the page scrolls), newest last, at most three
+ * tools or Angre: toastLayout.ts `phoneToastTop`, kept current while the page scrolls or what is above the toolbar
+ * changes height: `watchToolbarMoves`), newest last, at most three
  * (store TOAST_LIMIT). Each closes by itself
  * after 6 s, 10 s when it has a button (the timer restarts when the same text is shown again: `seq`), or with ×.
  *
@@ -22,7 +23,7 @@ import { createNewProposal, dismissToast, toastOffersNewProposal, useToasts } fr
 import { useFirstRunOpen } from './firstRun';
 import { PHONE_QUERY, useMediaQuery } from './hooks';
 import { revealWarnings, toolbarBottom } from './reveal';
-import { phoneToastTop, toastBottomAvoiding } from './toastLayout';
+import { phoneToastTop, toastBottomAvoiding, watchToolbarMoves } from './toastLayout';
 import { topEntry, toastRegistry } from './toastRegistry';
 import type { UndoGroup } from './toastRegistry';
 
@@ -127,12 +128,8 @@ export function Toasts() {
     const update = () => setPhoneTop(active ? phoneToastTop(toolbarBottom()) : null);
     update();
     if (!active) return;
-    window.addEventListener('scroll', update, { capture: true, passive: true });
-    window.addEventListener('resize', update);
-    return () => {
-      window.removeEventListener('scroll', update, { capture: true });
-      window.removeEventListener('resize', update);
-    };
+    // Also when what is above the toolbar changes height (a banner whose facts arrive late, Nøkkeltall wrapping).
+    return watchToolbarMoves(update);
   }, [isPhone, shown, toasts]);
 
   const groups = registry.groups(toasts);

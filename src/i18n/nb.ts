@@ -1031,6 +1031,8 @@ export const nb = {
         return `${there}; plassen du bruker nå har ${m === 0 ? 'ingen' : m}.`;
       },
       hint: 'Du ser plassen du bruker nå.',
+      /** Until the link's space has answered (a slow or blocked connection): nothing is said about what it holds. */
+      loading: 'Henter plassen i lenken …',
       switch: 'Bytt dit',
       stay: 'Bli her',
       proposalText: (name: string | null) =>

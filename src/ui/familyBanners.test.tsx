@@ -137,7 +137,10 @@ describe('final fix round banners', () => {
     render(<FamilyBanners />);
     const banner = () => byTestId('other-family-banner');
     expect(banner()?.textContent).toContain('Denne lenken går til en annen delt plass.');
-    expect(banner()?.dataset.primary).toBe('stay');
+    // Fix round 3: until the link's space has answered, nothing is highlighted and it says it is fetching.
+    expect(banner()?.textContent).toContain('Henter plassen i lenken … Du ser plassen du bruker nå.');
+    expect(banner()?.dataset.primary).toBe('none');
+    expect(container.querySelectorAll('[data-testid="other-family-banner"] .btn-primary')).toHaveLength(0);
     expect(byTestId('other-family-switch')?.textContent).toBe('Bytt dit');
     expect(byTestId('other-family-stay')?.textContent).toBe('Bli her');
     // The link's space answered: proposals made by others there, only this device's own here → «Bytt dit».
@@ -401,5 +404,100 @@ describe('morning round', () => {
     expect(copy && getComputedStyle(copy).whiteSpace).toBe('normal');
     expect(themeCss).toMatch(/\.banner \.actions \.btn \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
     removeTheme();
+  });
+});
+
+describe('fix round 3 (phase 3): the proposal-link banner before the link’s space has answered', () => {
+  const other = 'e2e-old-family-abcdefghijklmn';
+  const banner = () => byTestId('other-family-banner');
+
+  it('no answer yet (a slow or blocked connection): «Henter plassen i lenken …», no «finnes ikke», nothing highlighted', () => {
+    familyUiStore.setState({ otherFamily: { id: other, proposal: 'p-x', info: null } });
+    render(<FamilyBanners />);
+    expect(banner()?.textContent).toContain('Denne lenken går til et forslag i en annen delt plass.');
+    expect(banner()?.textContent).toContain('Henter plassen i lenken …');
+    expect(banner()?.textContent).not.toContain('finnes ikke');
+    expect(banner()?.textContent).not.toContain('ingen forslag');
+    expect(banner()?.dataset.primary).toBe('none');
+    expect(container.querySelectorAll('[data-testid="other-family-banner"] .btn-primary')).toHaveLength(0);
+    expect(byTestId('other-family-copy')).toBeNull();
+  });
+
+  it('an out-of-date cache without the proposal: still fetching, never «finnes ikke» or «Bli her» from it', () => {
+    const cached = { count: 1, names: ['Mamma'], others: true, hereCount: 1, hereOthers: true, proposalName: null, fromCache: true as const };
+    familyUiStore.setState({ otherFamily: { id: other, proposal: 'p-x', info: cached } });
+    render(<FamilyBanners />);
+    expect(banner()?.textContent).toContain('Plassen i lenken har 1 forslag (Mamma); plassen du bruker nå har 1.');
+    expect(banner()?.textContent).toContain('Henter plassen i lenken …');
+    expect(banner()?.textContent).not.toContain('finnes ikke');
+    expect(banner()?.dataset.primary).toBe('none');
+    // The server's answer: the proposal is not there.
+    const { fromCache: _cache, ...confirmed } = cached;
+    act(() => familyUiStore.setState({ otherFamily: { id: other, proposal: 'p-x', info: confirmed } }));
+    expect(banner()?.textContent).toContain('Forslaget i lenken finnes ikke i den plassen.');
+    expect(banner()?.dataset.primary).toBe('stay');
+    expect(byTestId('other-family-stay')?.className).toContain('btn-primary');
+  });
+});
+
+describe('fix round 3 (phase 3): «Hva heter du?» on a phone follows the toolbar', () => {
+  /** A ResizeObserver stand-in (jsdom has none): `fire()` reports a size change of what is observed. */
+  class FakeResizeObserver {
+    static all: FakeResizeObserver[] = [];
+    observed: Element[] = [];
+    private readonly cb: ResizeObserverCallback;
+    constructor(cb: ResizeObserverCallback) {
+      this.cb = cb;
+      FakeResizeObserver.all.push(this);
+    }
+    observe(el: Element) {
+      this.observed.push(el);
+    }
+    unobserve() {}
+    disconnect() {
+      this.observed = [];
+    }
+    fire() {
+      this.cb([], this as unknown as ResizeObserver);
+    }
+  }
+
+  it('a banner above the toolbar that grows while the card is shown moves the card down with the toolbar', () => {
+    // A phone (jsdom has no matchMedia).
+    const phone = (query: string) =>
+      ({ matches: query === '(max-width: 799px)', media: query, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+    Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: phone });
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    FakeResizeObserver.all = [];
+    appStore.getState().select(null);
+    for (const t of appStore.getState().toasts) appStore.getState().dismissToast(t.id);
+    let toolbarBottom = 321;
+    render(
+      <div className="app">
+        <header className="topbar">
+          <FamilyBanners />
+        </header>
+        <div className="toolbar-wrap" data-testid="toolbar-probe" />
+      </div>,
+    );
+    const toolbar = byTestId('toolbar-probe') as HTMLElement;
+    toolbar.getBoundingClientRect = () => ({ bottom: toolbarBottom }) as DOMRect;
+    act(() => familyUiStore.setState({ nameBanner: true }));
+    expect(byTestId('name-banner')?.style.top).toBe('329px');
+    // What moves the toolbar is watched: the page, the top bar (with the banners) and the toolbar itself.
+    const watched = FakeResizeObserver.all.flatMap((o) => o.observed);
+    expect(watched).toContain(document.querySelector('.app'));
+    expect(watched).toContain(document.querySelector('.topbar'));
+    expect(watched).toContain(toolbar);
+    // The proposal-link banner gets its facts and grows: the toolbar is 88 px lower, and so is the card.
+    toolbarBottom = 409;
+    act(() => {
+      for (const o of FakeResizeObserver.all) if (o.observed.length > 0) o.fire();
+    });
+    expect(byTestId('name-banner')?.style.top).toBe('417px');
+    act(() => familyUiStore.setState({ nameBanner: false }));
+    expect(FakeResizeObserver.all.every((o) => o.observed.length === 0)).toBe(true);
+    Reflect.deleteProperty(window, 'matchMedia');
+    vi.unstubAllGlobals();
   });
 });

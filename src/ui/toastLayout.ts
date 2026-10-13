@@ -1,4 +1,7 @@
-/** Where the toasts go: clear of the first-run card (PC, tablet) and of the toolbar and hint line (phones). Pure. */
+/**
+ * Where the toasts go: clear of the first-run card (PC, tablet) and of the toolbar and hint line (phones). Pure, but
+ * for `watchToolbarMoves` (when to measure again).
+ */
 
 /** Gap kept between the toasts and the first-run card (px). */
 const CARD_GAP = 8;
@@ -26,4 +29,30 @@ const CHROME_GAP = 8;
  */
 export function phoneToastTop(chromeBottom: number): number | null {
   return chromeBottom > 0 ? Math.round(chromeBottom + CHROME_GAP) : null;
+}
+
+/**
+ * What moves the toolbar and the hint line, or changes their size: the page (on phones its height follows its
+ * content, so a banner added above them grows it), the top bar with the family banners, the Nøkkeltall line, and the
+ * toolbar and the hint line themselves.
+ */
+const TOOLBAR_MOVERS = '.app, .topbar, [data-testid="headline"], .toolbar-wrap, [data-testid="hint-line"]';
+
+/**
+ * Calls `update` whenever the toolbar and hint line may have moved on screen: a scroll (the page or a panel), a resize
+ * of the window, or a size change of what is above them (a family banner whose facts arrive a moment after it
+ * appears, a second banner, Nøkkeltall wrapping differently) or of themselves. For what sits just below them on a
+ * phone (the toasts, «Hva heter du?»), so it never ends up over the tools. Returns the unsubscribe.
+ */
+export function watchToolbarMoves(update: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  window.addEventListener('scroll', update, { capture: true, passive: true });
+  window.addEventListener('resize', update);
+  const observer = typeof ResizeObserver === 'function' && typeof document !== 'undefined' ? new ResizeObserver(() => update()) : null;
+  if (observer) for (const el of document.querySelectorAll(TOOLBAR_MOVERS)) observer.observe(el);
+  return () => {
+    window.removeEventListener('scroll', update, { capture: true });
+    window.removeEventListener('resize', update);
+    observer?.disconnect();
+  };
 }

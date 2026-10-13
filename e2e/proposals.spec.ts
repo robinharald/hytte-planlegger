@@ -45,6 +45,10 @@
  *    it comes;
  *  - the proposal-link banner with a long proposal name fits an iPhone 13 (390 px, its buttons wrap);
  *  - a copy brought along whose name is taken is named after this device («Mammas idé (Pappa)»), not «(delt)».
+ * Fix round 3 (phase 3):
+ *  - on an iPhone 13, «Hva heter du?» stays below the tool row when a proposal-link banner above it grows (its facts
+ *    arrive a moment later: `window.__e2eWatchDelayMs` slows the fake space's first answer); until then the banner
+ *    says «Henter plassen i lenken …» with no highlighted button.
  *
  * Screenshots: proposals-menu.png (the open menu), share-dialog.png (local "Send forslaget"), family-carry-over.png
  * (the offer after the switch), family-other-space.png (the banner for a link to another space).
@@ -122,7 +126,8 @@ export async function loadFirebaseAdapter() {
     watch(path, onNext) {
       const w = { path, onNext };
       watchers.add(w);
-      setTimeout(() => { if (watchers.has(w)) onNext(e2eChildren(e2eLoad(), path), { fromCache: false, hasPendingWrites: false }); }, 0);
+      // window.__e2eWatchDelayMs: a slower first answer (a test sets it before opening a link).
+      setTimeout(() => { if (watchers.has(w)) onNext(e2eChildren(e2eLoad(), path), { fromCache: false, hasPendingWrites: false }); }, globalThis.__e2eWatchDelayMs || 0);
       return () => watchers.delete(w);
     },
     async read(path) { return e2eChildren(e2eLoad(), path); },
@@ -703,6 +708,67 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
         expect(b.right, `«${b.text}» ends inside the banner`).toBeLessThanOrEqual(b.bannerRight + 0.5);
         expect(b.cut, `«${b.text}» is not cut`).toBe(false);
       }
+      expect(pageErrors).toEqual([]);
+    });
+
+    test('«Hva heter du?» stays below the tool row when a proposal-link banner above it grows (fix round 3, iPhone 13)', async ({ page, browser }, testInfo) => {
+      const pageErrors = collectPageErrors(page);
+      const FA = 'e2e-name-card-phone-a-01234567';
+      const FB = 'e2e-name-card-phone-b-01234567';
+      const mamma = await otherDeviceMade(browser, testInfo, FB, 'Mammas idé');
+      // Pappa's device uses FA and has no name: its first save asks «Hva heter du?» (the card) after a quiet moment.
+      await withFakeFamilySpace(page);
+      await page.addInitScript((f) => localStorage.setItem('hytte-planlegger:family', f), FA);
+      await page.goto(`/#f=${FA}`);
+      await waitReady(page);
+      await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced');
+      // A proposal without a name prompt: the locked toast's «Nytt forslag».
+      await page.getByTestId('tool-wall').click({ force: true });
+      await page.getByTestId('toast-new-proposal').click();
+      await expect.poll(async () => (await projectOnScreen(page)).variants.length).toBe(2);
+      await dismissToasts(page);
+      const card = page.getByTestId('name-banner');
+      await expect(card).toBeVisible({ timeout: 15_000 });
+      await addFakeDocs(page, mamma.docs);
+
+      /** The card's and the tool row's (with the hint line) boxes, read in one frame. */
+      const boxes = () =>
+        page.evaluate(() => {
+          const r = (sel: string) => document.querySelector(sel)?.getBoundingClientRect() ?? null;
+          const c = r('[data-testid="name-banner"]');
+          const t = r('.toolbar-wrap');
+          const h = r('[data-testid="hint-line"]');
+          return c && t && h ? { cardTop: c.top, cardBottom: c.bottom, toolbarTop: t.top, chromeBottom: Math.max(t.bottom, h.bottom) } : null;
+        });
+      const clear = async () => {
+        const b = await boxes();
+        return b !== null && (b.cardTop >= b.chromeBottom || b.cardBottom <= b.toolbarTop);
+      };
+      expect(await clear(), 'the card starts below the tool row').toBe(true);
+      const before = await boxes();
+
+      // Mamma's proposal link in this tab; the link's space answers 1 s after the banner came (meanwhile it says it is
+      // fetching, nothing highlighted), so the banner grows (its facts and the copy button) while the card is shown.
+      await page.evaluate(() => ((window as { __e2eWatchDelayMs?: number }).__e2eWatchDelayMs = 1000));
+      await page.evaluate(([f, p]) => (window.location.hash = `#f=${f}&p=${p}`), [FB, mamma.id] as const);
+      const ask = page.getByTestId('other-family-banner');
+      await expect(ask).toBeVisible();
+      await expect(ask).toContainText('Henter plassen i lenken …');
+      await expect(ask).toHaveAttribute('data-primary', 'none');
+      await expect(page.getByTestId('other-family-copy')).toBeVisible();
+      await expect(ask).toContainText('Plassen i lenken har 1 forslag (Mamma)');
+      await expect(card).toBeVisible();
+      // The tool row moved down; the card followed it and covers none of the tools.
+      await expect.poll(clear, { timeout: 3000 }).toBe(true);
+      expect((await boxes())?.toolbarTop ?? 0, 'the banner pushed the tool row down').toBeGreaterThan(before?.toolbarTop ?? Infinity);
+      await page.waitForTimeout(500);
+      expect(await clear(), 'still clear once everything has settled').toBe(true);
+      const atTool = await page.evaluate(() => {
+        const r = document.querySelector('[data-testid="tool-wall"]')?.getBoundingClientRect();
+        const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+        return hit?.closest('[data-testid="tool-wall"]') !== null;
+      });
+      expect(atTool, 'a tap on Vegg reaches Vegg').toBe(true);
       expect(pageErrors).toEqual([]);
     });
   });

@@ -728,3 +728,69 @@ describe('morning round: a slow first connection, the name card, the name of a c
     expect(names(m)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (Pappa)']);
   });
 });
+
+describe('fix round 3 (phase 3): the proposal-link banner on a slow connection, the name card after a selection', () => {
+  const state = (m: AppStoreModule) => m.familyUiStore.getState();
+
+  it('1: a link to a proposal in another space while the server cannot be reached: no facts from the empty cache; the server’s list gives them', async () => {
+    // Pappa's device uses F1; Mamma's link goes to «Mammas idé» in F2. His connection is slow or blocked.
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const [x] = await othersMake(F2, ['Mammas idé']);
+    const dev = firebase.fake.device({ unreachable: true });
+    firebase.next = dev;
+    const m = await load(`#f=${F2}&p=${x}`);
+    await settle(300);
+    // Only the empty cache answered: nothing is said about F2 (no «ingen forslag», no «finnes ikke», no «Bli her»).
+    expect(state(m).otherFamily).toEqual({ id: F2, proposal: x, info: null });
+    dev.setReachable(true);
+    await vi.waitFor(() => expect(state(m).otherFamily?.info).toMatchObject({ count: 1, names: ['Mamma'], others: true, proposalName: 'Mammas idé' }));
+    expect(state(m).otherFamily?.info?.fromCache).toBeUndefined();
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F1);
+  });
+
+  it('1: an out-of-date cache of the link’s space is flagged (never «finnes ikke» from it) until the server answers', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    await othersMake(F2, ['Mammas første']);
+    // This device saw F2 once (its cache has «Mammas første»), then lost the server; «Mammas idé» was made after that.
+    const dev = firebase.fake.device();
+    dev.setReachable(false);
+    const [x] = await othersMake(F2, ['Mammas idé']);
+    firebase.next = dev;
+    const m = await load(`#f=${F2}&p=${x}`);
+    await vi.waitFor(() => expect(state(m).otherFamily?.info).toMatchObject({ count: 1, proposalName: null, fromCache: true }));
+    dev.setReachable(true);
+    await vi.waitFor(() => expect(state(m).otherFamily?.info).toMatchObject({ count: 2, proposalName: 'Mammas idé' }));
+    expect(state(m).otherFamily?.info?.fromCache).toBeUndefined();
+  });
+
+  it('1: a space the server says is empty is still called empty', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const m = await load(`#f=${F2}`);
+    await vi.waitFor(() => expect(state(m).otherFamily?.info).toMatchObject({ count: 0, proposalName: null }));
+    expect(state(m).otherFamily?.info?.fromCache).toBeUndefined();
+  });
+
+  it('3: the card goes away when something is selected and comes back only after the same quiet wait', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const m = await load(`#f=${F1}`);
+    const id = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Uten navn');
+    if (!id) throw new Error('duplicate');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(state(m).nameBanner).toBe(true), { timeout: m.NAME_BANNER_IDLE_MS + 2000 });
+    // A tap selects the hot tub: the card is gone (not just hidden while selected).
+    m.appStore.getState().select({ kind: 'hotTub', id: 'tub-1' });
+    expect(state(m).nameBanner).toBe(false);
+    // Let go: not back at once, where the next tap goes.
+    m.appStore.getState().select(null);
+    await settle(m.NAME_BANNER_IDLE_MS - 1000);
+    expect(state(m).nameBanner).toBe(false);
+    // Back after NAME_BANNER_IDLE_MS of quiet.
+    await vi.waitFor(() => expect(state(m).nameBanner).toBe(true), { timeout: 2000 });
+    // A name given: never again.
+    m.setMyName('Pappa');
+    m.appStore.getState().select({ kind: 'hotTub', id: 'tub-1' });
+    m.appStore.getState().select(null);
+    await settle(m.NAME_BANNER_IDLE_MS + 300);
+    expect(state(m).nameBanner).toBe(false);
+  }, 20_000);
+});

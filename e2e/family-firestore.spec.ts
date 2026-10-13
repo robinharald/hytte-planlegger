@@ -29,6 +29,10 @@
  *    every request to firestore.googleapis.com is aborted for 15 s. Meanwhile it never says the space is empty (no
  *    «Denne plassen er tom», no «Ikke startet»; the family is not stored). Once the requests go through, F is stored,
  *    «Lagret for alle», and X is on screen.
+ *  - Fix round 3 (phase 3), the same for a link to another space: Pappa's device uses F («Pappas plan»), Mamma's R has
+ *    «Mammas idé». Pappa opens `#f=R&p=<id>` in a new tab while firestore.googleapis.com is blocked for 15 s: the
+ *    banner says «Henter plassen i lenken …», never «ingen forslag (er lenken hel?)» or «finnes ikke», and «Bli her»
+ *    is not highlighted. Once the requests go through it names «Mammas idé», highlights «Bytt dit» and offers the copy.
  */
 import { readFileSync } from 'node:fs';
 import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
@@ -373,6 +377,59 @@ test.describe('the real family space (Firestore), throwaway e2e- families', () =
     expect((await projectOnScreen(page)).variants.map((v) => v.name)).toEqual(['Forslag D', 'Familiens plan']);
     expect(errors).toEqual([]);
     await context.close();
+  });
+
+  test('a link to a proposal in another space while Firestore cannot be reached never says that space is empty or the proposal missing', async ({ browser }, testInfo) => {
+    const F = e2eFamilyId('slow-link-f');
+    const R = e2eFamilyId('slow-link-r');
+    families.push(F, R);
+    // Pappa's device uses F with «Pappas plan».
+    const pappa = await device(browser, testInfo, F, 'Pappa');
+    pappa.page.once('dialog', (d) => void d.accept('Pappas plan'));
+    await pappa.page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await proposalDocs(F)).map((d) => d.data.name), { timeout: 30_000 }).toEqual(['Pappas plan']);
+    await expect(pappa.page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced', { timeout: 30_000 });
+    // Mamma's R has «Mammas idé»; she sends its link.
+    const mamma = await device(browser, testInfo, R, 'Mamma');
+    mamma.page.once('dialog', (d) => void d.accept('Mammas idé'));
+    await mamma.page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await proposalDocs(R)).map((d) => d.data.name), { timeout: 30_000 }).toEqual(['Mammas idé']);
+    const x = (await activeVariant(mamma.page)).id;
+    expect(mamma.errors).toEqual([]);
+    await mamma.context.close();
+
+    // Pappa's connection cannot reach Firestore; he opens Mamma's link in a new tab (R was never opened on his device).
+    await pappa.page.close();
+    const blocked = /firestore\.googleapis\.com/;
+    await pappa.context.route(blocked, (route) => route.abort());
+    const tab = await pappa.context.newPage();
+    const tabErrors = collectPageErrors(tab);
+    await tab.goto(`/#f=${R}&p=${x}`);
+    await tab.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: READY_TIMEOUT_MS, polling: 250 });
+    const ask = tab.getByTestId('other-family-banner');
+    await expect(ask).toHaveAttribute('data-kind', 'proposal', { timeout: 30_000 });
+    const until = Date.now() + 15_000;
+    while (Date.now() < until) {
+      const text = (await ask.textContent()) ?? '';
+      expect(text, 'never «ingen forslag (er lenken hel?)» from the empty cache').not.toContain('ingen forslag');
+      expect(text, 'never «finnes ikke» from the empty cache').not.toContain('finnes ikke');
+      expect(await ask.getAttribute('data-primary'), '«Bli her» is not picked from the empty cache').not.toBe('stay');
+      await tab.waitForTimeout(1000);
+    }
+    await expect(ask).toContainText('Henter plassen i lenken …');
+    await expect(ask).toHaveAttribute('data-primary', 'none');
+    expect(await tab.evaluate(() => localStorage.getItem('hytte-planlegger:family'))).toBe(F);
+
+    // Firestore answers again: the banner names the proposal, «Bytt dit» is highlighted (R has Mamma's proposal, F only
+    // this device's), and the copy is offered. Nothing switched.
+    await pappa.context.unroute(blocked);
+    await expect(ask).toContainText('Denne lenken går til «Mammas idé» i en annen delt plass.', { timeout: 120_000 });
+    await expect(ask).toContainText('Plassen i lenken har 1 forslag (Mamma)');
+    await expect(ask).toHaveAttribute('data-primary', 'switch');
+    await expect(tab.getByTestId('other-family-copy')).toBeVisible();
+    expect(await tab.evaluate(() => localStorage.getItem('hytte-planlegger:family'))).toBe(F);
+    expect([...pappa.errors, ...tabErrors]).toEqual([]);
+    await pappa.context.close();
   });
 
   test('an edit made just before the app goes to the background is sent at once (visibilitychange → hidden)', async ({ browser }, testInfo) => {

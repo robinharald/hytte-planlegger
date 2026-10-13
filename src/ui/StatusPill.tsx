@@ -15,7 +15,8 @@
  *    and saying the family there will not see them any more, when that space has proposals made on other devices); a
  *    family link to another space («Denne lenken går til en annen delt plass. Plassen i lenken har N forslag (…);
  *    plassen du bruker nå har M. [Bytt dit] [Bli her]», the space with proposals made on other devices highlighted,
- *    else «Bli her»; a link to one proposal there: [Hent «…» som en kopi hit] [Bytt dit] [Bli her] with the same
+ *    else «Bli her» (until the link's space has answered: «Henter plassen i lenken …», nothing highlighted); a link
+ *    to one proposal there: [Hent «…» som en kopi hit] [Bytt dit] [Bli her] with the same
  *    rule for «Bytt dit», else the copy highlighted); a link's space that is empty on a device without a family
  *    («Denne plassen er tom. Er lenken hel?» [Begynn her]); another tab switched this device to another space
  *    («… [Last på nytt]»: this tab is read-only and saves nothing); «Hva heter du?» after the first save without a
@@ -55,7 +56,7 @@ import { pillState, requestAppUpdateCheck, useMinuteClock } from './familyUi';
 import { useFirstRunOpen } from './firstRun';
 import { PHONE_QUERY, useMediaQuery } from './hooks';
 import { toolbarBottom } from './reveal';
-import { phoneToastTop, toastBottomAvoiding } from './toastLayout';
+import { phoneToastTop, toastBottomAvoiding, watchToolbarMoves } from './toastLayout';
 
 export function StatusPill() {
   const mode = useFamily((s) => s.mode);
@@ -262,7 +263,8 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
  * «Hva heter du?» after the first save without a name: a card floating in the toast area (PC: bottom centre; phone:
  * just below the toolbar and the hint line, like the toasts, toastLayout.ts `phoneToastTop`; on a PC above the
  * first-run card where they would overlap, `toastBottomAvoiding`). It is out of the page flow, so its arrival moves
- * neither the toolbar nor the plan.
+ * neither the toolbar nor the plan. Measured again whenever the toolbar may have moved (`watchToolbarMoves`: also when
+ * a banner above it grows while the card is shown), so on a phone it never covers the tools.
  */
 function NameCard() {
   const f = nb.family;
@@ -275,15 +277,11 @@ function NameCard() {
       const card = isPhone || !firstRunOpen ? null : document.querySelector('[data-testid="first-run"]');
       const top = isPhone ? phoneToastTop(toolbarBottom()) : null;
       const bottom = card ? toastBottomAvoiding(card.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight }) : null;
-      setPlace({ ...(top !== null ? { top } : {}), ...(bottom !== null ? { bottom } : {}) });
+      const next = { ...(top !== null ? { top } : {}), ...(bottom !== null ? { bottom } : {}) };
+      setPlace((prev) => (prev.top === next.top && prev.bottom === next.bottom ? prev : next));
     };
     update();
-    window.addEventListener('scroll', update, { capture: true, passive: true });
-    window.addEventListener('resize', update);
-    return () => {
-      window.removeEventListener('scroll', update, { capture: true });
-      window.removeEventListener('resize', update);
-    };
+    return watchToolbarMoves(update);
   }, [isPhone, firstRunOpen]);
   return (
     <div className="banner name-card" role="status" data-testid="name-banner" style={place}>
@@ -307,7 +305,9 @@ function NameCard() {
  * the space that holds proposals made on other devices («Bytt dit» only when the link's space has some and this one
  * has none; else «Bli her»). A link to one proposal there offers a copy into this space and «Bytt dit» with the same
  * rule (a device stuck in a space of its own can join the family through a proposal link); otherwise the copy is the
- * highlighted button (or «Bli her» when the proposal is not there).
+ * highlighted button (or «Bli her» when the server says the proposal is not there). Until the link's space has
+ * answered (`info` null: a slow or blocked connection) it says «Henter plassen i lenken …» and no button is
+ * highlighted; a list from this device's cache only (`info.fromCache`) never makes it say «finnes ikke».
  */
 function OtherFamilyBanner(props: { link: OtherFamilyLink }) {
   const f = nb.family.otherFamily;
@@ -315,12 +315,13 @@ function OtherFamilyBanner(props: { link: OtherFamilyLink }) {
   const switchFirst = info !== null && info.others && !info.hereOthers;
   if (proposal) {
     const name = info?.proposalName ?? null;
-    const primary = switchFirst ? 'switch' : name ? 'copy' : 'stay';
+    const missing = info !== null && name === null && !info.fromCache;
+    const primary = switchFirst ? 'switch' : name ? 'copy' : missing ? 'stay' : 'none';
     return (
       <div className="banner warn" role="status" data-testid="other-family-banner" data-kind="proposal" data-primary={primary}>
         <div className="msg">
           <strong>{f.proposalText(name)}</strong> {info && <span>{f.counts(info.count, info.names, info.hereCount)} </span>}
-          <span>{info && !name ? f.proposalMissing : f.proposalHint}</span>
+          <span>{name ? f.proposalHint : missing ? f.proposalMissing : f.loading}</span>
         </div>
         <div className="actions">
           {name && (
@@ -348,16 +349,17 @@ function OtherFamilyBanner(props: { link: OtherFamilyLink }) {
       </div>
     );
   }
+  const primary = switchFirst ? 'switch' : info ? 'stay' : 'none';
   return (
-    <div className="banner warn" role="status" data-testid="other-family-banner" data-kind="space" data-primary={switchFirst ? 'switch' : 'stay'}>
+    <div className="banner warn" role="status" data-testid="other-family-banner" data-kind="space" data-primary={primary}>
       <div className="msg">
-        <strong>{f.text}</strong> <span>{info ? f.counts(info.count, info.names, info.hereCount) : f.hint}</span>
+        <strong>{f.text}</strong> <span>{info ? f.counts(info.count, info.names, info.hereCount) : `${f.loading} ${f.hint}`}</span>
       </div>
       <div className="actions">
-        <button type="button" className={`btn btn-small${switchFirst ? ' btn-primary' : ''}`} data-testid="other-family-switch" onClick={switchToLinkedFamily}>
+        <button type="button" className={`btn btn-small${primary === 'switch' ? ' btn-primary' : ''}`} data-testid="other-family-switch" onClick={switchToLinkedFamily}>
           {f.switch}
         </button>
-        <button type="button" className={`btn btn-small${switchFirst ? '' : ' btn-primary'}`} data-testid="other-family-stay" onClick={stayInFamily}>
+        <button type="button" className={`btn btn-small${primary === 'stay' ? ' btn-primary' : ''}`} data-testid="other-family-stay" onClick={stayInFamily}>
           {f.stay}
         </button>
       </div>
