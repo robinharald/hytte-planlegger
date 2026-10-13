@@ -3,7 +3,8 @@
  *  1. two template units snapped side by side: an edit of one never squeezes the other — Bredde changes the free side,
  *     an edge pushed into the neighbour is refused with the toast naming it (as against the house);
  *  2. Bredde / Dybde centres the unit's own opening and lets it grow back towards the template's width (no jump near
- *     it: a post stays at each end);
+ *     it: a post stays at each end) — only while it is still where the template put it (fix round 4: a door the user
+ *     moved, or one the user added, keeps its place);
  *  3. a refused «Ta tilbake» on a house edge names the unit in the way.
  */
 import { describe, expect, it } from 'vitest';
@@ -49,6 +50,23 @@ const blockPts = (s: Store, id: string): Vec2[] => V(s).blocks.find((b) => b.id 
 const width = (s: Store, id: string) => box(blockPts(s, id)).x1 - box(blockPts(s, id)).x0;
 /** The unit's openings as [offset, width]. */
 const own = (s: Store, id: string) => V(s).openings.filter((o) => o.host.kind === 'blockEdge' && o.host.blockId === id).map((o) => [o.offset, o.width]);
+/** Opening `id`'s block edge: its start, end and length. */
+function edgeOf(s: Store, id: string): { a: Vec2; b: Vec2; length: number } {
+  const host = V(s).openings.find((o) => o.id === id)?.host;
+  if (host?.kind !== 'blockEdge') throw new Error(`${id}: not on a block edge`);
+  const poly = V(s).blocks.find((b) => b.id === host.blockId)?.polygon ?? [];
+  const i = poly.findIndex((v) => v.id === host.edgeId);
+  const a = poly[i].p;
+  const b = poly[(i + 1) % poly.length].p;
+  return { a, b, length: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+}
+/** Plan centre of opening `id` on its block edge. */
+function planCentre(s: Store, id: string): Vec2 {
+  const { a, b, length } = edgeOf(s, id);
+  const t = (V(s).openings.find((o) => o.id === id)?.offset ?? 0) / length;
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+const opening = (s: Store, id: string) => V(s).openings.find((o) => o.id === id)!;
 /** Block `id` with everything that belongs to it (its polygon, room, openings). */
 const unitState = (s: Store, id: string) =>
   J({
@@ -208,6 +226,94 @@ describe("Bredde / Dybde centres the unit's own opening and lets it grow back", 
     expect(own(s, shed)).toEqual([[0.75, 1]]);
     expect(A.setBlockSize(s, shed, 'w', 2.5)).toBe(true);
     expect(own(s, shed)).toEqual([[1.25, 1]]);
+  });
+});
+
+describe('Bredde / Dybde leaves an opening the user moved or added where it is (fix round 4)', () => {
+  /** The opening the template put in the unit: its door, or the Vedskjul's open front. */
+  const templateDoor = (s: Store, unit: string) => V(s).openings.find((o) => o.host.kind === 'blockEdge' && o.host.blockId === unit)!;
+
+  it('the template door moved to 0,6 m, a window added at L/2 + 0,5 on its edge: Bredde keeps both, no overlap', () => {
+    for (const [template, w0, w1] of [
+      ['anneks', 4, 4.6],
+      ['anneks', 4, 3.6],
+      ['eget', 3, 3.6],
+      ['badstue', 2.4, 3],
+    ] as [string, number, number][]) {
+      const label = `${template} ${w0} → ${w1}`;
+      const s = proposal();
+      const unit = tapped(s, template, [18.4, 9]);
+      const door = templateDoor(s, unit);
+      expect(edgeOf(s, door.id).length, label).toBeCloseTo(w0, 9);
+      expect(A.moveOpening(s, door.id, 0.6), label).toBe(true);
+      const window = A.addOpening(s, door.host, w0 / 2 + 0.5, 'window');
+      expect(window, label).not.toBeNull();
+      const win = window as string;
+      expect(opening(s, win).offset, label).toBeCloseTo(w0 / 2 + 0.5, 9);
+      expect(warnings(s), label).not.toContain('opening-overlap');
+      const doorAt = planCentre(s, door.id);
+      const winAt = planCentre(s, win);
+      s.setState({ toasts: [] });
+      expect(A.setBlockSize(s, unit, 'w', w1), label).toBe(true);
+      expect(edgeOf(s, door.id).length, label).toBeCloseTo(w1, 9);
+      // Before: the door was centred again (Anneks 4,6 m: 2,30, beside the window at 2,50), on the window.
+      expect(opening(s, door.id).offset, label).toBeCloseTo(0.6, 9);
+      expect(opening(s, door.id).width, label).toBe(door.width);
+      expect(planCentre(s, door.id), label).toEqual(doorAt);
+      expect(planCentre(s, win), label).toEqual(winAt);
+      expect(opening(s, win).offset, label).toBeCloseTo(w0 / 2 + 0.5, 9);
+      expect(warnings(s), label).not.toContain('opening-overlap');
+      expect(toastTexts(s), label).toEqual([]);
+    }
+  });
+
+  it('a second door added at 0,6 m on the next edge stays at 0,6 m on Dybde 3 → 3,6 (Bod, Anneks, Eget bygg)', () => {
+    for (const template of ['bod', 'anneks', 'eget']) {
+      const s = proposal();
+      const unit = tapped(s, template, [18.4, 9]);
+      const door = templateDoor(s, unit);
+      const host = door.host;
+      if (host.kind !== 'blockEdge') throw new Error('door not on a block edge');
+      const poly = V(s).blocks.find((b) => b.id === unit)!.polygon;
+      const next = poly[(poly.findIndex((v) => v.id === host.edgeId) + 1) % poly.length].id;
+      const side = A.addOpening(s, { kind: 'blockEdge', blockId: unit, edgeId: next }, 0.6, 'door');
+      expect(side, template).not.toBeNull();
+      const id = side as string;
+      expect(edgeOf(s, id).length, template).toBeCloseTo(3, 9);
+      expect(opening(s, id).offset, template).toBeCloseTo(0.6, 9);
+      const doorBefore = J(templateDoor(s, unit));
+      expect(A.setBlockSize(s, unit, 'd', 3.6), template).toBe(true);
+      expect(edgeOf(s, id).length, template).toBeCloseTo(3.6, 9);
+      // Before: 1,80, the middle of the longer edge.
+      expect(opening(s, id).offset, template).toBeCloseTo(0.6, 9);
+      expect(opening(s, id).width, template).toBe(0.9);
+      // The template's door, on an edge Dybde does not change, is left as it was.
+      expect(J(templateDoor(s, unit)), template).toBe(doorBefore);
+    }
+  });
+
+  it('the template door where the template put it is still centred on Bredde (Anneks 4 → 4,6 m: 2,3)', () => {
+    const s = proposal();
+    const unit = tapped(s, 'anneks', [18.4, 9]);
+    const door = templateDoor(s, unit);
+    expect(opening(s, door.id).offset).toBeCloseTo(2, 9);
+    expect(A.setBlockSize(s, unit, 'w', 4.6)).toBe(true);
+    expect(opening(s, door.id).offset).toBeCloseTo(2.3, 9);
+    expect(opening(s, door.id).width).toBe(0.9);
+  });
+
+  it('an open front the user moved keeps its place on Bredde; narrowed only when it no longer fits', () => {
+    const s = proposal();
+    const shed = tapped(s, 'vedskjul', [18.4, 9]);
+    const front = templateDoor(s, shed);
+    expect(A.setOpeningProps(s, front.id, { width: 1 })).toBe(true);
+    expect(A.moveOpening(s, front.id, 0.7)).toBe(true);
+    expect(A.setBlockSize(s, shed, 'w', 2.5)).toBe(true);
+    // Before: back in the middle (1,25).
+    expect(own(s, shed)).toEqual([[0.7, 1]]);
+    expect(A.setBlockSize(s, shed, 'w', 1)).toBe(true);
+    expect(own(s, shed)).toEqual([[0.5, 0.8]]);
+    expect(toastTexts(s)).toContain(EDIT_STRINGS.unitOpeningsNarrowed('Vedskjul', 1));
   });
 });
 

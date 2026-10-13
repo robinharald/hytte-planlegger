@@ -49,10 +49,13 @@ brukerflaten) og satt sammen her. «Ta tilbake» i hjørner etter 4–6 flytt er
 - **Et nektet «Ta tilbake» på husets kant sier hvilket bygg som står i veien**: «Ta tilbake går ikke: «Vedskjul 2» står
   i veien – flytt det først.» (før: «Bygget kan ikke stå oppå et annet bygg.»). Det er bygget inntil kanten som ikke
   kan skyves unna, eller bygget der kanten skal tilbake.
-- **Åpningen i et nytt bygg følger Bredde/Dybde begge veier** (`edit.ts fitUnitOpenings`): den står midt på veggen, og
-  blir veggen lengre igjen, vokser den tilbake mot malens bredde. Bredde 1,5 og så 2,0 gir vedskjulet den samme 1,8 m
-  åpne fronten det ble plassert med. Det står alltid en stolpe på 0,1 m i hver ende, så bredden gjør ikke noe sprang
-  rundt malens bredde (1,75 / 1,8 / 1,81 m). En åpning du selv har gjort smalere, beholder bredden sin.
+- **Åpningen i et nytt bygg følger Bredde/Dybde begge veier** (`edit.ts fitUnitOpenings`): bare malens egen åpning
+  (åpen front, døra) som fortsatt står midt på veggen der malen satte den, settes midt på veggen igjen, og blir veggen
+  lengre igjen, vokser den tilbake mot malens bredde. Bredde 1,5 og så 2,0 gir vedskjulet den samme 1,8 m åpne fronten
+  det ble plassert med. Det står alltid en stolpe på 0,1 m i hver ende, så bredden gjør ikke noe sprang rundt malens
+  bredde (1,75 / 1,8 / 1,81 m). En åpning du selv har gjort smalere, beholder bredden sin. En åpning du har flyttet
+  eller lagt til (en dør flyttet til 0,6 m, et vindu, en dør nr. 2), blir der den står og gjøres bare smalere når den
+  ikke lenger får plass (før hoppet en flyttet dør i anneks 4 → 4,6 m til 2,30, oppå vinduet ved siden av).
 - **En kameravinkel virker etter Esc i «Gå rundt»** (stor; `walkState.ts viewKept` / `presetRequest`, `Controls.tsx`,
   `Scene.tsx`, `WalkControls.tsx`): etter Esc vises ingen kameravinkel som valgt, og et trykk på en vinkel flytter
   kameraet dit, også på den som var valgt før. Før skjedde ingenting med den uthevede «Oversikt». Bildet etter Esc
@@ -84,17 +87,17 @@ brukerflaten) og satt sammen her. «Ta tilbake» i hjørner etter 4–6 flytt er
   kortet. **Startpakken er ikke større**: «Send forslaget» (`ShareDialog.tsx`) er nå en egen liten bit som lastes
   første gang den åpnes (service workeren mellomlagrer den). JavaScript ved oppstart er 1 081,3 kB (327,2 kB gzip) mot
   1 082,7 kB (327,4 kB) før runden, målt likt (inngangsskriptet og modulepreload-filene i `index.html`, gzip -9).
-- **Tester**: `npm test` 2042 tester i 129 filer, alle grønne (5 hoppet over: de som trenger arkitektens IFC-fil).
+- **Tester**: `npm test` 2046 tester i 129 filer, alle grønne (5 hoppet over: de som trenger arkitektens IFC-fil).
   `npm run typecheck`, `npm run lint`, `npm run build` og `npx tsc --noEmit -p e2e/tsconfig.json` er rene. `npm run
   e2e`: 99 av 99 grønne i tre prosjekter (PC, iPhone, `pwa`), 10 hoppet over (de mot den ekte Firestore). De sju
   skjermbildene som ble skrevet på nytt, er sett over: bare små forskjeller i tegningen, så de innsjekkede er beholdt.
   Mot den ekte Firestore (`E2E_FIRESTORE=1`, engangsfamilier `e2e-…`, slettet etterpå med 0 dokumenter igjen): 10 av
   10 grønne. Spaken i `phone-phase3.spec.ts` og `walk-preset.spec.ts`: 5 av 5 hver med `--repeat-each=5`. Nytt i
-  Vitest: `editActions.fix8.test.ts` (to vedskjul inntil hverandre, åpningen som vokser tilbake, «Ta tilbake» som
-  nevner bygget), `controlsPresets.test.tsx`, og nye tilfeller i `Walk.dom.test.tsx`, `PlumbingLayer.test.tsx`,
-  `appStore.family.test.ts` og `familyBanners.test.tsx`; `app.test.tsx` og `proposalsUi.test.tsx` venter på at
-  «Send forslaget» er lastet. Nytt i e2e (kortet på iPhone, lenken mot den ekte Firestore og `lazy-offline.spec.ts` er
-  kjørt uten rettingen og feiler da):
+  Vitest: `editActions.fix8.test.ts` (to vedskjul inntil hverandre, åpningen som vokser tilbake, en flyttet eller
+  lagt til dør som blir der den står, «Ta tilbake» som nevner bygget), `controlsPresets.test.tsx`, og nye tilfeller i
+  `Walk.dom.test.tsx`, `PlumbingLayer.test.tsx`, `appStore.family.test.ts` og `familyBanners.test.tsx`; `app.test.tsx`
+  og `proposalsUi.test.tsx` venter på at «Send forslaget» er lastet. Nytt i e2e (kortet på iPhone, lenken mot den
+  ekte Firestore og `lazy-offline.spec.ts` er kjørt uten rettingen og feiler da):
   - PC (`walk-preset.spec.ts`): gå, W, Esc — ingen kameravinkel er valgt; «Oversikt» gir tilbake oversiktens plass,
     mål og synsvinkel;
   - PC (`editing.spec.ts` (ae)): det nektede «Ta tilbake» nevner «Vedskjul 2»;
@@ -109,8 +112,10 @@ brukerflaten) og satt sammen her. «Ta tilbake» i hjørner etter 4–6 flytt er
 - Et nytt bygg inntil et annet nytt bygg behandles som et bygg inntil huset: det ene flytter aldri det andre.
   Bredde/Dybde endrer den frie siden; med bygg på begge sider nektes endringen med meldingen (bygget kunne også skjøvet
   naboen unna).
-- Bredde/Dybde setter byggets egen åpning (åpen front, dør) midt på veggen hver gang veggen endrer lengde, og en åpning
-  som fylte veggen, vokser tilbake mot malens bredde. En åpning du har gjort smalere selv, beholder bredden.
+- Bredde/Dybde setter byggets egen åpning (åpen front, dør) midt på veggen hver gang veggen endrer lengde, så lenge den
+  står midt på veggen der malen satte den, og en åpning som fylte veggen, vokser tilbake mot malens bredde. En åpning
+  du har gjort smalere selv, beholder bredden; en du har flyttet eller lagt til, blir der den står. Hvilken vegg døra
+  ble satt på, lagres ikke: byggets første dør av malens type regnes som malens dør.
 - Esc i «Gå rundt» beholder gåturens synsvinkel til kameraet flyttes, og ingen kameravinkel vises som valgt så lenge.
 - Forslagsbanneret uthever ingen knapp før plassen i lenken har svart (før: «Bli her»).
 - «Send forslaget» lastes som en egen bit første gang (for å holde startpakken nede).

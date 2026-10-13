@@ -3395,25 +3395,35 @@ function fitWidth(length: number): number {
   return Math.max(0.1, length - 2 * Math.min(0.1, length / 4));
 }
 
+/** How far (m) from the middle of its edge the template's own opening may be and still count as where it was put. */
+const TEMPLATE_CENTRED = 0.01;
+
 /**
- * The template's width of opening `o` of a unit made from template `t` (its open front on the front edge, or its
- * door), else null (an opening the user added).
+ * The template's width of opening `o` of a unit made from template `t` while it is still where the template put it:
+ * its open front on the front edge, or its door (the unit's first opening of the door's type; the edge the door went
+ * on is not stored), centred on the edge as it was before the change (`offset0` on an edge `L0` long). Else null: an
+ * opening the user added, or the template's one the user moved (fix round 4 after phase 3: Bredde put a door the user
+ * had moved to 0,6 m back in the middle, on the window beside it).
  */
-function templateOpeningWidth(t: UnitTemplate | undefined, block: Block, o: Opening): number | null {
-  if (!t || o.host.kind !== 'blockEdge') return null;
+function templateOpeningWidth(t: UnitTemplate | undefined, draft: Variant, block: Block, o: Opening, L0: number, offset0: number): number | null {
+  if (!t || o.host.kind !== 'blockEdge' || Math.abs(offset0 - L0 / 2) > TEMPLATE_CENTRED) return null;
   if (t.openFront && o.type === 'opening' && o.fullHeight === true && o.host.edgeId === block.templateFrontEdgeId) return fitWidth(t.w);
-  return t.door && o.type === t.door.type ? t.door.width : null;
+  if (!t.door || o.type !== t.door.type) return null;
+  const door = t.door.type;
+  const first = draft.openings.find((x) => x.status !== 'removed' && x.host.kind === 'blockEdge' && x.host.blockId === block.id && x.type === door);
+  return first === o ? t.door.width : null;
 }
 
 /**
  * After Bredde / Dybde of a template unit (`base`: the variant before): on every edge whose length changed, its own
  * openings that no longer fit (wider than the edge less a post at each end, `fitWidth`) are made narrower, centred —
  * final morning round: a Vedskjul narrowed from 3 m to 1,5 m kept its 1,8 m open front, outside its wall
- * (`opening-outside-host`). The template's own opening (the open front, the door) is centred on its edge on every
- * such change, and one that filled its edge grows back towards the template's width when the edge gets longer (fix
- * round 3 after phase 3: Bredde 1,5 then 2 m left the 1,3 m front off-centre; with the posts there is no jump at the
- * template's own width). Others that still fit were already slid onto the edge (`keepEdgeOpenings`). Returns the ids
- * of the openings it narrowed (the caller toasts).
+ * (`opening-outside-host`). The template's own opening (the open front, the door) while still where the template put
+ * it, centred on its edge (`templateOpeningWidth`), is centred on the edge again on every such change, and one that
+ * filled its edge grows back towards the template's width when the edge gets longer (fix round 3 after phase 3: Bredde
+ * 1,5 then 2 m left the 1,3 m front off-centre; with the posts there is no jump at the template's own width). Others
+ * — added by the user, or moved — keep their place (`keepEdgeOpenings`) unless they no longer fit (fix round 4).
+ * Returns the ids of the openings it narrowed (the caller toasts).
  */
 export function fitUnitOpenings(draft: Variant, blockId: Id, base: Variant): Id[] {
   const block = draft.blocks.find((b) => b.id === blockId);
@@ -3424,10 +3434,11 @@ export function fitUnitOpenings(draft: Variant, blockId: Id, base: Variant): Id[
     if (o.status === 'removed' || o.host.kind !== 'blockEdge' || o.host.blockId !== blockId) continue;
     const line = hostLine(draft, o.host);
     if (!line) continue;
-    const L0 = base.openings.some((x) => x.id === o.id) ? (hostLine(base, o.host)?.length ?? line.length) : line.length;
-    if (Math.abs(line.length - L0) <= 1e-6) continue;
+    const o0 = base.openings.find((x) => x.id === o.id);
+    const L0 = o0 ? (hostLine(base, o.host)?.length ?? line.length) : line.length;
+    if (!o0 || Math.abs(line.length - L0) <= 1e-6) continue;
     const fit = fitWidth(line.length);
-    const own = templateOpeningWidth(t, block, o);
+    const own = templateOpeningWidth(t, draft, block, o, L0, o0.offset);
     let width = o.width;
     // It filled its edge before (as placed, or narrowed to fit): it grows back with a longer edge.
     if (own !== null && line.length > L0 && width < own && width >= fitWidth(L0) - 1e-6) width = Math.min(own, fit);
