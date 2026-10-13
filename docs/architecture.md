@@ -735,14 +735,25 @@ read-only at once (`ui.readOnly`: no tools, no «+ Nytt forslag», no plan edits
 enheten har byttet delt plass i en annen fane.», pill state `elsewhere` «Ikke lagret – last siden på nytt»), and «Last
 på nytt» (`reloadInCurrentFamily`) reloads into the stored space. While the link's space is unconfirmed (empty, on a
 device without a family) the pill says `notStarted` «Ikke startet – plassen i lenken er tom» (short «Ikke startet»),
-also after «Lukk». «Hva heter du?» never opens as a dialog by itself while someone edits: after the first save without
-a name a banner ('name-banner', «Skriv navnet» / «Hopp over») appears once nothing has been edited or selected for 3 s,
-and «+ Nytt forslag» / «Kopier» in the shared space with the name unknown open one dialog with both fields
-(`ui/Dialogs.tsx promptNewProposal` → `NewProposalDialog`, rendered by `NameDialog`); a name left empty is not asked
-for again in that session. «Bytt dit» (only it switches)
+also after «Lukk» — but only once the server has answered: a first list built from the device's own (empty) cache
+carries `ProposalList.fromCache` (`familyStore.firestore.ts`), and an empty one sets `ui.unanswered` instead of
+`emptyFamily`, so the pill says `connecting` «Kobler til …» (offline: `waitingOffline` «Uten nett – plassen i lenken er
+ikke hentet ennå») and nothing is stored; `appStore.recheckWaitingList()` (after every sync state update) confirms the
+family as soon as a later list has proposals (`confirmFamily()` → `runFirstList`, so the `&p=` proposal opens) and asks
+«Denne plassen er tom» only on the first server-confirmed empty list (final morning round). «Hva heter du?» never
+opens as a dialog by itself while someone edits: after the first save without a name a card ('name-banner', «Skriv
+navnet» / «Hopp over»; `StatusPill.tsx NameCard`, rendered by `FamilyBanners`) floats in the toast area — fixed, bottom
+centre on a PC above the first-run card, just under the toolbar on a phone, z-index under menus, dialogs and toasts, so
+nothing moves when it comes — once nothing is selected and there has been no edit, selection or pointer / wheel /
+touch / gesture / key input for 3 s (`askNameWhenIdle`; a hovering mouse does not count); it steps aside while a toast
+shows or something is selected. «+ Nytt forslag» / «Kopier» in the shared space with the name unknown open one dialog
+with both fields (`ui/Dialogs.tsx promptNewProposal` → `NewProposalDialog`, rendered by `NameDialog`); a name left
+empty is not asked for again until the app is opened next time; «Hopp over» never asks again. «Bytt dit» (only it switches)
 pushes the old id onto `hytte-planlegger:family.previous` and records it in `…:family.switched-from`; once the new space
 has answered, the proposals this device created in the old one (`…:family.created`, filled by `ProposalSync.onCreated`)
-are offered («Hent forslagene fra den forrige plassen»: `acceptCarryOver` copies them in and puts the old ones in the old
+are offered («Hent forslagene fra den forrige plassen»: `acceptCarryOver` copies them in — a copy whose name is taken
+is named after this device, «Mammas idé (Pappa)», or «Mammas idé (kopi)» without a name
+(`nb.family.carryOver.copyName`), not «(delt)» — and puts the old ones in the old
 space's Papirkurv; «Nei takk» forgets the offer). Final fix round: the offer is the snapshot taken at the switch
 (`…:family.switch-offer`: what was created in the old space before it), and copies brought in are recorded under
 `…:family.carried-in` and never offered again (the last fix round replaced the final round's 'left-family-banner'
@@ -764,9 +775,10 @@ built, so it is still shown after the next reload) and every migrated proposal k
 (`addVariants(…, { at })`). The PWA: vite-plugin-pwa, `registerType: 'prompt'`, `injectRegister: false`,
 `UpdateToast.tsx` registers `./sw.js` (scope `./`) and asks before an update; when the new worker takes over, only the
 tab that pressed Oppdater reloads (`onNeedReload`), the others show «Appen er oppdatert i en annen fane … [Last på
-nytt]» (also on `controllerchange` in a tab that never saw the waiting worker); everything is precached (also the
-Firebase chunk and the fonts), navigations fall back to index.html; the manifest has no `start_url` (a home-screen
-app opens the page it was added from, `#f=` included).
+nytt]» (also on `controllerchange` in a tab that never saw the waiting worker); everything except the lazy PDF/IFC libraries
+is precached (also the Firebase chunk and the fonts; the PDF/IFC libraries are cached on first use and warmed in the
+background, see Phase 3), navigations fall back to index.html; the manifest has no `start_url` (a home-screen app
+opens the page it was added from, `#f=` included).
 
 `persistence.ts` (phase 1 – 2a; since 2b only the UI prefs, links, files and reading the legacy autosave are in use):
 autosave of `project` (debounced 500 ms) to localStorage `hytte-planlegger:project`, written once
@@ -952,14 +964,28 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   is refused with the toast and changes nothing (`restoreEdgeOnBlock`). A carried wall goes back to
   `Wall.carriedBy.from` (where it stood before the carry), not to its ghost; a corner or T with another moved wall is
   closed again where the two lines cross (`editActions.ts keptJunctions` / `closeJunctions`); a new wall without a
-  ghost that the user moved counts as moved (`movedNewWalls`), and `carriedBy` is recorded on such walls too. A variant
-  without any `carriedBy` (saved before the fifth review) falls back to the geometric rules of before (`noCarriedBy`).
-  A `Variant.mergedRooms` record is kept while its face is only reshaped; another edit drops it only when it splits the
-  face holding the record's anchor or leaves the anchor in another room's face (`withMergedRooms`; `MergedRoom.face` is
-  now for reference only). A drawn block keeps the walls on an edge shared with another block (the wing takes
+  ghost that the user moved counts as moved (`movedNewWalls`), and `carriedBy` is recorded on such walls too. The
+  geometric fallback for variants without any `carriedBy` (`noCarriedBy`) was removed in the final morning round: it
+  also switched on in today's proposals whenever nothing happened to be carried and slanted the user's own walls, and
+  no published proposal predates `carriedBy` (wall editing went live with it). A `Variant.mergedRooms` record is kept
+  while its face is only reshaped; another edit drops it only when it splits the face holding the record's anchor (at
+  least two pieces each ≥ 0,5 m² or ≥ 15 % of the old face, or holding another room's anchor: `substantialPiece`, so a
+  sliver beside a moved wall is no split) or leaves the anchor in another room's face (`withMergedRooms`;
+  `MergedRoom.face` is now for reference only). A drawn block keeps the walls on an edge shared with another block (the wing takes
   `w-wing-w` and `o-stue-gang` when moved or deleted); only a unit leaves such walls to the other block. The push-out
   after a placement also moves terrace items whose footprint reaches into the new unit's walls (the Loungesofa beside
   a Vedskjul set against the house).
+- **Final morning round** (the seventh review): «Ta tilbake» on a building edge checks the whole plan before it
+  changes anything — `applyRestoreEdgeGhost` computes the edge plan (without the units it would push) first, and
+  `restoreGhost` refuses at once when `restoreEdgeOnBlock` holds — so a refused restore changes nothing and leaves no
+  undo step (`healGhosts` also assigns a new ghosts array only when a ghost actually healed, else every refused edit
+  saved an undo step). A house edge or corner that cannot move outward because a unit stands against it is refused
+  with the unit's name (`edit.ts unitInTheWay`; the block-edit plan, `blockEdgeMoveClamp` and `blockVertexMoveClamp`
+  return its `unitId`; `editActions.ts onBlockText` → `nb.editor.unitInTheWay`, "«Vedskjul» står inntil veggen – flytt
+  det først", in the toast and the drag hint); a unit's own edge pushed into the house keeps `unitOnBlock`. Bredde /
+  Dybde that make a unit narrower than its own opening narrow the opening to edge − 2 × post (post = min(0,1 m, edge /
+  4)) and centre it (`edit.ts fitUnitOpenings`, toast `nb.editor.unitOpeningsNarrowed` with Angre); dragging the
+  unit's edge does not.
 - **Snapping** (`snap.ts`): grid 0.10 m (0.01 with Alt); wall ends / midpoints, block axis vertices and edges (never
   cladding faces), deck edges and vertices, collinear extensions and perpendiculars (within 6 m of the ends), ortho
   from the start point; polygons (units, blocks) snap axis to axis; furniture back to wall; hot tubs to deck edges.
@@ -1070,36 +1096,61 @@ All four are optional layers on the same data: nothing here changes the project 
   `pngExport` when the menu opens; `IfcPanel.tsx` loads `IfcPanelBody` when the panel is opened; `ifc/store.ts`
   imports `loader.ts` on the first file). They are not precached by the PWA either (`vite.config.ts LAZY_LIBS_*`:
   about 6 MB most installs never use) but cached on first use (runtime cache `hytte-lazy-libs`, cache first), so a PDF
-  or an IFC works offline once it has been used online. `optimizeDeps.include` pre-bundles them for the dev server
-  (found only at their first dynamic import, Vite would reload the page then).
+  or an IFC works offline once it has been used online. Final morning round: `export/warmLazy.ts warmLazyChunks()`
+  (itself a small chunk, imported by `main.tsx` after the first render) waits 8 s and an idle moment, then — only
+  online, only with a service worker registered, not with «Spar data», once per build (`hytte-planlegger:lazy-libs-warm`)
+  — imports the PDF code and web-ifc (their chunks are fetched; nothing is started) and puts those files and the wasm
+  straight into `hytte-lazy-libs` (also on the very first visit, before the worker controls the page); its
+  `LAZY_CACHE` / `LAZY_FILE` must match `vite.config.ts`. Offline before that, `export/offline.ts offlineFirstUse(e)`
+  (a failed chunk / wasm download, or `navigator.onLine === false`) makes the PDF dialog and the IFC panel say
+  `nb.export.offlineFirstUse` («Første gang trenger dette nett – koble til og prøv igjen; etterpå virker det uten
+  nett.») instead of the raw error or «IFC-fila kunne ikke leses» (the loader's reason `'offline'`). The drainage layer
+  (`PlumbingLayer.tsx`) is a lazy chunk too, loaded when «Avløp og sluk» is first switched on (precached). The start
+  bundle is 1 083 kB (328 kB gzip), not larger than before the round. `optimizeDeps.include` pre-bundles the libraries
+  for the dev server (found only at their first dynamic import, Vite would reload the page then).
 - **PDF** (`export/`): `sheets.ts` turns the options (A4 / A3, 1:50 / 1:100, Plan 1 / Hems / Begge, names and areas,
   dimensions, furniture, colours or black and white) into sheets per storey: orientation automatic, a storey too large
   for one sheet tiled with 1 cm overlap («Ark 2 av 7 · rad 1, kolonne 2»); Hems uses Plan 1's rectangle so the storeys
   line up. `planSheet.tsx` renders the plan's own layers with `renderToStaticMarkup` at true scale (1 m = 20 mm at
   1:50), `svgPrint.ts` rewrites that SVG for svg2pdf, `titleBlock.ts` adds the title block (project, proposal,
   storey, scale and paper, date, BYA / BRA, north arrow, scale bar, «sist endret av …», the legend), and
-  `schedulePage.ts` the Romskjema per level and the area totals on the last sheet(s). Helvetica (jsPDF needs TTF; only
-  woff2 Barlow is bundled). File `hytta-<forslag>-<dato>.pdf`; on a PC a download, on a touch device whose share sheet
+  `schedulePage.ts` the Romskjema per level and the area totals on the last sheet(s), its text 3 mm in from the frame
+  (`scheduleBodies` gets the inset area, so the dialog's page count follows). Helvetica (jsPDF needs TTF; only woff2
+  Barlow is bundled), WinAnsi: every user text — the plan's labels, the title block (`text()`), the schedule (`t()`,
+  its measuring included) and the PDF's metadata title — goes through `svgPrint.ts pdfSafeText` (arrows → «->», ≈ →
+  «~», emoji and other letters → «?»). File `hytta-<forslag>-<dato>.pdf`; on a PC a download, on a touch device whose share sheet
   takes files «Del …» / «Last ned» (`deliver.ts`). The dialog's choices are remembered per device
   (`hytte-planlegger:export.pdf`). Defaults A3 1:100 (Forslag D then fits one sheet per storey).
 - **PNG** (`export/pngExport.ts`, `png.ts`, `view3d/capture.ts`): re-renders the current scene at the device pixel
   ratio (at most 3× and 16 M pixels), adds a caption strip (proposal, «3D · Ute · Oversikt · dato», «Hytteplanlegger»)
   and saves `hytta-3d-<dato>.png`; synchronous from the tap, so a phone's share sheet opens; with no 3D view shown yet
-  it switches to 3D, waits for a frame and downloads. HTML labels are not in the picture.
+  it switches to 3D, waits for a frame and downloads. HTML labels are not in the picture. While walking the P key and
+  the camera button under «Avslutt» (`view3d/WalkControlsPhoto.tsx`) save it without ending the walk
+  (`export/walkView.ts saveWalkPhoto`); the caption's view is then «Gå rundt» (`captionTexts`: while walking, and after
+  a walk ended with Esc until the camera moves again, `walkViewKept`).
 - **Walk** («Gå rundt»; `view3d/walk.ts`, `WalkControls.tsx`, `WalkOverlay.tsx`, `walkState.ts`): eye 1,65 m over the
   floor, deck, stair tread, step or terrain (eased; ducks under the low loft slab; never under the terrain; not into
   the lake); walls slide, doors and openings with a low sill let the walker through, windows (the glass bump too),
-  railings, the hot tub, posts and the chimney block; furniture does not. Start: where the user clicked a floor in 3D,
-  else a selected room's label point (both facing the camera's way), else inside the Stue 1,6 m from the glass door
-  facing the terrace. PC: pointer lock (drag to look if refused), W A S D / arrows, Shift runs, Esc or losing the lock
-  ends; walk keys are swallowed (no nudge in the plan). Touch: the joystick bottom left, a drag on the right 60 % of
-  the view looks, «Avslutt» top right. A camera preset or the Plan tab ends the walk; the camera eases back. While
-  walking every storey shows whole and clicks do not select. The session and «Skygger» live in `walkState.ts` (the
-  shadows choice per device), not in the app store.
+  railings, the hot tub, posts and the chimney block; furniture does not. Below the floors (final morning round,
+  `buildWalkWorld → addSkirtsAndPlinths`): each deck piece's outer ring blocks from its skirt bottom (or the terrain) up
+  to the deck's underside, and each derived foundation outline (`WalkDerived.foundations`) from its bottom to its top,
+  so nobody walks in under the terrace or into a plinth on the slope; the flip side is that an unrailed deck edge more
+  than ~0,65 m above the terrain cannot be stepped off. Start: where the user clicked a floor in 3D, else a selected
+  room's label point (both facing the camera's way), else inside the Stue 1,6 m from the glass door facing the
+  terrace; Playwright can set `window.__hytteWalkFrom = { x, y, heading }` for the next walk (WalkControls.tsx
+  `takeTestWalkStart`; nothing in the app sets it). PC: pointer lock (drag to look if refused), W A S D / arrows,
+  Shift runs, P saves a PNG and walks on, Esc or losing the lock ends the walk with the camera left where the walker
+  stood (`keepWalkerView`: the orbit target 4 m ahead; the orbit controls' 'start' event cancels the rig's easing back);
+  walk keys are swallowed (no nudge in the plan). Touch: the joystick bottom left, a drag on the right 60 % of the view
+  looks, «Avslutt» top right with the camera button stacked under it. «Avslutt», a camera preset or the Plan tab end
+  the walk with the camera easing back. While walking every storey shows whole and clicks do not select. The session
+  and «Skygger» live in `walkState.ts` (the shadows choice per device), not in the app store.
 - **Sun** (`view3d/sunPanel.ts`, `ui/Controls.tsx`): presets «Midtsommer» (21 June), «Jevndøgn» (20 March),
   «Midtvinter» (21 December) of the chosen year and «I dag» (today's date and the time now at the cabin); under the
   time slider the day's daylight band with sunrise / sunset ticks at the cabin («Sola er oppe hele døgnet» / «Sola er
-  under horisonten»); «Skygger» on / off.
+  under horisonten»); «Skygger» on / off. The band samples the sun's altitude every 5 min over the local day and
+  narrows each crossing to the second (`sunDay`), so the days next to the midnight sun are right (23 May: set 00:45,
+  rise 01:07; 21 July: set 00:51, rise 01:22), where suncalc's `getTimes` misses an event.
 - **Drainage** («Avløp og sluk»; `geometry/plumbing.ts`, `plan2d/layers/PlumbingLayer.tsx`, `state/plumbingActions.ts`,
   `ui/PlumbingToggle.tsx`, `ui/plumbingInfo.ts`): fixtures that need a drain (`needsDrain` in the catalogue: toilets,
   showers, basins, washers, floor drains, the water heater); toilets back to back or side by side on one wall are a
@@ -1114,7 +1165,11 @@ All four are optional layers on the same data: nothing here changes the project 
   `deriveVariant`; not analysed at all while the overlay is off). Stacks drag along walls (snapping out of openings),
   a tap gives a × to delete, «Legg til avløpsstamme» stores one; the suggestion comes back on a storey without a
   stored stack. The stack's hit circle is 12 px (16 on touch) but at most 0,25 m, so the toilets beside it stay
-  selectable zoomed out. The toggle is per device (`hytte-planlegger:plumbing`). No 3D, no falls or pipe sizes.
+  selectable zoomed out. On touch it works like furniture: a finger on a stack that is not picked is the plan's (a
+  drag pans, a second finger pinches; a tap picks it and also clears the plan's selection), and only the picked stack
+  drags (with the larger target). A picked suggestion explains itself in the plan's hint line (`onHint`,
+  `nb.plumbing.suggestedNote`), not in the plan. The toggle is per device (`hytte-planlegger:plumbing`). No 3D, no
+  falls or pipe sizes.
 - **IFC overlay** («IFC-modell»; `src/ifc`, `IfcLayer.tsx`, `IfcOverlay.tsx`, `IfcPanel.tsx`): the user picks the
   architect's file (no `accept` filter: iOS greys out .ifc); the loader checks the STEP header, imports web-ifc
   (single-threaded) and parses merged meshes per kind (wall, window, door, roof, slab, other) and plan sections (Plan 1
@@ -1506,12 +1561,35 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   (parse with the real web-ifc on a synthetic file, transform, cache, store, views). E2E: `phase3.spec.ts` (PDF A3 1:50
   both storeys: pages and A3 MediaBox read from the file; PNG download; walk W 500 ms at eye height, Esc; «Avløp og
   sluk» with the «fint» line, the WC toilet in Soverom 1 flagged in Advarsler; the synthetic IFC through the file
-  chooser in plan and 3D, the screenshot with the real file when present), `phone-phase3.spec.ts` (the joystick walks,
+  chooser in plan and 3D, the screenshot always from the synthetic file), `phone-phase3.spec.ts` (the joystick walks,
   a drag looks, «Avslutt»; «Eksporter» reachable), `editing.spec.ts` (ab) (Vedskjul at (12,8, −0,9), Dybde 2,0: the
   house unchanged) and (ac) (corner restore D1), `proposals.spec.ts` (the proposal link's «Bytt dit», the two-field
   dialog), `phone-editing.spec.ts` (the shed against the wing, the bedroom pinched to the middle),
   `phone-furniture.spec.ts` (two fingers through the mini-bar; the up-facing handle hidden). Screenshots:
   export-dialog.png, 3d-walk.png, plan-avlop.png, ifc-overlay.png, phone-walk.png.
+- Final morning round: `editActions.fix7.test.ts` (no geometric fallback without `carriedBy`, with and without a
+  reload; the refused house-edge restore byte-identical with 0 undo steps; merged-room records past a sliver face;
+  the unit named when it blocks a house edge or corner; Bredde / Dybde narrowing a unit's own opening),
+  `editActions.fix6.test.ts` (the corner sweep now also fails on any wall the restore turns), `appStore.family.test.ts`
+  (a new device on an unreachable connection: «Kobler til …», nothing stored, then the family and the `&p=` proposal;
+  `waitingOffline`; the carried copy «(Pappa)» / «(kopi)»), `familyBanners.test.tsx` (the name card fixed in the toast
+  area with `theme.css` loaded, no banner row; it steps aside for a toast or a selection; a finger move re-arms the
+  wait, a hovering mouse does not; banner buttons wrap), `walk.test.ts` (from (20, −9) north, y stays below −4,6; from
+  the east x above 23; a 0,25 m flood fill from the Stue start reaches all 27 rooms and never stands under a deck or
+  inside a plinth; a plinth on a slope), `sunPanel.test.ts` (23 May and 21 July), `planPdf.test.ts` (emoji, arrows, ≈
+  and Ł in the title block, schedule and metadata; the 3 mm inset), `exportDialog.test.tsx`, `loader.offline.test.ts`,
+  `warmLazy.test.ts`, `pngCaption.test.ts`, `Walk.dom.test.tsx`, `WalkControlsPhoto.dom.test.tsx`,
+  `PlumbingLayer.test.tsx` (touch: drag pans, tap picks, the picked one drags). E2E: `editing.spec.ts` (ad)
+  (dv-leseskrok south, w-106-stue west, «Ta tilbake»: w-106-stue straight, its end on the divider) and (ae) (the
+  house's south edge north, a shed against it and one in the way: the refused restore changes nothing, Angre takes the
+  last shed); `phase3.spec.ts` (from (20, −9) north the skirt stops the walker on the terrain; P saves a PNG and the
+  walk goes on; a PDF of «Pappas idé 👍 ≈ ny» prints «Pappas idé ? ~ ny», read from the file's inflated text);
+  `phone-phase3.spec.ts` (the camera button under «Avslutt»; a drag on the unpicked drain stack pans and saves
+  nothing, a tap picks it and the hint line explains it, a drag of the picked one saves it; the joystick checked once
+  the scroll has settled); `proposals.spec.ts` (the name card leaves the toolbar where it was; the proposal-link banner
+  and its buttons inside an iPhone 13's 390 px; «Mammas idé (Pappa)»); `family-firestore.spec.ts` (opt-in: a new device
+  with firestore.googleapis.com aborted for 15 s is never told the space is empty, then shows the link's proposal with
+  «Lagret for alle»).
 - `npm run build` must pass with zero TypeScript errors; `npm run lint` (oxlint) clean.
 
 ## Rules for contributors (humans and agents)

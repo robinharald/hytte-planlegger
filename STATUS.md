@@ -2,7 +2,7 @@
 
 Oppdatert 2026-10-13 (fase 2b integrert: møbler, delte forslag i Firestore, offline/PWA og finpuss av redigeringen;
 fikserunde 2b etter den tredje gjennomgangen, runde 2 etter den fjerde, runde 3 etter den femte, runde 4 etter den
-sjette; fase 3: eksport, gå-modus, sol, avløp og IFC-modellen).
+sjette; fase 3: eksport, gå-modus, sol, avløp og IFC-modellen; fikserunde 3 etter den sjuende gjennomgangen).
 Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
@@ -18,13 +18,141 @@ Faser:
 Det som faktisk gjenstår (alt annet i oppdraget er gjort):
 
 1. **Prøve på en ekte iPhone** (pappas): alt er prøvd i Chromium på PC og med iPhone 13-emulering, ikke i Safari.
-   Særlig: delingsmenyen for PDF og PNG, spaken og dra-for-å-se i «Gå rundt», to fingre som starter på mini-linja,
-   å velge en .ifc-fil fra Filer, og at «Hva heter du?»-banneret ikke kommer i veien.
+   Særlig: delingsmenyen for PDF og PNG, spaken, dra-for-å-se og kameraknappen i «Gå rundt», to fingre som starter på
+   mini-linja, å velge en .ifc-fil fra Filer, hvor «Hva heter du?»-kortet havner, og at verktøyraden fortsatt er tegnet
+   når et banner kommer over en plan som er knepet inn (se «Kjente problemer (fikserunde 3)»).
 2. **Dra-ytelse**: inkrementell vegg- og romavledning (bare den delen av vegg-grafen som endres), så drag av vegger,
    kanter og bygg blir jevne også på telefon (70–90 ms per oppdatering på PC, 360–670 ms med 4 × tregere CPU).
-3. Små rester (se «Kjente problemer» under): Barlow i PDF-en (trenger en TTF-utgave), 3D-etikettene i PNG-bildet,
-   møbler og lukkede dører i «Gå rundt», terrengfoten til trinnene fra terrassen (`geometry/outdoor.ts`), avløp i 3D,
-   de gjenværende tilfellene av «Ta tilbake» i hjørner.
+3. Små rester (se «Kjente problemer» under): «Ta tilbake» i hjørner etter 4–6 flytt, Barlow i PDF-en (trenger en
+   TTF-utgave), 3D-etikettene i PNG-bildet, møbler og lukkede dører i «Gå rundt», terrengfoten til trinnene fra
+   terrassen (`geometry/outdoor.ts`), avløp i 3D.
+
+## Fikserunde 3 (fase 3) (13. okt 2026)
+
+Den sjuende gjennomgangen (redigeringskjernen i Node, delte forslag mot den ekte Firestore, familiebruk på iPhone 13 og
+en 1366 × 768-PC, de nye funksjonene mot et produksjonsbygg) fant ingen blokkerende, 5 store og 16 mindre feil. De store
+og 13 av de mindre er rettet i tre parallelle deler (redigeringskjernen, den delte lagringen, funksjonene) og satt
+sammen her. Funnet om arkitektens IFC i det offentlige repoet var alt rettet i edacc2a. «Ta tilbake» etter 4–6 flytt og
+tegningen på telefon etter en layoutendring står under «Kjente problemer (fikserunde 3)».
+
+### Gjort
+
+- **«Ta tilbake» gjør aldri brukerens vegger skjeve** (stor; `editActions.ts`): reserveregelen for forslag uten
+  `carriedBy` (fra runde 4) er fjernet. Den slo også inn i dagens forslag hver gang ingen vegg tilfeldigvis var tatt
+  med, og vred da veggene brukeren selv hadde flyttet, uten melding (dv-leseskrok −0,3, w-106-stue +0,3, «Ta tilbake»
+  på dv-leseskrok: w-106-stue ble [[5,1, 0], [5, 2,18]]). Nå står de rett, med enden lukket mot veggen som kom
+  tilbake. Ingen publisert forslag trenger regelen: veggredigeringen kom ut sammen med `carriedBy`. Gjennomgangens
+  sveip (flytt en vegg, så hver vegg den tok med, så «Ta tilbake»): vegger som vris, 28 → 0.
+- **Et nektet «Ta tilbake» på husets kant endrer ingenting** (stor; `edit.ts applyRestoreEdgeGhost`, `restoreGhost`):
+  planen sjekkes før noe flyttes. Før ble vedskjulet inntil kanten skjøvet 0,5 m unna og lagret som et angresteg, mens
+  meldingen sa «Bygget kan ikke stå oppå et annet bygg.». Et grep som nektes, lagrer heller ikke lenger et tomt
+  angresteg (`healGhosts`).
+- **En ny enhet med treg eller blokkert forbindelse får aldri høre at plassen er tom** (stor;
+  `familyStore.firestore.ts`, `appStore.ts`, `familyUi.ts`): en tom første liste fra enhetens eget mellomlager regnes
+  ikke som svar. Statusen sier «Kobler til …» (uten nett: «Uten nett – plassen i lenken er ikke hentet ennå», kort
+  «Uten nett»), og ingenting lagres. Svarer plassen med forslag, tas den i bruk, og forslaget i `&p=`-lenken vises;
+  «Denne plassen er tom. Er lenken hel?» kommer først når plassen selv har svart tom. Får en tom plass forslag senere,
+  tas den i bruk da. Prøvd mot den ekte Firestore med alle forespørsler til firestore.googleapis.com blokkert i 15 s.
+- **PDF og IFC første gang uten nett** (stor; `export/offline.ts`, `export/warmLazy.ts`, `ifc/loader.ts`,
+  `ifc/store.ts`): appen henter PDF-bibliotekene og IFC-leseren (ca. 6 MB) inn i mellomlageret selv, 8 s etter at den
+  er åpnet med nett og når nettleseren har en ledig stund — bare med service worker, ikke med «Spar data», én gang per
+  versjon av appen, også ved første besøk. Er de likevel ikke hentet, sier PDF-dialogen og IFC-panelet «Første gang
+  trenger dette nett – koble til og prøv igjen; etterpå virker det uten nett.» i stedet for en engelsk feilmelding
+  eller «IFC-fila kunne ikke leses».
+- **«Gå rundt» går ikke inn under terrassen eller inn i grunnmuren** (stor; `walk.ts addSkirtsAndPlinths`): kledningen
+  rundt terrassen (ned til bakken) og grunnmurene stopper deg. Fra sør i skråningen (20, −9) stopper du ved y −4,6
+  utenfor kledningen; alle 27 rom kan fortsatt nås fra starten i stua.
+- **Et sammenslått rom husker navnet etter omlasting også når en flyttet vegg lager en liten flik** (`editActions.ts
+  substantialPiece`): en bit teller som deling bare når den er minst 0,5 m² eller 15 % av rommet, eller har et annet
+  roms navn i seg. «Vindfang», «Bad», «Korridor (øvre)», «Korridor (nedre)» og «Trapperepos» kommer tilbake.
+- **Husets kant eller hjørne med et bygg inntil** sier hva som står i veien: «Vedskjul» står inntil veggen – flytt det
+  først (meldingen og hintet under drag), i stedet for «Bygget kan ikke stå oppå et annet bygg».
+- **Bredde/Dybde som gjør et nytt bygg smalere enn sin egen åpning**, gjør åpningen smalere og midt på veggen, med
+  meldingen «Åpningen i «Vedskjul» er gjort smalere, så den får plass i veggen.» og Angre — ingen advarsel lenger.
+- **«Hva heter du?» er et kort som ikke skyver noe** (`StatusPill.tsx NameCard`): det ligger der meldingene kommer
+  (nederst på PC, rett under verktøylinja på telefon), kommer først når ingenting er valgt og planen ikke er endret
+  eller rørt (også knip, panorering og rulling) på 3 s, og viker for meldinger og valg.
+- **Knappene i forslagsbanneret brytes** over flere linjer, så banneret får plass på en iPhone (390 px) også med et
+  langt forslagsnavn.
+- **Et forslag som hentes med fra den forrige plassen** og har et navn som er tatt, heter «Mammas idé (Pappa)» (uten
+  navn: «Mammas idé (kopi)»), ikke «(delt)».
+- **Sola**: den gule stripa og tidene stemmer også dagene ved midnattssola (23. mai: ned 00:45, opp 01:07; 21. juli: ned
+  00:51, opp 01:22).
+- **PDF**: tittelfeltet, romskjemaet og PDF-ens tittel skriver bare tegn skriften har (emoji → «?», → → «->», ≈ →
+  «~»); før ble det «Ø=ÜM». Romskjemaet står 3 mm inn fra rammen.
+- **PNG mens du går**: P (PC) eller kameraknappen under «Avslutt» lagrer det du ser, og du går videre; bildeteksten
+  sier «Gå rundt». Esc lar kameraet stå der du sto, så «Eksporter» → «Lagre 3D-bildet som PNG» lagrer det også;
+  «Avslutt», en kameravinkel og Plan-fanen glir tilbake som før.
+- **Avløpsstammen på telefon** virker som møblene: et trykk velger den, bare den valgte kan dras, og et drag som
+  starter på en stamme som ikke er valgt, flytter planen (før flyttet og lagret det stammen). Trykkflaten er høyst
+  0,25 m, så toalettene ved siden av kan trykkes på. Forklaringen «Stammen er et forslag …» står i hintlinja, ikke i
+  planen (der ble den kuttet på telefon).
+- **e2e**: spaken i `phone-phase3.spec.ts` måles først når 3D-bildet har sluttet å rulle (feilet av og til).
+- **Integrasjonen**: tekstene ligger i `nb.ts` (`nb.editor.unitInTheWay`, `unitOpeningsNarrowed`,
+  `nb.export.offlineFirstUse`, `nb.walk.photo`, `photoTitle`, «P lagrer bildet» i gå-hintene, knappens tittel og
+  Hjelp; de midlertidige `editCoreStrings.ts` og `export/strings.ts` er borte). Planen sender stammens hint til
+  hintlinja (`PlanView` → `PlumbingLayer onHint`). Kameraknappen står i samme kolonne som «Avslutt» (på telefonen er
+  «Avslutt» høyere enn på PC, og knappen dekket den med 5 px). `main.tsx` starter forhåndshentingen etter første
+  tegning; «Uten nett» har samme farge som «Kobler til …». **Startpakken er ikke større**: avløpslaget og
+  forhåndshentingen er egne små biter, så JavaScript ved oppstart er 1 082,6 kB (328,2 kB gzip) mot 1 084,1 kB (328,6
+  kB) før runden, målt likt. Playwright kan starte en gåtur et bestemt sted (`window.__hytteWalkFrom`, bare for
+  testene).
+- **Tester**: `npm test` 2023 tester i 127 filer, alle grønne (5 hoppet over: de som trenger arkitektens IFC-fil).
+  `npm run typecheck`, `npm run lint`, `npm run build` og `npx tsc --noEmit -p e2e/tsconfig.json` er rene. `npm run
+  e2e`: 96 av 96 grønne i tre prosjekter (PC, iPhone, `pwa`), 9 hoppet over (de mot den ekte Firestore); alle 31
+  skjermbildene er sett over. Mot den ekte Firestore (`E2E_FIRESTORE=1`, engangsfamilier `e2e-…`, slettet etterpå):
+  9 av 9 grønne. Nytt i Vitest: `editActions.fix7.test.ts` (de fem kjernefunnene, med og uten omlasting; hjørnesveipet
+  i fix6 feiler nå også på en vegg som vris), familietestene (treg forbindelse, `waitingOffline`, «(Pappa)»), kortet og
+  knappene (`familyBanners.test.tsx`), `walk.test.ts` (fra sør og øst, flomfylling til alle 27 rom, grunnmur),
+  `sunPanel.test.ts`, `planPdf.test.ts`, `exportDialog.test.tsx`, `loader.offline.test.ts`, `warmLazy.test.ts`,
+  `pngCaption.test.ts`, `Walk.dom.test.tsx`, `WalkControlsPhoto.dom.test.tsx`, `PlumbingLayer.test.tsx`. Nytt i e2e
+  ((ad), (ae), gåturen fra sør, stammen og banneret er også kjørt mot filene fra før runden, og feiler der):
+  - PC (`editing.spec.ts`): (ad) dv-leseskrok 0,3 m sør, w-106-stue 0,3 m vest, «Ta tilbake» på dv-leseskrok —
+    w-106-stue står rett med enden på skilleveggen, 27 navn; (ae) husets sørkant 0,5 m nord, et vedskjul inntil og et
+    i veien for den gamle kanten — «Ta tilbake» nektes med meldingen, forslaget er byte for byte likt, og Angre tar
+    det siste vedskjulet (ikke noe tomt steg);
+  - PC (`phase3.spec.ts`): «Gå rundt» fra (20, −9) mot nord stopper utenfor kledningen (y < −4,6, på terrenget), P
+    lagrer en PNG og gåturen fortsetter; PDF av «Pappas idé 👍 ≈ ny» skriver «Pappas idé ? ~ ny» i tittelfeltet (lest
+    fra fila), ingen «Ø=»;
+  - PC (`proposals.spec.ts`): navnekortet flytter ikke verktøylinja; forslagsbanneret og knappene får plass på en
+    iPhone 13 (390 px) med et langt navn; «Mammas idé (Pappa)»;
+  - iPhone (`phone-phase3.spec.ts`): kameraknappen under «Avslutt»; et drag på stammen som ikke er valgt flytter
+    planen og lagrer ingenting, et trykk velger den (hintlinja forklarer), og et drag av den valgte lagrer den; spaken
+    måles når rullingen har stoppet;
+  - ekte Firestore (`family-firestore.spec.ts`): en ny enhet som ikke når firestore.googleapis.com på 15 s, får aldri
+    «Ikke startet» eller «tom»-banneret, og viser så forslaget i lenken med «Lagret for alle».
+
+### Avgjort i fikserunde 3 (Robin kan endre)
+
+- Reserveregelen for «Ta tilbake» i forslag uten `carriedBy` er fjernet, ikke gjort smartere: ingen publisert forslag
+  er eldre enn `carriedBy`.
+- Husets kant eller hjørne som et bygg står inntil, kan ikke flyttes utover, og meldingen sier hvilket bygg det er (det
+  kunne også skjøvet bygget unna, som «Ta tilbake» gjør).
+- Bredde/Dybde gjør byggets egen åpning smalere; et drag av byggets kant gjør det ikke (da kommer advarselen som før).
+- Esc i «Gå rundt» lar kameraet stå der du sto; «Avslutt», en kameravinkel og Plan-fanen glir tilbake.
+- Terrassens kledning stopper deg i «Gå rundt»: fra en terrassekant uten rekkverk mer enn ca. 0,65 m over terrenget
+  kan du ikke gå ned.
+- PDF-bibliotekene og IFC-leseren hentes i bakgrunnen (ca. 6 MB én gang per versjon; ikke med «Spar data»).
+  Forhåndshentingen leser bibliotekene inn i minnet én gang, men starter dem ikke.
+- Et trykk på en avløpsstamme som ikke er valgt, fjerner også valget i planen (som et trykk på tomt gulv).
+- «Hva heter du?»-kortet ligger nederst på PC og under verktøylinja på telefon, der meldingene kommer.
+
+### Kjente problemer (fikserunde 3)
+
+- «Ta tilbake» i hjørner etter 4–6 flytt (gjennomgangen, med og uten omlasting): w-106-korr +0,3, så w-105-diag,
+  w-105-106, w-106-stue, lw-landing og lw-106-top −0,2 hver, så «Ta tilbake» på w-106-korr slår sammen «Korridor
+  (nedre)»; w-106-korr −0,3 og fire av dem +0,2 slår sammen «Soverom 3»; w-104-103 +0,3, så w-103-korr og w-104-diag
+  +0,2 slår sammen «Bad» (med `wall-dangling` og våtromsvarselet, samme familie som i runde 4). Sveipet har 6 slike
+  rekkefølger. Angre virker; rommet kan få navnet igjen.
+- Telefon: i Chromiums iPhone-emulering kan verktøyraden og hintlinja stå blanke etter en knipezoom når noe over
+  planen endrer høyde (DOM-en er riktig; trolig bare emuleringen). «Hva heter du?» skyver ikke lenger noe, men andre
+  bannere (tom plass, forslagslenke, konflikt) gjør det. Må sjekkes på pappas iPhone.
+- En vegg som ble strukket av en annen veggs flytting, har spøkelset sitt oppå seg: et trykk der de ligger over
+  hverandre velger spøkelset (med «Ta tilbake»), så veggen må tas i den nye biten (sett da e2e-testen (ad) ble skrevet).
+- Dra-ytelse som før: 70–90 ms per oppdatering på PC, 360–670 ms med 4 × tregere CPU.
+- Forhåndshentingen bruker ca. 6 MB data én gang per versjon på enheter med nett (ikke med «Spar data»).
+- Det som står under «Kjente problemer (fase 3)» og «(runde 4)», gjelder ellers fortsatt; ingenting er prøvd i Safari.
+
 
 ## Fase 3 – eksport, gå-modus, sol, avløp, IFC (13. okt 2026)
 
@@ -141,7 +269,8 @@ Ingenting er prøvd på en ekte iPhone.
   svg2pdf. WebKit er ikke installert her; alt er prøvd i Chromium (PC og iPhone 13-emulering).
 - PDF: Helvetica er 5–10 % bredere enn navnelappene er lagt ut for, så noen få blir trange; A4 1:50 gir seks nesten
   tomme Hems-ark; å lage PDF-en holder siden 0,4 s (A3 1:100) til 1,2 s (A4 1:50, 14 sider) på PC, lenger på telefon;
-  uten nett virker «Lag PDF» først når den er brukt én gang med nett.
+  uten nett virker «Lag PDF» først når bibliotekene er hentet med nett (fikserunde 3: appen henter dem selv i
+  bakgrunnen og sier fra om de mangler).
 - PNG: 3D-etikettene (romnavnene) er HTML og kommer ikke med i bildet.
 - «Gå rundt»: møbler stopper deg ikke, og dører går du gjennom selv om de er tegnet lukket. Trinnene fra terrassen
   ender 0,77 m over det skrå terrenget fordi `geometry/outdoor.ts` tar terrenghøyden ved terrassekanten, ikke ved
@@ -176,8 +305,8 @@ delte lagringen, planen på telefon og PC) og satt sammen her med fase 3. Det so
   omlasting. Én vegg om gangen: 117 av 117 tilbake nøyaktig til seeden.
 - **Et sammenslått rom husker navnet etter omlasting**: posten i `Variant.mergedRooms` beholdes når rommet bare får ny
   form, og glemmes bare når rommet deles, eller når stedet den husker nå ligger i et annet rom.
-- **Forslag lagret før runde 3** (uten `carriedBy`) bruker den gamle geometriske regelen for «Ta tilbake» igjen (6 av 6
-  tilfeller tilbake nøyaktig).
+- ~~Forslag lagret før runde 3 (uten `carriedBy`) bruker den gamle geometriske regelen for «Ta tilbake» igjen.~~
+  Fjernet i fikserunde 3: regelen slo også inn i dagens forslag og gjorde brukerens vegger skjeve.
 - **Fløyen** tar med `w-wing-w` og døråpningen Stue → Gang når den flyttes eller slettes; bare et bygg fra «Nytt bygg»
   lar en vegg langs et annet bygg bli igjen.
 - **Møbler på terrassen** som et nytt bygg treffer med veggene (ikke bare midten), skyves ut med meldingen: et vedskjul
@@ -219,10 +348,13 @@ delte lagringen, planen på telefon og PC) og satt sammen her med fase 3. Det so
 
 - Et bygg fra «Nytt bygg» som står inntil et annet bygg, endrer alltid den frie siden ved «Bredde/Dybde»; den festede
   kanten kan ikke dras inn i bygget; «Ta tilbake» på husets kant skyver bygget unna i stedet for å krympe det.
+- Husets kant eller hjørne som et bygg står inntil, kan ikke flyttes utover (før ble bygget grunnere); meldingen sier
+  hvilket bygg som står i veien (fikserunde 3). Bredde/Dybde som gjør et bygg smalere enn sin egen åpning, gjør
+  åpningen smalere (fikserunde 3).
 - En forslagslenke kan også bytte plass («Bytt dit»), med samme uthevingsregel som en plass-lenke.
 - En fane som en annen fane har stoppet, er skrivebeskyttet til den lastes på nytt.
-- «Hva heter du?» er et banner etter 3 s ro (det skyver planen litt ned når det kommer), eller et felt i «Nytt
-  forslag»-vinduet.
+- «Hva heter du?» er et kort der meldingene kommer, etter 3 s ro uten noe valgt (det skyver ingenting; fikserunde 3),
+  eller et felt i «Nytt forslag»-vinduet.
 - Et valgt bygg får møbelet fra biblioteket bare når midten av planen ligger inni det; et møbel uten plass i nærheten
   kan havne i et hvilket som helst rom i etasjen (med melding).
 - Rotasjonshåndtaket skjules på telefon når den eneste ledige siden vender opp; to fingre som starter på mini-linja går

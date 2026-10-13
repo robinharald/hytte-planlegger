@@ -58,7 +58,11 @@ adressen uten lenke, får sin egen, tomme plass.
 - Åpner en enhet **uten** plass en lenke til en plass som er **tom** (ingen forslag), spør appen først: «Denne plassen
   er tom. Er lenken hel?». Plassen huskes ikke, og ingenting flyttes inn i den (den gamle autolagringen, forslag som lå
   på enheten), før du trykker **Begynn her** eller lager et forslag der. Så lenge sier statusen «Ikke startet – plassen
-  i lenken er tom» (aldri «Lagret»), også om meldingen lukkes. Har plassen forslag, brukes den med en gang.
+  i lenken er tom» (aldri «Lagret»), også om meldingen lukkes. Har plassen forslag, brukes den så snart plassen har
+  svart. Bare plassen selv kan si at den er tom: med treg eller blokkert forbindelse (eller uten nett) har en ny enhet
+  bare sitt eget, tomme mellomlager, så statusen sier «Kobler til …» (uten nett: «Uten nett – plassen i lenken er ikke
+  hentet ennå»), aldri «tom». Når svaret kommer, tas plassen i bruk, og forslaget i lenken (`&p=`) vises; er plassen
+  virkelig tom, kommer spørsmålet først da. Får en tom plass forslag senere (fra en annen enhet), tas den i bruk da.
 - Åpner en enhet som **har** en plass, en familielenke til en **annen** plass (en ny lenke, en gammel fane, et
   bokmerke, en fane Safari åpner igjen – ved oppstart eller limt inn i en åpen fane), bytter den aldri av seg selv.
   Appen blir i plassen den bruker nå og spør: «Denne lenken går til en annen delt plass. Plassen i lenken har 3 forslag
@@ -92,10 +96,14 @@ adressen uten lenke, får sin egen, tomme plass.
   (statusen sier «Ikke lagret – last siden på nytt»). Det som var endret i fanen før byttet, lagres i plassen den
   viste. «Last på nytt» åpner plassen enheten bruker nå.
 - **«Hva heter du?»** kommer aldri som en egen dialog mens noen endrer: er navnet ukjent, spør «+ Nytt forslag» om det
-  i samme vindu som navnet på forslaget («Navn på forslaget» og «Hva heter du?»; navnet kan stå tomt). Lagres noe uten
-  navn på en annen måte (f.eks. «Nytt forslag» i meldingen om at Forslag D er låst), kommer spørsmålet som en melding
-  over planen med **Skriv navnet** og **Hopp over** når ingenting er endret på 3 sekunder. «Hopp over» spør aldri
-  igjen; navnet kan endres under Mer → «Endre navnet ditt».
+  i samme vindu som navnet på forslaget («Navn på forslaget» og «Hva heter du?»; navnet kan stå tomt, og da spørres det
+  ikke mer før appen åpnes neste gang). Lagres noe uten navn på en annen måte (f.eks. «Nytt forslag» i meldingen om at
+  Forslag D er låst), kommer spørsmålet som et kort der meldingene vises (nederst på PC, under verktøylinja på telefon;
+  det skyver ingenting) med **Skriv navnet** og **Hopp over**, når ingenting er valgt og planen ikke er endret eller
+  rørt på 3 sekunder. Appen spør til navnet er skrevet eller «Hopp over» er valgt; «Hopp over» spør aldri igjen. Navnet
+  kan endres under Mer → «Endre navnet ditt».
+- Hentes et forslag med fra den forrige plassen, og plassen du bytter til alt har et med samme navn, får det navnet
+  til enheten etter seg («Mammas idé (Pappa)», uten navn «Mammas idé (kopi)»).
 - Gamle lenker med `#d=` (en kopi av et forslag i selve lenken) virker fortsatt: forslaget legges til som et nytt
   forslag i familiens plass. Den samme lenken to ganger legger det ikke til to ganger.
 - Forslag som lå lagret i nettleseren fra før (den gamle autolagringen), flyttes inn i familiens plass første gang,
@@ -118,7 +126,8 @@ Forslag D ligger ikke i den delte plassen: det følger med appen, er låst og er
 | «Lagrer …» | En endring er på vei: appen venter et øyeblikk etter siste endring (og til et drag er sluppet), eller plassen har ikke bekreftet den ennå. |
 | «Lagret her – sendes når du er på nett» | Du er uten nett, og minst én endring ligger i kø på denne enheten (også etter at appen er lastet på nytt uten nett). Den sendes av seg selv når nettet er tilbake. |
 | «Ikke lagret – velg Hent endringene eller Lagre over» | Forslaget ble endret (eller slettet) et annet sted mens du endret det her. Endringene dine i det forslaget lagres ikke før du velger i meldingen over planen. Lukker du appen før det, er de borte (på PC spør nettleseren først). |
-| «Kobler til …» | Appen starter forbindelsen til den delte plassen. |
+| «Kobler til …» | Appen starter forbindelsen til den delte plassen, eller (på en enhet uten plass) venter på at plassen i lenken svarer. |
+| «Uten nett – plassen i lenken er ikke hentet ennå» | Enheten har ingen plass ennå og er uten nett, så den vet ikke hva plassen i lenken har. Den hentes når enheten er på nett igjen. |
 | «Ikke koblet til familiens plass – lagres her» | Forbindelsen feilet (f.eks. første oppstart uten nett, eller Anonymous er slått av). Appen prøver igjen. |
 | «Ikke lagret – prøver igjen» | Den delte plassen avviste en lagring (f.eks. regler som ikke er publisert). Endringen er ikke borte; appen prøver igjen. |
 | «Kun på denne enheten (familiens plass kan ikke nås nå)» | Firebase kunne ikke lastes i det hele tatt (f.eks. blokkert av nettleseren). Appen virker som vanlig og lagrer forslagene på denne enheten; den prøver igjen hvert 15. sekund og når enheten kommer på nett, og legger da forslagene herfra inn i familiens plass. |

@@ -76,21 +76,25 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   (`hytta-<forslag>-<dato>.pdf`), på telefonen kan du dele den (e-post, meldinger, Filer) eller laste den ned. Skriv ut
   i **faktisk størrelse (100 %)**, ikke «tilpass til siden», så stemmer målestokken (1 m = 2 cm i 1:50). Er planen for
   stor for arket, deles den på flere ark med 1 cm overlapp. Siste side har romskjemaet og arealene — fint å gi til en
-  håndverker eller arkitekt.
+  håndverker eller arkitekt. Tegn som PDF-skriften ikke har (emoji, piler), skrives som «?» eller «->».
 - **Bilde av 3D**: «Eksporter» → «Lagre 3D-bildet som PNG» lagrer det du ser i 3D akkurat nå, med forslagets navn og
-  dato nederst. På telefonen åpnes delingsmenyen.
+  dato nederst. På telefonen åpnes delingsmenyen. Mens du går rundt: kameraknappen under «Avslutt», eller P på PC,
+  lagrer det du ser, og du går videre.
 - **Gå rundt**: i 3D, trykk «Gå rundt» (under kameravinklene, eller knappen oppe til høyre i bildet). Du står i stua i
   øyehøyde (1,65 m) — eller der du sist trykket på et gulv i 3D, eller i rommet du har valgt i planen. På PC: gå med
-  W A S D (eller piltastene), se deg rundt med musa, hold Shift for å løpe, Esc avslutter. På telefonen: gå med spaken
-  nede til venstre, dra i bildet for å se deg rundt, «Avslutt» oppe til høyre. Du går gjennom dører og åpninger og opp
-  og ned trapper, men ikke gjennom vegger og vinduer (møblene stopper deg ikke).
+  W A S D (eller piltastene), se deg rundt med musa, hold Shift for å løpe, P lagrer bildet, Esc avslutter (kameraet
+  blir stående der du sto, så du kan lagre bildet fra «Eksporter»). På telefonen: gå med spaken nede til venstre, dra i
+  bildet for å se deg rundt, «Avslutt» oppe til høyre. Du går gjennom dører og åpninger og opp og ned trapper, men ikke
+  gjennom vegger, vinduer, terrassens kledning ned mot bakken eller grunnmuren (møblene stopper deg ikke).
 - **Sol og skygge**: trykk «Midtsommer», «Jevndøgn», «Midtvinter» eller «I dag», og dra i klokkeslettet. Den gule
   stripa viser når sola er oppe den dagen ved hytta. Slå av «Skygger» hvis 3D går tregt på telefonen.
 - **Avløp og sluk**: slå på «Avløp og sluk» under Vis (med planen). Du ser et forslag til avløpsstamme og stiplede
   ledninger med avstand fra toaletter, dusjer, servanter og vaskemaskiner. Under bryteren står hva som er fint (i
   Forslag D: «WC og Hovedbad: toalettene står rygg mot rygg på veggen ved x 18,6 – det er fint.»). Flytter du et
   toalett langt unna, blir det rødt og kommer under Advarsler med avstanden. I ditt eget forslag kan du dra stammen
-  langs veggene, trykke på den for å slette den, eller trykke «Legg til avløpsstamme».
+  langs veggene, trykke på den for å slette den, eller trykke «Legg til avløpsstamme». På telefonen som med møblene:
+  trykk på stammen for å velge den, dra den valgte for å flytte den (et drag som starter på en stamme som ikke er
+  valgt, flytter planen).
 - **IFC-modell**: åpne panelet «IFC-modell» (under Vis) og trykk «Last inn IFC-fil», og velg arkitektens IFC-fil. Den legges blått over planen og halvgjennomsiktig i 3D, så du kan se at
   hytta i dag stemmer. Du kan skru den av og på i plan og 3D, endre synligheten og flytte den 1 cm om gangen. Fila
   blir på enheten din: den lastes ikke opp og deles ikke med familien. «Fjern» tar den bort igjen.
@@ -101,8 +105,10 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   samme forslagene. «Send forslaget» sender en lenke rett til forslaget som er åpent (`#f=…&p=…`). Oppsettet av
   Firebase står i [docs/firebase-oppsett.md](docs/firebase-oppsett.md) (gjort; reglene i `firestore.rules` er publisert).
 - **Forslag-menyen** (øverst) viser Forslag D først og så familiens forslag med «sist endret av …». «+ Nytt forslag»
-  lager en kopi av forslaget på skjermen. I den delte plassen spør appen én gang «Hva heter du?» — i samme vindu som
-  navnet på det nye forslaget, eller i en stripe øverst når du har gjort en pause.
+  lager en kopi av forslaget på skjermen. I den delte plassen spør appen «Hva heter du?» til du har skrevet navnet eller
+  trykket «Hopp over» (står feltet tomt, spørres det ikke mer før appen åpnes neste gang) — i samme vindu som navnet på
+  det nye forslaget, eller i et kort der meldingene kommer når ingenting er valgt og du har gjort en pause (kortet
+  skyver ingenting).
 - **Lagring er automatisk.** Statusen øverst sier «Lagret for alle», «Lagrer …», «Lagret her – sendes når du er på
   nett» (uten nett, også etter at appen er lastet på nytt) eller «Kun på denne enheten …» (uten delt plass). Endrer to
   samme forslag samtidig, får den ene valget «Hent endringene» / «Lagre over» (utgaven som ikke vinner, legges under
@@ -116,14 +122,17 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   annen fane, sier de andre fanene fra, kan ikke endres og lagrer ikke mer («Last på nytt»). «Lagre over» sier fra til den andre, og utgaven som ble lagt
   bort, er merket under Tidligere versjoner. **Tidligere versjoner** (Mer) har inntil 20 automatiske versjoner per forslag. Mer har også «Lagre som fil»,
   «Åpne fil» og «Eksporter JSON».
-- **Uten nett** starter appen fra mellomlageret (service worker), og endringene sendes når nettet er tilbake (PDF og
-  IFC-modellen virker uten nett når de er brukt én gang med nett). På
+- **Uten nett** starter appen fra mellomlageret (service worker), og endringene sendes når nettet er tilbake. PDF og
+  IFC-modellen virker uten nett når bibliotekene deres er hentet én gang med nett: appen henter dem selv i bakgrunnen
+  noen sekunder etter at den er åpnet med nett (ikke med «Spar data»); er de ikke hentet, sier appen «Første gang
+  trenger dette nett – koble til og prøv igjen; etterpå virker det uten nett.». På
   iPhone: legg appen på Hjem-skjermen mens familielenken er åpen (kortet «Legg planleggeren på Hjem-skjermen» forklarer
   hvordan). Når en ny versjon av appen er publisert, kommer «Ny versjon av appen er klar. [Oppdater]»; har du appen
   åpen i flere faner, lastes bare den du trykket i på nytt, de andre sier fra.
 - **Åpne bare familielenken.** En lenke som er kuttet av, starter ikke en ny plass (appen sier fra). Velger du «Bytt
   dit», tilbyr appen å hente forslagene du laget i den forrige plassen. En lenke til en tom plass spør «Denne plassen er
-  tom. Er lenken hel?» før noe lagres.
+  tom. Er lenken hel?» før noe lagres — men først når plassen har svart: med treg forbindelse eller uten nett sier
+  statusen «Kobler til …» eller «Uten nett …» så lenge.
 
 ## Kom i gang
 
@@ -198,7 +207,11 @@ npm run dev        # http://localhost:5173
   i A3 1:50 med begge etasjer — sidene og A3-størrelsen lest fra fila —, PNG, «Gå rundt» med W, «Avløp og sluk» med et
   toalett flyttet til Soverom 1, og en liten syntetisk IFC-fil fra `e2e/fixtures/` gjennom filvelgeren),
   `e2e/phone-phase3.spec.ts` (spaken i «Gå rundt», «Eksporter» på telefonen), et vedskjul inntil huset med ny dybde og
-  «Ta tilbake» i et hjørne (PC), og forslagslenkens «Bytt dit» og vinduet med to navn (forslagene). Prøvene mot den
+  «Ta tilbake» i et hjørne (PC), og forslagslenkens «Bytt dit» og vinduet med to navn (forslagene). Morgenrunden la til
+  «Ta tilbake» som holder veggene rette og et nektet «Ta tilbake» som ikke endrer noe (PC), «Gå rundt» fra sør som
+  stopper ved terrassens kledning og P som lagrer bildet, en PDF av et forslag med emoji i navnet (teksten lest fra
+  fila), navnekortet som ikke flytter verktøylinja, avløpsstammen på telefonen (drag flytter planen, trykk og så drag
+  flytter stammen), forslagsbanneret på 390 px og en ny enhet med treg forbindelse mot den ekte Firestore. Prøvene mot den
   ekte Firestore kjøres bare med `E2E_FIRESTORE=1` (se
   [docs/firebase-oppsett.md](docs/firebase-oppsett.md)); ellers hoppes de over. Skjermbildene i `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
@@ -208,11 +221,11 @@ npm run dev        # http://localhost:5173
 ## Bygg og publisering
 
 `npm run build` lager `dist/` med relativ base (`./` i `vite.config.ts`), så samme bygg virker både lokalt og under en
-undermappe på GitHub Pages. Bygget har en service worker (`sw.js`, scope `./`) som mellomlagrer hele appen
-(fonter, ikoner og Firebase-delen også), og et manifest uten `start_url` (Hjem-skjerm-appen åpner adressen den ble lagt
-til fra, med familielenken). Firebase lastes som en egen del bare når den delte plassen brukes. PDF-bibliotekene
-(jsPDF, svg2pdf.js) og IFC-motoren (web-ifc med wasm, ca. 5 MB) er egne deler som lastes første gang de brukes, og
-mellomlagres da — de lastes ikke ned når appen installeres.
+undermappe på GitHub Pages. Bygget har en service worker (`sw.js`, scope `./`) som mellomlagrer alt unntatt
+PDF/IFC-bibliotekene, som lastes ved første bruk (fonter, ikoner og Firebase-delen er med), og et manifest uten
+`start_url` (Hjem-skjerm-appen åpner adressen den ble lagt til fra, med familielenken). Firebase lastes som en egen del
+bare når den delte plassen brukes. PDF-bibliotekene (jsPDF, svg2pdf.js) og IFC-motoren (web-ifc med wasm, ca. 5 MB) er
+egne deler som lastes første gang de brukes, og mellomlagres da — de lastes ikke ned når appen installeres.
 
 Publiseringen er automatisk: hver push til `main` kjører [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml),
 som kjører enhetstestene, bygger og laster `dist/` opp til GitHub Pages. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
