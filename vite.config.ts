@@ -15,8 +15,9 @@ import { VitePWA } from 'vite-plugin-pwa';
  * CSS, index.html, fonts, icons, the manifest), navigations fall back to index.html, and old caches are cleaned up.
  * Phase 3: the heavy libraries behind «Eksporter plan som PDF» (planPdf with jsPDF, svg2pdf.js and jsPDF's optional
  * html2canvas / DOMPurify / canvg) and the IFC overlay (web-ifc and its wasm) are NOT precached — about 6 MB that most
- * installs never use. They are cached on first use instead (runtimeCaching, cache first: the file names carry a content
- * hash), so a PDF or an IFC works offline after it has been used once online.
+ * installs never use. They go into the 'hytte-lazy-libs' runtime cache (cache first: the file names carry a content
+ * hash): src/export/warmLazy.ts fetches them in the background a few seconds after an online start (not with
+ * «Spar data»), or they are fetched at first use; from then on a PDF or an IFC works offline.
  * The manifest has no start_url on purpose: it then defaults to the page the app was added from, which keeps
  * #f=<family> — a home-screen app on iOS has its own storage and would otherwise not know the family.
  * No service worker in `npm run dev` (devOptions off), so the dev server and its e2e projects are unaffected.
@@ -61,7 +62,10 @@ export default defineConfig({
           {
             urlPattern: LAZY_LIBS_URL,
             handler: 'CacheFirst',
-            options: { cacheName: 'hytte-lazy-libs', expiration: { maxEntries: 24 } },
+            // ignoreVary: the page puts these files in the cache itself (src/export/warmLazy.ts); with a server that
+            // sends `Vary: Origin` (vite preview) the module script's request never matched them offline. Safe: the
+            // file names carry a content hash.
+            options: { cacheName: 'hytte-lazy-libs', expiration: { maxEntries: 24 }, matchOptions: { ignoreVary: true } },
           },
         ],
         navigateFallback: 'index.html',
