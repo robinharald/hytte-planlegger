@@ -28,6 +28,7 @@ import { nb } from '../i18n/nb';
 import { PlanView } from '../plan2d/PlanView';
 import type { ViewportInsets } from '../plan2d/PlanView';
 import { appStore, useAppStore } from '../state/appStore';
+import { usePlumbingOverlay } from '../state/plumbingActions';
 import { useEditActions } from '../state/editActions';
 import type { Selection } from '../state/selection';
 import { cutHeightFor, selectActiveVariant } from '../state/store';
@@ -159,6 +160,8 @@ function PanePlan(props: { hidden: boolean }) {
   const paneRef = useRef<HTMLElement>(null);
   const insets = usePlanInsets(isPhone, paneRef);
   const onDropFurniture = useCallback((catalogId: string, at: Vec2) => void place(catalogId, { kind: 'drop', at }), [place]);
+  // «Avløp og sluk» (Vis): the drainage helper's plan layer, null while the toggle is off.
+  const plumbing = usePlumbingOverlay();
   return (
     <section ref={paneRef} className={`pane pane-plan${props.hidden ? ' is-hidden' : ''}`} aria-label={nb.a11y.planView} aria-hidden={props.hidden}>
       <ErrorBoundary resetKey={derived.variantId} fallback={(error, reset) => <PaneError error={error} reset={reset} />}>
@@ -185,6 +188,7 @@ function PanePlan(props: { hidden: boolean }) {
           onLocked={showLockedToast}
           onDropFurniture={onDropFurniture}
           viewportInsets={insets}
+          plumbing={plumbing}
         />
       </ErrorBoundary>
     </section>

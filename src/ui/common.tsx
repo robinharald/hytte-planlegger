@@ -11,7 +11,11 @@ import { nb } from '../i18n/nb';
 // Panel
 // ---------------------------------------------------------------------------
 
-export function Panel(props: { title: string; badge?: ReactNode; defaultOpen?: boolean; testId?: string; id?: string; children: ReactNode }) {
+/**
+ * A collapsible panel section (`<details>`). `onlyWhenOpen`: the children are rendered only while it is open (and from
+ * then on stay mounted only while open), for contents loaded lazily.
+ */
+export function Panel(props: { title: string; badge?: ReactNode; defaultOpen?: boolean; testId?: string; id?: string; onlyWhenOpen?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(props.defaultOpen ?? true);
   return (
     <details className="panel" id={props.id} open={open} onToggle={(e) => setOpen(e.currentTarget.open)} data-testid={props.testId}>
@@ -21,7 +25,7 @@ export function Panel(props: { title: string; badge?: ReactNode; defaultOpen?: b
           {props.badge !== undefined && <span className="panel-badge">{props.badge}</span>}
         </span>
       </summary>
-      <div className="panel-body">{props.children}</div>
+      <div className="panel-body">{!props.onlyWhenOpen || open ? props.children : null}</div>
     </details>
   );
 }

@@ -75,6 +75,9 @@ import type { Id, Site, Vec2 } from '../model/types';
 import type { Selection } from '../state/selection';
 import { BlockLayer } from './layers/BlockLayer';
 import { DimensionLayer } from './layers/DimensionLayer';
+import { IfcLayer } from './layers/IfcLayer';
+import { PlumbingLayer } from './layers/PlumbingLayer';
+import type { PlumbingLayerProps } from './layers/PlumbingLayer';
 import { EditOverlay } from './layers/EditOverlay';
 import type { TempDimension } from './layers/EditOverlay';
 import { FloorLayer } from './layers/FloorLayer';
@@ -166,6 +169,11 @@ export interface PlanViewProps {
    * into the uncovered part (with a 12 px margin), and does nothing when it already fits.
    */
   viewportInsets?: ViewportInsets;
+  /**
+   * Phase 3, «Avløp og sluk»: the drainage helper's layer (stacks, runs, distances; state/plumbingActions.ts
+   * `usePlumbingOverlay`), null or absent while the toggle is off.
+   */
+  plumbing?: Pick<PlumbingLayerProps, 'plumbing' | 'todayRoomIds' | 'onMoveStack' | 'onDeleteStack'> | null;
 }
 
 /** See `PlanViewProps.viewportInsets`. */
@@ -719,6 +727,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           <GhostLayer ghosts={data.ghosts} highlightNew={highlightNew} selection={selection} corridorPx={band} />
           <OpeningLayer openings={data.openings} highlightNew={highlightNew} selection={selection} corridorPx={band} />
           <StructureLayer elements={data.structure} selection={selection} scale={view.s} stairModes={data.stairModes} />
+          <IfcLayer storey={planStorey} />
           <g opacity={outdoorActive ? undefined : FAINT_OPACITY}>
             <RailingLayer railings={data.railings} steps={data.steps} selection={selection} selectable={outdoorActive} corridorPx={sizes.corridor} />
           </g>
@@ -726,6 +735,9 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
           {showRoofPlan && <RoofPlanLayer roofs={data.roofs} />}
           <LabelLayer labels={labels} scale={scale} highlightNew={highlightNew} />
           {showDims && <DimensionLayer dimensions={data.dimensions} scale={view.s} />}
+          {props.plumbing && (
+            <PlumbingLayer {...props.plumbing} derived={derived} storeyId={storeyId} scale={view.s} coarse={coarse} editable={editable} clientToPlan={clientToPlan} />
+          )}
           {rotateItem && <FurnitureRotateHandle item={rotateItem} scale={view.s} handleR={sizes.handleR} coarse={coarse} items={data.furniture} walls={data.pieces} clientToPlan={clientToPlan} onRotate={onRotateFurniture} title={planStrings.edit.rotateHandle} />}
         </g>
         <NorthArrow bearing={site.planNorthBearing} cx={north[0]} cy={north[1]} />

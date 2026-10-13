@@ -1,8 +1,9 @@
 /**
  * Top bar (docs/phase2-plan.md §5–§6): title, "Forslag: <navn> ▾" (ProposalsMenu: Forslag D first, then the family's
  * proposals with "sist endret av …", "+ Nytt forslag", Papirkurv), "+ Nytt forslag", Gi nytt navn / Slett, the saving
- * status (StatusPill), Mer (Tidligere versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and in shared
- * mode "Endre navnet ditt"), "Send forslaget" and Hjelp. Angre / Gjør om live in the toolbar (§3.2).
+ * status (StatusPill), Eksporter (phase 3, ExportMenu.tsx: the plan as PDF, the 3D view as PNG), Mer (Tidligere
+ * versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and in shared mode "Endre navnet ditt"), "Send
+ * forslaget" and Hjelp. Angre / Gjør om live in the toolbar (§3.2).
  *
  *  - The locked base proposal (Forslag D) shows a "Grunnlag" tag; it cannot be renamed or deleted, and
  *    "+ Nytt forslag" is the primary button there.
@@ -41,6 +42,7 @@ import { ShareDialog } from './ShareDialog';
 import { FamilyBanners, NameDialog, StatusPill } from './StatusPill';
 import { TrashPanel } from './TrashPanel';
 import { UpdateToast } from './UpdateToast';
+import { ExportMenu } from './ExportMenu';
 import './family.css';
 
 /** Dialogs the app shell renders for the top bar (Hjelp). */
@@ -206,6 +208,7 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
       <div className="spacer" />
 
       <div className="toolgroup file-actions">
+        <ExportMenu />
         <MoreMenu actions={moreActions} />
       </div>
       {!readOnly && (

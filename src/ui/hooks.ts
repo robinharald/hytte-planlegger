@@ -12,7 +12,11 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 import { localInstant, sunInPlan } from '../geometry/geo';
 import type { DerivedVariant } from '../model/derived';
 import type { Project, Site, Vec3 } from '../model/types';
+import { lastExport } from '../export/hook';
+import type { LastExport } from '../export/hook';
 import { appStore, useAppStore } from '../state/appStore';
+import { walkProbe } from '../view3d/walkState';
+import type { WalkProbe } from '../view3d/walkState';
 import type { Selection } from '../state/selection';
 import { useDerived } from '../state/useDerived';
 import { canRotate, deleteCall, deleteResolved, duplicateResolved, nudgeSelection, resolveCurrent, rotateResolved } from './commands';
@@ -147,6 +151,10 @@ export interface HytteHook {
   derived: DerivedVariant;
   /** The current selection (for the Playwright editing tests). */
   selection: Selection | null;
+  /** Phase 3: the last PDF / PNG export (src/export/hook.ts), null before the first. */
+  lastExport: LastExport | null;
+  /** Phase 3: the walker's pose while «Gå rundt» is on (view3d/walkState.ts `walkProbe`), else null. */
+  walk: WalkProbe | null;
 }
 
 declare global {
@@ -155,12 +163,16 @@ declare global {
   }
 }
 
-/** Keeps `window.__hytte = { ready, project, derived, selection }` current (architecture.md "Component contracts"). */
+/**
+ * Keeps `window.__hytte = { ready, project, derived, selection, lastExport, walk }` current (architecture.md "Component
+ * contracts"); an export sets `lastExport` on the current object itself (export/hook.ts `publishLastExport`), and a
+ * new object carries it over.
+ */
 export function useTestHook(ready: boolean): void {
   const project = useAppStore((s) => s.project);
   const selection = useAppStore((s) => s.ui.selection);
   const derived = useDerived();
   useEffect(() => {
-    window.__hytte = { ready, project, derived, selection };
+    window.__hytte = { ready, project, derived, selection, lastExport: lastExport(), walk: walkProbe() };
   }, [ready, project, derived, selection]);
 }

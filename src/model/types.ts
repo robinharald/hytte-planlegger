@@ -148,6 +148,12 @@ export interface Variant {
    * schema bump: older documents have none.
    */
   mergedRooms?: MergedRoom[];
+  /**
+   * Drainage helper (brief §5, geometry/plumbing.ts): the proposal's drain stacks, each a point on a wall (plan
+   * coordinates, the wall's centre line) on one storey. Undefined or no stack on a storey = the helper suggests one there.
+   * Optional, no schema bump: older documents have none.
+   */
+  plumbing?: { stacks: { id: Id; p: Vec2; storeyId: Id }[] };
 }
 
 /** A Room record a merge removed, with the anchors (by room id) of the rooms alive with it then (`Variant.mergedRooms`). */

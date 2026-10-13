@@ -339,6 +339,7 @@ export function warningTarget(w: ModelWarning): Selection | null {
     case 'furniture-outside':
     case 'furniture-unknown':
     case 'furniture-needs-wet-room':
+    case 'drain-far':
       return { kind: 'furniture', id: w.furnitureId };
     default:
       return null;

@@ -14,8 +14,12 @@
  * - `onDropFurniture` (phase 2b): a furniture library item released over the view (dropEvent.ts
  *   `dispatchFurnitureDrop`, received on the root) lands where the pointer's ray meets a visible floor, a deck or the
  *   shown ground (drop.ts); the handler gets the catalogue id, the plan point and the hit (surface, level, z).
+ * - Walk mode «Gå rundt» (walkState.ts, WalkControls.tsx, WalkOverlay.tsx): the session and the «Skygger» switch
+ *   come from the view's own little store (also driven by ui/Controls.tsx); «Gå rundt» / «Avslutt» top right, the
+ *   joystick on touch screens, and the hint line says how to walk (at the top while the joystick is shown).
  */
 import { Canvas } from '@react-three/fiber';
+import { nb } from '../i18n/nb';
 import { useMemo, useRef } from 'react';
 import type { CSSProperties, JSX } from 'react';
 import type { DerivedVariant } from '../model/derived';
@@ -23,10 +27,14 @@ import type { Id, Site, TerrainAsset, Vec2, Vec3 } from '../model/types';
 import type { Selection } from '../state/selection';
 import { CAMERA_FAR, CAMERA_FOV, CAMERA_NEAR, presetWorld } from './cameras';
 import type { CameraPreset } from './cameras';
+import { registerCapture } from './capture';
 import type { DropHit } from './drop';
+import { IfcOverlay } from './IfcOverlay';
 import { PALETTE } from './materials';
 import { Scene } from './Scene';
 import { STRINGS } from './strings';
+import { WalkOverlay } from './WalkOverlay';
+import { useView3dLocal } from './walkState';
 
 export type { CameraPreset } from './cameras';
 export type { DropHit } from './drop';
@@ -81,7 +89,11 @@ const HINT_STYLE: CSSProperties = {
   pointerEvents: 'none',
   userSelect: 'none',
   zIndex: 50,
+  maxWidth: 'calc(100% - 20px)',
 };
+
+/** The hint while walking on a touch screen: at the top (the joystick has the lower left corner), clear of «Avslutt». */
+const HINT_TOP_STYLE: CSSProperties = { ...HINT_STYLE, bottom: 'auto', top: 10, maxWidth: 'calc(100% - 120px)' };
 
 function isCoarsePointer(): boolean {
   try {
@@ -93,6 +105,11 @@ function isCoarsePointer(): boolean {
 
 export function View3D(props: View3DProps): JSX.Element {
   const coarse = useMemo(isCoarsePointer, []);
+  const walk = useView3dLocal((s) => s.walk);
+  const shadows = useView3dLocal((s) => s.shadows);
+  const locked = useView3dLocal((s) => s.locked);
+  const walking = walk !== null;
+  const hintText = !walking ? STRINGS.hint : coarse ? nb.walk.hintTouch : locked ? nb.walk.hintDesktop : nb.walk.hintDesktopUnlocked;
   /** The navigation hint: 3D labels keep clear of it (pinned tags move up above it in narrow panes). */
   const hint = useRef<HTMLDivElement>(null);
   /** The root receives the furniture drop events (they bubble up from the canvas). */
@@ -105,12 +122,14 @@ export function View3D(props: View3DProps): JSX.Element {
   }, []);
   return (
     <div ref={root} data-testid="view-3d" style={ROOT_STYLE} aria-label={STRINGS.canvasLabel} role="region">
-      <Canvas dpr={[1, 1.5]} frameloop="demand" shadows="percentage" flat gl={{ antialias: true, preserveDrawingBuffer: true }} camera={initialCamera}>
-        <Scene {...props} coarse={coarse} labelReserve={hint} dropRoot={root} />
+      <Canvas dpr={[1, 1.5]} frameloop="demand" shadows="percentage" flat gl={{ antialias: true, preserveDrawingBuffer: true }} camera={initialCamera} onCreated={registerCapture}>
+        <Scene {...props} coarse={coarse} labelReserve={hint} dropRoot={root} walk={walk} shadows={shadows} />
+        <IfcOverlay {...props} />
       </Canvas>
-      <div ref={hint} style={HINT_STYLE}>
-        {STRINGS.hint}
+      <div ref={hint} style={walking && coarse ? HINT_TOP_STYLE : HINT_STYLE} data-testid="view3d-hint" role="status">
+        {hintText}
       </div>
+      <WalkOverlay walking={walking} coarse={coarse} />
     </div>
   );
 }

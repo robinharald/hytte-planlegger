@@ -7,6 +7,7 @@ import { useMemo } from 'react';
 import { nb } from '../i18n/nb';
 import type { Id } from '../model/types';
 import { appStore, useAppStore } from '../state/appStore';
+import { useDrainWarnings, withDrainWarnings } from '../state/plumbingActions';
 import type { Selection } from '../state/selection';
 import { useActiveVariant, useDerived } from '../state/useDerived';
 import { AreaTotals } from './AreaTotals';
@@ -23,7 +24,8 @@ function selectTarget(target: Selection, storeyOfLevel: (levelId?: Id) => Id | u
 }
 
 function WarningsPanel(props: { defaultOpen: boolean }) {
-  const derived = useDerived();
+  // With «Avløp og sluk» on, the drainage helper's 'drain-far' warnings are listed too (state/plumbingActions.ts).
+  const derived = withDrainWarnings(useDerived(), useDrainWarnings());
   const variant = useActiveVariant();
   const site = useAppStore((s) => s.project.site);
   const items = useMemo(() => warningItems(derived, variant, site), [derived, variant, site]);

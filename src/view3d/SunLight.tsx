@@ -5,7 +5,8 @@
  * dir · 60 m, target = centre of the built bounds. When the sun is below the horizon its intensity is 0 and it
  * casts no shadow (the hemisphere light keeps the model readable). Shadow map 2048 (1024 on coarse pointers,
  * where the PCF filter radius is also reduced — PCFSoftShadowMap no longer exists in three r186). The shadow
- * camera box covers the bounds plus 15 m (at least ±30 m).
+ * camera box covers the bounds plus 15 m (at least ±30 m). `shadows` false (the «Skygger» switch) keeps the light
+ * but casts no shadow (cheaper on phones).
  */
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import { Object3D } from 'three';
@@ -23,6 +24,8 @@ export interface SunLightProps {
   sun: { dir: Vec3; isUp: boolean };
   bounds: { min: Vec2; max: Vec2 };
   coarse: boolean;
+  /** Cast shadows while the sun is up (default true). */
+  shadows?: boolean;
 }
 
 /** Shadow box half-size for the given bounds. */
@@ -31,7 +34,7 @@ function shadowExtent(bounds: { min: Vec2; max: Vec2 }): number {
   return Number.isFinite(d) ? Math.max(30, d / 2 + 15) : 30;
 }
 
-export function SunLight({ sun, bounds, coarse }: SunLightProps) {
+export function SunLight({ sun, bounds, coarse, shadows = true }: SunLightProps) {
   const light = useRef<DirectionalLight>(null);
   const target = useMemo(() => new Object3D(), []);
   const cx = (bounds.min[0] + bounds.max[0]) / 2;
@@ -74,7 +77,7 @@ export function SunLight({ sun, bounds, coarse }: SunLightProps) {
         color={SUN}
         intensity={sun.isUp ? 0.75 * Math.PI : 0}
         position={position}
-        castShadow={sun.isUp}
+        castShadow={sun.isUp && shadows}
         shadow-bias={-0.0006}
         shadow-normalBias={0.02}
         shadow-radius={coarse ? 1 : 3}

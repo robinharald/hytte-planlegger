@@ -249,6 +249,8 @@ describe('warnings name walls and openings by type and place', () => {
       'furniture-outside': { kind: 'furniture-outside', furnitureId: 'f-1' },
       'furniture-unknown': { kind: 'furniture-unknown', furnitureId: 'f-1', catalogId: 'rakett' },
       'furniture-needs-wet-room': { kind: 'furniture-needs-wet-room', furnitureId: 'f-1' },
+      // Phase 3, the drainage helper (added while «Avløp og sluk» is on).
+      'drain-far': { kind: 'drain-far', furnitureId: 'f-1', catalogId: 'toalett', roomId: 'room-sov1', distance: 23.3 },
       generic: { kind: 'generic', message: 'geometry fallback: rooms on storey ground' },
     };
     const ids = /face-x1|room-sov1|win-|d-sov-ny|w-104|w-gang|blk-|rail-|deck-terrasse|steps\/|op-/;
@@ -258,6 +260,7 @@ describe('warnings name walls and openings by type and place', () => {
       expect(text, w.kind).not.toMatch(placeless);
       if (!w.kind.startsWith('furniture-')) expect(text, w.kind).not.toMatch(ids);
     }
+    expect(warningText(samples['drain-far'], lookup, formatM2)).toMatch(/^Toalettet (i «[^»]+» )?står 23,3 m fra avløpsstammen\.$/);
     expect(warningText(samples['roof-no-meet'], lookup, formatM2)).toBe('Taket på «Ny tverrfløy» møter ikke nabotaket i enden mot vest.');
     expect(warningText(samples['deck-steps-blocked'], lookup, formatM2)).toMatch(/^Trappa fra terrassen mot sør står der det nå er «Vedskjul 2»\./);
   });

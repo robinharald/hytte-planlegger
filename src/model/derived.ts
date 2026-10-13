@@ -508,4 +508,9 @@ export type ModelWarning =
   | { kind: 'furniture-needs-wet-room'; furnitureId: Id; roomId?: Id }
   /** Deck steps whose centre is not on a free run of their edge (a building stands there, or the edge is gone). */
   | { kind: 'deck-steps-blocked'; stepsId: Id; deckId: Id }
+  /**
+   * Phase 3, the drainage helper: a fixture that needs a drain stands too far from the drain stack (`distance`: the run
+   * in m). Not from `deriveVariant`: added by state/plumbingActions.ts `withDrainWarnings` while «Avløp og sluk» is on.
+   */
+  | { kind: 'drain-far'; furnitureId: Id; catalogId: string; roomId?: Id; distance: number }
   | { kind: 'generic'; message: string };

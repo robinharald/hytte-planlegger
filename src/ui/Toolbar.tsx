@@ -20,6 +20,7 @@ import type { ReactNode } from 'react';
 import { nb } from '../i18n/nb';
 import type { OpeningType } from '../model/types';
 import { appStore, useAppStore } from '../state/appStore';
+import { useDrainWarnings } from '../state/plumbingActions';
 import { useDerived } from '../state/useDerived';
 import { IconDoor, IconHouse, IconRedo, IconRotate, IconRuler, IconSelect, IconSofa, IconUndo, IconWall, IconWarning } from './common';
 import {
@@ -55,7 +56,8 @@ function breakable(name: string): ReactNode {
 
 /** The active proposal's warning count; opens Advarsler. Not shown without warnings. */
 function WarningsBadge() {
-  const count = useDerived().warnings.length;
+  // The drainage helper's 'drain-far' warnings count too while «Avløp og sluk» is on.
+  const count = useDerived().warnings.length + useDrainWarnings().length;
   if (count === 0) return null;
   const label = T.warnings(count);
   return (

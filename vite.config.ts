@@ -13,10 +13,19 @@ import { VitePWA } from 'vite-plugin-pwa';
  * worker with `useRegisterSW` and asks before an update ("Ny versjon av appen er klar. [Oppdater]"); nothing reloads
  * by itself. Everything the app needs offline is precached (globPatterns: the JS chunks incl. the lazy Firebase one,
  * CSS, index.html, fonts, icons, the manifest), navigations fall back to index.html, and old caches are cleaned up.
+ * Phase 3: the heavy libraries behind «Eksporter plan som PDF» (planPdf with jsPDF, svg2pdf.js and jsPDF's optional
+ * html2canvas / DOMPurify / canvg) and the IFC overlay (web-ifc and its wasm) are NOT precached — about 6 MB that most
+ * installs never use. They are cached on first use instead (runtimeCaching, cache first: the file names carry a content
+ * hash), so a PDF or an IFC works offline after it has been used once online.
  * The manifest has no start_url on purpose: it then defaults to the page the app was added from, which keeps
  * #f=<family> — a home-screen app on iOS has its own storage and would otherwise not know the family.
  * No service worker in `npm run dev` (devOptions off), so the dev server and its e2e projects are unaffected.
  */
+/** Chunks of the PDF export and the IFC overlay that are not precached (vite-plugin-pwa globIgnores). */
+const LAZY_LIBS_GLOBS = ['**/node_modules/**/*', '**/planPdf-*.js', '**/jspdf*.js', '**/svg2pdf*.js', '**/html2canvas*.js', '**/purify*.js', '**/index.es-*.js', '**/web-ifc*'];
+/** The same files as URLs, cached on first use (wasm: web-ifc's engine, src/ifc/loader.ts imports it with ?url). */
+const LAZY_LIBS_URL = /\/assets\/(?:planPdf-|jspdf|svg2pdf|html2canvas|purify|index\.es-|web-ifc)[^/]*\.(?:js|wasm)$/;
+
 export default defineConfig({
   base: './',
   plugins: [
@@ -45,6 +54,16 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,woff2,png,webmanifest}'],
+        // Lazy, heavy and rarely used (see above): cached on first use, not at install. `index.es-*` is canvg (not the
+        // Firebase chunks, which are `index.esm-*`).
+        globIgnores: LAZY_LIBS_GLOBS,
+        runtimeCaching: [
+          {
+            urlPattern: LAZY_LIBS_URL,
+            handler: 'CacheFirst',
+            options: { cacheName: 'hytte-lazy-libs', expiration: { maxEntries: 24 } },
+          },
+        ],
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
         // The main chunk (three.js, the terrain) is well over workbox's 2 MiB default.
@@ -52,6 +71,9 @@ export default defineConfig({
       },
     }),
   ],
+  // The lazy libraries of phase 3, pre-bundled when the dev server starts: found only at their first dynamic import,
+  // Vite would optimise them then and reload the page (a «Lag PDF» in the middle of an e2e test, or on Robin's PC).
+  optimizeDeps: { include: ['jspdf', 'svg2pdf.js', 'react-dom/server', 'web-ifc'] },
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1500,

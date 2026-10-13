@@ -21,6 +21,12 @@
  * the crease edges of every shown mesh the selection matches, selection3d.highlightMatches), the furniture drop target
  * (dropEvent.ts / drop.ts → `onDropFurniture`), `invalidate()` on every prop change (frameloop 'demand') and
  * `onReady` after the first rendered frame.
+ *
+ * Walk mode (`walk` = a session id, WalkControls.tsx): every storey with full walls and roofs (the exterior mode's
+ * visibility whatever `mode` and the cut say), the orbit controls and click selection off; the camera rig keeps the
+ * orbit camera's place and, when the walk ends, eases back to it (or to the preset when one was chosen meanwhile,
+ * walkState `returnToPreset`). A 3D click records its plan point (walkState `recordPick`) so a walk entered with
+ * that selection starts there. `shadows` (default on) lets the sun cast shadows.
  */
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
@@ -51,6 +57,9 @@ import { isShown, pickTagsOf, selectionOf } from './sceneUtils';
 import { highlightMatches, isClick } from './selection3d';
 import type { FloorPickContext } from './selection3d';
 import { StructureMeshes } from './StructureMeshes';
+import { fromWorld } from './coords';
+import { WalkControls } from './WalkControls';
+import { recordPick, view3dLocal } from './walkState';
 import { SunLight } from './SunLight';
 import { Terrain } from './Terrain';
 import { Trees } from './Trees';
@@ -82,6 +91,10 @@ export interface SceneProps {
   coarse: boolean;
   /** An element over the canvas the labels keep clear of (View3D's navigation hint). */
   labelReserve?: RefObject<HTMLElement | null>;
+  /** Walk session id while walking (walkState.ts), else null / undefined. */
+  walk?: number | null;
+  /** The sun casts shadows (default true). */
+  shadows?: boolean;
 }
 
 const BACKGROUND = `#${PALETTE.background.toString(16).padStart(6, '0')}`;
@@ -111,7 +124,10 @@ export function Scene(props: SceneProps) {
   const isPlaced = useCallback(() => placed.current, []);
 
   const parts = useSceneParts(derived);
-  const vis = useMemo(() => computeVisibility(parts.levels, mode, activeStoreyId, cutHeight), [parts.levels, mode, activeStoreyId, cutHeight]);
+  const walking = props.walk != null;
+  // walking shows every storey with full walls and roofs
+  const shownMode = walking ? 'ute' : mode;
+  const vis = useMemo(() => computeVisibility(parts.levels, shownMode, activeStoreyId, cutHeight), [parts.levels, shownMode, activeStoreyId, cutHeight]);
   const ground = useMemo(
     () => shownGroundFn(terrain, site, parts.site.groundWorks, parts.site.blocks, props.showTerrain),
     [terrain, site, parts.site, props.showTerrain],
@@ -126,16 +142,18 @@ export function Scene(props: SceneProps) {
     <>
       <color attach="background" args={[BACKGROUND]} />
       <fog attach="fog" args={[BACKGROUND, 110, 420]} />
-      <SunLight sun={props.sun} bounds={derived.bounds} coarse={props.coarse} />
+      <SunLight sun={props.sun} bounds={derived.bounds} coarse={props.coarse} shadows={props.shadows ?? true} />
       <OrbitControls
         makeDefault
+        enabled={!walking}
         enableDamping
         dampingFactor={0.1}
         maxPolarAngle={ORBIT_LIMITS.maxPolarAngle}
         minDistance={ORBIT_LIMITS.minDistance}
         maxDistance={ORBIT_LIMITS.maxDistance}
       />
-      <CameraRig preset={props.preset} bounds={derived.bounds} onPlaced={markPlaced} />
+      <CameraRig preset={props.preset} bounds={derived.bounds} onPlaced={markPlaced} walking={walking} />
+      <WalkControls session={props.walk ?? null} derived={derived} site={site} terrain={terrain} selection={props.selection} coarse={props.coarse} />
 
       <group ref={pickRoot} name="pickable">
         <group ref={building} name="building">
@@ -149,7 +167,7 @@ export function Scene(props: SceneProps) {
       {props.showLabels && (
         <Labels
           derived={derived}
-          mode={mode}
+          mode={shownMode}
           activeStoreyId={activeStoreyId}
           cutHeight={cutHeight}
           highlightNew={highlightNew}
@@ -162,7 +180,7 @@ export function Scene(props: SceneProps) {
         root={pickRoot}
         version={[parts.building, parts.outdoor, parts.furniture, parts.site, vis, props.showTrees, props.showTerrain]}
       />
-      <Picking root={pickRoot} onSelect={props.onSelect} />
+      <Picking root={pickRoot} onSelect={props.onSelect} disabled={walking} />
       <DropTarget
         root={props.dropRoot}
         onDrop={props.onDropFurniture}
@@ -255,7 +273,7 @@ interface Tween {
   start: number;
 }
 
-function CameraRig({ preset, bounds, onPlaced }: { preset: CameraPreset; bounds: { min: Vec2; max: Vec2 }; onPlaced: () => void }) {
+function CameraRig({ preset, bounds, onPlaced, walking }: { preset: CameraPreset; bounds: { min: Vec2; max: Vec2 }; onPlaced: () => void; walking: boolean }) {
   const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls) as unknown as ControlsLike | null;
   const invalidate = useThree((s) => s.invalidate);
@@ -269,16 +287,28 @@ function CameraRig({ preset, bounds, onPlaced }: { preset: CameraPreset; bounds:
   const boundsRef = useRef(bounds);
   const aspectRef = useRef(aspect);
   const presetRef = useRef(preset);
+  const walkingRef = useRef(walking);
+  /** The orbit camera's place when a walk began (the preset at that time too). */
+  const beforeWalk = useRef<{ position: Vector3; target: Vector3; preset: CameraPreset } | null>(null);
   useLayoutEffect(() => {
     boundsRef.current = bounds;
     aspectRef.current = aspect;
     presetRef.current = preset;
-  }, [bounds, aspect, preset]);
+    walkingRef.current = walking;
+  }, [bounds, aspect, preset, walking]);
 
   // Jump on the first frame with controls, animate on later preset changes. Bounds changes (edits) never move
-  // the camera.
+  // the camera. While walking the preset waits for the walk to end.
   useEffect(() => {
     if (!controls) return;
+    if (walkingRef.current) {
+      // the walk owns the camera (mounted while walking: count as placed)
+      if (first.current) {
+        first.current = false;
+        onPlaced();
+      }
+      return;
+    }
     const v = presetWorld(preset, boundsRef.current, aspectRef.current);
     userMoved.current = false;
     if (first.current || prefersReducedMotion()) {
@@ -294,10 +324,44 @@ function CameraRig({ preset, bounds, onPlaced }: { preset: CameraPreset; bounds:
     invalidate();
   }, [preset, controls, camera, invalidate, onPlaced]);
 
+  // A walk keeps the orbit camera's place (before WalkControls moves the camera: this rig comes first in the
+  // scene) and eases back to it afterwards, or to the preset when one was chosen meanwhile (walkState
+  // `returnToPreset`, or the preset prop changed).
+  useLayoutEffect(() => {
+    if (!controls) return;
+    if (walking) {
+      tween.current = null;
+      // mounted while walking: the camera never reached its preset, come back to that
+      const v = first.current ? presetWorld(presetRef.current, boundsRef.current, aspectRef.current) : { position: camera.position, target: controls.target };
+      beforeWalk.current = { position: v.position.clone(), target: v.target.clone(), preset: presetRef.current };
+      return;
+    }
+    const saved = beforeWalk.current;
+    beforeWalk.current = null;
+    if (!saved) return;
+    const toPreset = view3dLocal.getState().returnToPreset || saved.preset !== presetRef.current;
+    const v = toPreset ? presetWorld(presetRef.current, boundsRef.current, aspectRef.current) : saved;
+    if (toPreset) userMoved.current = false;
+    // start the orbit target straight ahead of the walker, as far as the target will be from the camera
+    const ahead = new Vector3();
+    camera.getWorldDirection(ahead);
+    const t0 = camera.position.clone().addScaledVector(ahead, Math.max(1, v.position.distanceTo(v.target)));
+    if (prefersReducedMotion()) {
+      tween.current = null;
+      camera.position.copy(v.position);
+      controls.target.copy(v.target);
+      controls.update();
+    } else {
+      controls.target.copy(t0);
+      tween.current = { p0: camera.position.clone(), t0, p1: v.position.clone(), t1: v.target.clone(), start: performance.now() };
+    }
+    invalidate();
+  }, [walking, controls, camera, invalidate]);
+
   // A viewport of another shape (Begge ↔ 3D, a rotated phone) re-frames the preset, unless the user has moved the
   // camera since it was placed.
   useEffect(() => {
-    if (!controls || first.current || userMoved.current || tween.current) return;
+    if (!controls || first.current || userMoved.current || tween.current || walkingRef.current) return;
     const v = presetWorld(presetRef.current, boundsRef.current, aspect);
     camera.position.copy(v.position);
     controls.target.copy(v.target);
@@ -318,7 +382,7 @@ function CameraRig({ preset, bounds, onPlaced }: { preset: CameraPreset; bounds:
 
   useFrame(() => {
     const t = tween.current;
-    if (!t || !controls) return;
+    if (!t || !controls || walkingRef.current) return;
     const k = Math.min(1, (performance.now() - t.start) / CAMERA_ANIM_MS);
     const e = easeInOutQuad(k);
     camera.position.lerpVectors(t.p0, t.p1, e);
@@ -334,13 +398,15 @@ function CameraRig({ preset, bounds, onPlaced }: { preset: CameraPreset; bounds:
 // Selection
 // ---------------------------------------------------------------------------
 
-function Picking({ root, onSelect }: { root: RefObject<Group | null>; onSelect: (sel: Selection | null) => void }) {
+function Picking({ root, onSelect, disabled }: { root: RefObject<Group | null>; onSelect: (sel: Selection | null) => void; disabled: boolean }) {
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
   const onSelectRef = useRef(onSelect);
+  const disabledRef = useRef(disabled);
   useLayoutEffect(() => {
     onSelectRef.current = onSelect;
-  }, [onSelect]);
+    disabledRef.current = disabled;
+  }, [onSelect, disabled]);
 
   useEffect(() => {
     const el = gl.domElement;
@@ -360,7 +426,7 @@ function Picking({ root, onSelect }: { root: RefObject<Group | null>; onSelect: 
       active.delete(e.pointerId);
       const p = press;
       press = null;
-      if (!p || p.id !== e.pointerId || !isClick(p, { x: e.clientX, y: e.clientY }, p.type)) return;
+      if (!p || p.id !== e.pointerId || !isClick(p, { x: e.clientX, y: e.clientY }, p.type) || disabledRef.current) return;
       const r = root.current;
       if (!r) return;
       const rect = el.getBoundingClientRect();
@@ -371,7 +437,12 @@ function Picking({ root, onSelect }: { root: RefObject<Group | null>; onSelect: 
       r.updateWorldMatrix(true, true);
       raycaster.setFromCamera(ndc, camera);
       const hit = raycaster.intersectObject(r, true).find((h) => isShown(h.object));
-      onSelectRef.current(hit ? selectionOf(hit.object) : null);
+      const sel = hit ? selectionOf(hit.object) : null;
+      if (hit) {
+        const at = fromWorld(hit.point);
+        recordPick(sel, [at[0], at[1]], at[2]);
+      }
+      onSelectRef.current(sel);
     };
     const cancel = (e: PointerEvent) => {
       active.delete(e.pointerId);

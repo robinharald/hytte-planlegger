@@ -16,6 +16,7 @@
 import type { ModelWarning } from '../model/derived';
 import type { ElementStatus, Id, OpeningType, RoomType, WallKind } from '../model/types';
 import type { CameraPreset } from '../view3d/View3D';
+import { formatBytes, formatM, formatNumber } from '../ui/format';
 
 // ---------------------------------------------------------------------------
 // Texts used in more than one place (one source each)
@@ -94,6 +95,19 @@ function ago(iso: string, now: number = Date.now()): string {
   const hours = Math.floor(min / 60);
   if (hours < 12) return `for ${hours} ${hours === 1 ? 'time' : 'timer'} siden`;
   return when(iso, now);
+}
+
+/** IFC nudge in metres with a sign: "+0,03", "−0,01", "0". */
+const signedCm = (m: number) => (m > 0 ? `+${formatNumber(m, 2)}` : m < 0 ? `−${formatNumber(-m, 2)}` : '0');
+
+/** The drainage helper: «ved x 18,6» for a wall along plan y, «ved y 4,2» along plan x, '' for a slanted wall. */
+function wallAt(axis: 'x' | 'y' | null, value: number): string {
+  return axis ? ` ved ${axis} ${formatM(value, false)}` : '';
+}
+
+/** The fixture's definite noun («toalettet»), else «møbelet» (`nb.plumbing.nouns`). */
+export function plumbingNoun(catalogId: string): string {
+  return nb.plumbing.nouns[catalogId] ?? nb.plumbing.nounOther;
 }
 
 /** §3.6: today's cabin cannot be deleted as a whole (the editor core's toast and the Bygningsdel editor). */
@@ -579,8 +593,25 @@ export const nb = {
     bearing: 'Retning',
     belowHorizon: 'Sola er under horisonten',
     timezoneNote: 'Lokal tid ved hytta',
-    midsummer: '21. juni',
+    // ---- phase 3: day presets, the daylight band, «Skygger» (ui/Controls.tsx SunControls, view3d/sunPanel.ts) ----
+    presets: 'Dager',
+    midsummer: 'Midtsommer',
+    midsummerTitle: '21. juni: midnattssol ved hytta',
+    equinox: 'Jevndøgn',
+    equinoxTitle: '20. mars: dag og natt omtrent like lange',
+    midwinter: 'Midtvinter',
+    midwinterTitle: '21. desember: mørketid, sola kommer ikke over horisonten',
     today: 'I dag',
+    todayTitle: 'Dagens dato og klokkeslett ved hytta',
+    sunrise: 'Soloppgang',
+    sunset: 'Solnedgang',
+    /** The chosen date has midnight sun / polar night at the cabin. */
+    alwaysUp: 'Sola er oppe hele døgnet',
+    alwaysDown: 'Sola er under horisonten',
+    /** Accessible name of the daylight band under the time slider. */
+    daylight: 'Når sola er oppe denne dagen',
+    shadows: 'Skygger',
+    shadowsTitle: 'Sola kaster skygger i 3D (slå av hvis 3D går tregt på telefonen)',
   },
 
   schedule: {
@@ -770,6 +801,11 @@ export const nb = {
       'På telefonen: trykk for å velge, og bruk linjen over det valgte (Egenskaper · Roter · Slett). Egenskaper åpnes nederst på skjermen med de viktigste feltene; dra i håndtaket eller trykk «Vis mer» for resten.',
       'Advarsler: tallet i verktøylinjen viser hvor mange det er. Når en endring gir en ny advarsel, kommer den som en melding med «Vis».',
       'I 3D viser Ute hele hytta, mens Inne tar av taket og kutter veggene, så du ser inn i rommene. Dra for å snu, rull eller knip for å zoome. Sol og skygge følger valgt dato og klokkeslett ved hytta.',
+      '«Gå rundt» (under kameravinklene, eller knappen oppe til høyre i 3D-bildet) lar deg gå gjennom rommene i øyehøyde. På PC: W A S D eller piltastene, se deg rundt med musa, Shift for å løpe, Esc avslutter. På telefonen: gå med spaken nede til venstre og dra i bildet for å se deg rundt.',
+      'Sol og skygge: trykk Midtsommer, Jevndøgn, Midtvinter eller I dag, og dra i klokkeslettet. Den gule stripa viser når sola er oppe den dagen. Slå av «Skygger» hvis 3D går tregt på telefonen.',
+      '«Eksporter» øverst: «Eksporter plan som PDF» lager tegninger i 1:50 eller 1:100 på A3 eller A4, med mål, romnavn, arealer, tittelfelt og romskjema – skriv ut i faktisk størrelse (100 %). «Lagre 3D-bildet som PNG» lagrer det du ser i 3D som et bilde.',
+      '«Avløp og sluk» under Vis viser et forslag til avløpsstamme og hvor langt toaletter, dusjer, servanter og vaskemaskiner har til den. Står noe for langt unna, kommer det under Advarsler. Dra stammen langs veggene for å flytte den.',
+      '«IFC-modell»: last inn arkitektens IFC-fil av hytta i dag, så ligger den blått over planen og halvgjennomsiktig i 3D. Fila blir bare på denne enheten.',
     ],
     tools: 'Verktøy',
     toolList: [
@@ -793,6 +829,7 @@ export const nb = {
       { keys: 'R', text: 'Roter det valgte møbelet eller nye bygget 90°, eller bygget du er i ferd med å sette ut', active: true },
       { keys: 'Ctrl+D', text: 'Dupliser møbel eller nytt bygg', active: true },
       { keys: 'Alt', text: 'Hold inne mens du drar: fest til 1 cm i stedet for 10 cm', active: true },
+      { keys: 'W A S D', text: 'Gå i «Gå rundt» (også piltastene; Shift for å løpe, Esc avslutter)', active: true },
     ],
   },
 
@@ -1346,6 +1383,213 @@ export const nb = {
     /** Room without a name (should not normally be labelled). */
     unnamedRoom: 'Uten navn',
   },
+
+  /** Phase 3: «Eksporter» – the plan as PDF and the 3D view as PNG (src/export, ui/ExportDialog.tsx). */
+  export: {
+    // ---- top bar menu «Eksporter» (ui/ExportMenu.tsx, next to «Mer») ---------------------------------------------
+    menu: 'Eksporter',
+    menuTitle: 'Lagre planen som PDF til utskrift, eller 3D-bildet som PNG',
+    menuPdf: 'Eksporter plan som PDF …',
+    menuPdfTitle: 'Lag en PDF av plantegningen i målestokk 1:50 eller 1:100, med romskjema – til utskrift eller til en håndverker',
+    menuPng: 'Lagre 3D-bildet som PNG',
+    menuPngTitle: 'Lagre det du ser i 3D-visningen som et bilde (PNG)',
+
+    // ---- the PDF dialog -----------------------------------------------------------------------------------------
+    heading: 'Eksporter plan som PDF',
+    paper: 'Papir',
+    paperA4Title: 'A4 (21 × 29,7 cm), vanlig skriverpapir',
+    paperA3Title: 'A3 (29,7 × 42 cm), dobbelt så stort som A4',
+    scale: 'Målestokk',
+    scale50Title: '1:50 – 1 m blir 2 cm på papiret',
+    scale100Title: '1:100 – 1 m blir 1 cm på papiret',
+    storeys: 'Etasjer',
+    bothStoreys: 'Begge',
+    bothStoreysTitle: 'Plan 1 og Hems, hver på sine ark',
+    include: 'Ta med',
+    labels: 'Romnavn og arealer',
+    dims: 'Målsetting',
+    furniture: 'Møbler',
+    colours: 'Farger',
+    coloursNew: 'Vis hva som er nytt (farger)',
+    coloursNewTitle: 'Nytt i oransje, det som fjernes stiplet, med forklaring – som i appen',
+    coloursBw: 'Svart-hvitt',
+    coloursBwTitle: 'Bare svart, hvitt og grått – best på en skriver uten farger',
+    orientation: { landscape: 'liggende', portrait: 'stående' } as Record<'landscape' | 'portrait', string>,
+    /** "Blir 3 sider: Plan 1 på 1 ark A3 liggende, Hems på 1 ark A3 liggende, romskjema til slutt." */
+    summary: (pages: number, parts: string[]) => `Blir ${pages} ${pages === 1 ? 'side' : 'sider'}: ${[...parts, 'romskjema til slutt'].join(', ')}.`,
+    summaryPart: (storey: string, sheets: number, paper: string, orientation: string) => `${storey} på ${sheets} ark ${paper} ${orientation}`,
+    tiled: 'Planen er større enn arket i denne målestokken, så den deles på flere ark med 1 cm overlapp. Skriv ut i «faktisk størrelse» (100 %), ikke «tilpass til siden».',
+    printTip: 'Skriv ut i «faktisk størrelse» (100 %), så stemmer målestokken.',
+    make: 'Lag PDF',
+    making: 'Lager PDF …',
+    done: (file: string, pages: number) => `Laget «${file}» (${pages} ${pages === 1 ? 'side' : 'sider'}).`,
+    share: 'Del …',
+    shareTitle: 'Send PDF-en med telefonens delingsmeny (e-post, meldinger, Filer …)',
+    download: 'Last ned',
+    downloadTitle: 'Lagre PDF-en på denne enheten',
+    failed: (message: string) => `Klarte ikke å lage PDF-en: ${message}`,
+
+    // ---- title block --------------------------------------------------------------------------------------------
+    tbProject: 'Prosjekt',
+    tbProposal: 'Forslag',
+    tbStorey: 'Etasje',
+    tbScale: 'Målestokk',
+    tbDate: 'Dato',
+    tbSheet: 'Ark',
+    tbSheetOf: (i: number, n: number) => `${i} av ${n}`,
+    /** Position of a tile in a plan split over several sheets: "rad 1, kolonne 2". */
+    tbTile: (row: number, col: number) => `rad ${row}, kolonne ${col}`,
+    tbAreas: 'Arealer',
+    /** "BYA 235,5 m²" and below it "bygg 178,3 · terrasse 57,2" */
+    tbBya: (total: string) => `BYA ${total}`,
+    tbByaDetail: (buildings: string, decks: string) => `bygg ${buildings} · terrasse ${decks}`,
+    /** "BRA 170,1 m²" and below it "i dag 95,0 · nytt 75,1" */
+    tbBra: (total: string) => `BRA ${total}`,
+    tbBraDetail: (existing: string, added: string) => `i dag ${existing} · nytt ${added}`,
+    tbMadeWith: 'Hytteplanlegger',
+    tbBy: (name: string) => `sist endret av ${name}`,
+    tbScheduleStorey: 'Romskjema',
+    tbNoScale: '–',
+    north: 'N',
+    scaleBarUnit: 'm',
+    legendExisting: 'Hytta i dag',
+    legendNew: 'Nytt',
+    legendRemoved: 'Fjernet',
+
+    // ---- schedule page ------------------------------------------------------------------------------------------
+    scheduleHeading: 'Romskjema og arealer',
+    scheduleType: 'Type',
+    schedulePart: 'Del',
+    scheduleBoth: 'begge',
+    scheduleVoidNote: '(åpning, telles ikke)',
+    scheduleTotal: 'Sum alle rom (netto)',
+    scheduleContinued: '(fortsatt)',
+    totalsHeading: 'Arealer (NS 3940)',
+    totalsBya: 'BYA – bebygd areal',
+    totalsByaBuildings: 'bygninger',
+    totalsByaDecks: 'terrasser over 0,5 m',
+    totalsBra: 'BRA – bruksareal',
+    totalsAxis: 'Aksemål (grunnflate på akselinjene)',
+    totalsRooms: 'Rom (netto, sum av rommene)',
+    totalsNote: 'Romarealene er netto gulvflate mellom innsidene av veggene. BYA er målt til utsiden av kledningen; BRA innenfor ytterveggene der fri høyde er minst 1,9 m. «i dag» = hytta slik den er nå, «nytt» = nytt i forslaget.',
+
+    // ---- PNG ----------------------------------------------------------------------------------------------------
+    /** Caption line 2: "3D · Ute · Oversikt · 13.10.2026" */
+    pngView: (mode: string, preset: string) => `3D · ${mode} · ${preset}`,
+    pngSaved: (file: string) => `Bildet er lagret som «${file}».`,
+    pngNo3d: 'Fant ikke 3D-visningen. Åpne 3D eller Begge og prøv igjen.',
+    pngOpening3d: 'Åpner 3D-visningen …',
+    pngFailed: (message: string) => `Klarte ikke å lagre bildet: ${message}`,
+  },
+
+  /** Phase 3: «Gå rundt», the first-person walk in 3D (view3d/WalkControls.tsx, WalkOverlay.tsx, ui/Controls.tsx). */
+  walk: {
+    /** «Gå rundt» button on the 3D view and chip among the camera angles. */
+    start: 'Gå rundt',
+    startTitle: 'Gå rundt i øyehøyde (1,65 m over gulvet). PC: W A S D og musa, Shift for å løpe, Esc avslutter. Telefon: spaken og dra i bildet.',
+    exit: 'Avslutt',
+    exitTitle: 'Avslutt Gå rundt (Esc)',
+    /** Hint line while walking on a PC with the mouse locked to the view. */
+    hintDesktop: 'Gå med W A S D, se deg rundt med musa, Esc avslutter',
+    /** …when the mouse is not locked (the browser refused, or after a click elsewhere). */
+    hintDesktopUnlocked: 'Gå med W A S D, dra i bildet for å se deg rundt (trykk i bildet for å styre med musa), Esc avslutter',
+    /** …on a phone or tablet. */
+    hintTouch: 'Gå med spaken, dra i bildet for å se deg rundt',
+    joystick: 'Spak: dra for å gå',
+  },
+
+  /** Phase 3: «Avløp og sluk», the drainage helper (geometry/plumbing.ts, plan2d/layers/PlumbingLayer.tsx, ui/PlumbingToggle.tsx). */
+  plumbing: {
+    toggle: 'Avløp og sluk',
+    toggleTitle: 'Vis avløpsstammen, rørene fra toaletter, dusjer, servanter og vaskemaskiner og hvor langt de har til stammen',
+    stack: 'Avløpsstamme',
+    stackSuggested: 'Forslag til avløpsstamme. Dra den langs veggene for å flytte den.',
+    stackStored: 'Avløpsstamme. Dra den langs veggene for å flytte den, trykk for å slette.',
+    stackReadOnly: 'Avløpsstamme',
+    deleteStack: 'Slett avløpsstammen',
+    addStack: 'Legg til avløpsstamme',
+    addStackTitle: 'Setter en ny avløpsstamme på veggen nærmest avløpene som står for langt unna (ellers ved de andre avløpene)',
+    todayDrain: 'Bruker avløpet som er der i dag',
+    suggestedNote: 'Stammen er et forslag. Dra den i planen for å flytte den.',
+    storedNote: 'Trykk på en stamme i planen for å slette den.',
+    none: 'Ingen toaletter, dusjer, servanter eller vaskemaskiner i forslaget.',
+    /** Definite noun of each fixture that needs a drain («toalettet»), by catalogue id (`plumbingNoun`). */
+    nouns: {
+      toalett: 'toalettet',
+      servant: 'servanten',
+      'dusj-80': 'dusjen',
+      'dusj-90': 'dusjen',
+      'dusj-100': 'dusjen',
+      badekar: 'badekaret',
+      vaskemaskin: 'vaskemaskinen',
+      vaskesoyle: 'vaskesøylen',
+      sluk: 'sluket',
+      varmtvannsbereder: 'varmtvannsberederen',
+    } as Record<string, string>,
+    /** A fixture without a noun above. */
+    nounOther: 'møbelet',
+    /** Distance label on a run in the plan: «0,4 m». */
+    distance: (m: number): string => formatM(m),
+    /** «WC og Hovedbad: toalettene står rygg mot rygg på veggen ved x 18,6 – det er fint.» */
+    pair: (rooms: readonly string[], kind: 'back-to-back' | 'side-by-side', axis: 'x' | 'y' | null, value: number): string =>
+      `${rooms.length ? `${joinAnd([...rooms])}: t` : 'T'}oalettene står ${kind === 'back-to-back' ? 'rygg mot rygg' : 'side om side'} på veggen${wallAt(axis, value)} – det er fint.`,
+    /** «WC: toalettet står 0,4 m fra avløpsstammen – det er fint.» */
+    near: (catalogId: string, room: string | undefined, m: number): string =>
+      `${room ? `${room}: ${plumbingNoun(catalogId)}` : cap(plumbingNoun(catalogId))} står ${formatM(m)} fra avløpsstammen – det er fint.`,
+    /** «Soverom 1: toalettet står 6,2 m fra avløpsstammen – det er for langt (høyst 1,0 m).» */
+    far: (catalogId: string, room: string | undefined, m: number, limit: number): string =>
+      `${room ? `${room}: ${plumbingNoun(catalogId)}` : cap(plumbingNoun(catalogId))} står ${formatM(m)} fra avløpsstammen – det er for langt (høyst ${formatM(limit)}).`,
+    /** «Soverom 1: toalettet har ingen avløpsstamme i etasjen.» */
+    noStack: (catalogId: string, room: string | undefined): string =>
+      `${room ? `${room}: ${plumbingNoun(catalogId)}` : cap(plumbingNoun(catalogId))} har ingen avløpsstamme i etasjen.`,
+    /** «De andre 4 avløpene står innen 3,0 m fra avløpsstammen – det er fint.» (`reach`: geometry/plumbing.ts FIXTURE_REACH_M) */
+    othersNear: (n: number, reach: number): string =>
+      n === 1
+        ? `Det andre avløpet står innen ${formatM(reach)} fra avløpsstammen – det er fint.`
+        : `De andre ${n} avløpene står innen ${formatM(reach)} fra avløpsstammen – det er fint.`,
+    /** «Bad, Do og Teknisk / vask bruker avløpet som er der i dag.» */
+    today: (rooms: readonly string[]): string => `${joinAnd([...rooms])} bruker avløpet som er der i dag.`,
+    /** Advarsler ('drain-far'): «Toalettet i «Soverom 1» står 6,2 m fra avløpsstammen.» */
+    drainFar: (catalogId: string, room: string | null | undefined, m: number): string =>
+      `${cap(plumbingNoun(catalogId))}${room ? ` i «${room}»` : ''} står ${formatM(m)} fra avløpsstammen.`,
+  },
+
+  /** Phase 3: «IFC-modell», the architect's model of today's cabin as an overlay (src/ifc, ui/IfcPanel.tsx). */
+  ifc: {
+    heading: 'IFC-modell',
+    intro:
+      'Legg arkitektens modell av hytta i dag over planen og 3D-visningen, så du kan se at alt stemmer. Fila blir bare på denne enheten – den lastes ikke opp og deles ikke.',
+    load: 'Last inn IFC-fil',
+    loadTitle: 'Velg arkitektens IFC-fil (.ifc) fra denne enheten',
+    replace: 'Bytt fil',
+    replaceTitle: 'Velg en annen IFC-fil',
+    remove: 'Fjern',
+    removeTitle: 'Fjern IFC-modellen fra denne enheten',
+    loading: 'Leser IFC-fila …',
+    restoring: 'Henter IFC-modellen …',
+    notIfc: 'Fila ser ikke ut som en IFC-fil (.ifc).',
+    failed: 'IFC-fila kunne ikke leses.',
+    empty: 'Fant ingen vegger, tak eller dekker i IFC-fila.',
+    fileInfo: (name: string, bytes: number) => `${name} · ${formatBytes(bytes)}`,
+    showPlan: 'Vis i planen',
+    showPlanTitle: 'Blå omriss av IFC-modellens vegger, vinduer og dører over planen',
+    show3d: 'Vis i 3D',
+    show3dTitle: 'IFC-modellen halvgjennomsiktig i 3D',
+    walls3d: 'Vegger, dører og vinduer',
+    roof3d: 'Tak',
+    slabs3d: 'Dekker',
+    opacity: 'Synlighet',
+    percent: (v: number) => `${Math.round(v * 100)} %`,
+    nudge: 'Juster plassering',
+    nudgeTitle: 'Flytt IFC-modellen 1 cm om gangen, høyst 10 cm hver vei',
+    nudgeLeft: 'Flytt 1 cm til venstre',
+    nudgeRight: 'Flytt 1 cm til høyre',
+    nudgeUp: 'Flytt 1 cm opp i planen',
+    nudgeDown: 'Flytt 1 cm ned i planen',
+    nudgeOffset: (dx: number, dy: number) => `x ${signedCm(dx)} m · y ${signedCm(dy)} m`,
+    nudgeReset: 'Nullstill',
+    nudgeResetTitle: 'Tilbake til plasseringen fra kalibreringen',
+  },
 } as const;
 
 /** Start of the message of a geometry-fallback 'generic' warning (geometry/derive.ts `GEOMETRY_FALLBACK` + ':'). */
@@ -1472,6 +1716,10 @@ export function warningText(w: ModelWarning, names: NameLookup, fmtArea: (m2: nu
       return `Møbeltypen «${w.catalogId}» finnes ikke i katalogen og vises som en boks.`;
     case 'furniture-needs-wet-room':
       return `«${names('furniture', w.furnitureId)}» trenger sluk og bør stå på bad, WC eller vaskerom.`;
+    case 'drain-far': {
+      const room = w.roomId ? placeWord(names, 'room', w.roomId) : '';
+      return nb.plumbing.drainFar(w.catalogId, room || null, w.distance);
+    }
     case 'generic':
       return w.message.startsWith(GEOMETRY_FALLBACK_PREFIX)
         ? nb.warnings.geometryFallback(w.message.slice(GEOMETRY_FALLBACK_PREFIX.length).trim())
