@@ -6,7 +6,9 @@
  * server's CURRENT documents when it arrives (a `set` with `merge` keeps the fields it leaves out; an `update` of a
  * document that does not exist fails the batch, `not-found`). Documents with queued writes are flagged `pending` in
  * snapshots, also writes made on the device before a store was created on it (an offline reload). `refuse` makes
- * the server reject writes (rules), `signInFails` the anonymous sign-in.
+ * the server reject writes (rules), `signInFails` the anonymous sign-in. A device whose server is `unreachable` (a slow
+ * or blocked connection while the browser says online) sees only its own cache (what it saw of the server before, so
+ * nothing on a new device) in `fromCache` snapshots and queues its writes, until `setReachable(true)`.
  */
 import { applyUpdate } from './familyStore.firestore';
 import type { AdapterDoc, Connectivity, FirestoreAdapter, SnapshotMeta, WriteOp } from './familyStore.firestore';
@@ -17,6 +19,8 @@ export interface FakeDevice {
   adapter: FirestoreAdapter;
   connectivity: Connectivity;
   setOnline(online: boolean): void;
+  /** The server answers again (true) or stops answering (false) while the device stays online. */
+  setReachable(reachable: boolean): void;
   /** Writes made offline that have not reached the server. */
   queued(): number;
 }
@@ -24,7 +28,7 @@ export interface FakeDevice {
 export interface FakeFirestore {
   /** Server documents by full path. */
   docs: Map<string, Data>;
-  device(opts?: { online?: boolean; signInFails?: boolean }): FakeDevice;
+  device(opts?: { online?: boolean; signInFails?: boolean; unreachable?: boolean }): FakeDevice;
   /** Reject every write whose path matches (null = accept all). */
   refuse: ((path: string) => boolean) | null;
   /** Number of writes the server accepted. */
@@ -63,6 +67,10 @@ export function createFakeFirestore(): FakeFirestore {
     writes: 0,
     device(opts = {}) {
       let online = opts.online ?? true;
+      let reachable = !opts.unreachable;
+      /** What this device saw of the server while it could reach it (its cache; empty on a new device). */
+      let cache = new Map<string, Data>();
+      const serverDocs = () => (reachable ? fake.docs : cache);
       /** Writes not on the server yet, in order. */
       const queue: { ops: WriteOp[]; resolve: () => void; reject: (e: unknown) => void }[] = [];
       const idle: (() => void)[] = [];
@@ -71,7 +79,7 @@ export function createFakeFirestore(): FakeFirestore {
 
       /** This device's view of a document: the server's with the queued writes applied (an update of a missing one is skipped). */
       const local = (path: string): Data | undefined => {
-        let d = fake.docs.get(path);
+        let d = serverDocs().get(path);
         for (const item of queue) {
           for (const op of item.ops) {
             if (op.path !== path) continue;
@@ -87,7 +95,7 @@ export function createFakeFirestore(): FakeFirestore {
       const view = (collection: string): AdapterDoc[] => {
         const pending = queuedPaths();
         const ids = new Set<string>();
-        for (const path of [...fake.docs.keys(), ...pending]) {
+        for (const path of [...serverDocs().keys(), ...pending]) {
           const id = inCollection(path, collection);
           if (id !== null) ids.add(id);
         }
@@ -99,7 +107,7 @@ export function createFakeFirestore(): FakeFirestore {
         }
         return out;
       };
-      const meta = (): SnapshotMeta => ({ fromCache: !online, hasPendingWrites: queue.length > 0 });
+      const meta = (): SnapshotMeta => ({ fromCache: !online || !reachable, hasPendingWrites: queue.length > 0 });
       const notify = () => {
         for (const w of watchers) w.onNext(view(w.path), meta());
       };
@@ -107,7 +115,7 @@ export function createFakeFirestore(): FakeFirestore {
       devices.add(self);
 
       const commit = () => {
-        while (online && queue.length > 0) {
+        while (online && reachable && queue.length > 0) {
           const item = queue.shift();
           if (!item) break;
           let error: unknown = null;
@@ -184,6 +192,12 @@ export function createFakeFirestore(): FakeFirestore {
         setOnline(next) {
           online = next;
           for (const cb of connectivityListeners) cb(next);
+          if (next) commit();
+          else notify();
+        },
+        setReachable(next) {
+          if (!next && reachable) cache = new Map([...fake.docs].map(([k, d]) => [k, clone(d)]));
+          reachable = next;
           if (next) commit();
           else notify();
         },

@@ -60,6 +60,8 @@ const PILL = {
   elsewhere: 'Ikke lagret – last siden på nytt',
   /** Shared mode: the start link's space is empty and not this device's yet («Begynn her» or a new proposal starts it). */
   notStarted: 'Ikke startet – plassen i lenken er tom',
+  /** Shared mode, offline: the start link's space (not this device's yet) has never been fetched, so it is unknown. */
+  waitingOffline: 'Uten nett – plassen i lenken er ikke hentet ennå',
 } as const;
 
 const MONTHS = ['jan.', 'feb.', 'mars', 'apr.', 'mai', 'juni', 'juli', 'aug.', 'sep.', 'okt.', 'nov.', 'des.'] as const;
@@ -939,6 +941,7 @@ export const nb = {
       noFamily: 'Kun her',
       elsewhere: 'Ikke lagret',
       notStarted: 'Ikke startet',
+      waitingOffline: 'Uten nett',
     } satisfies Record<keyof typeof PILL, string>,
     pillTitle: {
       local: 'Forslagene lagres automatisk i denne nettleseren. Trykk «Send forslaget» for å dele en kopi som lenke.',
@@ -959,6 +962,8 @@ export const nb = {
         'Denne enheten bruker en annen delt plass nå (den ble byttet i en annen fane). Denne fanen kan ikke endres og lagrer ingenting før du laster siden på nytt.',
       notStarted:
         'Plassen i lenken er tom, og denne enheten har ikke tatt den i bruk. Ingenting er lagret der ennå. Trykk «Begynn her» eller lag et forslag for å begynne.',
+      waitingOffline:
+        'Du er uten nett, og denne enheten har ikke hentet plassen i lenken før. Den hentes når du er på nett igjen; har den forslag, vises de da.',
     } satisfies Record<keyof typeof PILL, string>,
     conflict: (name: string, by: string, at: string) => `«${name}» ble endret av ${by} ${at}.`,
     conflictDeleted: (name: string, by: string, at: string) => `«${name}» ble slettet av ${by} ${at}.`,
@@ -1004,6 +1009,14 @@ export const nb = {
       accept: (n: number) => (n === 1 ? 'Hent forslaget fra den forrige plassen' : 'Hent forslagene fra den forrige plassen'),
       decline: 'Nei takk',
       done: (n: number) => (n === 1 ? 'Forslaget er hentet fra den forrige plassen.' : `${n} forslag er hentet fra den forrige plassen.`),
+      /**
+       * Name of a proposal brought along when this space already has one with its name: the name of the device that
+       * made it («Mammas idé (Pappa)»), else «(kopi)» — never «(delt)», which reads as the family's own.
+       */
+      copyName: (name: string, who: string | null, n: number) => {
+        const tag = who ?? 'kopi';
+        return n === 1 ? `${name} (${tag})` : `${name} (${tag} ${n})`;
+      },
     },
     /**
      * A family link (a new one, an old tab, a bookmark) to another space than the one this device uses: no switch until

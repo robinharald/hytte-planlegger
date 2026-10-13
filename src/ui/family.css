@@ -86,6 +86,7 @@
 }
 .status-pill[data-state='saving'],
 .status-pill[data-state='connecting'],
+.status-pill[data-state='waitingOffline'],
 .status-pill[data-state='pending'] {
   background: var(--warn-bg);
   color: var(--warn-fg);

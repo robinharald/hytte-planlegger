@@ -20,6 +20,9 @@
  *    own revision id is added with `arrayUnion`): a save queued offline from an old view never drops revision ids.
  *  - The conflict guard checks against the newest version this device knows (the live listener's cache view), so it
  *    works offline too; last write wins otherwise.
+ *  - A list made from a snapshot the server has not confirmed (`SnapshotMeta.fromCache`: a new device on a slow or
+ *    blocked connection gets its empty cache first) says so (`ProposalList.fromCache`), so an empty one is never taken
+ *    as "the space is empty".
  *  - A write the server refuses (e.g. rules) is reported as `error` in the status (and through `onWriteError`).
  */
 import type { FirebaseOptions } from 'firebase/app';
@@ -201,6 +204,8 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
   let server = new Map<Id, ProposalDoc>();
   /** Documents of the last snapshot with writes the server does not have yet (also queued by an earlier page). */
   let snapshotPending = 0;
+  /** The last snapshot came from this device's cache only (the server has not answered it). */
+  let snapshotFromCache = true;
   /**
    * Own writes the server has not confirmed yet, in order: a whole document (null = deleted) or a field update. They
    * are applied over the listener's view meanwhile (a field update to whatever version is shown).
@@ -252,7 +257,8 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
 
   const emit = () => {
     recompute();
-    list = buildList(docs.entries(), now(), decode);
+    const built = buildList(docs.entries(), now(), decode);
+    list = snapshotFromCache ? { ...built, fromCache: true } : built;
     for (const l of listeners) l(list);
   };
 
@@ -272,6 +278,7 @@ export function createFirestoreFamilyStore(opts: FirestoreFamilyStoreOptions): F
     }
     server = next;
     snapshotPending = flagged > 0 ? flagged : meta.hasPendingWrites ? 1 : 0;
+    snapshotFromCache = meta.fromCache;
     setStatus({ phase: 'ready', pending: pendingCount(), error: status.error === 'listen' ? null : status.error });
     resolveReady();
     emit();

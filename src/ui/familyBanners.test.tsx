@@ -4,7 +4,9 @@
  * notice for a version deleted by a device that had not seen it ([Hent tilbake]), the banner for a family link that is
  * not whole, and the offer to bring along this device's proposals from the previous family space. Fourth fix round:
  * «Bytt dit» on a proposal link, the offer without a highlighted button when the space left is the family's, the
- * neutral pill of a space not started, and «Hva heter du?» as a banner.
+ * neutral pill of a space not started, and «Hva heter du?» as a banner. Morning round: the pill while the link's space
+ * has not answered, «Hva heter du?» as a card floating in the toast area (nothing moves when it comes), and banner
+ * buttons that wrap on a phone.
  */
 import { act } from 'react';
 import type { ReactNode } from 'react';
@@ -14,6 +16,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeDerived } from './testDerived';
 
 vi.mock('../geometry/derive', () => ({ deriveVariant: () => makeDerived() }));
+
+// theme.css as text (Vitest does not load CSS): through Node's fs, without Node's types in the app config.
+type NodeFs = { readFileSync(path: string, encoding: 'utf8'): string };
+const nodeProcess = (globalThis as unknown as { process: { cwd(): string; getBuiltinModule(id: 'node:fs'): NodeFs } }).process;
+const themeCss = nodeProcess.getBuiltinModule('node:fs').readFileSync(`${nodeProcess.cwd()}/src/ui/theme.css`, 'utf8');
 
 const { appStore, familyUiStore } = await import('../state/appStore');
 const { StatusPill, FamilyBanners, NameDialog } = await import('./StatusPill');
@@ -317,5 +324,82 @@ describe('final fix round banners', () => {
     expect(text).toContain('«Lagre over» legger den andre utgaven der.');
     act(() => familyUiStore.setState({ conflicts: [{ ...conflict, kind: 'deleted' }] }));
     expect(byTestId('conflict-banner')?.textContent).toContain('«Lagre over» henter det tilbake med utgaven din.');
+  });
+});
+
+describe('morning round', () => {
+  /** The app's stylesheet in the document, so jsdom resolves the banner rules (it does no layout). */
+  function withTheme(): () => void {
+    const style = document.createElement('style');
+    style.textContent = themeCss;
+    document.head.appendChild(style);
+    return () => style.remove();
+  }
+
+  it('the pill while the link’s space has answered only from this device’s empty cache: «Kobler til …», offline «Uten nett …»', () => {
+    const base = { mode: 'shared' as const, phase: 'ready' as const, saving: false, pending: 0, online: true, failed: false, unconfirmed: true };
+    expect(pillState({ ...base, unanswered: true })).toBe('connecting');
+    expect(pillState({ ...base, unanswered: true, online: false })).toBe('waitingOffline');
+    expect(pillState({ ...base, unanswered: false })).toBe('notStarted');
+    act(() => familyUiStore.setState({ ...base, online: false, unanswered: true }));
+    render(<StatusPill />);
+    expect(byTestId('status-pill')?.dataset.state).toBe('waitingOffline');
+    expect(byTestId('status-pill')?.getAttribute('aria-label')).toBe('Uten nett – plassen i lenken er ikke hentet ennå');
+    expect(byTestId('status-pill')?.textContent).toContain('Uten nett');
+    act(() => familyUiStore.setState({ mode: 'local', phase: 'ready', online: true, unanswered: false }));
+  });
+
+  it('«Hva heter du?» floats in the toast area: no banner row in the page, the toolbar does not move', () => {
+    const removeTheme = withTheme();
+    const clearToasts = () => {
+      for (const t of appStore.getState().toasts) appStore.getState().dismissToast(t.id);
+    };
+    clearToasts();
+    appStore.getState().select(null);
+    render(
+      <header className="topbar">
+        <FamilyBanners />
+        <div className="toolbar-wrap" data-testid="toolbar-probe" />
+      </header>,
+    );
+    const toolbar = byTestId('toolbar-probe');
+    const before = toolbar?.offsetTop;
+    act(() => familyUiStore.setState({ nameBanner: true }));
+    const card = byTestId('name-banner');
+    expect(card?.textContent).toContain('Hva heter du?');
+    expect(card?.classList.contains('name-card')).toBe(true);
+    // Out of the page flow: fixed (like the toasts), and no banner row is added above the toolbar.
+    expect(card && getComputedStyle(card).position).toBe('fixed');
+    expect(document.querySelector('.family-banners')).toBeNull();
+    expect(toolbar?.offsetTop).toBe(before);
+    expect(themeCss).toMatch(/\.banner\.name-card \{[^}]*position: fixed;/);
+    // With another banner it still floats (inside the row, but fixed).
+    act(() => familyUiStore.setState({ emptyFamily: true }));
+    expect(byTestId('name-banner') && getComputedStyle(byTestId('name-banner') as HTMLElement).position).toBe('fixed');
+    act(() => familyUiStore.setState({ emptyFamily: false }));
+    // It steps aside while a toast is shown in the toast area, or while something is selected.
+    act(() => appStore.getState().showToast({ text: 'Lagret.' }));
+    expect(byTestId('name-banner')).toBeNull();
+    act(clearToasts);
+    expect(byTestId('name-banner')).not.toBeNull();
+    act(() => appStore.getState().select({ kind: 'hotTub', id: 'tub-1' }));
+    expect(byTestId('name-banner')).toBeNull();
+    act(() => appStore.getState().select(null));
+    expect(byTestId('name-banner')).not.toBeNull();
+    removeTheme();
+  });
+
+  it('banner buttons wrap: a long proposal name in «Hent «…» som en kopi hit» never widens the page on a phone', () => {
+    const removeTheme = withTheme();
+    const name = 'Mammas idé med et ganske langt navn';
+    familyUiStore.setState({
+      otherFamily: { id: 'e2e-old-family-abcdefghijklmn', proposal: 'p-x', info: { count: 1, names: ['Mamma'], others: true, hereCount: 0, hereOthers: false, proposalName: name } },
+    });
+    render(<FamilyBanners />);
+    const copy = byTestId('other-family-copy');
+    expect(copy?.textContent).toBe(`Hent «${name}» som en kopi hit`);
+    expect(copy && getComputedStyle(copy).whiteSpace).toBe('normal');
+    expect(themeCss).toMatch(/\.banner \.actions \.btn \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
+    removeTheme();
   });
 });

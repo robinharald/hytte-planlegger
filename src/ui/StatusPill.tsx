@@ -19,13 +19,14 @@
  *    rule for «Bytt dit», else the copy highlighted); a link's space that is empty on a device without a family
  *    («Denne plassen er tom. Er lenken hel?» [Begynn her]); another tab switched this device to another space
  *    («… [Last på nytt]»: this tab is read-only and saves nothing); «Hva heter du?» after the first save without a
- *    name ([Skriv navnet] [Hopp over]; a banner, never a dialog during editing). A «Lagre over» from another device
+ *    name ([Skriv navnet] [Hopp over]; never a dialog during editing): a floating card in the toast area (`NameCard`,
+ *    out of the page flow, so its arrival moves nothing under the user's finger). A «Lagre over» from another device
  *    over a version saved here uses the overwritten banner. The conflict banner says what each button keeps (the
  *    other version goes under Tidligere versjoner).
  *  - `NameDialog`: "Hva heter du?" when asked for (Mer → «Endre navnet ditt», «Skriv navnet» on the banner); opened by
  *    «+ Nytt forslag» while the name is unknown, it is the two-field «Nytt forslag» dialog (Dialogs.tsx).
  */
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { nb } from '../i18n/nb';
 import {
   acceptCarryOver,
@@ -51,6 +52,10 @@ import type { OtherFamilyLink } from '../state/appStore';
 import { Modal } from './common';
 import { NewProposalDialog } from './Dialogs';
 import { pillState, requestAppUpdateCheck, useMinuteClock } from './familyUi';
+import { useFirstRunOpen } from './firstRun';
+import { PHONE_QUERY, useMediaQuery } from './hooks';
+import { toolbarBottom } from './reveal';
+import { phoneToastTop, toastBottomAvoiding } from './toastLayout';
 
 export function StatusPill() {
   const mode = useFamily((s) => s.mode);
@@ -64,8 +69,9 @@ export function StatusPill() {
   const noFamily = useFamily((s) => s.noFamily);
   const elsewhere = useFamily((s) => s.elsewhere);
   const unconfirmed = useFamily((s) => s.unconfirmed);
+  const unanswered = useFamily((s) => s.unanswered);
   const readOnly = useAppStore((s) => s.ui.readOnly);
-  const state = pillState({ mode, phase, saving, pending, online, failed, fallback, conflicts: readOnly ? [] : conflicts, noFamily, elsewhere, unconfirmed });
+  const state = pillState({ mode, phase, saving, pending, online, failed, fallback, conflicts: readOnly ? [] : conflicts, noFamily, elsewhere, unconfirmed, unanswered });
   const text = nb.family.pill[state];
   return (
     <span className="status-pill" data-state={state} data-testid="status-pill" role="status" aria-label={text} title={nb.family.pillTitle[state]}>
@@ -89,23 +95,23 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
   const emptyFamily = useFamily((s) => s.emptyFamily);
   const elsewhere = useFamily((s) => s.elsewhere);
   const readOnly = useAppStore((s) => s.ui.readOnly);
-  const nameBanner = useFamily((s) => s.nameBanner) && !readOnly;
+  // The name card shares the toast area: it steps aside while a toast is shown there or something is selected.
+  const nameQuiet = useAppStore((s) => s.toasts.length === 0 && s.ui.selection === null);
+  const nameBanner = useFamily((s) => s.nameBanner) && !readOnly && nameQuiet;
   const [carrying, setCarrying] = useState(false);
   const now = useMinuteClock();
   const f = nb.family;
-  if (
-    conflicts.length === 0 &&
-    overwritten.length === 0 &&
-    tooNew === 0 &&
-    notices.length === 0 &&
-    !carryOver &&
-    !otherFamily &&
-    !emptyFamily &&
-    !elsewhere &&
-    !nameBanner
-  ) {
-    return null;
-  }
+  const rows =
+    conflicts.length > 0 ||
+    overwritten.length > 0 ||
+    tooNew > 0 ||
+    notices.length > 0 ||
+    carryOver !== null ||
+    otherFamily !== null ||
+    emptyFamily ||
+    elsewhere;
+  // The name card floats (fixed, out of the flow): alone it needs no banner row at all.
+  if (!rows) return nameBanner ? <NameCard /> : null;
   return (
     <div className="family-banners" data-testid="family-banners">
       {elsewhere && (
@@ -237,21 +243,7 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           </div>
         </div>
       )}
-      {nameBanner && (
-        <div className="banner" role="status" data-testid="name-banner">
-          <div className="msg">
-            <strong>{f.name.heading}</strong> <span>{f.name.bannerHint}</span>
-          </div>
-          <div className="actions">
-            <button type="button" className="btn btn-small btn-primary" data-testid="name-banner-write" onClick={askForName}>
-              {f.name.bannerWrite}
-            </button>
-            <button type="button" className="btn btn-small btn-ghost" data-testid="name-banner-skip" onClick={() => setMyName('')}>
-              {f.name.skip}
-            </button>
-          </div>
-        </div>
-      )}
+      {nameBanner && <NameCard />}
       {notices.includes('family-unavailable') && (
         <div className="banner warn" role="status" data-testid="family-unavailable">
           <div className="msg">{f.familyUnavailable}</div>
@@ -262,6 +254,50 @@ export function FamilyBanners(props: { onShowRevisions?: () => void }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * «Hva heter du?» after the first save without a name: a card floating in the toast area (PC: bottom centre; phone:
+ * just below the toolbar and the hint line, like the toasts, toastLayout.ts `phoneToastTop`; on a PC above the
+ * first-run card where they would overlap, `toastBottomAvoiding`). It is out of the page flow, so its arrival moves
+ * neither the toolbar nor the plan.
+ */
+function NameCard() {
+  const f = nb.family;
+  const isPhone = useMediaQuery(PHONE_QUERY);
+  const firstRunOpen = useFirstRunOpen();
+  const [place, setPlace] = useState<{ top?: number; bottom?: number }>({});
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return;
+    const update = () => {
+      const card = isPhone || !firstRunOpen ? null : document.querySelector('[data-testid="first-run"]');
+      const top = isPhone ? phoneToastTop(toolbarBottom()) : null;
+      const bottom = card ? toastBottomAvoiding(card.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight }) : null;
+      setPlace({ ...(top !== null ? { top } : {}), ...(bottom !== null ? { bottom } : {}) });
+    };
+    update();
+    window.addEventListener('scroll', update, { capture: true, passive: true });
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, { capture: true });
+      window.removeEventListener('resize', update);
+    };
+  }, [isPhone, firstRunOpen]);
+  return (
+    <div className="banner name-card" role="status" data-testid="name-banner" style={place}>
+      <div className="msg">
+        <strong>{f.name.heading}</strong> <span>{f.name.bannerHint}</span>
+      </div>
+      <div className="actions">
+        <button type="button" className="btn btn-small btn-primary" data-testid="name-banner-write" onClick={askForName}>
+          {f.name.bannerWrite}
+        </button>
+        <button type="button" className="btn btn-small btn-ghost" data-testid="name-banner-skip" onClick={() => setMyName('')}>
+          {f.name.skip}
+        </button>
+      </div>
     </div>
   );
 }

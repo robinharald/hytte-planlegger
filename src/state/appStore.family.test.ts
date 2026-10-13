@@ -19,23 +19,28 @@
  * before is still saved); an old proposal link whose proposal was carried here opens it here; the pill is neutral
  * while the link's empty space is not started; «Hva heter du?» is a banner once the plan was left alone, never a
  * dialog while editing.
+ * Morning round: a new device whose connection is slow or blocked (its empty cache answers first) is never told the
+ * link's space is empty: «Kobler til …» (offline: «Uten nett …») until the server answers, then the space is stored and
+ * the `&p=` proposal shown; «Hva heter du?» waits until nothing is selected and the plan is not touched; a copy brought
+ * along whose name is taken is named after this device («(Pappa)», else «(kopi)»).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createForslagD, SEED_VARIANT_ID } from '../model/seed/forslagD';
 import { pillState } from '../ui/familyUi';
 import { FAMILY_KEYS } from './familyStore';
 import { createFakeFirestore } from './familyStore.fake';
-import type { FakeFirestore } from './familyStore.fake';
+import type { FakeDevice, FakeFirestore } from './familyStore.fake';
 import { createFirestoreFamilyStore } from './familyStore.firestore';
 import { createLocalFamilyStore, LOCAL_KEYS } from './familyStore.local';
 import { KEYS } from './persistence';
 import phase1Text from './fixtures/phase1-autosave.plain-visit.json?raw';
 
-const firebase: { fake: FakeFirestore } = { fake: createFakeFirestore() };
+/** `next`: the device of the next page load (default: a new online device). */
+const firebase: { fake: FakeFirestore; next: FakeDevice | null } = { fake: createFakeFirestore(), next: null };
 
 vi.mock('./familyStore.firestore', async (importOriginal) => {
   const real = await importOriginal<typeof import('./familyStore.firestore')>();
-  return { ...real, loadFirebaseAdapter: async () => firebase.fake.device().adapter };
+  return { ...real, loadFirebaseAdapter: async () => (firebase.next ?? firebase.fake.device()).adapter };
 });
 
 const F1 = 'e2e-family-one-abcdefghijklmnop';
@@ -90,6 +95,7 @@ const names = (m: AppStoreModule) => m.appStore.getState().project.variants.map(
 beforeEach(() => {
   localStorage.clear();
   firebase.fake = createFakeFirestore();
+  firebase.next = null;
   vi.stubEnv('VITE_FAMILY_STORE', 'shared');
   vi.spyOn(console, 'error').mockImplementation(() => {}); // jsdom: "Not implemented: navigation" on reload
 });
@@ -519,7 +525,8 @@ describe('fourth fix round: proposal links switch too, edited copies come along,
     // The edited copy is offered (highlighted: the space left has no proposals by others) and brought along.
     await vi.waitFor(() => expect(m.familyUiStore.getState().carryOver).toEqual({ from: P, names: ['Mammas idé'], othersThere: false }), { timeout: 4000 });
     expect(await m.acceptCarryOver()).toBe(1);
-    expect(names(m)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (delt)']);
+    // Morning round: no name on this device, so «(kopi)» (never «(delt)», which reads as the family's own).
+    expect(names(m)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (kopi)']);
     expect(m.appStore.getState().project.variants.find((v) => v.id === copy)?.outdoor.hotTubs[0].centre).toEqual([19.7, -3.2]);
     await vi.waitFor(() => expect(proposalDocs(F2).sort()).toEqual([docPath(F2, x), docPath(F2, copy)].sort()));
     expect(tubIn(F2, x)).toEqual([21.7, -3.2]);
@@ -624,4 +631,100 @@ describe('fourth fix round: proposal links switch too, edited copies come along,
     await settle(m.NAME_BANNER_IDLE_MS + 300);
     expect(m.familyUiStore.getState().nameBanner).toBe(false);
   }, 15_000);
+});
+
+describe('morning round: a slow first connection, the name card, the name of a copy brought along', () => {
+  /** An empty space (a link that may be cut off, or a new one). */
+  const G = 'e2e-morning-empty-0123456789abc';
+  const state = (m: AppStoreModule) => m.familyUiStore.getState();
+
+  it('1: a new device that cannot reach the server opens #f=F&p=X: «Kobler til …», never «tom»; the server’s list stores F and shows X', async () => {
+    const [x] = await othersMake(F2, ['Familiens plan']);
+    const dev = firebase.fake.device({ unreachable: true });
+    firebase.next = dev;
+    const m = await load(`#f=${F2}&p=${x}`);
+    // Only the device's empty cache answered: nothing is known about the space yet.
+    await settle(300);
+    expect(state(m)).toMatchObject({ unanswered: true, emptyFamily: false, unconfirmed: true });
+    expect(pillState(state(m))).toBe('connecting');
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBeNull();
+    expect(names(m)).toEqual(['Forslag D']);
+    // The connection comes back: the space is this device's, and the proposal in the link is shown.
+    dev.setReachable(true);
+    await vi.waitFor(() => expect(m.appStore.getState().project.activeVariantId).toBe(x));
+    expect(state(m)).toMatchObject({ unanswered: false, emptyFamily: false, unconfirmed: false });
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F2);
+    expect(pillState(state(m))).toBe('synced');
+    expect(names(m)).toEqual(['Forslag D', 'Familiens plan']);
+  });
+
+  it('1: an empty space is called empty only when the server says so; a proposal made there later stores it', async () => {
+    const dev = firebase.fake.device({ unreachable: true });
+    firebase.next = dev;
+    const m = await load(`#f=${G}`);
+    await settle(300);
+    expect(state(m)).toMatchObject({ unanswered: true, emptyFamily: false });
+    dev.setReachable(true);
+    await vi.waitFor(() => expect(state(m).emptyFamily).toBe(true));
+    expect(state(m).unanswered).toBe(false);
+    expect(pillState(state(m))).toBe('notStarted');
+    // Another device makes a proposal there: the space has proposals now, so it is this device's (no question).
+    await othersMake(G, ['Mammas idé']);
+    await vi.waitFor(() => expect(state(m).unconfirmed).toBe(false));
+    expect(state(m).emptyFamily).toBe(false);
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(G);
+    expect(names(m)).toEqual(['Forslag D', 'Mammas idé']);
+  });
+
+  it('1: offline on a new device: «Uten nett – plassen i lenken er ikke hentet ennå» until it is online', async () => {
+    const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    const dev = firebase.fake.device({ online: false });
+    firebase.next = dev;
+    const m = await load(`#f=${G}`);
+    await settle(300);
+    expect(state(m)).toMatchObject({ unanswered: true, emptyFamily: false, online: false });
+    expect(pillState(state(m))).toBe('waitingOffline');
+    onLine.mockReturnValue(true);
+    dev.setOnline(true);
+    window.dispatchEvent(new Event('online'));
+    await vi.waitFor(() => expect(state(m).emptyFamily).toBe(true));
+    expect(pillState(state(m))).toBe('notStarted');
+  });
+
+  it('2: «Hva heter du?» waits while something is selected and while a finger moves on the plan', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const m = await load(`#f=${F1}`);
+    const id = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Uten navn');
+    if (!id) throw new Error('duplicate');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F1)).toEqual([docPath(F1, id)]));
+    // Something selected: no card, however long it waits.
+    m.appStore.getState().select({ kind: 'hotTub', id: 'tub-1' });
+    await settle(m.NAME_BANNER_IDLE_MS + 500);
+    expect(state(m).nameBanner).toBe(false);
+    // Let go, but a finger pans the plan a moment later: the wait starts again.
+    m.appStore.getState().select(null);
+    await settle(m.NAME_BANNER_IDLE_MS - 1000);
+    window.dispatchEvent(Object.assign(new Event('pointermove'), { pointerType: 'touch', buttons: 1 }));
+    await settle(1500);
+    expect(state(m).nameBanner).toBe(false);
+    // A mouse hovering is no activity: the card comes 3 s after the finger.
+    window.dispatchEvent(Object.assign(new Event('pointermove'), { pointerType: 'mouse', buttons: 0 }));
+    await vi.waitFor(() => expect(state(m).nameBanner).toBe(true), { timeout: m.NAME_BANNER_IDLE_MS });
+  }, 20_000);
+
+  it('4: a proposal brought along whose name is taken here is named after this device, not «(delt)»', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    localStorage.setItem(FAMILY_KEYS.myName, 'Pappa');
+    let m = await load(`#f=${F1}`);
+    const mine = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Mammas idé');
+    if (!mine) throw new Error('duplicate');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F1)).toEqual([docPath(F1, mine)]));
+    await othersMake(F2, ['Mammas idé']);
+    m = await switchThere(await load(`#f=${F2}`));
+    await vi.waitFor(() => expect(state(m).carryOver?.names).toEqual(['Mammas idé']), { timeout: 4000 });
+    expect(await m.acceptCarryOver()).toBe(1);
+    expect(names(m)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (Pappa)']);
+  });
 });

@@ -184,6 +184,11 @@ export interface ProposalList {
   trash: ProposalMeta[];
   /** Stored by a newer app version (schema too new): never shown, never written. */
   tooNew: ProposalMeta[];
+  /**
+   * Shared: only this device's cache answered, not the server (a slow or blocked connection, offline). An empty list
+   * then says nothing about the space. Absent once the server answered (and always in the local store).
+   */
+  fromCache?: boolean;
 }
 
 export type SaveResult =

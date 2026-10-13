@@ -808,6 +808,31 @@ abbr[title] {
   gap: 6px;
   flex-wrap: wrap;
 }
+/* Banner buttons wrap instead of widening the page («Hent «<a long proposal name>» som en kopi hit» on a phone). */
+.banner .actions .btn {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  max-width: 100%;
+}
+/* «Hva heter du?» (StatusPill.tsx `NameCard`): a card floating in the toast area, out of the page flow, so its
+ * arrival moves nothing; on phones just below the toolbar and the hint line (inline `top`, like the toasts). Under
+ * the open menus (40), dialogs (50) and toasts (60). */
+.banner.name-card {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 39;
+  width: min(560px, calc(100vw - 24px));
+  box-shadow: var(--shadow);
+}
+@media (max-width: 799px) {
+  .banner.name-card {
+    top: calc(8px + env(safe-area-inset-top));
+    bottom: auto;
+  }
+}
 
 .workspace {
   flex: 1;

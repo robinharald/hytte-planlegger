@@ -21,13 +21,16 @@
  *    proposal there); a link to a proposal that is in this space (an old link to the space it was carried from) just
  *    shows it. On a device without a family the link's space is used, and stored once it shows proposals, a proposal
  *    is made in it, or the user starts it («Denne plassen er tom. Er lenken hel?» [Begynn her]; the pill says
- *    «Ikke startet» meanwhile). When another tab switches this device to another space (`storage` event), this tab
+ *    «Ikke startet» meanwhile). Only the server can say the space is empty: while only this device's (empty) cache
+ *    has answered — a slow or blocked connection, offline — the pill says «Kobler til …» (offline: «Uten nett …»),
+ *    and a later list with proposals stores the space and shows the `&p=` proposal (`recheckWaitingList`). When
+ *    another tab switches this device to another space (`storage` event), this tab
  *    saves what was edited before, becomes read-only and asks for a reload. A
  *    `#f=` whose id is not whole (cut off) never starts a new family: the stored one is used, or — on a device without
  *    one — the proposals are kept on this device (`noFamily`) until a whole link is opened; a banner says so.
  *    «Hva heter du?» is never a dialog during editing: «+ Nytt forslag» asks for it with the proposal's name
  *    (`askNameWithProposal`, ui/Dialogs.tsx `promptNewProposal`); the first save without a name otherwise shows a
- *    banner once the plan has been left alone a moment (`nameBanner`).
+ *    floating card once nothing is selected and the plan has been left alone a moment (`nameBanner`).
  *  - 'local': the proposals are stored in this browser (familyStore.local.ts) — "Kun på denne enheten".
  * familyStore.sync.ts keeps the store and the family store in step (autosave, live merge, conflict guard); its state
  * (status pill, "sist endret av …", Papirkurv, conflicts) is mirrored into `familyUiStore` (`useFamily`).
@@ -341,12 +344,15 @@ if (startParams.delta) {
   }
 }
 
-/** Names of link proposals made unique against `taken` (the link's own ids are kept). */
-function nameAgainst(variants: Variant[], taken: Iterable<string>): Variant[] {
+/**
+ * Names of link proposals made unique against `taken` (the link's own ids are kept): «X (delt)», «X (delt 2)» …, or
+ * what `suffixed` makes.
+ */
+function nameAgainst(variants: Variant[], taken: Iterable<string>, suffixed: (name: string, n: number) => string = nb.share.sharedName): Variant[] {
   const names = new Set(taken);
   return variants.map((v) => {
     let name = v.name;
-    for (let n = 1; names.has(name); n++) name = nb.share.sharedName(v.name, n);
+    for (let n = 1; names.has(name); n++) name = suffixed(v.name, n);
     names.add(name);
     return name === v.name ? v : { ...v, name };
   });
@@ -421,7 +427,7 @@ export interface FamilyUiState extends SyncState {
    * one dialog with two fields, then `from` (null: the proposal on screen) is copied.
    */
   nameForProposal: { from: Id | null } | null;
-  /** The first save without a name: «Hva heter du?» as a banner (shown once the plan has been left alone a moment). */
+  /** The first save without a name: «Hva heter du?» as a floating card (shown once the plan has been left alone a moment). */
   nameBanner: boolean;
   /**
    * Shared mode, but Firebase could not be loaded: the proposals are kept on this device (the local store) until the
@@ -443,6 +449,12 @@ export interface FamilyUiState extends SyncState {
   otherFamily: OtherFamilyLink | null;
   /** The start link's space has no proposals and this device has no family yet: «Begynn her» (`startEmptyFamily`). */
   emptyFamily: boolean;
+  /**
+   * The start link's space (not this device's yet) has answered only from this device's empty cache, not from the
+   * server (a slow or blocked connection, offline): nothing is known about it yet. The pill says «Kobler til …» (or the
+   * offline text), never «… er tom»; the empty-space question waits for the server.
+   */
+  unanswered: boolean;
   /** The start link's space is not this device's family yet (nothing is stored there): the pill is neutral. */
   unconfirmed: boolean;
   /** Another tab on this device switched to another space: this tab saves nothing until it is reloaded. */
@@ -479,6 +491,7 @@ export const familyUiStore = create<FamilyUiState>()(() => ({
   carryOver: null,
   otherFamily: otherFamilyLink,
   emptyFamily: false,
+  unanswered: false,
   unconfirmed: unconfirmedFamily,
   elsewhere: false,
   notices: [...startFamilyNotices],
@@ -593,16 +606,22 @@ function retireLegacyWhenStored(): void {
 /** The first list waits (`unconfirmedFamily` and the space is empty) until the space is started. */
 let firstListWaits = false;
 
+function isEmptyList(list: ProposalList): boolean {
+  return list.proposals.length + list.trash.length + list.tooNew.length === 0;
+}
+
 /**
  * After the first list. A link's space on a device without a family: stored when it has proposals; when it is empty,
- * nothing is moved into it (old autosave, proposals kept on this device) until the user starts it.
+ * nothing is moved into it (old autosave, proposals kept on this device) until the user starts it. An empty list from
+ * this device's cache only (`fromCache`: a new device on a slow or blocked connection, or offline) is no answer:
+ * the question waits for the server (`recheckWaitingList`).
  */
 function onFirstList(list: ProposalList): void {
   if (!sync || !family) return;
   if (family.mode === 'shared' && unconfirmedFamily) {
-    if (list.proposals.length + list.trash.length + list.tooNew.length === 0) {
+    if (isEmptyList(list)) {
       firstListWaits = true;
-      familyUiStore.setState({ emptyFamily: true });
+      familyUiStore.setState(list.fromCache ? { unanswered: true } : { emptyFamily: true });
       return;
     }
     confirmFamily();
@@ -610,12 +629,24 @@ function onFirstList(list: ProposalList): void {
   runFirstList(list);
 }
 
+/**
+ * While the first list waits (after every sync state change): a later list with proposals stores the space and runs
+ * what waited (the `&p=` proposal is shown); the server's first answer for a space that is still empty asks «Denne
+ * plassen er tom. Er lenken hel?». Not during a drag (the list is applied when it ends).
+ */
+function recheckWaitingList(): void {
+  if (!firstListWaits || !unconfirmedFamily || !sync || family?.mode !== 'shared' || appStore.getState().inTransaction()) return;
+  const list = sync.lastList();
+  if (!isEmptyList(list)) confirmFamily();
+  else if (!list.fromCache && familyUiStore.getState().unanswered) familyUiStore.setState({ unanswered: false, emptyFamily: true });
+}
+
 /** The space of the start link becomes this device's family (stored); what waited for it runs now. */
 function confirmFamily(): void {
   if (!unconfirmedFamily || !familyId) return;
   unconfirmedFamily = false;
   writeRaw(storage, FAMILY_KEYS.familyId, familyId);
-  familyUiStore.setState({ emptyFamily: false, unconfirmed: false });
+  familyUiStore.setState({ emptyFamily: false, unanswered: false, unconfirmed: false });
   if (firstListWaits && sync) {
     firstListWaits = false;
     runFirstList(sync.lastList());
@@ -747,9 +778,12 @@ export async function acceptCarryOver(): Promise<number> {
   if (!c || !sync) return 0;
   const project = appStore.getState().project;
   const ids = new Set(project.variants.map((v) => v.id));
+  // A name taken here gets this device's name («Mammas idé (Pappa)»: the version changed on this device), else «(kopi)».
+  const who = cleanName(myName());
   const copies = nameAgainst(
     c.offered.map((v) => (ids.has(v.id) ? { ...v, id: newProposalId() } : v)),
     project.variants.map((v) => v.name),
+    (name, n) => nb.family.carryOver.copyName(name, who, n),
   );
   // Copies brought in are not "made here": a later switch never offers to move them out of this space again.
   if (familyId) recordIds(FAMILY_KEYS.carriedIn, familyId, copies.map((v) => v.id));
@@ -959,7 +993,10 @@ function attachSync(store: FamilyStore): void {
     },
     onFirstList,
   });
-  sync.subscribe((s) => familyUiStore.setState(s));
+  sync.subscribe((s) => {
+    familyUiStore.setState(s);
+    recheckWaitingList();
+  });
   familyUiStore.setState(sync.getState());
 }
 
@@ -1134,7 +1171,7 @@ export function startPersistence(): () => void {
     if (unconfirmedFamily) {
       unconfirmedFamily = false;
       firstListWaits = false;
-      familyUiStore.setState({ emptyFamily: false, unconfirmed: false });
+      familyUiStore.setState({ emptyFamily: false, unanswered: false, unconfirmed: false });
     }
   };
   window.addEventListener('storage', onStorage);
@@ -1270,14 +1307,18 @@ export function skipNameForNow(): void {
   familyUiStore.setState({ nameBanner: false });
 }
 
-/** «Hva heter du?» waits until the plan has been left alone this long (the banner row moves the plan down a little). */
+/** «Hva heter du?» waits until the plan has been left alone this long (nothing selected, no edit, no touch). */
 export const NAME_BANNER_IDLE_MS = 3000;
 /** Stops the wait for a quiet moment (null when not waiting). */
 let stopNameWait: (() => void) | null = null;
 
+/** Input that restarts the wait: taps, drags, pans and pinches on the plan (or anywhere), the wheel, keys. */
+const NAME_WAIT_EVENTS = ['pointerdown', 'pointermove', 'wheel', 'touchstart', 'touchmove', 'gesturestart', 'gesturechange', 'keydown'] as const;
+
 /**
- * The first save without a name (shared mode): «Hva heter du?» never interrupts an edit. A banner (no dialog, it
- * takes no taps on the plan) is shown once nothing was edited or selected for NAME_BANNER_IDLE_MS and no drag runs.
+ * The first save without a name (shared mode): «Hva heter du?» never interrupts an edit. A card floating in the toast
+ * area (ui/StatusPill.tsx `NameCard`: no dialog, no layout shift) is shown once nothing is selected and nothing was
+ * edited, selected, touched, panned or pinched for NAME_BANNER_IDLE_MS, and no drag runs.
  */
 function askNameWhenIdle(): void {
   if (stopNameWait || nameSkipped || familyUiStore.getState().elsewhere) return;
@@ -1287,19 +1328,30 @@ function askNameWhenIdle(): void {
     timer = setTimeout(show, NAME_BANNER_IDLE_MS);
   }
   function show(): void {
-    if (appStore.getState().inTransaction()) {
+    const s = appStore.getState();
+    if (s.inTransaction()) {
       arm();
       return;
     }
+    // Something selected: wait until it is let go (the selection change arms the wait again).
+    if (s.ui.selection !== null) return;
     stopNameWait?.();
     if (!nameSkipped && myName() === null) familyUiStore.setState({ nameBanner: true });
   }
   const unsubscribe = appStore.subscribe((s, prev) => {
     if (s.project !== prev.project || s.ui.selection !== prev.ui.selection) arm();
   });
+  // A hovering mouse is no activity; a pressed button, a finger or a pen is.
+  const onInput = (e: Event) => {
+    if (e.type === 'pointermove' && (e as PointerEvent).pointerType === 'mouse' && (e as PointerEvent).buttons === 0) return;
+    arm();
+  };
+  const target = hasWindow ? window : null;
+  for (const type of NAME_WAIT_EVENTS) target?.addEventListener(type, onInput, { capture: true, passive: true });
   stopNameWait = () => {
     if (timer !== null) clearTimeout(timer);
     unsubscribe();
+    for (const type of NAME_WAIT_EVENTS) target?.removeEventListener(type, onInput, { capture: true });
     stopNameWait = null;
   };
   arm();

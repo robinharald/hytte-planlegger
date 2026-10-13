@@ -22,7 +22,9 @@ export type PillState = keyof typeof nb.family.pill;
  * `pending` also counts writes queued before this page was loaded, so an offline reload never says «Lagret for alle».
  * `elsewhere` (another tab switched this device to another space; this tab saves nothing) wins over everything.
  * `unconfirmed` (shared mode: the start link's space is not this device's yet, so nothing is stored there; it is
- * empty, «Denne plassen er tom. Er lenken hel?») is neutral: never «Lagret».
+ * empty, «Denne plassen er tom. Er lenken hel?») is neutral: never «Lagret». While only this device's empty cache has
+ * answered for that space (`unanswered`: a slow or blocked connection, offline), nothing is known about it yet:
+ * «Kobler til …», offline `waitingOffline`, never «… er tom».
  */
 export function pillState(
   s: Pick<SyncState, 'mode' | 'phase' | 'saving' | 'pending' | 'online' | 'failed'> & {
@@ -31,6 +33,7 @@ export function pillState(
     noFamily?: boolean;
     elsewhere?: boolean;
     unconfirmed?: boolean;
+    unanswered?: boolean;
   },
 ): PillState {
   if (s.elsewhere) return 'elsewhere';
@@ -39,7 +42,7 @@ export function pillState(
   if (s.failed) return 'failed';
   if (s.phase === 'error') return 'error';
   if (s.phase === 'connecting') return 'connecting';
-  if (s.unconfirmed) return 'notStarted';
+  if (s.unconfirmed) return s.unanswered ? (s.online ? 'connecting' : 'waitingOffline') : 'notStarted';
   if (s.pending > 0 && !s.online) return 'pending';
   if (s.saving || s.pending > 0) return 'saving';
   return 'synced';
