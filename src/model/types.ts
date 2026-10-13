@@ -155,8 +155,9 @@ export interface MergedRoom {
   room: Room;
   peers: Record<Id, Vec2>;
   /**
-   * The outline (area and bounding box) of the face it was merged into, right after the merge: an edit other than
-   * "Ta tilbake" that redraws that face drops the record (last fix round, fifth review). Undefined: not known.
+   * The outline (area and bounding box) of the face it was merged into, right after the merge (for reference only:
+   * since the sixth review an edit other than "Ta tilbake" drops the record only when it splits the face holding its
+   * anchor or leaves the anchor in another room's face, state/editActions.ts `withMergedRooms`). Undefined: not known.
    */
   face?: { area: number; min: Vec2; max: Vec2 };
 }
@@ -369,9 +370,12 @@ export interface Wall {
    * `applyMoveWallEndpoint`: a continuation in line, a follower at a shared end, a T-junction) and where that left
    * it. "Ta tilbake" on that wall brings this one back only while it still stands there; "Ta tilbake" on this one never
    * moves that wall (last fix round, fifth review). Set only on moved walls with a ghost; dropped when the wall is
-   * back on its ghost or moved on its own. Undefined = none; optional, no schema bump.
+   * back on its ghost or moved on its own. Undefined = none; optional, no schema bump. `from`: its ends before that
+   * wall's moves carried it (kept over repeated moves of the same wall); "Ta tilbake" on that wall returns it there,
+   * not to its ghost, so a wall the user had moved first keeps that move (last fix round, sixth review). Undefined (saved
+   * before): back to its ghost.
    */
-  carriedBy?: { by: Id; a: Vec2; b: Vec2 };
+  carriedBy?: { by: Id; a: Vec2; b: Vec2; from?: { a: Vec2; b: Vec2 } };
 }
 
 export type OpeningType =

@@ -64,6 +64,14 @@
  * kept out of every cascade back, and a neighbour end such a wall meets stays); merged-away names revive only into
  * faces the restore changed (with the toast `roomsBack`), and a `Variant.mergedRooms` record goes when another edit
  * redraws its face.
+ *
+ * Last fix round, sixth review: a carried wall goes back to where it stood before the restored wall's moves carried it
+ * (`Wall.carriedBy.from`), not to its ghost; a corner or T-junction the restored wall had with another moved wall is
+ * closed again where the lines cross (`keptJunctions` / `closeJunctions`); a moved new wall without a ghost counts as
+ * moved (`movedNewWalls`); a variant without any `carriedBy` falls back to the geometric rules of before
+ * (`noCarriedBy`). A merged-room record goes only when its face is split or its anchor lies in another room's face.
+ * Bredde / Dybde of a unit against a building change its free side; «Ta tilbake» on a house edge pushes a unit against
+ * it away or is refused with the toast `unitOnBlock` (geometry/edit.ts `restoreEdgeOnBlock`).
  */
 import { current, isDraft, produce } from 'immer';
 import { useMemo } from 'react';
@@ -96,6 +104,7 @@ import {
   applyRestoreOpening,
   applyRestoreWall,
   applyRotateBlock,
+  applyWallEnds,
   applySetBlockProps,
   applySetBlockSize,
   applySetDeckProps,
@@ -107,6 +116,7 @@ import {
   applyToggleRailingEdge,
   blockEdgeMoveClamp,
   blockHasExistingArea,
+  blockSizeMove,
   blockVertexMoveClamp,
   deckOfEdge,
   ghostRef,
@@ -114,7 +124,9 @@ import {
   hostLine,
   isLocked,
   pieceRange,
+  overlapArea,
   reconcileRooms,
+  restoreEdgeOnBlock,
   reviveRoomRecords,
   roomResizeMove,
   turnedAxis,
@@ -129,7 +141,7 @@ import { backEdge } from '../geometry/furnitureDerive';
 import { levelAt } from '../geometry/levels';
 import { buildSnapContext, chipsAcross, gridStep, rayToWall, roundTo, snap, snapCircle, snapFootprint, snapLineOffset, snapPolygon } from '../geometry/snap';
 import type { DimensionChip, SnapContext, SnapIndicator, SnapResult } from '../geometry/snap';
-import { distancePointSegment, pointInPolygon } from '../geometry/polygon';
+import { area, distancePointSegment, pointInPolygon } from '../geometry/polygon';
 import type { DerivedRoom, DerivedVariant } from '../model/derived';
 import { catalogPlacementSpec, convexOverlap, insideRoom, placementObstacles, rectFootprint, tapPlacement } from '../plan2d/furniturePlacement';
 import type { Obstacle, PlacementSpec } from '../plan2d/furniturePlacement';
@@ -292,7 +304,7 @@ function run<R>(store: EditStore, recipe: (draft: Variant, ctx: EditContext) => 
           });
         }
       }
-      final = withMergedRooms(final, base, merges, nextDerived, !opts.revive);
+      final = withMergedRooms(final, base, merges, nextDerived, !opts.revive, derived);
     }
   }
   if (final !== current) store.getState().replaceVariant(current.id, final, { transaction: opts.transaction });
@@ -314,6 +326,10 @@ function faceAt(v: Variant, derived: DerivedVariant, room: Room): DerivedRoom | 
   return derived.rooms.find((f) => f.storeyId === storey && pointInPolygon(room.anchor, f.facePolygon));
 }
 
+/** Whether two bounding boxes meet (touching counts). */
+const boxesMeet = (a: { min: Vec2; max: Vec2 }, b: { min: Vec2; max: Vec2 }): boolean =>
+  a.min[0] <= b.max[0] && b.min[0] <= a.max[0] && a.min[1] <= b.max[1] && b.min[1] <= a.max[1];
+
 /** How many merged-away rooms a variant keeps (`Variant.mergedRooms`), newest first. */
 const MERGED_ROOMS_KEPT = 40;
 
@@ -321,22 +337,39 @@ const MERGED_ROOMS_KEPT = 40;
  * The rooms a merge removed are kept on the variant with the anchors of the rooms of their storey alive with them
  * before the edit (`Variant.mergedRooms`, final fix round after 2b), so "Ta tilbake" can give a merged-away name its
  * face back also after a reload, when the undo history is gone (`roomsFromHistory` covers the session). Rooms that are
- * back are dropped from the list; at most MERGED_ROOMS_KEPT are kept. Each keeps the outline of the face it was merged
- * into (`MergedRoom.face`, in `derived`); an edit other than a restore (`prune`) that redraws that face drops it (last
- * fix round, fifth review: the name no longer belongs anywhere there).
+ * back are dropped from the list; at most MERGED_ROOMS_KEPT are kept. An edit other than a restore (`prune`; `baseDerived`
+ * the model before it, `derived` after it) drops a record only when it splits the face that holds the record's anchor
+ * (two or more faces now lie mostly in it, and the storey has more faces than before) or leaves the anchor in the face
+ * of another room that is still there — not when it only reshapes that face (last fix round, sixth review: moving a
+ * wall of the merged room dropped the record, so the name was lost after a reload; the revival only into faces the
+ * restore changed already keeps an old name out of unrelated faces).
  */
-function withMergedRooms(v: Variant, before: Variant, merges: readonly RoomMerge[], derived: DerivedVariant, prune: boolean): Variant {
+function withMergedRooms(v: Variant, before: Variant, merges: readonly RoomMerge[], derived: DerivedVariant, prune: boolean, baseDerived?: DerivedVariant): Variant {
   const live = new Set(v.rooms.map((r) => r.id));
   const gone = merges.map((m) => m.removed).filter((r, i, all) => !live.has(r.id) && all.findIndex((x) => x.id === r.id) === i);
   const old = v.mergedRooms ?? [];
-  const redrawn = (m: MergedRoom): boolean => {
-    if (!prune || !m.face) return false;
-    const f = faceAt(before, derived, m.room);
-    return !f || !sameFaceShape(f, { area: m.face.area, bbox: { min: m.face.min, max: m.face.max }, storeyId: f.storeyId });
-  };
-  const kept = old.filter((m) => !live.has(m.room.id) && !gone.some((r) => r.id === m.room.id) && !redrawn(m));
-  if (gone.length === 0 && kept.length === old.length) return v;
   const storeyOf = (levelId: Id) => before.levels.find((l) => l.id === levelId)?.storeyId;
+  const facesOn = (d: DerivedVariant, storeyId: Id) => d.rooms.filter((f) => f.storeyId === storeyId);
+  const roomIn = (x: Variant, f: DerivedRoom) => x.rooms.find((r) => storeyOf(r.levelId) === f.storeyId && pointInPolygon(r.anchor, f.facePolygon));
+  const outdated = (m: MergedRoom): boolean => {
+    if (!prune || !baseDerived) return false;
+    const f0 = faceAt(before, baseDerived, m.room);
+    if (!f0) return false;
+    const after = facesOn(derived, f0.storeyId);
+    if (after.length > facesOn(baseDerived, f0.storeyId).length) {
+      const inside = after.filter((g) => {
+        const a = area(g.facePolygon);
+        return a > 1e-6 && boxesMeet(g.bbox, f0.bbox) && overlapArea(g.facePolygon, f0.facePolygon) >= 0.5 * a;
+      });
+      if (inside.length >= 2) return true;
+    }
+    const f1 = faceAt(before, derived, m.room);
+    const r0 = roomIn(before, f0);
+    const r1 = f1 ? roomIn(v, f1) : undefined;
+    return r0 !== undefined && r1 !== undefined && r1.id !== r0.id && live.has(r0.id);
+  };
+  const kept = old.filter((m) => !live.has(m.room.id) && !gone.some((r) => r.id === m.room.id) && !outdated(m));
+  if (gone.length === 0 && kept.length === old.length) return v;
   const peersOf = (room: Room): Record<Id, Vec2> => {
     const out: Record<Id, Vec2> = {};
     for (const r of before.rooms) if (storeyOf(r.levelId) === storeyOf(room.levelId)) out[r.id] = copy(r.anchor);
@@ -472,9 +505,14 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
     if (hostId && hostId !== id && v.walls.some((w) => w.id === hostId && w.status === 'removed')) return restoreGhost(store, hostId);
   }
   let parallelSame = false;
+  let onBlock = false;
   let from: RunOpts['from'];
   let neighbours: NeighbourEnd[] = [];
   let carried: Id[] = [];
+  let carriedTo = new Map<Id, { a: Vec2; b: Vec2 }>();
+  let newBack = new Map<Id, { a: Vec2; b: Vec2 }>();
+  // Corners and T-junctions with other moved walls that stay closed (last fix round, sixth review).
+  let junctions: KeptJunction[] = [];
   // Walls no step since the wall was first touched has changed (the undo history): the way back leaves them alone.
   let still: ReadonlySet<Id> = new Set();
   // Moved walls the restored wall's move did not carry (last fix round, fifth review): never moved by the way back.
@@ -499,10 +537,27 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       // forward step carried sideways stay out of that and go back whole afterwards (fix round after 2b).
       carried = carriedSideways(v, live, g);
       // Walls moved on their own (or carried by another wall's move) stay where they are (last fix round, fifth review).
-      own = notCarriedBy(v, live);
-      still = new Set([...unchangedSince(store, v, id), ...carried, ...own]);
+      // New walls without a ghost that the user moved count as such too (last fix round, sixth review).
+      const movedNew = movedNewWalls(v, s.project.variants.find((x) => isLocked(x)), live);
+      own = new Set([...notCarriedBy(v, live), ...movedNew.keys()]);
+      // New walls without a ghost that this wall's move carried go straight back to where they stood before it.
+      newBack = carriedFrom(
+        v,
+        v.walls.filter((w) => w.status === 'new' && carriedBy(w, live.id) && !v.walls.some((x) => x.id === `${w.id}/ghost`)).map((w) => w.id),
+      );
+      still = new Set([...unchangedSince(store, v, id), ...carried, ...own, ...joinedOwn(v, live, own), ...newBack.keys()]);
       if (!parallelSame) from = endpointsBack(s.project.site, v, live.id, g, still);
       neighbours = neighbourEnds(v, live, g).filter((n) => !carried.includes(n.wallId));
+      carriedTo = carriedFrom(v, carried);
+      let shared: ((p: Id, q: Id) => boolean) | undefined;
+      const meet = (p: Id, q: Id) => {
+        if (!shared) {
+          const vd = deriveOf(s.project.site, v);
+          shared = vd ? shareStorey(vd) : () => false;
+        }
+        return shared(p, q);
+      };
+      junctions = keptJunctions(v, live, g, new Map([...movedNew, ...newBack]), meet);
     }
   }
   const r = run(
@@ -522,7 +577,17 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
         // Neighbours the forward step left just off the wall's line: their ends back onto the junction too.
         bringBackNeighbours(d, s.project.site, neighbours, own);
         // Continuations it carried along sideways: back whole.
-        bringBackCarried(d, s.project.site, carried, own);
+        bringBackCarried(d, s.project.site, carried, own, carriedTo);
+        setWallEnds(d, s.project.site, newBack);
+        // A corner or T-junction with a wall that stays where the user put it (or goes back to before this wall's move
+        // carried it) is closed again: the restored wall ends on its line, its end slides onto the restored wall.
+        if (ref.original) closeJunctions(d, s.project.site, ref.original, junctions);
+        // The way back is no carry: what its cascades recorded goes (a later move of the wall would chain onto it).
+        for (const w of d.walls) {
+          const c = w.carriedBy;
+          const c0 = v.walls.find((x) => x.id === w.id)?.carriedBy;
+          if (c && !(c0 && c0.by === c.by && dist(c0.a, c.a) < 1e-9 && dist(c0.b, c.b) < 1e-9)) delete w.carriedBy;
+        }
         // Openings the cascade moved on the walls it touched (their ghosts sat on those walls' ghosts): back too.
         for (const [oid, hostId] of parked) if (!d.walls.some((w) => w.id === hostId)) applyRestoreOpening(d, oid);
         healGhosts(d);
@@ -535,10 +600,13 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
         healGhosts(d);
         return ok;
       }
+      // A unit against the edge is pushed away with it, or the restore is refused (last fix round, sixth review).
+      onBlock = restoreEdgeOnBlock(ctx, id);
       return applyRestoreEdgeGhost(d, ctx, id);
     },
     { revive: () => roomTombstones(store, v), from },
   );
+  if (onBlock) unitOnBlockToast(store);
   return changed(r);
 }
 
@@ -558,23 +626,39 @@ const NEIGHBOUR_REACH = 0.05;
  * returns to) while their live end is elsewhere, within 5 cm of `live`. (A free node's followers end on the nominal
  * moved line; when the wall's other end was clamped by its support the wall itself turned a little, so they end ~1–3
  * cm beside it — neither coincident nor on it: w-104-103 after w-103-korr −0.2, w-104-diag after w-105-diag +0.2.)
+ * Each goes to where it stood before `live`'s moves carried it (`Wall.carriedBy.from`), else to its ghost's end
+ * (last fix round, sixth review: w-103-korr, moved by the user and then shortened by w-103-102's move, went back to
+ * the seed). In a variant without any `carriedBy` (saved before the fifth review) every moved wall counts, as then.
  */
 function neighbourEnds(v: Variant, live: Wall, g: Wall): NeighbourEnd[] {
   const out: NeighbourEnd[] = [];
+  const legacy = noCarriedBy(v);
   for (const w of v.walls) {
     // Only walls the forward move of `live` carried and that still stand where it left them (final fix round, fourth
     // review: w-103-korr, moved by itself onto w-vf-korr's line, was turned by «Ta tilbake» on w-vf-korr).
-    if (w.id === live.id || w.status === 'removed' || !carriedBy(w, live.id)) continue;
+    if (w.id === live.id || w.status === 'removed' || (!legacy && !carriedBy(w, live.id))) continue;
     const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
     if (!wg) continue;
+    const from = legacy ? undefined : w.carriedBy?.from;
     for (const end of ['a', 'b'] as const) {
-      if (dist(w[end], wg[end]) < 1e-9) continue;
-      if (distancePointSegment(wg[end], g.a, g.b) > 0.01) continue;
+      const to = from ? from[end] : wg[end];
+      if (dist(w[end], to) < 1e-9) continue;
+      if (distancePointSegment(to, g.a, g.b) > 0.01) continue;
       if (distancePointSegment(w[end], live.a, live.b) > NEIGHBOUR_REACH && !onNominalLine(w[end], live, g)) continue;
-      out.push({ wallId: w.id, end, to: copy(wg[end]) });
+      out.push({ wallId: w.id, end, to: copy(to) });
     }
   }
   return out;
+}
+
+/**
+ * A variant whose walls hold no `Wall.carriedBy` (a proposal saved before the fifth review, or nothing carried yet):
+ * "Ta tilbake" there falls back to the geometric rules of before (last fix round, sixth review) — every moved wall
+ * whose ghost meets the restored wall's ghost may be carried back, and a continuation in line goes back when it was
+ * moved across exactly as far.
+ */
+function noCarriedBy(v: Variant): boolean {
+  return !v.walls.some((w) => w.carriedBy !== undefined);
 }
 
 /**
@@ -678,6 +762,8 @@ function carriedBy(w: Wall, byId: Id): boolean {
  * not the wall whose move carried `live` (last fix round, fifth review).
  */
 function notCarriedBy(v: Variant, live: Wall): Set<Id> {
+  // Without any `carriedBy` (saved before the fifth review) nothing tells them apart: none, as then (`noCarriedBy`).
+  if (noCarriedBy(v)) return new Set();
   const ghosts = new Set(v.walls.filter((w) => w.status === 'removed').map((w) => w.id));
   return new Set(v.walls.filter((w) => w.id !== live.id && w.status === 'new' && ghosts.has(`${w.id}/ghost`) && !carriedBy(w, live.id)).map((w) => w.id));
 }
@@ -689,12 +775,16 @@ function notCarriedBy(v: Variant, live: Wall): Set<Id> {
  * back (an endpoint drag back would turn them) and then moves each back whole (`bringBackCarried`). Only walls that
  * `live`'s move carried and that still stand where it left them (`Wall.carriedBy`, last fix round, fifth review: also
  * after a reload; a wall in line that the user moved in a step of its own — also on another floor — stays where they
- * put it, and so does the wall whose move carried `live`).
+ * put it, and so does the wall whose move carried `live`). In a variant without any `carriedBy` (`noCarriedBy`): those
+ * moved across exactly as far as `live`, as before the fifth review.
  */
 function carriedSideways(v: Variant, live: Wall, g: Wall): Id[] {
   const out: Id[] = [];
+  const legacy = noCarriedBy(v);
+  const ng = leftNormal(unit(sub(g.b, g.a)));
+  const liveAcross = dot(sub(live.a, g.a), ng);
   for (const w of v.walls) {
-    if (w.id === live.id || w.status !== 'new' || !carriedBy(w, live.id)) continue;
+    if (w.id === live.id || w.status !== 'new' || (!legacy && !carriedBy(w, live.id))) continue;
     const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
     const e = wg ? (['a', 'b'] as const).find((k) => dist(wg.a, g[k]) <= COINCIDE_M || dist(wg.b, g[k]) <= COINCIDE_M) : undefined;
     if (!wg || !e) continue;
@@ -706,28 +796,50 @@ function carriedSideways(v: Variant, live: Wall, g: Wall): Id[] {
     const n = leftNormal(unit(ug));
     const across = dot(sub(w.a, wg.a), n);
     if (Math.abs(across) <= 1e-9) continue;
+    if (legacy && Math.abs(dot(sub(w.a, wg.a), ng) - liveAcross) > 1e-6) continue;
     out.push(w.id);
   }
   return out;
 }
 
 /**
- * Move each carried wall (`carriedSideways`) back across itself onto its ghost's line (applyMoveWall: walls with a
- * T-junction on it follow), then give it its ghost's exact geometry (applyRestoreWall) and heal.
+ * Where each carried wall among `ids` goes back to: where it stood before the restored wall's moves carried it
+ * (`Wall.carriedBy.from`, last fix round, sixth review); a wall without it goes back to its ghost.
  */
-function bringBackCarried(d: Variant, site: Site, ids: readonly Id[], own: ReadonlySet<Id> = new Set()): void {
+function carriedFrom(v: Variant, ids: readonly Id[]): Map<Id, { a: Vec2; b: Vec2 }> {
+  const out = new Map<Id, { a: Vec2; b: Vec2 }>();
+  for (const w of v.walls) {
+    const from = ids.includes(w.id) ? w.carriedBy?.from : undefined;
+    if (from) out.set(w.id, { a: copy(from.a), b: copy(from.b) });
+  }
+  return out;
+}
+
+/**
+ * Move each carried wall (`carriedSideways`) back across itself onto its ghost's line (applyMoveWall: walls with a
+ * T-junction on it follow), then give it its ghost's exact geometry (applyRestoreWall) and heal. A wall with a place
+ * from before the carry (`from`, `carriedFrom`) goes back there instead (healed only when that is its ghost).
+ */
+function bringBackCarried(d: Variant, site: Site, ids: readonly Id[], own: ReadonlySet<Id> = new Set(), from: ReadonlyMap<Id, { a: Vec2; b: Vec2 }> = new Map()): void {
   for (const id of ids) {
     const w = d.walls.find((x) => x.id === id && x.status !== 'removed');
     const wg = d.walls.find((x) => x.id === `${id}/ghost` && x.status === 'removed');
     if (!w || !wg) continue;
-    const n = leftNormal(unit(sub(wg.b, wg.a)));
-    const across = dot(sub(wg.a, w.a), n);
+    const back = from.get(id);
+    const to = back ?? { a: wg.a, b: wg.b };
+    const n = leftNormal(unit(sub(to.b, to.a)));
+    const across = dot(sub(to.a, w.a), n);
     if (Math.abs(across) > 1e-9) {
       const base = isDraft(d) ? current(d) : (JSON.parse(JSON.stringify(d)) as Variant);
       const derived = deriveOf(site, base);
       if (derived) applyMoveWall(d, { base, derived }, id, scale(n, across), { keep: new Set([...untouched(base), ...own]) });
     }
-    applyRestoreWall(d, `${id}/ghost`);
+    const now = d.walls.find((x) => x.id === id && x.status !== 'removed');
+    if (back && now) {
+      now.a = copy(back.a);
+      now.b = copy(back.b);
+      delete now.carriedBy;
+    } else applyRestoreWall(d, `${id}/ghost`);
     healGhosts(d);
   }
 }
@@ -753,6 +865,204 @@ function endpointsBack(site: Site, v: Variant, wallId: Id, g: Wall, still: Reado
     curDerived = deriveOf(site, cur);
   }
   return cur !== v && curDerived ? { variant: cur, derived: curDerived } : undefined;
+}
+
+/**
+ * How two walls meet: an end of each at one point ('corner'), an end of the first on the second ('onOther') or an end
+ * of the second on the first ('onFirst'), within 1 cm; null when they do not meet or run in line.
+ */
+type Meeting = { kind: 'corner'; end: 'a' | 'b'; otherEnd: 'a' | 'b' } | { kind: 'onOther'; end: 'a' | 'b' } | { kind: 'onFirst'; otherEnd: 'a' | 'b' };
+
+function meeting(w: Pick<Wall, 'a' | 'b'>, x: Pick<Wall, 'a' | 'b'>): Meeting | null {
+  const dw = sub(w.b, w.a);
+  const dx = sub(x.b, x.a);
+  const lw = Math.hypot(dw[0], dw[1]);
+  const lx = Math.hypot(dx[0], dx[1]);
+  if (lw < 1e-9 || lx < 1e-9 || Math.abs(dw[0] * dx[1] - dw[1] * dx[0]) <= Math.sin((5 * Math.PI) / 180) * lw * lx) return null;
+  for (const end of ['a', 'b'] as const) for (const otherEnd of ['a', 'b'] as const) if (dist(w[end], x[otherEnd]) <= COINCIDE_M) return { kind: 'corner', end, otherEnd };
+  for (const end of ['a', 'b'] as const) if (distancePointSegment(w[end], x.a, x.b) <= COINCIDE_M) return { kind: 'onOther', end };
+  for (const otherEnd of ['a', 'b'] as const) if (distancePointSegment(x[otherEnd], w.a, w.b) <= COINCIDE_M) return { kind: 'onFirst', otherEnd };
+  return null;
+}
+
+/**
+ * Whether two stored walls reach a common storey (their derived pieces): a partition running on through the loft meets
+ * the loft's walls there.
+ */
+function shareStorey(derived: DerivedVariant): (p: Id, q: Id) => boolean {
+  const storeys = new Map<Id, Set<Id>>();
+  for (const dw of derived.walls) {
+    if (dw.source.kind !== 'wall') continue;
+    const set = storeys.get(dw.source.wallId) ?? new Set<Id>();
+    for (const st of dw.storeyIds) set.add(st);
+    storeys.set(dw.source.wallId, set);
+  }
+  return (p, q) => [...(storeys.get(p) ?? [])].some((st) => storeys.get(q)?.has(st) === true);
+}
+
+/** A meeting of the restored wall with another moved wall that "Ta tilbake" keeps closed (`closeJunctions`). */
+type KeptJunction = Meeting & { wallId: Id };
+
+/**
+ * The corners and T-junctions of the moved wall `live` (ghost `g`) with other moved walls (new, with a ghost, on a
+ * storey `live` reaches too: `meet`; not in line) that were there before the move (the two ghosts meet) and still are:
+ * "Ta tilbake" keeps them closed (`closeJunctions`; last fix round, sixth review). A meeting the move made (its end
+ * snapped onto a corner) is not one. A moved new wall without a ghost (`movedNew`) counts with its place in the base proposal, or where it stood
+ * before this wall's move carried it; an end of that place on the ghost's line, no farther from the ghost than the
+ * wall moved, counts as meeting it (the ghost is from before an earlier carry: dv-kjk-w, carried by dv-stue-n).
+ */
+function keptJunctions(v: Variant, live: Wall, g: Wall, movedNew: ReadonlyMap<Id, Pick<Wall, 'a' | 'b'>>, meet: (p: Id, q: Id) => boolean): KeptJunction[] {
+  const reach = Math.max(dist(live.a, g.a), dist(live.b, g.b)) + COINCIDE_M;
+  const gn = leftNormal(unit(sub(g.b, g.a)));
+  const nearLine = (p: Vec2) => Math.abs(dot(sub(p, g.a), gn)) <= COINCIDE_M && distancePointSegment(p, g.a, g.b) <= reach;
+  const out: KeptJunction[] = [];
+  for (const x of v.walls) {
+    if (x.id === live.id || x.status !== 'new') continue;
+    const xg = v.walls.find((y) => y.id === `${x.id}/ghost` && y.status === 'removed');
+    const xo = xg ?? movedNew.get(x.id);
+    if (!xo || !(meeting(g, xo) || (!xg && (nearLine(xo.a) || nearLine(xo.b))))) continue;
+    const m = meeting(live, x);
+    if (m && meet(live.id, x.id)) out.push({ ...m, wallId: x.id });
+  }
+  return out;
+}
+
+/**
+ * New walls without a ghost (in the base proposal already, such as the divider dv-stue-n) that the user moved: their
+ * place in the locked base proposal `reference` (Forslag D) differs, and no move of `live` left them where they are;
+ * each with that place. "Ta tilbake" on `live` treats them as moved walls with a ghost (last fix round, sixth review).
+ * None in a variant without any `carriedBy` (`noCarriedBy`).
+ */
+function movedNewWalls(v: Variant, reference: Variant | undefined, live: Wall): Map<Id, Wall> {
+  const out = new Map<Id, Wall>();
+  if (!reference || reference.id === v.id || noCarriedBy(v)) return out;
+  const ghosts = new Set(v.walls.filter((w) => w.status === 'removed').map((w) => w.id));
+  for (const w of v.walls) {
+    if (w.id === live.id || w.status !== 'new' || ghosts.has(`${w.id}/ghost`) || carriedBy(w, live.id)) continue;
+    const r = reference.walls.find((x) => x.id === w.id && x.status === 'new');
+    if (r && (dist(r.a, w.a) > 1e-9 || dist(r.b, w.b) > 1e-9)) out.set(w.id, r);
+  }
+  return out;
+}
+
+/**
+ * Walls the move of `live` carried whose carried end (on `live`) another moved wall in `own` now also ends at: they
+ * stay with that wall on the way back (last fix round, sixth review: w-103-102, carried by w-103-korr, went back and
+ * left w-vf-korr — moved in line by the user — dangling at their corner).
+ */
+function joinedOwn(v: Variant, live: Wall, own: ReadonlySet<Id>): Id[] {
+  const ownEnds = v.walls.filter((w) => own.has(w.id) && w.status !== 'removed').flatMap((w) => [w.a, w.b]);
+  return v.walls
+    .filter(
+      (x) =>
+        x.id !== live.id &&
+        x.status === 'new' &&
+        !own.has(x.id) &&
+        (['a', 'b'] as const).some((e) => distancePointSegment(x[e], live.a, live.b) <= COINCIDE_M && ownEnds.some((p) => dist(p, x[e]) <= COINCIDE_M)),
+    )
+    .map((x) => x.id);
+}
+
+/**
+ * After "Ta tilbake" on wall `wallId`: each junction of `junctions` that came apart is closed again (last fix round,
+ * sixth review: «Ta tilbake» on one of two walls meeting at a corner, both moved by the user, opened the corner — two
+ * rooms merged and a wall dangled). A corner: both ends go to where the two lines cross (the restored wall keeps its
+ * line, the other its place); the restored wall's end on the other: onto its line; the other's end on the restored
+ * wall: along its own line onto it. Never turns a wall round or makes it shorter than 5 cm.
+ */
+function closeJunctions(d: Variant, site: Site, wallId: Id, junctions: readonly KeptJunction[]): void {
+  if (junctions.length === 0) return;
+  const base = isDraft(d) ? current(d) : (JSON.parse(JSON.stringify(d)) as Variant);
+  const w0 = base.walls.find((x) => x.id === wallId && x.status !== 'removed');
+  if (!w0) return;
+  // The derived model, only when a junction came apart (most restores leave every one closed).
+  let derived: DerivedVariant | null | undefined;
+  const derivedNow = () => (derived === undefined ? (derived = deriveOf(site, base)) : derived);
+  let shared: ((p: Id, q: Id) => boolean) | undefined;
+  const meet = (p: Id, q: Id) => {
+    const dv = derivedNow();
+    shared ??= dv ? shareStorey(dv) : () => false;
+    return shared(p, q);
+  };
+  // The live walls as the closing so far leaves them (each junction sees the ones before it).
+  const now = new Map(base.walls.filter((x) => x.status !== 'removed').map((x) => [x.id, { a: copy(x.a), b: copy(x.b) }]));
+  const ends = new Map<Id, { a?: Vec2; b?: Vec2 }>();
+  const set = (id: Id, end: 'a' | 'b', p: Vec2) => {
+    ends.set(id, { ...ends.get(id), [end]: copy(p) });
+    const g = now.get(id);
+    if (g) g[end] = copy(p);
+  };
+  // The end `end` of `x` at p: still pointing the same way from its other end, and at least 5 cm long.
+  const fits = (x: Pick<Wall, 'a' | 'b'>, end: 'a' | 'b', p: Vec2) => {
+    const other = end === 'a' ? x.b : x.a;
+    return dot(sub(p, other), sub(x[end], other)) > 0 && dist(p, other) >= 0.05;
+  };
+  // Another wall on a storey that wall `of` reaches, not in line with it, ends at q (an end there does not dangle).
+  const heldAt = (q: Vec2, of: Id, not: readonly Id[]) => {
+    const g = now.get(of);
+    return (
+      g !== undefined &&
+      [...now].some(([id, y]) => !not.includes(id) && meet(of, id) && meeting(g, y) !== null && (dist(y.a, q) <= COINCIDE_M || dist(y.b, q) <= COINCIDE_M))
+    );
+  };
+  const on = (p: Vec2, s: Pick<Wall, 'a' | 'b'>) => distancePointSegment(p, s.a, s.b) <= COINCIDE_M;
+  for (const j of junctions) {
+    const w = now.get(wallId);
+    const x = now.get(j.wallId);
+    if (!w || !x) continue;
+    const pair = [wallId, j.wallId];
+    if (j.kind === 'corner') {
+      const we = w[j.end];
+      const xe = x[j.otherEnd];
+      // Closed: the ends still meet, or one ends on the other while another wall holds the end left over (a corner of
+      // three: w-104-diag and w-105-106 at w-106-korr's end).
+      if (dist(we, xe) <= COINCIDE_M || (on(xe, w) && heldAt(we, wallId, pair)) || (on(we, x) && heldAt(xe, j.wallId, pair))) continue;
+    } else if (j.kind === 'onOther' ? on(w[j.end], x) : on(x[j.otherEnd], w)) continue;
+    const p = intersectLines(w.a, sub(w.b, w.a), x.a, sub(x.b, x.a));
+    if (!p) continue;
+    if (j.kind === 'corner') {
+      // The other wall's end is held by another wall (w-103-102 meeting w-vf-korr, moved in line by the user): it stays;
+      // the restored wall's end goes onto the other wall where the crossing lies on it.
+      if (heldAt(x[j.otherEnd], j.wallId, pair)) {
+        if (!heldAt(w[j.end], wallId, pair) && fits(w, j.end, p) && on(p, x)) set(wallId, j.end, p);
+        continue;
+      }
+      if (!fits(x, j.otherEnd, p)) continue;
+      // Another wall still holds the restored wall's end (w-104-diag at w-104-103's end): where the crossing lies on the
+      // restored wall, only the other wall's end goes onto it (a T-junction).
+      if (heldAt(w[j.end], wallId, pair) && on(p, w)) {
+        set(j.wallId, j.otherEnd, p);
+        continue;
+      }
+      if (!fits(w, j.end, p)) continue;
+      set(wallId, j.end, p);
+      set(j.wallId, j.otherEnd, p);
+    } else if (j.kind === 'onOther') {
+      if (fits(w, j.end, p) && on(p, x)) set(wallId, j.end, p);
+    } else if (fits(x, j.otherEnd, p) && on(p, w)) {
+      set(j.wallId, j.otherEnd, p);
+    }
+  }
+  if (ends.size === 0) return;
+  const dv = derivedNow();
+  if (dv) setWallEnds(d, site, ends, { base, derived: dv });
+}
+
+/**
+ * Give stored walls of the draft new ends (geometry/edit.ts `applyWallEnds`, from the draft as it is: `ctx` when the
+ * caller has it), then heal.
+ */
+function setWallEnds(d: Variant, site: Site, ends: ReadonlyMap<Id, { a?: Vec2; b?: Vec2 }>, ctx?: EditContext): void {
+  if (ends.size === 0) return;
+  const base = ctx?.base ?? (isDraft(d) ? current(d) : (JSON.parse(JSON.stringify(d)) as Variant));
+  const derived = ctx?.derived ?? deriveOf(site, base);
+  if (!derived) return;
+  applyWallEnds(d, { base, derived }, ends);
+  for (const id of ends.keys()) {
+    const w = d.walls.find((x) => x.id === id && x.status !== 'removed');
+    if (w) delete w.carriedBy;
+  }
+  healGhosts(d);
 }
 
 // ---------------------------------------------------------------------------
@@ -919,10 +1229,18 @@ export function setBlockProps(store: EditStore, blockId: Id, patch: BlockPatch):
 
 /**
  * Bredde / Dybde of a block: moves the east / north edge (`side` 'max', default) or the west / south one. A unit grown
- * over terrace furniture pushes it out, with the `placeUnit` toast (last fix round, fifth review).
+ * over terrace furniture pushes it out, with the `placeUnit` toast (last fix round, fifth review). A unit standing
+ * against a building with that edge changes on its free side instead and never moves the building; growing into one
+ * is refused with the toast `unitOnBlock` (geometry/edit.ts `blockSizeMove`; last fix round, sixth review).
  */
 export function setBlockSize(store: EditStore, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): boolean {
-  const r = run(store, (d, ctx) => applySetBlockSize(d, ctx, blockId, axis, value, side));
+  let onBlock = false;
+  const r = run(store, (d, ctx) => {
+    const m = blockSizeMove(ctx, blockId, axis, value, side);
+    onBlock = m !== null && blockEdgeMoveClamp(ctx, blockId, m.edgeId, m.delta).onBlock;
+    return applySetBlockSize(d, ctx, blockId, axis, value, side);
+  });
+  if (onBlock) unitOnBlockToast(store);
   if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
   return changed(r);
 }
@@ -2251,7 +2569,8 @@ function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers)
       const pts = block.polygon.map((x) => x.p);
       // A unit's corner stops against another building (last fix round, fifth review): the outline stops there too.
       const clamp = blockVertexMoveClamp({ base, derived: session.baseDerived }, block.id, v.id, sres.point);
-      const shown = clamp.onBlock ? add(v.p, scale(sub(sres.point, v.p), clamp.k)) : sres.point;
+      // A corner pushed into the building a unit stands against slides along its wall (last fix round, sixth review).
+      const shown = clamp.onBlock ? (clamp.point ?? add(v.p, scale(sub(sres.point, v.p), clamp.k))) : sres.point;
       const hint = clamp.onBlock ? { hint: EDIT_STRINGS.unitOnBlock } : {};
       // Gable / mono blocks keep their rectangle (geometry/edit.ts keepsRectangle): both adjacent edges move.
       return {

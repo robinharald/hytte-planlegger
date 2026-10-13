@@ -201,7 +201,10 @@ describe('a unit moved, dragged or turned onto terrace furniture pushes it out i
   it('a shed dragged onto the terrace table pushes it out (toast); moving the shed leaves it, deleting the shed keeps it', () => {
     const s = proposal();
     const id = A.placeUnit(s, 'vedskjul', [10.6, -3.6], 0) as string;
-    expect(toastTexts(s)).toEqual([]);
+    // The chair whose footprint reached into the shed's north wall is pushed out too (last fix round, sixth review).
+    expect(toastTexts(s).join(' ')).toContain('«Utestol» er flyttet ut av «Vedskjul»');
+    expect(D(s).warnings.map((w) => w.kind)).not.toContain('furniture-in-wall');
+    s.setState({ toasts: [] });
     const from: Vec2 = [10.6, -3.6];
     const to: Vec2 = [12.8, -2.0];
     const session = A.beginDrag(s, { kind: 'block', id }, from, undefined, { snapRadiusM: LAPTOP.snapRadiusM });

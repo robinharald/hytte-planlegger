@@ -4,7 +4,8 @@
  * Takvinkel sends `drive: 'pitch'`, Mønehøyde `drive: 'height'`.
  *
  *  - Bredde / Dybde are the axis-line bounding box; a change moves the block's east / north edge:
- *    `setBlockSize(blockId, 'w' | 'd', value, 'max')` (junction partners and parts follow the editor core's rules).
+ *    `setBlockSize(blockId, 'w' | 'd', value, 'max')` (junction partners and parts follow the editor core's rules; a
+ *    unit standing against a building with that edge changes on its free side instead: geometry/edit.ts `blockSizeMove`).
  *    Blocks with explicit parts list them (§3.4): existing parts "Eksisterende: 12,00 × 6,20 m", new parts "Stue
  *    forlenget: lengde 4,00 m" (the extent that differs from the block's), so it is clear the new part is what grows.
  *    A block without a single east / north edge (not a rectangle) shows the sizes read-only (drag its corners).

@@ -85,7 +85,9 @@
  * Block edits (§3.4, §3.5). Edges move along their outward normal. Gable / mono blocks keep their shape: a corner
  * drag moves both adjacent edges (each by the pointer's component along its normal); only flat-roof blocks get free
  * vertex drags. Every junction (DerivedBlock.junctions) carries the partner block's coincident edge along by the same
- * vector (and so on through the partner's junctions on that edge). New polygons are validated (area ≥ 0.25 m², not
+ * vector (and so on through the partner's junctions on that edge) — never between a template unit and a building that
+ * is not one (`carriesThrough`, last fix round, sixth review: a unit's edge moves only itself, and an attached edge of
+ * a unit pushed into its building stays). New polygons are validated (area ≥ 0.25 m², not
  * self-intersecting, same orientation); a move that breaks one is scaled back to the largest valid fraction. Then,
  * generically for every changed edge: openings keep their plan position (projected on the new edge, clamped); stored
  * walls collinear with a moved edge (both ends within 1 cm of the old segment) are carried along (with their
@@ -1274,6 +1276,19 @@ function applyWallChanges(draft: Variant, ctx: EditContext, changes: Map<Id, Wal
   return changedHosts;
 }
 
+/**
+ * Set ends of stored walls (`ends`, by id) as a cascade does, from the state `ctx.base`: an existing wall is touched
+ * (its ghost added), openings keep their plan position and go back towards their ghosts when a host gets longer.
+ * "Ta tilbake" keeps a corner with a wall the user moved closed this way (state/editActions.ts `closeJunctions`; last
+ * fix round, sixth review). False when nothing changed.
+ */
+export function applyWallEnds(draft: Variant, ctx: EditContext, ends: ReadonlyMap<Id, { a?: Vec2; b?: Vec2 }>): boolean {
+  const changes = new Map<Id, WallChange>([...ends].map(([id, e]) => [id, { ...e }]));
+  const hosts = applyWallChanges(draft, ctx, changes, true);
+  pullBackOpenings(draft, ctx, hosts);
+  return hosts.length > 0;
+}
+
 /** T-junction walls ending on the interior of segment (a, b): their end follows the new line (na, nb). */
 function tJunctionChanges(ctx: EditContext, a: Vec2, b: Vec2, na: Vec2, nb: Vec2, storeys: readonly Id[], except: ReadonlySet<Id>, changes: Map<Id, WallChange>): void {
   const dNew = sub(nb, na);
@@ -1386,16 +1401,22 @@ export function applyMoveWall(draft: Variant, ctx: EditContext, wallId: Id, delt
 }
 
 /**
- * Record on each moved wall among `ids` (new, with a ghost, changed by this edit) that wall `by`'s move carried it, and
- * where to (`Wall.carriedBy`; last fix round, fifth review): "Ta tilbake" on `by` brings back only those still there.
+ * Record on each moved wall among `ids` (new, changed by this edit) that wall `by`'s move carried it, and where to
+ * (`Wall.carriedBy`; last fix round, fifth review): "Ta tilbake" on `by` brings back only those still there, to where
+ * they stood before `by`'s moves carried them (`from`: kept while `by`'s earlier carry still holds, so a wall moved in
+ * several steps sends it back past all of them; last fix round, sixth review). Also on a new wall without a ghost (a
+ * divider of the base proposal), so "Ta tilbake" tells it from one the user moved.
  */
 function markCarried(draft: Variant, ctx: EditContext, by: Id, ids: Iterable<Id>): void {
   for (const id of ids) {
     const w = draft.walls.find((x) => x.id === id);
     const w0 = ctx.base.walls.find((x) => x.id === id);
-    if (!w || !w0 || w.status !== 'new' || !draft.walls.some((g) => g.id === ghostIdOf(id))) continue;
+    if (!w || !w0 || w.status !== 'new') continue;
     if (samePoint(w.a, w0.a, TINY) && samePoint(w.b, w0.b, TINY)) continue;
-    w.carriedBy = { by, a: copy(w.a), b: copy(w.b) };
+    const c0 = w0.carriedBy;
+    const chained = c0 !== undefined && c0.by === by && samePoint(c0.a, w0.a, 1e-9) && samePoint(c0.b, w0.b, 1e-9);
+    const from = chained ? c0.from : { a: copy(w0.a), b: copy(w0.b) };
+    w.carriedBy = from ? { by, a: copy(w.a), b: copy(w.b), from: { a: copy(from.a), b: copy(from.b) } } : { by, a: copy(w.a), b: copy(w.b) };
   }
 }
 
@@ -1702,7 +1723,9 @@ export function ghostRef(v: Variant, id: Id): GhostRef | null {
  * moving the adjacent edge at that end back out —, junction partners following; the ghosts that heal take their
  * host walls with them, and the opening ghosts that sat on those hosts are restored (the openings the edge edit
  * moved or clamped are back where they were, existing again). A ghost that cannot be reached is dropped (its opening
- * ghosts restored on the edge). False for an unknown id.
+ * ghosts restored on the edge). A template unit standing against the edge where it goes back to is pushed away whole
+ * first (`restoreEdgePushes`); one that cannot go, or one the edge would run into, refuses the restore: false, nothing
+ * changed (`restoreEdgeOnBlock` tells the caller; last fix round, sixth review). False for an unknown id.
  */
 export function applyRestoreEdgeGhost(draft: Variant, ctx: EditContext, id: Id): boolean {
   const ref = ghostRef(ctx.base, id);
@@ -1715,31 +1738,17 @@ export function applyRestoreEdgeGhost(draft: Variant, ctx: EditContext, id: Id):
     const hostId = o.host.wallId;
     if (ctx.base.walls.some((w) => w.id === hostId && w.status === 'removed')) parked.set(o.id, hostId);
   }
-  const block = ctx.base.blocks.find((b) => b.id === ref.blockId);
-  const i = block ? block.polygon.findIndex((x) => x.id === ref.edgeId) : -1;
-  if (block && i >= 0) {
-    const pts = block.polygon.map((v) => v.p);
-    const n = pts.length;
-    const { a, b } = blockEdgeGeom(block, i);
-    const shift = dot(sub(ref.a, a), outwardNormal(pts, i));
-    if (Math.abs(shift) > 1e-9) {
-      applyMoveBlockEdge(draft, ctx, ref.blockId, ref.edgeId, scale(outwardNormal(pts, i), shift));
-    } else {
-      // A stub: the edge got shorter at one end; the adjacent edge there moves back out to the stub's far end.
-      const L = dist(a, b);
-      const s = [along(a, b, ref.a), along(a, b, ref.b)];
-      const lo = Math.min(...s);
-      const hi = Math.max(...s);
-      const k = lo < -SAME ? (i - 1 + n) % n : hi > L + SAME ? (i + 1) % n : -1;
-      if (k >= 0) {
-        const far = lo < -SAME ? pointAlong(a, b, lo) : pointAlong(a, b, hi);
-        const nk = outwardNormal(pts, k);
-        const sk = dot(sub(far, k === (i + 1) % n ? b : a), nk);
-        if (Math.abs(sk) > 1e-9) applyMoveBlockEdge(draft, ctx, ref.blockId, block.polygon[k].id, scale(nk, sk));
-      } else {
-        uncoverJunction(draft, ctx, ref.blockId, i, lo, hi);
-      }
-    }
+  const move = restoreEdgeMove(ctx, ref);
+  if (move) {
+    // Units standing against the edge on the side it goes back to are pushed away first (they are never dragged along:
+    // `carriesThrough`); a unit that is still in the way refuses the restore (last fix round, sixth review).
+    const pushes = restoreEdgePushes(ctx, move);
+    if (pushes === null) return false;
+    const pushed = new Set(pushes.map((p) => p.blockId));
+    for (const p of pushes) applyMoveBlock(draft, ctx, p.blockId, p.delta);
+    const plan = edgePlan(pushed.size > 0 ? withoutBlocks(ctx, pushed) : ctx, move.blockId, move.edgeId, move.delta);
+    if (plan?.onBlock) return false;
+    if (plan) applyUnitPolygons(draft, ctx, plan.polys);
   }
   healGhosts(draft);
   // Hosts that healed away: their opening ghosts are restored. (A ghost the move could not reach is only dropped; its
@@ -1759,15 +1768,104 @@ export function applyRestoreEdgeGhost(draft: Variant, ctx: EditContext, id: Id):
   return true;
 }
 
+/** A block edge moved by `delta` (its component along the outward normal; `applyMoveBlockEdge`). */
+interface EdgeMove {
+  blockId: Id;
+  edgeId: Id;
+  delta: Vec2;
+}
+
+/**
+ * The edge move of "Ta tilbake" on edge ghost `ref` (`applyRestoreEdgeGhost`): the edge back onto the ghost line; for a
+ * stub of a shortened edge the adjacent edge at that end back out; for a stretch a partner block opened, the partner's
+ * edge (`uncoverJunction`). Null when nothing moves.
+ */
+function restoreEdgeMove(ctx: EditContext, ref: Extract<GhostRef, { type: 'blockEdge' }>): EdgeMove | null {
+  const block = ctx.base.blocks.find((b) => b.id === ref.blockId);
+  const i = block ? block.polygon.findIndex((x) => x.id === ref.edgeId) : -1;
+  if (!block || i < 0) return null;
+  const pts = block.polygon.map((v) => v.p);
+  const n = pts.length;
+  const { a, b } = blockEdgeGeom(block, i);
+  const shift = dot(sub(ref.a, a), outwardNormal(pts, i));
+  if (Math.abs(shift) > 1e-9) return { blockId: ref.blockId, edgeId: ref.edgeId, delta: scale(outwardNormal(pts, i), shift) };
+  // A stub: the edge got shorter at one end; the adjacent edge there moves back out to the stub's far end.
+  const L = dist(a, b);
+  const s = [along(a, b, ref.a), along(a, b, ref.b)];
+  const lo = Math.min(...s);
+  const hi = Math.max(...s);
+  const k = lo < -SAME ? (i - 1 + n) % n : hi > L + SAME ? (i + 1) % n : -1;
+  if (k < 0) return uncoverJunction(ctx, ref.blockId, i, lo, hi);
+  const far = lo < -SAME ? pointAlong(a, b, lo) : pointAlong(a, b, hi);
+  const nk = outwardNormal(pts, k);
+  const sk = dot(sub(far, k === (i + 1) % n ? b : a), nk);
+  return Math.abs(sk) > 1e-9 ? { blockId: ref.blockId, edgeId: block.polygon[k].id, delta: scale(nk, sk) } : null;
+}
+
+/** The context with the blocks `ids` left out of the base (for a plan that must not see units pushed away first). */
+function withoutBlocks(ctx: EditContext, ids: ReadonlySet<Id>): EditContext {
+  return { ...ctx, base: { ...ctx.base, blocks: ctx.base.blocks.filter((b) => !ids.has(b.id)) } };
+}
+
+/**
+ * The template units a restore's edge move (`restoreEdgeMove`, junction partners included) would push into, each with
+ * the move that keeps it against the edge — they stand against an edge that goes outward; null when one of them cannot
+ * go that far without standing on another building (`unitMoveFraction`): the restore is refused (last fix round, sixth
+ * review: «Ta tilbake» on the glass bump's south edge shrank the shed placed against it from 2 m to 1 m).
+ */
+function restoreEdgePushes(ctx: EditContext, move: EdgeMove): { blockId: Id; delta: Vec2 }[] | null {
+  const block = ctx.base.blocks.find((b) => b.id === move.blockId);
+  const i = block ? block.polygon.findIndex((x) => x.id === move.edgeId) : -1;
+  if (!block || i < 0) return [];
+  const shift = dot(move.delta, outwardNormal(block.polygon.map((v) => v.p), i));
+  const out: { blockId: Id; delta: Vec2 }[] = [];
+  for (const [blockId, m] of propagateShifts(ctx, [{ blockId: move.blockId, edgeIndex: i, shift }])) {
+    const b = ctx.base.blocks.find((x) => x.id === blockId);
+    const db = ctx.derived.blocks.find((x) => x.block.id === blockId);
+    if (!b || !db) continue;
+    for (const [edgeIndex, s] of m) {
+      if (s <= TINY) continue;
+      const delta = scale(outwardNormal(b.polygon.map((v) => v.p), edgeIndex), s);
+      for (const j of db.junctions) {
+        const u = ctx.base.blocks.find((x) => x.id === j.otherBlockId);
+        if (j.edgeIndex !== edgeIndex || !u || u.template === undefined || carriesThrough(ctx, blockId, u.id)) continue;
+        if (out.some((p) => p.blockId === u.id)) continue;
+        out.push({ blockId: u.id, delta });
+      }
+    }
+  }
+  for (const p of out) {
+    const u = ctx.base.blocks.find((x) => x.id === p.blockId);
+    if (!u || unitMoveFraction(ctx.base, u.polygon.map((v) => v.p), p.delta, u) < 1) return null;
+  }
+  return out;
+}
+
+/**
+ * Whether "Ta tilbake" on edge ghost `id` is refused because a unit stands in the way (one that cannot be pushed away
+ * along the edge's move, or one the edge would reach without standing against it): the caller toasts `unitOnBlock`.
+ */
+export function restoreEdgeOnBlock(ctx: EditContext, id: Id): boolean {
+  const ref = ghostRef(ctx.base, id);
+  if (!ref || ref.type !== 'blockEdge') return false;
+  const move = restoreEdgeMove(ctx, ref);
+  if (!move) return false;
+  const pushes = restoreEdgePushes(ctx, move);
+  if (pushes === null) return true;
+  const plan = edgePlan(pushes.length > 0 ? withoutBlocks(ctx, new Set(pushes.map((p) => p.blockId))) : ctx, move.blockId, move.edgeId, move.delta);
+  return plan?.onBlock === true;
+}
+
 /**
  * "Ta tilbake" on a ghost of a stretch [lo, hi] of edge `edgeIndex` that a partner block opened (addJunctionGhosts):
  * the partner's edge on that stretch is shortened back to the ghost's end by moving the partner's adjacent edge at the
- * end that reaches into the stretch (the glass bump's east edge back to x 9), junction partners following.
+ * end that reaches into the stretch (the glass bump's east edge back to x 9), junction partners following. Returns
+ * that move (null: none).
  */
-function uncoverJunction(draft: Variant, ctx: EditContext, blockId: Id, edgeIndex: number, lo: number, hi: number): void {
+function uncoverJunction(ctx: EditContext, blockId: Id, edgeIndex: number, lo: number, hi: number): EdgeMove | null {
   const db = ctx.derived.blocks.find((x) => x.block.id === blockId);
   const own = ctx.base.blocks.find((x) => x.id === blockId);
-  if (!db || !own) return;
+  if (!db || !own) return null;
   const { a, b } = blockEdgeGeom(own, edgeIndex);
   for (const j of db.junctions) {
     if (j.edgeIndex !== edgeIndex || j.role === 'owner' || Math.min(hi, j.s1) - Math.max(lo, j.s0) <= SAME) continue;
@@ -1786,9 +1884,9 @@ function uncoverJunction(draft: Variant, ctx: EditContext, blockId: Id, edgeInde
     const pts = partner.polygon.map((v) => v.p);
     const nAdj = outwardNormal(pts, end.e.adj);
     const shift = dot(sub(pointAlong(a, b, end.to), end.e.p), nAdj);
-    if (Math.abs(shift) > 1e-9) applyMoveBlockEdge(draft, ctx, partner.id, partner.polygon[end.e.adj].id, scale(nAdj, shift));
-    return;
+    return Math.abs(shift) > 1e-9 ? { blockId: partner.id, edgeId: partner.polygon[end.e.adj].id, delta: scale(nAdj, shift) } : null;
   }
+  return null;
 }
 
 /** Restore a removed opening: a moved one gets the ghost's place and size back, a deleted one becomes existing. */
@@ -1990,7 +2088,20 @@ export function keepsRectangle(block: Block): boolean {
 
 type ShiftMap = Map<Id, Map<number, number>>;
 
-/** Edge shifts (along the outward normal) carried through the junctions to partner edges. */
+/**
+ * Whether an edge shift of block `fromId` is carried through a junction to block `toId`: never between a template unit
+ * and a building that is not one (last fix round, sixth review: a shed against the house moved the house's outer wall
+ * when its Dybde changed, and «Ta tilbake» on a house edge shrank the shed). Such an edit moves only its own block's
+ * edge; one that would push it into the other building is cut back by `unitClampedPlan` (a unit's attached edge does
+ * not move outward at all: `withoutPushesIntoBuildings`), and one away from it leaves the two apart.
+ */
+function carriesThrough(ctx: EditContext, fromId: Id, toId: Id): boolean {
+  const from = ctx.base.blocks.find((b) => b.id === fromId);
+  const to = ctx.base.blocks.find((b) => b.id === toId);
+  return (from?.template !== undefined) === (to?.template !== undefined);
+}
+
+/** Edge shifts (along the outward normal) carried through the junctions to partner edges (`carriesThrough`). */
 function propagateShifts(ctx: EditContext, starts: { blockId: Id; edgeIndex: number; shift: number }[]): ShiftMap {
   const out: ShiftMap = new Map();
   const queue = [...starts];
@@ -2006,11 +2117,41 @@ function propagateShifts(ctx: EditContext, starts: { blockId: Id; edgeIndex: num
     out.set(s.blockId, m);
     const db = ctx.derived.blocks.find((b) => b.block.id === s.blockId);
     for (const j of db?.junctions ?? []) {
-      if (j.edgeIndex !== s.edgeIndex) continue;
+      if (j.edgeIndex !== s.edgeIndex || !carriesThrough(ctx, s.blockId, j.otherBlockId)) continue;
       queue.push({ blockId: j.otherBlockId, edgeIndex: j.otherEdgeIndex, shift: -s.shift });
     }
   }
   return out;
+}
+
+/**
+ * Whether edge `edgeIndex` of template unit `blockId` stands against a building that is not a unit (a junction with it
+ * in `ctx.derived`): the edge a unit placed against the house shares with it.
+ */
+export function unitEdgeAttached(ctx: EditContext, blockId: Id, edgeIndex: number): boolean {
+  const db = ctx.derived.blocks.find((b) => b.block.id === blockId);
+  if (!db || db.block.template === undefined) return false;
+  return db.junctions.some((j) => j.edgeIndex === edgeIndex && !carriesThrough(ctx, blockId, j.otherBlockId));
+}
+
+type EdgeShift = { blockId: Id; edgeIndex: number; shift: number };
+
+/**
+ * The edge shifts of an edge / corner edit without those that would push a unit's attached edge (`unitEdgeAttached`)
+ * outward into the building it stands against (last fix round, sixth review): a corner dragged into the house slides
+ * along its wall, an attached edge dragged into it stays. `dropped`: one was left out (hint / toast).
+ */
+function withoutPushesIntoBuildings(ctx: EditContext, starts: EdgeShift[]): { kept: EdgeShift[]; dropped: boolean } {
+  const kept = starts.filter((s) => !(s.shift > TINY && unitEdgeAttached(ctx, s.blockId, s.edgeIndex)));
+  return { kept, dropped: kept.length < starts.length };
+}
+
+/** `shiftsPlan` of the edge shifts `starts`, without the pushes into a building a unit stands against. */
+function unitAwarePlan(ctx: EditContext, starts: EdgeShift[]): BlockEditPlan {
+  const { kept, dropped } = withoutPushesIntoBuildings(ctx, starts);
+  if (!kept.some((s) => Math.abs(s.shift) >= TINY)) return { polys: new Map(), k: 0, onBlock: true };
+  const plan = shiftsPlan(ctx, propagateShifts(ctx, kept));
+  return dropped ? { ...plan, onBlock: true } : plan;
 }
 
 /** Polygon with edges shifted along their outward normals (vertices = intersections of the shifted lines). */
@@ -2173,13 +2314,28 @@ function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec
   }
   if (draft.ghosts?.length === 0) delete draft.ghosts;
 
-  // Stored walls: collinear with a moved edge → carried along; one end on a moved edge → extended / trimmed.
+  // Stored walls: collinear with a moved edge → carried along; one end on a moved edge → extended / trimmed. A
+  // template unit's edge takes only its own walls (`blockOwnership`; last fix round, sixth review: the house's
+  // partitions ending on the wall a shed stands against were stretched when the shed's edge left it).
+  const unitOwns = new Map<Id, (w: Wall) => boolean>();
+  const follows = (e: ChangedEdge, w: Wall): boolean => {
+    const b0 = ctx.base.blocks.find((b) => b.id === e.blockId);
+    if (!b0 || b0.template === undefined) return true;
+    let owns = unitOwns.get(b0.id);
+    if (!owns) {
+      owns = blockOwnership(ctx.base, ctx, b0).wall;
+      unitOwns.set(b0.id, owns);
+    }
+    return owns(w);
+  };
   const movedEdges = changed.filter((e) => e.moved);
   const carried = new Map<Id, { a: Vec2; b: Vec2; translated: boolean }>();
   const changes = new Map<Id, WallChange>();
   for (const w of ctx.base.walls) {
     if (w.status === 'removed') continue;
-    const host = movedEdges.find((e) => distancePointSegment(w.a, e.oa, e.ob) <= COINCIDE && distancePointSegment(w.b, e.oa, e.ob) <= COINCIDE);
+    const host = movedEdges.find(
+      (e) => distancePointSegment(w.a, e.oa, e.ob) <= COINCIDE && distancePointSegment(w.b, e.oa, e.ob) <= COINCIDE && follows(e, w),
+    );
     if (host) {
       carried.set(w.id, {
         a: mapOnEdge(w.a, host.oa, host.ob, host.na, host.nb),
@@ -2190,7 +2346,7 @@ function applyBlockPolygons(draft: Variant, ctx: EditContext, polys: Map<Id, Vec
     }
     for (const end of ['a', 'b'] as const) {
       const p = w[end];
-      const e = movedEdges.find((x) => distancePointSegment(p, x.oa, x.ob) <= COINCIDE);
+      const e = movedEdges.find((x) => distancePointSegment(p, x.oa, x.ob) <= COINCIDE && follows(x, w));
       if (!e) continue;
       const other = end === 'a' ? w.b : w.a;
       const wd = sub(p, other);
@@ -2252,7 +2408,7 @@ function edgePlan(ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): Block
   const n = outwardNormal(block.polygon.map((v) => v.p), i);
   const shift = dot(delta, n);
   if (Math.abs(shift) < TINY) return null;
-  return shiftsPlan(ctx, propagateShifts(ctx, [{ blockId, edgeIndex: i, shift }]));
+  return unitAwarePlan(ctx, [{ blockId, edgeIndex: i, shift }]);
 }
 
 /** Move block edge `edgeId` by `delta` (its component along the outward normal), junction partners following. */
@@ -2287,7 +2443,7 @@ function vertexPlan(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): Block
       { blockId, edgeIndex: prev, shift: dot(d, outwardNormal(pts, prev)) },
       { blockId, edgeIndex: i, shift: dot(d, outwardNormal(pts, i)) },
     ];
-    return shiftsPlan(ctx, propagateShifts(ctx, starts));
+    return unitAwarePlan(ctx, starts);
   }
   const build = (k: number) => {
     const q = copy(add(v, scale(sub(p, v), k)));
@@ -2297,7 +2453,7 @@ function vertexPlan(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): Block
       pts.map((x, j) => (j === i ? q : copy(x))),
     );
     for (const other of ctx.base.blocks) {
-      if (other.id === blockId) continue;
+      if (other.id === blockId || !carriesThrough(ctx, blockId, other.id)) continue;
       const opts = other.polygon.map((x) => x.p);
       if (!opts.some((x) => dist(x, v) <= COINCIDE)) continue;
       const moved = opts.map((x) => (dist(x, v) <= COINCIDE ? q : copy(x)));
@@ -2319,10 +2475,16 @@ export function applyMoveBlockVertex(draft: Variant, ctx: EditContext, blockId: 
   return plan !== null && applyUnitPolygons(draft, ctx, plan.polys);
 }
 
-/** As `blockEdgeMoveClamp`, for `applyMoveBlockVertex`. */
-export function blockVertexMoveClamp(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): { k: number; onBlock: boolean } {
+/**
+ * As `blockEdgeMoveClamp`, for `applyMoveBlockVertex`; `point`: where the corner goes when it moves (a unit's corner
+ * dragged into the building it stands against slides along its wall: last fix round, sixth review).
+ */
+export function blockVertexMoveClamp(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): { k: number; onBlock: boolean; point?: Vec2 } {
   const plan = vertexPlan(ctx, blockId, vertexId, p);
-  return plan ? { k: plan.k, onBlock: plan.onBlock } : { k: 1, onBlock: false };
+  if (!plan) return { k: 1, onBlock: false };
+  const i = ctx.base.blocks.find((b) => b.id === blockId)?.polygon.findIndex((v) => v.id === vertexId) ?? -1;
+  const q = i >= 0 ? plan.polys.get(blockId)?.[i] : undefined;
+  return q ? { k: plan.k, onBlock: plan.onBlock, point: copy(q) } : { k: plan.k, onBlock: plan.onBlock };
 }
 
 /**
@@ -2408,14 +2570,14 @@ interface PushOpts {
 /**
  * A unit placed, moved or turned over furniture (fix round after 2b; final fix round: moves and turns too, never the
  * house's furniture): every item on the unit's storey whose centre lies inside the unit's outer outline (the axis
- * rectangle grown by the cladding) and that stands outside every block — on the deck or the ground: no derived room,
+ * rectangle grown by the cladding), or whose footprint reaches into it (last fix round, sixth review: into its walls),
+ * and that stands outside every block — on the deck or the ground: no derived room,
  * centre in no other block — is pushed straight out past one side, by the smallest move that clears the cladding by
  * PUSH_GAP and puts it into no other block, onto no other item of that storey (bounding boxes), into no wall and no door
  * swing (the house's, and the unit's own doors where it now stands); farther out past the same sides in PUSH_STEP steps
  * when the nearest spot is taken; else the smallest move into no block. A unit placed over the house therefore leaves
  * the house's furniture alone (its block-overlap warning shows it) but still pushes terrace furniture out, so it never
- * owns what stood there before it (`furnitureOfBlock`). Items whose centre is outside stay (the collision warning shows
- * them). Returns the ids of the items it moved.
+ * owns what stood there before it (`furnitureOfBlock`). Returns the ids of the items it moved.
  */
 function pushFurnitureOut(draft: Variant, ctx: EditContext, poly: Vec2[], outerOffset: number, levelId: Id, opts: PushOpts = {}): Id[] {
   type Box = { min: Vec2; max: Vec2 };
@@ -2426,9 +2588,13 @@ function pushFurnitureOut(draft: Variant, ctx: EditContext, poly: Vec2[], outerO
   const hi: Vec2 = [ub.max[0] + outerOffset, ub.max[1] + outerOffset];
   const onStorey = draft.furniture.filter((f) => storeyOfLevel(draft, f.levelId) === storey);
   const derivedOf = new Map(ctx.derived.furniture.map((f) => [f.id, f]));
+  const outer: Vec2[] = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
   const pushable = onStorey.filter((f) => {
     const c = f.position;
-    if (!(c[0] > lo[0] && c[0] < hi[0] && c[1] > lo[1] && c[1] < hi[1])) return false;
+    // Also an item whose footprint reaches into the unit's walls (last fix round, sixth review: the Loungesofa beside a
+    // Vedskjul set against the house stood in its wall).
+    const inside = c[0] > lo[0] && c[0] < hi[0] && c[1] > lo[1] && c[1] < hi[1];
+    if (!inside && !convexOverlap(furnitureFootprint(f), outer)) return false;
     // Only what stands outside every block: never the house's furniture, nor what is in another unit's room.
     return !opts.own?.(f) && derivedOf.get(f.id)?.roomId === undefined && !others.some((o) => pointInPolygon(c, o.axis));
   });
@@ -2657,8 +2823,9 @@ export function unitClearShift(v: Variant, poly: Vec2[], reach: number, self: Pi
 /**
  * What a whole-block move, turn or delete takes along (last fix round, fifth review: a unit standing on the house took
  * the house's walls, room names and furniture when it was deleted, moved or turned): stored walls that are new, have
- * both ends on or inside its axis polygon and lie in no other block (no end, nor the middle or a point 2 cm to either
- * side of it, strictly inside one: a wall along another block's edge is that block's); Room records created with it
+ * both ends on or inside its axis polygon and — for a template unit — lie in no other block (no end, nor the middle or
+ * a point 2 cm to either side of it, strictly inside one: a wall along another block's edge is that block's; a drawn
+ * block such as the wing keeps its walls on a shared edge, last fix round, sixth review); Room records created with it
  * (`Room.unitId`) or anchored in it and in no other block; furniture standing in its own faces (`furnitureOfBlock`)
  * whose centre is in no other block; structure inside it and in no other block. Never a ghost, and for a template unit
  * never an existing wall (a drawn new block keeps the existing walls inside it, as before).
@@ -2682,6 +2849,9 @@ function blockOwnership(v: Variant, ctx: Pick<EditContext, 'derived'> | undefine
     wall: (w: Wall): boolean => {
       if (w.status === 'removed' || (block.template !== undefined && w.status !== 'new')) return false;
       if (!onStoreys(w.levelId) || !insideOrOn(w.a, axis) || !insideOrOn(w.b, axis)) return false;
+      // A drawn block keeps the walls on its edges shared with another block (last fix round, sixth review: the wing
+      // left w-wing-w and its door behind when it was moved or deleted); only a unit leaves them to that block.
+      if (block.template === undefined) return true;
       const m = scale(add(w.a, w.b), 0.5);
       const side = scale(leftNormal(unit(sub(w.b, w.a))), 0.02);
       return ![w.a, w.b, m, add(m, side), sub(m, side)].some(inOther);
@@ -3126,27 +3296,47 @@ function openFrontOpening(blockId: Id, edgeId: Id, length: number, eave: number,
 }
 
 /**
- * Set a block's width ('w', along x) or depth ('d', along y) by moving the edge on `side` ('max' = east / north,
- * default; 'min' = west / south): the edge whose outward normal points that way most.
+ * The edge move of `applySetBlockSize`: the edge on `side` whose outward normal points that way most, moved by the
+ * change of size. For a template unit whose edge there stands against a building that is not a unit
+ * (`unitEdgeAttached`) the opposite edge moves when it is free (last fix round, sixth review: Dybde on a shed south of
+ * the house moved its north edge, and with it the house). Null when the block has no such edge or the value is wrong.
  */
-export function applySetBlockSize(draft: Variant, ctx: EditContext, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): boolean {
+export function blockSizeMove(ctx: EditContext, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): { edgeId: Id; delta: Vec2 } | null {
   const block = ctx.base.blocks.find((b) => b.id === blockId);
-  if (!block || !(value > 0)) return false;
+  if (!block || !(value > 0)) return null;
   const pts = block.polygon.map((v) => v.p);
   const box = bbox(pts);
   const current = axis === 'w' ? box.max[0] - box.min[0] : box.max[1] - box.min[1];
-  const dir: Vec2 = axis === 'w' ? [side === 'max' ? 1 : -1, 0] : [0, side === 'max' ? 1 : -1];
-  let best = -1;
-  let bestDot = 0.5;
-  pts.forEach((_, i) => {
-    const d = dot(outwardNormal(pts, i), dir);
-    if (d > bestDot) {
-      bestDot = d;
-      best = i;
-    }
-  });
-  if (best < 0) return false;
-  return applyMoveBlockEdge(draft, ctx, blockId, block.polygon[best].id, scale(dir, value - current));
+  const edgeTowards = (s: 'min' | 'max') => {
+    const dir: Vec2 = axis === 'w' ? [s === 'max' ? 1 : -1, 0] : [0, s === 'max' ? 1 : -1];
+    let best = -1;
+    let bestDot = 0.5;
+    pts.forEach((_, i) => {
+      const d = dot(outwardNormal(pts, i), dir);
+      if (d > bestDot) {
+        bestDot = d;
+        best = i;
+      }
+    });
+    return { best, dir };
+  };
+  let e = edgeTowards(side);
+  if (e.best >= 0 && unitEdgeAttached(ctx, blockId, e.best)) {
+    const other = edgeTowards(side === 'max' ? 'min' : 'max');
+    if (other.best >= 0 && !unitEdgeAttached(ctx, blockId, other.best)) e = other;
+  }
+  if (e.best < 0) return null;
+  return { edgeId: block.polygon[e.best].id, delta: scale(e.dir, value - current) };
+}
+
+/**
+ * Set a block's width ('w', along x) or depth ('d', along y) by moving the edge on `side` ('max' = east / north,
+ * default; 'min' = west / south) — for a unit standing against a building with that edge, the free one opposite
+ * (`blockSizeMove`).
+ */
+export function applySetBlockSize(draft: Variant, ctx: EditContext, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): boolean {
+  const m = blockSizeMove(ctx, blockId, axis, value, side);
+  return m !== null && applyMoveBlockEdge(draft, ctx, blockId, m.edgeId, m.delta);
 }
 
 // ---------------------------------------------------------------------------
@@ -3317,7 +3507,8 @@ const sameFaceShape = (a: DerivedRoom, b: DerivedRoom): boolean =>
 const boxesOverlap = (a: { min: Vec2; max: Vec2 }, b: { min: Vec2; max: Vec2 }): boolean =>
   a.min[0] < b.max[0] && b.min[0] < a.max[0] && a.min[1] < b.max[1] && b.min[1] < a.max[1];
 
-function overlapArea(a: Vec2[], b: Vec2[]): number {
+/** The area (m²) two polygons share. */
+export function overlapArea(a: Vec2[], b: Vec2[]): number {
   if (a.length < 3 || b.length < 3) return 0;
   return withClipFallback(
     'room overlap',

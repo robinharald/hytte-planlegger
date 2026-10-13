@@ -33,6 +33,8 @@ function proposal(): Store {
 }
 
 const SEED = selectActiveVariant(proposal().getState());
+/** The derived room of each seed item (undefined: on the terrace or the ground). */
+const SEED_ROOM = new Map(deriveForState(proposal().getState()).furniture.map((f) => [f.id, f.roomId]));
 const J = (x: unknown) => JSON.stringify(x);
 const V = (s: Store): Variant => selectActiveVariant(s.getState());
 const D = (s: Store): DerivedVariant => deriveForState(s.getState());
@@ -215,7 +217,12 @@ describe('a template unit never ends up on another building', () => {
           placed++;
           expect(overlapWarnings(s), label).toEqual([]);
           expect(box(blockPts(s, id)).y1, label).toBeLessThanOrEqual(-2 + 1e-9);
-          expect(J(V(s).furniture), label).toBe(J(SEED.furniture));
+          // No house item moves; a terrace chair reaching into the unit's wall is pushed out (last fix round, sixth review).
+          for (const f of V(s).furniture) {
+            if (J(f) === J(SEED.furniture.find((g) => g.id === f.id))) continue;
+            expect(SEED_ROOM.get(f.id), `${label} ${f.id}`).toBeUndefined();
+            expect(toastTexts(s).join(' '), label).toContain('er flyttet ut av');
+          }
         }
       }
     }
