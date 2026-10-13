@@ -13,7 +13,7 @@
  *  - «IFC-modell» → «Last inn IFC-fil» with the small synthetic file e2e/fixtures/test-cabin.ifc (src/ifc/testIfc.ts:
  *    the main house's four walls, a window, a door, a floor and a roof slab — not the architect's model): blue outlines
  *    in the plan (`[data-layer=ifc]`) and the overlay in 3D (the canvas's `data-ifc-meshes`); screenshot ifc-overlay.png
- *    with the architect's real file when this machine has it (read from OneDrive through the file chooser, never
+ *    with the synthetic fixture (the architect's file is only used locally through the HYTTE_IFC environment variable, never
  *    copied into the repository), else with the synthetic one.
  *
  * The editor-core fixes of this round (a unit against the house resized, the corner «Ta tilbake») are in
@@ -21,7 +21,7 @@
  * phone-phase3.spec.ts.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Vec2 } from '../src/model/types';
 import {
@@ -42,8 +42,6 @@ import {
 } from './helpers';
 
 const FIXTURE_IFC = fileURLToPath(new URL('./fixtures/test-cabin.ifc', import.meta.url));
-/** The architect's model of today's cabin (OneDrive; only on Robin's PC). */
-const REAL_IFC = 'C:\\Users\\robin\\OneDrive\\Byggeprosjekt hytte\\Fw__Hyttetegninger\\SIBSAS 11453 IB Hytte Merskarvann v01.ifc';
 
 async function lastExport(page: Page) {
   return page.evaluate(() => (window as HytteWindow).__hytte?.lastExport ?? null);
@@ -263,14 +261,7 @@ test.describe('phase 3 on a desktop (1400×900)', () => {
     await page.getByTestId('ifc-show-3d').check();
     await expect(canvas).toHaveAttribute('data-ifc-meshes', /^[1-9]\d*$/);
 
-    // The screenshot: the architect's file when this machine has it, else the synthetic one.
-    if (existsSync(REAL_IFC)) {
-      const replace = page.waitForEvent('filechooser');
-      await page.getByTestId('ifc-replace').click();
-      await (await replace).setFiles(REAL_IFC);
-      await expect(page.getByTestId('ifc-file')).toContainText('SIBSAS', { timeout: 120_000 });
-      await expect(canvas).toHaveAttribute('data-ifc-meshes', /^[1-9]\d*$/);
-    }
+    // The committed screenshot is always taken with the synthetic fixture (never the architect's file).
     await page.getByTestId('mode-ute').click();
     await page.getByTestId('preset-oversikt').click();
     await zoomAt(page, [8, 3.1], 3);

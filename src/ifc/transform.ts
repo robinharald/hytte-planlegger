@@ -3,7 +3,7 @@
  *
  * plan (x, y) = R(rotation) · (u, ±v) + (dx, dy), plan z = h + dz, with (u, v, h) = IFC (X, Y, Z) (types.ts).
  *
- * Calibration for «SIBSAS 11453 IB Hytte Merskarvann v01.ifc» (docs/kalibrering-ifc.md, line 3: in web-ifc's Y-up world
+ * Calibration for the architect's IFC of today's cabin (docs/kalibrering-ifc.md, line 3: in web-ifc's Y-up world
  * "X = x + 4.71, Y = 1.79 − z, H = y"): translation (4.71, 1.79, 0), rotation 0°, NO mirror. The minus in "1.79 − z" is
  * web-ifc's own Z-up → Y-up turn (its world z is −IFC Y), not a mirror, so in the IFC's frame it is a pure shift:
  * x = X + 4.71, y = Y + 1.79, z = Z (the IFC's Z = 0 is the main floor, kote 99.85). The fit: the IFC's exterior

@@ -106,8 +106,8 @@ Ingenting er prøvd på en ekte iPhone.
     med W i 0,5 s flytter deg i øyehøyde, Esc avslutter; «Avløp og sluk» med stammen og «fint»-linja, WC-toalettet
     dratt til Soverom 1 gir advarselen, Angre gjør alt fint igjen; en liten syntetisk IFC-fil (`e2e/fixtures/test-cabin.ifc`,
     laget av `src/ifc/testIfc.ts`, ikke arkitektens) gjennom filvelgeren gir omriss i planen på husets vegger og
-    modellen i 3D. Skjermbildet `ifc-overlay.png` er tatt med arkitektens ekte fil (lest fra OneDrive gjennom
-    filvelgeren når den finnes på maskinen, aldri kopiert inn i repoet);
+    modellen i 3D. Skjermbildet `ifc-overlay.png` er tatt med den syntetiske fila (arkitektens fil brukes bare lokalt gjennom
+    miljøvariabelen `HYTTE_IFC`, og kopieres aldri inn i repoet);
   - iPhone (`phone-phase3.spec.ts`): spaken holdt fremover i 0,7 s går i øyehøyde og stopper når den slippes, et drag
     til høyre i bildet snur blikket, «Avslutt»; «Eksporter» er på skjermen, PDF-dialogen med «Lag PDF» innen rekkevidde
     og PNG-valget er der;

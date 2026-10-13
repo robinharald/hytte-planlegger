@@ -31,7 +31,7 @@ const box = (h0: number, h1: number) => ({
 
 const MODEL: ParsedIfc = {
   version: PARSER_VERSION,
-  fileName: 'SIBSAS hytte v01.ifc',
+  fileName: 'hytta-i-dag v01.ifc',
   fileSize: 1912843,
   schema: 'IFC4',
   meshes: [
@@ -147,7 +147,7 @@ describe('IfcPanel', () => {
   it('switches the views and the 3D groups, sets the opacity and nudges within ±10 cm', async () => {
     setOverlay(MODEL);
     await render();
-    expect($('ifc-file')!.textContent).toBe('SIBSAS hytte v01.ifc · 1,8 MB');
+    expect($('ifc-file')!.textContent).toBe('hytta-i-dag v01.ifc · 1,8 MB');
     act(() => $('ifc-show-plan')!.click());
     expect(ifcOverlay.getState().prefs.showPlan).toBe(false);
     act(() => $('ifc-roof-3d')!.click());

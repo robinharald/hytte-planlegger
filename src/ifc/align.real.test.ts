@@ -1,6 +1,7 @@
 /**
  * Alignment of the architect's IFC with the seed's existing walls through the calibrated transform (transform.ts). The
- * file is read from Robin's OneDrive when it is there and skipped otherwise; it is never copied into the repository.
+ * file is read from the path in the HYTTE_IFC environment variable when set and skipped otherwise; it is never copied
+ * into the repository.
  * The IFC walls are cut at 0.3, 0.9 and 1.5 m above the main floor (each face is then seen between the windows: the
  * glass bump's windows start at 0.4, the main level's at 0.8, the lower level's end at 1.01).
  * - every outer (cladding) face of the seed's existing exterior walls has the IFC's outermost wall edge within 5 cm;
@@ -22,15 +23,15 @@ import type { WebIfcApi, WebIfcModule } from './parse';
 import { IFC_CALIBRATION } from './transform';
 import type { ParsedIfc } from './types';
 
-const IFC_PATH = 'C:/Users/robin/OneDrive/Byggeprosjekt hytte/Fw__Hyttetegninger/SIBSAS 11453 IB Hytte Merskarvann v01.ifc';
 
 interface NodeFs {
   existsSync(p: string): boolean;
   readFileSync(p: string): Uint8Array;
 }
-const nodeProcess = (globalThis as unknown as { process?: { getBuiltinModule?(id: 'node:fs'): NodeFs } }).process;
+const nodeProcess = (globalThis as unknown as { process?: { env?: Record<string, string | undefined>; getBuiltinModule?(id: 'node:fs'): NodeFs } }).process;
+const IFC_PATH = nodeProcess?.env?.HYTTE_IFC ?? '';
 const fs = nodeProcess?.getBuiltinModule?.('node:fs');
-const present = !!fs && fs.existsSync(IFC_PATH);
+const present = !!fs && IFC_PATH !== '' && fs.existsSync(IFC_PATH);
 
 let model: ParsedIfc;
 let derived: DerivedVariant;

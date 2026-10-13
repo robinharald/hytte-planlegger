@@ -91,8 +91,7 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   Forslag D: «WC og Hovedbad: toalettene står rygg mot rygg på veggen ved x 18,6 – det er fint.»). Flytter du et
   toalett langt unna, blir det rødt og kommer under Advarsler med avstanden. I ditt eget forslag kan du dra stammen
   langs veggene, trykke på den for å slette den, eller trykke «Legg til avløpsstamme».
-- **IFC-modell**: åpne panelet «IFC-modell» (under Vis) og trykk «Last inn IFC-fil», og velg arkitektens fil
-  (`SIBSAS 11453 IB Hytte Merskarvann v01.ifc`). Den legges blått over planen og halvgjennomsiktig i 3D, så du kan se at
+- **IFC-modell**: åpne panelet «IFC-modell» (under Vis) og trykk «Last inn IFC-fil», og velg arkitektens IFC-fil. Den legges blått over planen og halvgjennomsiktig i 3D, så du kan se at
   hytta i dag stemmer. Du kan skru den av og på i plan og 3D, endre synligheten og flytte den 1 cm om gangen. Fila
   blir på enheten din: den lastes ikke opp og deles ikke med familien. «Fjern» tar den bort igjen.
 
