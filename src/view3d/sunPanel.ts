@@ -3,13 +3,15 @@
  *  - `SUN_PRESET_KEYS` / `sunPresetPatch`: Midtsommer (21 June), Jevndøgn (20 March), Midtvinter (21 December) in
  *    the year of the chosen date, keeping the time; «I dag» = today's date and the time now (rounded to 5 min), both
  *    on the clock at the cabin (Site.timezone), not the device's.
- *  - `sunDay(site, date)`: the sunrises and sunsets on that local day at the cabin (suncalc `getTimes` at
- *    `site.originLatLon` with the zone's UTC offset at local noon, for the day and its neighbours, since near the
- *    midnight sun the evening's sunset can fall after midnight), as minutes after local midnight; `alwaysUp`
- *    (midnight sun) / `alwaysDown` (polar night) when the sun does not cross the horizon that day.
+ *  - `sunDay(site, date)`: the sunrises and sunsets on that local day at the cabin, as minutes after local midnight:
+ *    the sun's altitude (suncalc `getPosition` at `site.originLatLon`, as for the light) sampled every 5 minutes from
+ *    local midnight to the next, against suncalc's sunrise altitude (−0.833°: refraction and the sun's disc), each
+ *    sign change refined to the second (suncalc's `getTimes` works per solar day, so next to the midnight-sun period
+ *    it misses a dip below the horizon that belongs to an always-up neighbour); `alwaysUp` (midnight sun) /
+ *    `alwaysDown` (polar night) when the sun does not cross the horizon that day.
  *  - `daylightStops`: the slider's daylight band as [from, to] fractions of the 00:00–23:55 range.
  */
-import { getTimes } from 'suncalc';
+import { getPosition } from 'suncalc';
 import { localInstant, zoneOffsetMs } from '../geometry/geo';
 import type { Site } from '../model/types';
 
@@ -91,33 +93,45 @@ function shiftDate(date: string, days: number): string {
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
 }
 
-/** suncalc times of the civil day `date` at the cabin, or null for a malformed date. */
-function timesOn(site: SunSite, date: string): ReturnType<typeof getTimes> | null {
-  const noon = localInstant(site as Site, date, 12 * 60);
-  if (!Number.isFinite(noon.getTime())) return null;
-  const offsetMin = zoneOffsetMs(site.timezone, noon.getTime()) / 60_000;
-  return getTimes(noon, site.originLatLon.lat, site.originLatLon.lon, 0, offsetMin);
-}
+/**
+ * suncalc's sunrise / sunset altitude (−0.833° geometric: refraction and the sun's disc) as the apparent altitude in
+ * degrees that suncalc v2's `getPosition` returns (it adds its refraction at the horizon, 0.484°, below 0°).
+ */
+const HORIZON = -0.833 + 0.48396;
+/** Sampling step of the day (ms). */
+const SAMPLE_MS = 5 * 60_000;
 
 /** Sunrises and sunsets at the cabin on the local date (see the header). */
 export function sunDay(site: SunSite, date: string): SunDay {
-  const today = timesOn(site, date);
-  if (!today) return { events: [], alwaysUp: false, alwaysDown: false };
+  const from = localInstant(site as Site, date, 0).getTime();
+  const to = localInstant(site as Site, shiftDate(date, 1), 0).getTime();
+  if (!Number.isFinite(from) || !Number.isFinite(to) || !(to > from)) return { events: [], alwaysUp: false, alwaysDown: false };
+  const { lat, lon } = site.originLatLon;
+  const up = (t: number) => getPosition(new Date(t), lat, lon).altitude > HORIZON;
   const events: SunEvent[] = [];
-  for (const t of [timesOn(site, shiftDate(date, -1)), today, timesOn(site, shiftDate(date, 1))]) {
-    if (!t) continue;
-    const pairs: [SunEvent['kind'], Date | null][] = [
-      ['rise', t.sunrise],
-      ['set', t.sunset],
-    ];
-    for (const [kind, at] of pairs) {
-      const m = localMinutes(site, at, date);
-      if (m !== null && !events.some((e) => e.kind === kind && Math.abs(e.minutes - m) < 1)) events.push({ kind, minutes: m });
+  let t0 = from;
+  let up0 = up(t0);
+  let anyUp = up0;
+  for (let t1 = Math.min(to, from + SAMPLE_MS); t0 < to; t1 = Math.min(to, t1 + SAMPLE_MS)) {
+    const up1 = up(t1);
+    anyUp ||= up1;
+    if (up1 !== up0) {
+      // the crossing to the second
+      let lo = t0;
+      let hi = t1;
+      while (hi - lo > 1000) {
+        const mid = (lo + hi) / 2;
+        if (up(mid) === up0) lo = mid;
+        else hi = mid;
+      }
+      const m = localMinutes(site, new Date(hi), date);
+      if (m !== null) events.push({ kind: up1 ? 'rise' : 'set', minutes: m });
     }
+    t0 = t1;
+    up0 = up1;
   }
-  events.sort((a, b) => a.minutes - b.minutes);
   const none = events.length === 0;
-  return { events, alwaysUp: none && today.alwaysUp === true, alwaysDown: none && today.alwaysDown === true };
+  return { events, alwaysUp: none && anyUp, alwaysDown: none && !anyUp };
 }
 
 /** The first sunrise and the last sunset of the day (null when there is none). */

@@ -73,6 +73,38 @@ describe('sunrise / sunset ticks at 68.613 N', () => {
     expect(stops[stops.length - 1][1]).toBe(1);
   });
 
+  it('23 May, the day before the midnight sun: a short dip after midnight, up the rest of the day', () => {
+    const d = sunDay(SITE, '2026-05-23');
+    expect(d.alwaysUp).toBe(false);
+    expect(d.events.map((e) => e.kind)).toEqual(['set', 'rise']);
+    // NOAA's algorithm gives 00:46 and 01:08 for the cabin
+    expect(d.events[0].minutes).toBeGreaterThan(35);
+    expect(d.events[0].minutes).toBeLessThan(55);
+    expect(d.events[1].minutes).toBeGreaterThan(60);
+    expect(d.events[1].minutes).toBeLessThan(75);
+    // the band: up from 00:00 until the set and from the rise to the end of the day (15:00 is daylight)
+    expect(daylightStops(d)).toEqual([
+      [0, d.events[0].minutes / SLIDER_MAX],
+      [d.events[1].minutes / SLIDER_MAX, 1],
+    ]);
+    expect(sunDay(SITE, '2026-05-24')).toEqual({ events: [], alwaysUp: true, alwaysDown: false });
+  });
+
+  it('21 July, the day after the midnight sun: up at midnight until about 00:50, again from about 01:20', () => {
+    const d = sunDay(SITE, '2026-07-21');
+    expect(d.events.map((e) => e.kind)).toEqual(['set', 'rise']);
+    // NOAA: 00:52 and 01:23
+    expect(d.events[0].minutes).toBeGreaterThan(40);
+    expect(d.events[0].minutes).toBeLessThan(60);
+    expect(d.events[1].minutes).toBeGreaterThan(75);
+    expect(d.events[1].minutes).toBeLessThan(90);
+    const stops = daylightStops(d);
+    expect(stops).toHaveLength(2);
+    expect(stops[0][0]).toBe(0);
+    expect(stops[1][1]).toBe(1);
+    expect(sunDay(SITE, '2026-07-20').alwaysUp).toBe(true);
+  });
+
   it('labels the ticks unless they would run into each other', () => {
     const ticks = sunTicks(sunDay(SITE, '2026-05-22'));
     expect(ticks.map((t) => t.kind)).toEqual(['set', 'rise']);
