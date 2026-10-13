@@ -40,12 +40,17 @@
  *  - an empty link's space on a new device: the pill says «Ikke startet»; «Hva heter du?» never opens on its own while
  *    editing: a banner after a pause (the locked toast's «Nytt forslag»), and «+ Nytt forslag» asks for both names in
  *    one dialog (ui/Dialogs.tsx `promptNewProposal`).
+ * Morning round:
+ *  - «Hva heter du?» waits while something is selected, and floats in the toast area: the toolbar does not move when
+ *    it comes;
+ *  - the proposal-link banner with a long proposal name fits an iPhone 13 (390 px, its buttons wrap);
+ *  - a copy brought along whose name is taken is named after this device («Mammas idé (Pappa)»), not «(delt)».
  *
  * Screenshots: proposals-menu.png (the open menu), share-dialog.png (local "Send forslaget"), family-carry-over.png
  * (the offer after the switch), family-other-space.png (the banner for a link to another space).
  */
 import { readFileSync } from 'node:fs';
-import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
+import { devices, expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
 import LZString from 'lz-string';
 import { createForslagD, SEED_REVISION } from '../src/model/seed/forslagD';
 import { CURRENT_SCHEMA_VERSION } from '../src/model/types';
@@ -656,11 +661,50 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     await expect(page.getByTestId('carry-over-accept')).toHaveClass(/btn-primary/);
     await page.getByTestId('carry-over-accept').click();
     await expect(offer).toHaveCount(0);
-    await expect.poll(async () => (await projectOnScreen(page)).variants.map((v) => v.name)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (delt)']);
+    await expect.poll(async () => (await projectOnScreen(page)).variants.map((v) => v.name)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (Pappa)']);
     expect((await projectOnScreen(page)).variants.find((v) => v.id === copy)?.outdoor.hotTubs[0].centre).toEqual(moved);
     await expect.poll(async () => Object.keys(await fakeDocs(page, `families/${FB}/proposals/`)).filter((k) => !k.includes('/revisions/')).length).toBe(2);
     await expect.poll(async () => (await fakeDocs(page, copyDoc))[copyDoc]?.deletedAt ?? null, 'in his old space\'s Papirkurv').toBeTruthy();
     expect(pageErrors).toEqual([]);
+  });
+
+  test.describe('on an iPhone 13 (390 × 844, touch)', () => {
+    // The iPhone 13 of the 'iphone' project (Chromium; the browser type stays the worker's).
+    const { defaultBrowserType: _browserType, ...iPhone } = devices['iPhone 13'];
+    test.use(iPhone);
+
+    test('the proposal-link banner fits a 390 px wide window with a long proposal name: its buttons wrap (morning round, iPhone 13)', async ({ page, browser }, testInfo) => {
+      const pageErrors = collectPageErrors(page);
+      const FA = 'e2e-long-name-family-a-0123456';
+      const FB = 'e2e-long-name-family-b-0123456';
+      const name = 'Mammas idé med et ganske langt navn';
+      const mamma = await otherDeviceMade(browser, testInfo, FB, name);
+      await deviceWith(page, FA, 'Pappas plan');
+      await addFakeDocs(page, mamma.docs);
+      await page.evaluate(([f, p]) => (window.location.hash = `#f=${f}&p=${p}`), [FB, mamma.id] as const);
+      const ask = page.getByTestId('other-family-banner');
+      await expect(page.getByTestId('other-family-copy')).toHaveText(`Hent «${name}» som en kopi hit`);
+      // The phone's width (not innerWidth: on a phone the page widens to what overflows, 405 px with the bug).
+      const width = page.viewportSize()!.width;
+      expect(width).toBe(390);
+      const box = await ask.boundingBox();
+      expect(box && box.x + box.width, 'the banner ends inside the window').toBeLessThanOrEqual(width);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), 'no sideways scrolling').toBeLessThanOrEqual(width);
+      // Every button of the banner ends inside it, its text not cut (before: «Hent «…» som en kopi hit» on one line ran
+      // past the banner's edge).
+      const buttons = await ask.locator('button').evaluateAll((els) =>
+        els.map((b) => {
+          const r = b.getBoundingClientRect();
+          const banner = b.closest('[data-testid=other-family-banner]')!.getBoundingClientRect();
+          return { text: b.textContent, right: r.right, bannerRight: banner.right, cut: b.scrollWidth > b.clientWidth + 1 };
+        }),
+      );
+      for (const b of buttons) {
+        expect(b.right, `«${b.text}» ends inside the banner`).toBeLessThanOrEqual(b.bannerRight + 0.5);
+        expect(b.cut, `«${b.text}» is not cut`).toBe(false);
+      }
+      expect(pageErrors).toEqual([]);
+    });
   });
 
   test('«Hva heter du?» never opens on its own while editing: a banner after a pause; the pill of an empty space (fourth fix round)', async ({ page }) => {
@@ -690,10 +734,24 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     await expect(page.getByTestId('name-dialog')).toHaveCount(0);
     await expect(page.getByTestId('name-banner')).toHaveCount(0);
     expect((await activeVariant(page)).outdoor.hotTubs[0].centre[0]).toBeLessThan(20.2);
-    // Left alone: the banner (not a dialog). «Skriv navnet» opens the prompt.
+    // Morning round: still selected, so nothing comes; let go (Esc) and leave the plan alone.
+    await page.waitForTimeout(2000);
+    await expect(page.getByTestId('name-banner')).toHaveCount(0);
+    const selected = () => page.evaluate(() => (window as HytteWindow).__hytte?.selection ?? null);
+    // Esc goes back to Velg first (if another tool is on), then lets go of the selection.
+    for (let i = 0; i < 3 && (await selected()) !== null; i++) {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(200);
+    }
+    await expect.poll(selected).toBeNull();
+    await dismissToasts(page);
+    const toolbarBefore = await page.locator('.toolbar-wrap').boundingBox();
+    // Left alone: the card (not a dialog), floating in the toast area: the toolbar does not move. «Skriv navnet» opens
+    // the prompt.
     const banner = page.getByTestId('name-banner');
     await expect(banner).toBeVisible({ timeout: 10_000 });
     await expect(banner).toContainText('Hva heter du?');
+    expect((await page.locator('.toolbar-wrap').boundingBox())?.y, 'nothing moves when the card comes').toBe(toolbarBefore?.y);
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
     await page.getByTestId('name-banner-write').click();
     await page.getByTestId('name-input').fill('Pappa');

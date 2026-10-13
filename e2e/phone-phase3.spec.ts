@@ -5,11 +5,29 @@
  *  - «Eksporter» is on screen in the top bar: «Eksporter plan som PDF …» opens the dialog with «Lag PDF» reachable
  *    without scrolling the page, and «Lagre 3D-bildet som PNG» is there (on a phone it hands the picture to the share
  *    sheet, which Playwright cannot show; the desktop test downloads it).
+ * Final morning round:
+ *  - «Avløp og sluk» on touch, like furniture («Trykk for å velge, dra det valgte for å flytte»): a one-finger drag that
+ *    starts on the suggested stack pans the plan and saves nothing; a tap picks it (the hint line explains it), and a
+ *    drag of the picked stack moves it along the wall and saves it;
+ *  - the walk's camera button («Lagre bildet») is under «Avslutt».
  * The first-time flow with the shed against the wing and the bedroom pinched to the middle is in phone-editing.spec.ts.
  */
 import { expect, test, type CDPSession, type Page } from '@playwright/test';
 import type { Vec2 } from '../src/model/types';
-import { collectPageErrors, type HytteWindow, loadAndWaitReady, SETTLE_MS, shoot, skipFirstRun, touchSession } from './helpers';
+import {
+  activeVariant,
+  collectPageErrors,
+  dismissToasts,
+  type HytteWindow,
+  loadAndWaitReady,
+  planTransform,
+  projectOnScreen,
+  SETTLE_MS,
+  shoot,
+  skipFirstRun,
+  touchDrag,
+  touchSession,
+} from './helpers';
 
 async function walkProbe(page: Page) {
   return page.evaluate(() => (window as HytteWindow).__hytte?.walk ?? null);
@@ -50,13 +68,28 @@ test.describe('phase 3 on an iPhone', () => {
     const joystick = page.getByTestId('walk-joystick');
     await expect(joystick).toBeVisible();
     await expect(page.getByTestId('walk-exit')).toBeVisible();
+    // The camera button sits under «Avslutt», inside the view.
+    const exitBox = (await page.getByTestId('walk-exit').boundingBox())!;
+    const photoBox = (await page.getByTestId('walk-photo').boundingBox())!;
+    expect(photoBox.y, 'under «Avslutt»').toBeGreaterThanOrEqual(exitBox.y + exitBox.height);
+    expect(photoBox.height).toBeGreaterThanOrEqual(44);
     await expect.poll(async () => {
       const w = await walkProbe(page);
       return w ? Math.round((w.eyeZ - w.feetZ) * 100) / 100 : null;
     }).toBeCloseTo(1.65, 1);
     const start = (await walkProbe(page))!;
 
-    // The joystick is inside the screen and the 3D view.
+    // The joystick is inside the screen and the 3D view, once the smooth scroll that brings the 3D view forward
+    // (WalkControls) has settled: two equal reads in a row (expect.poll waits 100 ms or more between them).
+    let prev = '';
+    await expect
+      .poll(async () => {
+        const now = JSON.stringify([await joystick.boundingBox(), await view.boundingBox()]);
+        const stable = now === prev;
+        prev = now;
+        return stable;
+      })
+      .toBe(true);
     const jb = (await joystick.boundingBox())!;
     const vb = (await view.boundingBox())!;
     const vp = page.viewportSize()!;
@@ -120,5 +153,60 @@ test.describe('phase 3 on an iPhone', () => {
     await expect(page.getByTestId('export-summary')).toContainText('Blir');
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
+  });
+
+  test('«Avløp og sluk» on touch: a drag on the unpicked stack pans; a tap picks it, then a drag moves it', async ({ page }) => {
+    await loadAndWaitReady(page);
+    page.once('dialog', (d) => void d.accept());
+    await page.getByTestId('new-proposal').tap();
+    await expect.poll(async () => (await projectOnScreen(page)).variants.length).toBe(2);
+    await expect(page.getByTestId('plan-view')).toHaveAttribute('data-plan-editable', 'true');
+    await dismissToasts(page);
+    const toggle = page.getByTestId('toggle-plumbing');
+    // On the phone Vis starts folded.
+    if (!(await toggle.isVisible())) {
+      const vis = page.locator('details.panel > summary').filter({ hasText: /^\s*Vis\s*$/ });
+      await vis.scrollIntoViewIfNeeded();
+      await vis.tap();
+    }
+    await toggle.scrollIntoViewIfNeeded();
+    await toggle.tap();
+    await expect(toggle).toBeChecked();
+    await page.getByTestId('plan-view').scrollIntoViewIfNeeded();
+    const hit = page.locator('[data-testid=plan-view] [data-drain-hit]').first();
+    await expect(hit).toHaveCount(1);
+    const stackId = await hit.getAttribute('data-drain-hit');
+    const centre = async (): Promise<Vec2> => {
+      const b = (await hit.boundingBox())!;
+      return [b.x + b.width / 2, b.y + b.height / 2];
+    };
+    const plumbing = async () => (await activeVariant(page)).plumbing ?? null;
+    expect(await plumbing()).toBeNull();
+    const cdp = await touchSession(page);
+
+    // 1. A one-finger drag that starts on the stack (not picked): the plan pans, the stack is not moved or saved.
+    const t0 = await planTransform(page);
+    const c0 = await centre();
+    await touchDrag(cdp, c0, [c0[0] - 70, c0[1] + 50], 14);
+    await expect.poll(() => planTransform(page)).not.toBe(t0);
+    expect(await plumbing(), 'nothing saved by a pan').toBeNull();
+    const c1 = await centre();
+    expect(Math.hypot(c1[0] - c0[0] + 70, c1[1] - c0[1] - 50), 'the stack went along with the plan').toBeLessThan(6);
+
+    // 2. A tap picks it: the hint line says what a suggested stack is.
+    await page.touchscreen.tap(c1[0], c1[1]);
+    await expect(page.getByTestId('hint-line')).toContainText('Stammen er et forslag');
+    expect(await plumbing(), 'a tap saves nothing').toBeNull();
+
+    // 3. A drag of the picked stack moves it along the wall and saves it (the plan does not pan).
+    const t1 = await planTransform(page);
+    const c2 = await centre();
+    await touchDrag(cdp, c2, [c2[0] + 40, c2[1]], 14);
+    await expect.poll(async () => (await plumbing())?.stacks.length ?? 0).toBeGreaterThan(0);
+    expect(await planTransform(page), 'the plan stayed put').toBe(t1);
+    const saved = (await plumbing())!.stacks;
+    expect(saved.some((x) => x.id === stackId || x.storeyId === 'ground'), JSON.stringify(saved)).toBe(true);
+    const c3 = await centre();
+    expect(Math.hypot(c3[0] - c2[0], c3[1] - c2[1]), 'the stack moved on screen').toBeGreaterThan(10);
   });
 });

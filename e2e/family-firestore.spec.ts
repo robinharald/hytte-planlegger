@@ -25,6 +25,10 @@
  *    «lagt bort ved Lagre over».
  *  - Final fix round, leaving the app: an edit followed at once by visibilitychange → hidden (all iOS fires) is
  *    written within 0.7 s, before the 1 s debounce, and is on the server after the context is closed.
+ *  - Morning round, a slow first connection: Mamma's F holds «Familiens plan» (X); a new device opens `#f=F&p=X` while
+ *    every request to firestore.googleapis.com is aborted for 15 s. Meanwhile it never says the space is empty (no
+ *    «Denne plassen er tom», no «Ikke startet»; the family is not stored). Once the requests go through, F is stored,
+ *    «Lagret for alle», and X is on screen.
  */
 import { readFileSync } from 'node:fs';
 import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
@@ -318,6 +322,57 @@ test.describe('the real family space (Firestore), throwaway e2e- families', () =
     expect([...A.errors, ...B.errors]).toEqual([]);
     await A.context.close();
     await B.context.close();
+  });
+
+  test('a new device that cannot reach Firestore at first is never told the space is empty; then it opens the link’s proposal', async ({ browser }, testInfo) => {
+    const F = e2eFamilyId('slow-first');
+    families.push(F);
+    const mamma = await device(browser, testInfo, F, 'Mamma');
+    mamma.page.once('dialog', (d) => void d.accept('Familiens plan'));
+    await mamma.page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await activeVariant(mamma.page)).name).toBe('Familiens plan');
+    const x = (await activeVariant(mamma.page)).id;
+    await expect.poll(async () => (await proposalDocs(F)).map((d) => d.id), { timeout: 30_000 }).toEqual([x]);
+    expect(mamma.errors).toEqual([]);
+    await mamma.context.close();
+
+    // Pappa's new device opens Mamma's «Send forslaget» link while Firestore cannot be reached (sign-in still can).
+    const context = await browser.newContext({ baseURL: testInfo.project.use.baseURL, viewport: { width: 1400, height: 900 } });
+    await context.addInitScript(
+      ({ keys }) => {
+        localStorage.setItem('hytte-planlegger:family-mode', 'shared');
+        localStorage.setItem('hytte-planlegger:my-name', 'Pappa');
+        for (const k of keys) localStorage.setItem(k, '1');
+      },
+      { keys: [FIRST_RUN_KEY, INSTALL_CARD_KEY] },
+    );
+    const blocked = /firestore\.googleapis\.com/;
+    await context.route(blocked, (route) => route.abort());
+    const page = await context.newPage();
+    const errors = collectPageErrors(page);
+    await page.goto(`/#f=${F}&p=${x}`);
+    await page.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: READY_TIMEOUT_MS, polling: 250 });
+    const pill = page.getByTestId('status-pill');
+    const storedFamily = () => page.evaluate(() => localStorage.getItem('hytte-planlegger:family'));
+    const until = Date.now() + 15_000;
+    while (Date.now() < until) {
+      expect(await pill.getAttribute('data-state'), 'never «Ikke startet – plassen i lenken er tom»').not.toBe('notStarted');
+      await expect(page.getByTestId('empty-family-banner')).toHaveCount(0);
+      expect(await storedFamily()).toBeNull();
+      await page.waitForTimeout(1000);
+    }
+    expect(await pill.getAttribute('data-state')).toMatch(/^(connecting|error)$/);
+    expect(await pill.getAttribute('aria-label')).not.toContain('tom');
+
+    // Firestore answers again: F is this device's family and the proposal in the link is on screen.
+    await context.unroute(blocked);
+    await expect.poll(async () => (await activeVariant(page)).id, { timeout: 120_000 }).toBe(x);
+    await expect(pill).toHaveAttribute('data-state', 'synced', { timeout: 60_000 });
+    expect(await storedFamily()).toBe(F);
+    await expect(page.getByTestId('empty-family-banner')).toHaveCount(0);
+    expect((await projectOnScreen(page)).variants.map((v) => v.name)).toEqual(['Forslag D', 'Familiens plan']);
+    expect(errors).toEqual([]);
+    await context.close();
   });
 
   test('an edit made just before the app goes to the background is sent at once (visibilitychange → hidden)', async ({ browser }, testInfo) => {

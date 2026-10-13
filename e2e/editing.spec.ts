@@ -48,6 +48,15 @@
  *      deleted leaves the table (before: the enlarged Bod owned it, carried it and deleted it);
  *  (aa) w-106-korr 0.3 m north carries the loft wall lw-106-top (`carriedBy`); lw-106-top moved on by the user, then
  *      «Ta tilbake» on lw-106-top: w-106-korr stays where the user put it (before: it was reset to the seed).
+ * Fourth fix round: (ab) a Vedskjul against the main house resized in Egenskaper, the house stays; (ac) the corner
+ * w-peis-w / w-peis-n closes again on «Ta tilbake».
+ * Final morning round:
+ *  (ad) dv-leseskrok 0.3 m south, w-106-stue 0.3 m west (nothing is carried, so no wall holds `carriedBy`), «Ta
+ *      tilbake» on dv-leseskrok: w-106-stue stays straight with its end on the restored line (before: the fallback for
+ *      proposals without `carriedBy` slanted it, with no toast);
+ *  (ae) the main house's south edge 0.5 m north, a Vedskjul against it and another in the way of the old edge: «Ta
+ *      tilbake» on the edge is refused with the toast and changes nothing — the shed against the edge is not pushed,
+ *      no undo step (before: the shed was pushed off the house although the toast said no).
  * No state may produce a 'generic' warning (a failed derive or a geometry fallback).
  *
  * Screenshots (e2e/screenshots/): plan-editing.png (the deck selected: vertex and "+" handles), plan-unit-on-deck.png,
@@ -1193,5 +1202,89 @@ test.describe('editing a proposal (desktop, final fix round after 2b)', () => {
     expect(await named(), 'every room keeps its name').toBe(n0);
     expect(await kinds()).not.toContain('wall-dangling');
     await expect(page.locator('[data-testid=toast]').filter({ hasText: 'er nå ett rom' })).toHaveCount(0);
+  });
+
+  // ---- Final morning round -----------------------------------------------------------------------------------------
+
+  test('(ad) dv-leseskrok 0.3 m south, w-106-stue 0.3 m west, «Ta tilbake» on dv-leseskrok: w-106-stue stays straight', async ({ page }) => {
+    await freshProposal(page);
+    const wall = async (id: string) => (await activeVariant(page)).walls.find((w) => w.id === id);
+    const named = async () => (await derivedRooms(page)).filter((r) => r.name).length;
+    const kinds = () => page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.warnings ?? []).map((w) => w.kind));
+    const seedDivider = await wall('dv-leseskrok');
+    expect(seedDivider?.a).toEqual([5, 0]);
+    await zoomAt(page, [5.6, 0.6], 6);
+    const y = await dragWallY(page, 'dv-leseskrok', -0.3);
+    expect(y, 'dv-leseskrok moved south').toBeCloseTo(-0.3, 1);
+    // It carried w-106-stue's end along (stretched to y −0,3); above y 0 the wall's ghost lies over it, so the wall is
+    // grabbed on the stretched piece, zoomed in, clear of the glass bump's wall (x 5) and the divider (y −0,3).
+    expect((await wall('w-106-stue'))?.a).toEqual([5.1, -0.3]);
+    await zoomAt(page, [5.13, -0.15], 4);
+    const grab: Vec2 = [5.13, -0.15];
+    const [gx, gy] = await planToClient(page, grab);
+    expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.getAttribute('data-wall-id') ?? null, [gx, gy])).toBe('w-106-stue');
+    await selectAt(page, grab, { kind: 'wall', id: 'w-106-stue' });
+    await dragPlan(page, grab, [grab[0] - 0.3, grab[1]]);
+    await expect.poll(async () => (await wall('w-106-stue'))?.a[0]).toBeLessThan(5.1 - 0.05);
+    await page.keyboard.press('Escape');
+    const x = (await wall('w-106-stue'))!.a[0];
+    // Nothing is carried any more: the case the removed fallback (proposals saved without carriedBy) took.
+    expect((await activeVariant(page)).walls.filter((w) => w.carriedBy !== undefined).map((w) => w.id)).toEqual([]);
+    await dismissToasts(page);
+
+    const g = await derivedLine(page, 'dv-leseskrok/ghost');
+    // a stretch of the ghost on screen at this zoom (a divider's ghost is selected as a removed wall)
+    await selectAt(page, await clearPointOn(page, 'dv-leseskrok/ghost', [5.6, g.a[1]], [6.6, g.a[1]]), { kind: 'wall', id: 'dv-leseskrok/ghost' });
+    await page.getByTestId('ghost-restore').click();
+    await expect.poll(async () => (await wall('dv-leseskrok'))?.a[1]).toBeCloseTo(0, 6);
+    expect(await wall('dv-leseskrok')).toEqual(seedDivider);
+    // The user's w-106-stue keeps its x and stays straight, its south end on the restored line (before: [5,1, 0]…).
+    const stue = (await wall('w-106-stue'))!;
+    expect(stue.a[0], 'straight').toBeCloseTo(stue.b[0], 6);
+    expect(stue.a[0], "the user's x").toBeCloseTo(x, 6);
+    expect(Math.min(stue.a[1], stue.b[1]), 'its end closed on the restored divider').toBeCloseTo(0, 6);
+    expect(await named(), 'every room keeps its name').toBe(27);
+    expect(await kinds()).not.toContain('wall-dangling');
+  });
+
+  test('(ae) a refused «Ta tilbake» on the house edge (a shed in the way) changes nothing', async ({ page }) => {
+    await freshProposal(page);
+    const ON_BLOCK = 'Bygget kan ikke stå oppå et annet bygg.';
+    // The main house's south edge 0.5 m north (the Soverom side, clear of the glass bump).
+    await selectAt(page, [2.5, 0], { kind: 'wall', id: /^blk-main\// });
+    await dragPlan(page, [2.5, 0], [2.5, 0.5]);
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), 'blk-main')).y0).toBeCloseTo(0.5, 2);
+    // The old edge's ghost (its piece west of the glass bump: east of it the deck's edge lies on the same line).
+    const ghost = ((await activeVariant(page)).ghosts ?? []).find((x) => x.id === 'blk-main/v-main-sw/ghost');
+    expect(ghost?.id, 'the old south edge is a ghost').toBeTruthy();
+    await page.keyboard.press('Escape');
+    // A Vedskjul snapped against the moved edge …
+    const shed = await placeShed(page, [12.8, -0.4]);
+    expect(bbox(blockPolygon(await activeVariant(page), shed)).y1, 'against the moved edge').toBeCloseTo(0.5, 2);
+    await page.keyboard.press('Escape');
+    // … and another one in the old edge's way that does not touch the house: west of the glass bump, zoomed in so
+    // it does not snap against the moved edge (0,25 m away).
+    await zoomAt(page, [2.5, -0.5], 4);
+    const other = await placeShed(page, [2.5, -0.5]);
+    const otherBox = bbox(blockPolygon(await activeVariant(page), other));
+    expect(otherBox.y1, 'below the moved edge').toBeLessThan(0.5 - 0.1);
+    expect(otherBox.y1, 'in the old edge\'s way').toBeGreaterThan(0);
+    await page.getByTestId('tool-select').click();
+    await page.keyboard.press('Escape');
+    await dismissToasts(page);
+
+    const before = JSON.stringify(await activeVariant(page));
+    const line = await derivedLine(page, ghost!.id);
+    await selectAt(page, await clearPointOn(page, ghost!.id, line.a, line.b), { kind: 'ghost', id: ghost!.id });
+    await page.getByTestId('ghost-restore').click();
+    await expect(page.locator('[data-testid=toast]').filter({ hasText: ON_BLOCK })).toHaveCount(1);
+    await page.waitForTimeout(300);
+    expect(JSON.stringify(await activeVariant(page)), 'nothing changed: the shed against the edge was not pushed').toBe(before);
+    expect(bbox(blockPolygon(await activeVariant(page), shed)).y1).toBeCloseTo(0.5, 2);
+    // No undo step either: Angre now takes back the second shed, the last real edit.
+    await page.keyboard.press('Escape');
+    await page.getByTestId('undo').click();
+    await expect.poll(async () => (await activeVariant(page)).blocks.some((b) => b.id === other)).toBe(false);
+    expect(bbox(blockPolygon(await activeVariant(page), shed)).y1, 'the first shed is where it was').toBeCloseTo(0.5, 2);
   });
 });

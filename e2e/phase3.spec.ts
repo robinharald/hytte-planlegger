@@ -16,12 +16,20 @@
  *    with the synthetic fixture (the architect's file is only used locally through the HYTTE_IFC environment variable, never
  *    copied into the repository), else with the synthetic one.
  *
+ * Final morning round:
+ *  - «Gå rundt» from the south (20, −9), facing north up the slope: the terrace's skirt stops the walker on the
+ *    terrain outside it (before: in under the deck boards); P saves the view as a PNG and the walk goes on, and the
+ *    camera button is there;
+ *  - a proposal named «Pappas idé 👍 ≈ ny» as PDF: the title block prints «Pappas idé ? ~ ny» (read back from the
+ *    file's text), with no garbage from the emoji (before: «Ø=ÜM»).
+ *
  * The editor-core fixes of this round (a unit against the house resized, the corner «Ta tilbake») are in
- * editing.spec.ts (ab)–(ac); the proposal link's «Bytt dit» in proposals.spec.ts; the phone side in
+ * editing.spec.ts (ab)–(ae); the proposal link's «Bytt dit» in proposals.spec.ts; the phone side in
  * phone-phase3.spec.ts.
  */
 import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { constants as zlibConstants, inflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import type { Vec2 } from '../src/model/types';
 import {
@@ -49,6 +57,33 @@ async function lastExport(page: Page) {
 
 async function walkProbe(page: Page) {
   return page.evaluate(() => (window as HytteWindow).__hytte?.walk ?? null);
+}
+
+/**
+ * The text a PDF prints, one string per text object (BT … ET), read from its Flate-compressed content streams (jsPDF
+ * with `compress: true`); bytes as Latin-1 (WinAnsi), so «é» reads as «é» and an emoji's UTF-16 bytes as «Ø=…».
+ */
+function pdfTexts(bytes: Buffer): string[] {
+  const raw = bytes.toString('latin1');
+  const out: string[] = [];
+  const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' };
+  const unescape = (t: string) => t.replace(/\\([0-7]{1,3}|[\s\S])/g, (_m, e: string) => (/^[0-7]+$/.test(e) ? String.fromCharCode(parseInt(e, 8)) : (escapes[e] ?? e)));
+  for (const m of raw.matchAll(/(?<!end)stream\r?\n/g)) {
+    const start = (m.index ?? 0) + m[0].length;
+    const end = raw.indexOf('endstream', start);
+    if (end < 0) continue;
+    let text: string;
+    try {
+      text = inflateSync(bytes.subarray(start, end), { finishFlush: zlibConstants.Z_SYNC_FLUSH }).toString('latin1');
+    } catch {
+      continue;
+    }
+    for (const bt of text.match(/\bBT\b[\s\S]*?\bET\b/g) ?? []) {
+      const parts = [...bt.matchAll(/\(((?:\\[\s\S]|[^\\)])*)\)/g)].map((x) => unescape(x[1]));
+      if (parts.length > 0) out.push(parts.join(''));
+    }
+  }
+  return out;
 }
 
 async function openExportMenu(page: Page): Promise<void> {
@@ -272,5 +307,69 @@ test.describe('phase 3 on a desktop (1400×900)', () => {
     await page.getByTestId('ifc-remove').click();
     await expect(plan).toHaveCount(0);
     await expect(page.getByTestId('ifc-load')).toBeVisible();
+  });
+
+  test('«Gå rundt» from the south up the slope: the terrace skirt stops the walker; P saves a PNG and the walk goes on', async ({ page }) => {
+    await loadAndWaitReady(page);
+    await show3d(page);
+    // The walk starts at (20, −9) facing north (e2e hook, WalkControls.tsx `takeTestWalkStart`).
+    await page.evaluate(() => ((globalThis as { __hytteWalkFrom?: unknown }).__hytteWalkFrom = { x: 20, y: -9, heading: Math.PI / 2 }));
+    await page.getByTestId('preset-walk').click();
+    await expect.poll(async () => (await walkProbe(page))?.y ?? null).toBeCloseTo(-9, 0);
+    const start = (await walkProbe(page))!;
+    await expect(page.getByTestId('walk-photo')).toBeVisible();
+    // W held until the walker stands still (the frames are slow on SwiftShader).
+    await page.keyboard.down('w');
+    let last = start.y;
+    let still = 0;
+    const until = Date.now() + 30_000;
+    while (Date.now() < until && still < 4) {
+      await page.waitForTimeout(500);
+      const y = (await walkProbe(page))?.y ?? last;
+      still = Math.abs(y - last) < 0.005 ? still + 1 : 0;
+      last = y;
+    }
+    await page.keyboard.up('w');
+    const end = (await walkProbe(page))!;
+    expect(end.y - start.y, 'walked up the slope').toBeGreaterThan(3);
+    // Stopped outside the skirt (the deck's south edge, y −4,4 there), on the terrain: not in under the boards.
+    expect(end.y, 'outside the skirt').toBeLessThan(-4.6);
+    expect(end.feetZ, 'on the terrain, well below the deck (top −0,02)').toBeLessThan(-1);
+    expect(end.eyeZ, 'the eye stays below the deck boards from outside').toBeLessThan(1);
+
+    // P: a PNG of what the walker sees, and the walk goes on.
+    await page.keyboard.press('p');
+    await expect.poll(async () => (await lastExport(page))?.kind, { timeout: 30_000 }).toBe('png');
+    expect((await walkProbe(page))?.session).toBe(start.session);
+    // (the mouse may be locked to the view: Esc, as a family member would)
+    await page.keyboard.press('Escape');
+    await expect.poll(() => walkProbe(page)).toBeNull();
+  });
+
+  test('«Eksporter plan som PDF» of a proposal named with an emoji: the title block prints only what the font has', async ({ page }, testInfo) => {
+    await loadAndWaitReady(page);
+    const NAME = 'Pappas idé 👍 ≈ ny';
+    page.once('dialog', (d) => void d.accept(NAME));
+    await page.getByTestId('new-proposal').click();
+    await expect.poll(async () => (await activeVariant(page)).name).toBe(NAME);
+    await dismissToasts(page);
+    await openExportMenu(page);
+    await page.getByTestId('export-menu-pdf').click();
+    await expect(page.getByTestId('export-dialog')).toBeVisible();
+    await page.getByTestId('export-paper-A3').click();
+    await page.getByTestId('export-scale-100').click();
+    await page.getByTestId('export-storeys-ground').click();
+    const download = page.waitForEvent('download');
+    await page.getByTestId('export-make').click();
+    await expect.poll(async () => (await lastExport(page))?.kind, { timeout: 60_000 }).toBe('pdf');
+    const file = await download;
+    const saved = testInfo.outputPath(file.suggestedFilename());
+    await file.saveAs(saved);
+    const texts = pdfTexts(readFileSync(saved));
+    expect(texts.length, 'text objects in the PDF').toBeGreaterThan(20);
+    // The title block on the plan sheet and on the schedule sheet.
+    expect(texts.filter((t) => t === 'Pappas idé ? ~ ny').length, texts.filter((t) => t.includes('Pappas')).join(' | ')).toBeGreaterThanOrEqual(2);
+    // No UTF-16 surrogate bytes printed as WinAnsi («Ø=ÜM» for 👍), no raw ≈.
+    expect(texts.filter((t) => /Ø=|\u2248/.test(t))).toEqual([]);
   });
 });
