@@ -57,7 +57,8 @@ adressen uten lenke, får sin egen, tomme plass.
   «Kun på denne enheten (familielenken er ikke hel)») til hele familielenken åpnes; da flyttes de inn i plassen.
 - Åpner en enhet **uten** plass en lenke til en plass som er **tom** (ingen forslag), spør appen først: «Denne plassen
   er tom. Er lenken hel?». Plassen huskes ikke, og ingenting flyttes inn i den (den gamle autolagringen, forslag som lå
-  på enheten), før du trykker **Begynn her** eller lager et forslag der. Har plassen forslag, brukes den med en gang.
+  på enheten), før du trykker **Begynn her** eller lager et forslag der. Så lenge sier statusen «Ikke startet – plassen
+  i lenken er tom» (aldri «Lagret»), også om meldingen lukkes. Har plassen forslag, brukes den med en gang.
 - Åpner en enhet som **har** en plass, en familielenke til en **annen** plass (en ny lenke, en gammel fane, et
   bokmerke, en fane Safari åpner igjen – ved oppstart eller limt inn i en åpen fane), bytter den aldri av seg selv.
   Appen blir i plassen den bruker nå og spør: «Denne lenken går til en annen delt plass. Plassen i lenken har 3 forslag
@@ -72,15 +73,29 @@ adressen uten lenke, får sin egen, tomme plass.
   `hytte-planlegger:family.created`). Svarer du ja, legges de inn i den nye plassen, og i den gamle havner de i
   Papirkurven (30 dager). «Nei takk» lar dem ligge i den gamle plassen; den kan fortsatt åpnes med sin egen lenke
   (`…/#f=<gammel id>`). Forslag andre har laget i den gamle plassen, tilbys ikke, og heller ikke forslag som selv ble
-  hentet inn fra en annen plass (`hytte-planlegger:family.carried-in`): de blir værende der de er.
+  hentet inn fra en annen plass (`hytte-planlegger:family.carried-in`): de blir værende der de er. Har den gamle
+  plassen forslag fra **andre** enheter (den var familiens plass), er ingen av knappene uthevet, og meldingen sier fra:
+  «Den plassen har også forslag fra andre. Henter du det hit, ser ikke familien det der lenger.»
 - En **lenke til ett forslag** i en annen plass (`#f=<annen id>&p=<forslag-id>`, det «Send forslaget» sender) bytter
-  aldri plass. Appen spør i stedet: «Denne lenken går til «Mammas idé» i en annen delt plass.» med **Hent «Mammas idé»
-  som en kopi hit** (en kopi legges til i plassen du bruker nå og vises; den andre plassen røres ikke, og den samme
-  lenken to ganger gir ikke to kopier) og **Bli her**.
+  aldri plass av seg selv. Appen spør: «Denne lenken går til «Mammas idé» i en annen delt plass.», sier hva de to
+  plassene har, og gir tre valg: **Hent «Mammas idé» som en kopi hit** (en kopi legges til i plassen du bruker nå og
+  vises; den andre plassen røres ikke, og den samme lenken to ganger gir ikke to kopier), **Bytt dit** (som over; etter
+  byttet vises «Mammas idé») og **Bli her**. «Bytt dit» er uthevet etter samme regel som over (plassen i lenken har
+  forslag fra andre, plassen du bruker nå har ingen – en enhet som har havnet i en plass for seg selv, kommer slik inn i
+  familiens plass); ellers er kopien uthevet. En kopi regnes som hentet inn så lenge den er urørt; endrer du den på
+  denne enheten, regnes den som laget her og tilbys ved et senere «Bytt dit», så endringene ikke blir liggende igjen.
+- En gammel lenke til ett forslag i plassen enheten byttet fra (`#f=<gammel id>&p=<forslag-id>`), der forslaget er
+  hentet hit, åpner forslaget her uten å spørre («… fra lenken finnes alt i listen.»).
 - **Andre faner som står åpne** på samme enhet: bytter én fane plass («Bytt dit», eller en ny enhet som får sin første
-  plass), viser de andre fanene «Denne enheten har byttet delt plass i en annen fane.» med **Last på nytt**, og de
-  lagrer ingenting mer (statusen sier «Ikke lagret – last siden på nytt»). Det som var endret i fanen før byttet, lagres
-  i plassen den viste. «Last på nytt» åpner plassen enheten bruker nå.
+  plass), viser de andre fanene «Denne enheten har byttet delt plass i en annen fane.» med **Last på nytt**. De kan ikke
+  endres lenger (verktøyene og «+ Nytt forslag» er borte, planen tar ikke imot endringer) og lagrer ingenting mer
+  (statusen sier «Ikke lagret – last siden på nytt»). Det som var endret i fanen før byttet, lagres i plassen den
+  viste. «Last på nytt» åpner plassen enheten bruker nå.
+- **«Hva heter du?»** kommer aldri som en egen dialog mens noen endrer: er navnet ukjent, spør «+ Nytt forslag» om det
+  i samme vindu som navnet på forslaget («Navn på forslaget» og «Hva heter du?»; navnet kan stå tomt). Lagres noe uten
+  navn på en annen måte (f.eks. «Nytt forslag» i meldingen om at Forslag D er låst), kommer spørsmålet som en melding
+  over planen med **Skriv navnet** og **Hopp over** når ingenting er endret på 3 sekunder. «Hopp over» spør aldri
+  igjen; navnet kan endres under Mer → «Endre navnet ditt».
 - Gamle lenker med `#d=` (en kopi av et forslag i selve lenken) virker fortsatt: forslaget legges til som et nytt
   forslag i familiens plass. Den samme lenken to ganger legger det ikke til to ganger.
 - Forslag som lå lagret i nettleseren fra før (den gamle autolagringen), flyttes inn i familiens plass første gang,
@@ -110,9 +125,11 @@ Forslag D ligger ikke i den delte plassen: det følger med appen, er låst og er
 | «Kun på denne enheten (familielenken er ikke hel)» | Enheten har ingen familieplass, og lenken den ble åpnet med var kuttet av. Forslagene lagres på enheten til hele familielenken åpnes; da flyttes de inn i plassen. |
 | «Kun på denne enheten (ingen delt plass satt opp)» | Appen kjører uten Firebase-oppsett (`firebaseConfig` er `null`): forslagene lagres bare i denne nettleseren. |
 | «Kunne ikke lagre på denne enheten (lite plass?)» | Nettleseren har ikke plass. Lagre forslaget som fil (Mer → Lagre som fil). |
-| «Ikke lagret – last siden på nytt» | En annen fane på denne enheten har byttet til en annen delt plass. Denne fanen lagrer ingenting mer; trykk «Last på nytt» i meldingen. |
+| «Ikke lagret – last siden på nytt» | En annen fane på denne enheten har byttet til en annen delt plass. Denne fanen kan ikke endres og lagrer ingenting mer; trykk «Last på nytt» i meldingen. |
+| «Ikke startet – plassen i lenken er tom» | Enheten har ingen plass ennå, og lenken går til en tom plass. Ingenting er lagret der; trykk «Begynn her» eller lag et forslag for å begynne. |
 
-På smale skjermer viser statusen en kort tekst («Lagret», «Lagret her», «Kun her» …); hele teksten står i verktøytipset.
+På smale skjermer viser statusen en kort tekst («Lagret», «Lagret her», «Kun her», «Ikke startet» …); hele teksten står i
+verktøytipset.
 
 Endrer to personer det samme forslaget samtidig, viser appen ««X» ble endret av Pappa for 2 min siden.» med to valg,
 og ingen av dem kaster noe:
@@ -167,6 +184,10 @@ Bare dette, under `families/<familie-id>/…` (passer med reglene i `firestore.r
   utenfor listen (også når lagringen ble gjort uten nett fra en eldre utgave). Lagrer to enheter samtidig, kan listen
   en kort stund ha litt mer enn 20, og en lagring uten nett over en nyere utgave kan gi to like kopier av den samme
   eldre utgaven.
+
+Avløpsstammene fra «Avløp og sluk» er en del av forslaget (`project`). Arkitektens IFC-fil, PDF-ene og PNG-bildene
+sendes aldri til Firestore: IFC-modellen blir i nettleseren på enheten som lastet den inn, og PDF / PNG lagres eller
+deles bare der du velger.
 
 Ellers bare tidspunkter og id-er (tilfeldige tegn). Ingen e-post, ingen enhetsnavn, ingen nettleserinfo og ingen
 posisjon for den som bruker appen. Innloggingen er anonym og laster ingen Google-skript eller innloggingsvinduer (bare

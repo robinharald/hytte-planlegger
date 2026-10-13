@@ -1,7 +1,8 @@
 # Status
 
 Oppdatert 2026-10-13 (fase 2b integrert: møbler, delte forslag i Firestore, offline/PWA og finpuss av redigeringen;
-fikserunde 2b etter den tredje gjennomgangen, runde 2 etter den fjerde, runde 3 etter den femte).
+fikserunde 2b etter den tredje gjennomgangen, runde 2 etter den fjerde, runde 3 etter den femte, runde 4 etter den
+sjette; fase 3: eksport, gå-modus, sol, avløp og IFC-modellen).
 Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
@@ -9,7 +10,240 @@ Faser:
 - **Fase 2a** – redigering: egne forslag, vegger, dører/vinduer, rom, bygningsdeler, nye bygg på terrassen, terrassen,
   badestampen; spøkelser for det som er flyttet/fjernet fra hytta i dag; PC og iPhone (`docs/phase2-plan.md`, rev. 3).
 - **Fase 2b** – møbler, delte forslag for familien (Firestore), offline/PWA (integrert 12. okt 2026).
-- **Fase 4/5** (senere) – eksport, gå-modus, sol-panel, drenering, IFC-overlegg (se «Neste» under fase 2b).
+- **Fase 3** – resten av oppdraget (§4–§6): PDF av planen og PNG av 3D, «Gå rundt», sol-panelet, «Avløp og sluk» og
+  IFC-modellen som overlegg (integrert 13. okt 2026).
+
+## Neste
+
+Det som faktisk gjenstår (alt annet i oppdraget er gjort):
+
+1. **Prøve på en ekte iPhone** (pappas): alt er prøvd i Chromium på PC og med iPhone 13-emulering, ikke i Safari.
+   Særlig: delingsmenyen for PDF og PNG, spaken og dra-for-å-se i «Gå rundt», to fingre som starter på mini-linja,
+   å velge en .ifc-fil fra Filer, og at «Hva heter du?»-banneret ikke kommer i veien.
+2. **Dra-ytelse**: inkrementell vegg- og romavledning (bare den delen av vegg-grafen som endres), så drag av vegger,
+   kanter og bygg blir jevne også på telefon (70–90 ms per oppdatering på PC, 360–670 ms med 4 × tregere CPU).
+3. Små rester (se «Kjente problemer» under): Barlow i PDF-en (trenger en TTF-utgave), 3D-etikettene i PNG-bildet,
+   møbler og lukkede dører i «Gå rundt», terrengfoten til trinnene fra terrassen (`geometry/outdoor.ts`), avløp i 3D,
+   de gjenværende tilfellene av «Ta tilbake» i hjørner.
+
+## Fase 3 – eksport, gå-modus, sol, avløp, IFC (13. okt 2026)
+
+Bygd i fire parallelle deler (eksport, gå-modus + sol, avløp, IFC) samtidig med fikserunde 4 (tre deler), og satt
+sammen her.
+Ingenting er prøvd på en ekte iPhone.
+
+### Gjort
+
+- **«Eksporter» → «Eksporter plan som PDF …»** (ny meny ved siden av «Mer»; `src/export`, `ui/ExportMenu.tsx`,
+  `ui/ExportDialog.tsx`): A4 eller A3, 1:50 eller 1:100, Plan 1, Hems eller begge, «Romnavn og arealer»,
+  «Målsetting», «Møbler», og farger («Vis hva som er nytt») eller svart-hvitt. Stående eller liggende velges av seg
+  selv; dialogen sier hvor mange sider det blir og varsler når en etasje må deles på flere ark (1 cm overlapp, «Ark 2
+  av 7 · rad 1, kolonne 2», med råd om å skrive ut i «faktisk størrelse»). Planen tegnes med appens egne symboler i
+  riktig målestokk (1 m = 2 cm i 1:50, 1 cm i 1:100) med rutenett på 1 m, tittelfelt (Hytta ved Merkesvatnet,
+  forslaget, etasjen, målestokk og papir, dato, BYA og BRA, nordpil, målestokkstrek, «Hytteplanlegger · sist endret av
+  …», fargeforklaring) og romskjema med arealer på det siste arket. Fila heter `hytta-<forslag>-<dato>.pdf`; på PC
+  lastes den ned, på telefon gir dialogen «Del …» og «Last ned». Valgene huskes på enheten. Forslag D: A3 1:100 = 3
+  sider (ett ark per etasje + romskjema), A3 1:50 begge etasjer = 9 sider, A4 1:50 begge = 14.
+- **«Lagre 3D-bildet som PNG»**: det du ser i 3D akkurat nå, i skjermens oppløsning (høyst 3 × og 16 Mpx), med en
+  tekststripe nederst (forslaget, «3D · Ute · Oversikt · dato», «Hytteplanlegger»), som `hytta-3d-<dato>.png`. På
+  telefon går bildet rett til delingsmenyen fra trykket; er 3D ikke åpnet ennå, byttes det til 3D først og bildet lastes
+  ned.
+- **«Gå rundt»** (knapp under kameravinklene og oppe til høyre i 3D-bildet; `view3d/walk.ts`, `WalkControls.tsx`,
+  `WalkOverlay.tsx`): gå gjennom rommene i øyehøyde (1,65 m over gulv, terrasse, trappetrinn eller terreng; trappene
+  glir jevnt, du dukker under den lave hemsen, går aldri under terrenget og ikke ut i vannet). Vegger stopper deg (du
+  glir langs dem), dører og åpninger med lav terskel slipper deg gjennom, vinduer (også glassboksen), rekkverk,
+  badestampen, stolper og pipa stopper deg. Starter i Stue 1,6 m innenfor glassdøra med blikket mot terrassen, der du
+  sist trykket på et gulv i 3D, eller midt i et rom som er valgt i planen. PC: musa styres av 3D-bildet (pekerlås; ellers
+  dra for å se), W A S D eller piltastene, Shift for å løpe, Esc avslutter, og tastene flytter aldri noe i planen.
+  Telefon: spaken nede til venstre, dra i høyre del av bildet for å se rundt, «Avslutt» oppe til høyre, hintet øverst,
+  og 3D-bildet rulles fram. En kameravinkel eller Plan-fanen avslutter; kameraet glir tilbake. Mens du går vises alle
+  etasjer hele, og trykk velger ingenting.
+- **Sol og skygge**: «Midtsommer» (21. juni), «Jevndøgn» (20. mars), «Midtvinter» (21. desember) i valgt år og «I
+  dag»; under klokkeslett-glideren en gul stripe for når sola er oppe den dagen, med soloppgang og solnedgang ved hytta
+  («Sola er oppe hele døgnet» 21. juni, «Sola er under horisonten» 21. desember); bryteren «Skygger». På telefon står
+  de fire dagene på én rad og det er ikke noe eget klokkeslett-felt.
+- **«Avløp og sluk»** (Vis, med planen; `geometry/plumbing.ts`, `plan2d/layers/PlumbingLayer.tsx`,
+  `state/plumbingActions.ts`, `ui/PlumbingToggle.tsx`): avløpsstammen (et forslag, eller de lagrede), stiplede
+  ledninger med avstand fra toaletter, dusjer, servanter og vaskemaskiner, og under bryteren: «WC og Hovedbad:
+  toalettene står rygg mot rygg på veggen ved x 18,6 – det er fint.», «De andre 4 avløpene står innen 3,0 m fra
+  avløpsstammen – det er fint.» og «Bad, Do og Teknisk / vask bruker avløpet som er der i dag.». Et toalett flyttet til
+  Soverom 1 blir rødt med avstanden (ca. 23 m langs veggene) og står under Advarsler («Toalettet i «Soverom 1» står
+  23,3 m fra avløpsstammen.», også i tallet i verktøylinja) mens bryteren er på. Stammen dras langs veggene (fester seg
+  til nærmeste vegg, utenfor dører og vinduer), et trykk gir × for å slette den, og «Legg til avløpsstamme» lagrer en
+  ny. Lagres i forslaget (`Variant.plumbing`, uten ny skjemaversjon), følger fil, lenke og familiens plass; Forslag D
+  nekter med den vanlige meldingen.
+- **«IFC-modell»** (eget panel etter Vis; `src/ifc`, `ui/IfcPanel.tsx`): «Last inn IFC-fil» leser arkitektens fil fra
+  enheten (sjekker STEP-hodet, så web-ifc); blå omriss av vegger, vinduer og dører i planen (Plan 1 kuttet ved 0,9 m,
+  Hems ved 2,1 m med bare etasjen over), halvgjennomsiktig modell med blå kanter i 3D (vegger, tak og dekker for seg;
+  i «Inne» uten tak og kuttet som resten). Synlighet, «Juster plassering» (1 cm om gangen, høyst 10 cm), «Bytt fil»,
+  «Fjern». Fila lastes aldri opp og lagres ikke; den tolkede modellen hurtiglagres i nettleseren (IndexedDB), så den er
+  der etter en omlasting. Målt mot den ekte fila: de ti ytterveggene i dag ligger innen 0,1 cm på begge sider.
+  Forskjeller overlegget viser (riktige): østgavlen ved x 12 (fjernet i Forslag D) og en vegg ved hemstrappa (y ≈ 3,1)
+  som seed-modellen ikke har. Lasting: ca. 0,5 s på denne PC-en, 1,5 s med 4 × tregere CPU, 2–6 ms fra hurtiglageret.
+- **Integrasjonen**: tekstene ligger i `nb.ts` (`nb.export`, `nb.walk`, utvidet `nb.sun`, `nb.plumbing`, `nb.ifc`,
+  `nb.library.placedFarToast`; de midlertidige tekstfilene er borte), og avløpshjelpens advarsel er en `ModelWarning`
+  ('drain-far') med tekst og mål i Advarsler. Hjelp har nye avsnitt om «Gå rundt», sol og skygge, «Eksporter», «Avløp og
+  sluk» og «IFC-modell», og W A S D under hurtigtaster; førstegangskortet er uendret. `window.__hytte` har `lastExport`
+  og `walk` for testene, og 3D-lerretet sier hvor mange IFC-deler det tegner (`data-ifc-meshes`).
+- **Startpakken vokser ikke med PDF og IFC**: jsPDF, svg2pdf.js, react-dom/server, web-ifc og wasm-fila, PDF-dialogen,
+  PNG-koden, innholdet i IFC-panelet og IFC-leseren er egne biter som lastes først når de trengs (PNG-koden når
+  Eksporter-menyen åpnes, så delingsmenyen fortsatt kommer fra trykket). JavaScript ved oppstart: 1 084 kB (332 kB
+  gzip) mot 1 022 kB (309 kB) før fase 3 og runde 4 — forskjellen er avløpshjelpen, rettingene, tekstene og menyene;
+  av PDF og IFC er bare ca. 8 kB (meny, panelskall, lagring av valg) med. PWA-en laster heller ikke ned disse bitene ved
+  installasjon (ca. 6 MB, `vite.config.ts LAZY_LIBS_*`), men hurtiglagrer dem første gang de brukes: forhåndslagringen
+  er 3 012 KiB (før: 2 902 KiB; med alt hadde den blitt 9 074 KiB).
+- **Rettet ved integrasjonen**: stammens trykkflate i planen var 0,5 m større enn tegnet (`pointer-events: all` med en
+  1 m bred usynlig strek), så WC-toalettet ved siden av ikke kunne velges når «Avløp og sluk» var på — nå høyst 12 px
+  (16 på telefon) og høyst 0,25 m; dev-serveren lastet siden på nytt ved første «Lag PDF» (Vite oppdaget jsPDF først da;
+  nå forhåndsbygd, `optimizeDeps`); «klikk» i gå-hintet ble «trykk»; avløpshjelpen regnes ikke ut når bryteren er av;
+  tidsmålet i `derive.schema2.test.ts` har mer slakk lokalt (× 2,5; CI uendret × 3), fordi hele testsettet nå er
+  tyngre.
+- **Tester**: `npm test` 1984 tester i 122 filer, alle grønne. `npm run typecheck`, `npm run lint`, `npm run build` og
+  `npx tsc --noEmit -p e2e/tsconfig.json` er rene. `npm run e2e`: 90 av 90 grønne i tre prosjekter (PC, iPhone, `pwa`), 8 hoppet over (de mot den ekte
+  Firestore). PDF-en fra Chromium (A3 1:50, begge etasjer, 9 sider) er rastret og sett over side for side. Nye i e2e:
+  - PC (`phase3.spec.ts`): PDF i A3 1:50 med begge etasjer — antall sider som dialogen lovet, lest både fra
+    `lastExport` og fra fila selv (sideobjekter og A3-størrelse); PNG lastes ned som `hytta-3d-<dato>.png`; «Gå rundt»
+    med W i 0,5 s flytter deg i øyehøyde, Esc avslutter; «Avløp og sluk» med stammen og «fint»-linja, WC-toalettet
+    dratt til Soverom 1 gir advarselen, Angre gjør alt fint igjen; en liten syntetisk IFC-fil (`e2e/fixtures/test-cabin.ifc`,
+    laget av `src/ifc/testIfc.ts`, ikke arkitektens) gjennom filvelgeren gir omriss i planen på husets vegger og
+    modellen i 3D. Skjermbildet `ifc-overlay.png` er tatt med arkitektens ekte fil (lest fra OneDrive gjennom
+    filvelgeren når den finnes på maskinen, aldri kopiert inn i repoet);
+  - iPhone (`phone-phase3.spec.ts`): spaken holdt fremover i 0,7 s går i øyehøyde og stopper når den slippes, et drag
+    til høyre i bildet snur blikket, «Avslutt»; «Eksporter» er på skjermen, PDF-dialogen med «Lag PDF» innen rekkevidde
+    og PNG-valget er der;
+  - skjermbilder: `export-dialog.png`, `3d-walk.png`, `plan-avlop.png`, `ifc-overlay.png`, `phone-walk.png`.
+- **Prøvd mot den ekte Firestore** (`E2E_FIRESTORE=1`, engangsfamilier `e2e-…`, slettet etterpå, 0 dokumenter igjen):
+  alle 8 er grønne (`family-firestore.spec.ts` 6 av 6 med scenario H og J, `phone-family-firestore.spec.ts` med «Ikke
+  startet» på en ny enhet, og `family-offline.spec.ts`).
+
+### Avgjort i fase 3 (Robin kan endre)
+
+- PDF og PNG ligger i en egen meny «Eksporter» ved siden av «Mer». Standard er A3 1:100 (Forslag D får ett ark per
+  etasje). PDF-en bruker Helvetica (bare woff2-utgaven av Barlow følger med appen). Hems-arkene bruker samme utsnitt
+  som Plan 1, så etasjene ligger over hverandre.
+- «Gå rundt»: øyehøyde 1,65 m; piltastene går sidelengs (som A og D) i stedet for å snu; trinnene fra terrassen kan gås
+  opp fra 0,9 m under (de ender 0,77 m over terrenget, se kjente problemer). «I dag» setter både dagens dato og
+  klokkeslettet nå ved hytta; de andre dagene beholder klokkeslettet. «Skygger» huskes på enheten.
+- «Avløp og sluk»: oppdragets regel «én stamme per etasje» kan ikke gjøre seeden fin (Bad, Do og Teknisk står ca. 10 m
+  fra den nye fløyen), så avløp i rom som fortsatt er mest hytta i dag og var våtrom i Forslag D, bruker avløpet som er
+  der i dag (ingen ledning, ingen advarsel); toaletter regnes bare slik i bad og WC. Forslaget til stamme går dit flest
+  avløp står innen 3 m av hverandre, der flest når den (toaletter teller tre ganger, vegger mellom våtrom foretrekkes,
+  yttervegger trekkes fra for frost). Toaletter måles langs veggen (på tvers, så langs: en L), andre avløp i rett
+  linje. Fint er: et toalett innen 1,0 m fra stammen, to toaletter rygg mot rygg eller side om side innen 2,5 m, andre
+  avløp innen 3,0 m. Hver etasje uten lagret stamme får et forslag. Bryteren
+  huskes på enheten, og advarselen finnes bare mens den er på.
+- IFC: fila blir på enheten (ingen opplasting, ikke i delte forslag); bare ±10 cm justering. PDF-bibliotekene og
+  IFC-motoren lastes ikke ned når appen installeres, men første gang de brukes; etter det virker de uten nett.
+
+### Kjente problemer (fase 3)
+
+- Ikke prøvd i Safari eller på en ekte iPhone: delingsmenyen, pekerlåsen, spaken, bildet fra WebGL og tekstmålingen i
+  svg2pdf. WebKit er ikke installert her; alt er prøvd i Chromium (PC og iPhone 13-emulering).
+- PDF: Helvetica er 5–10 % bredere enn navnelappene er lagt ut for, så noen få blir trange; A4 1:50 gir seks nesten
+  tomme Hems-ark; å lage PDF-en holder siden 0,4 s (A3 1:100) til 1,2 s (A4 1:50, 14 sider) på PC, lenger på telefon;
+  uten nett virker «Lag PDF» først når den er brukt én gang med nett.
+- PNG: 3D-etikettene (romnavnene) er HTML og kommer ikke med i bildet.
+- «Gå rundt»: møbler stopper deg ikke, og dører går du gjennom selv om de er tegnet lukket. Trinnene fra terrassen
+  ender 0,77 m over det skrå terrenget fordi `geometry/outdoor.ts` tar terrenghøyden ved terrassekanten, ikke ved
+  foten. Pekerlåsen bes om rett etter trykket (nekter nettleseren, gjelder dra-og-trykk). Skjules 3D på annen måte enn
+  Plan-fanen, avsluttes gåturen først ved neste tast.
+- «Avløp og sluk»: ingenting i 3D, ingen fall eller rørdimensjoner; hemsens stamme er uavhengig av Plan 1; hvor dagens
+  avløp faktisk sitter, vet vi ikke (alt i dagens Bad, Do, Teknisk og Kjøkken regnes som fint); en stamme kan ikke
+  slettes med tastaturet; på telefon kan × ligge over et møbel i nærheten.
+- IFC: ingen automatisk tilpasning for andre filer (bare ±10 cm); dører og knutepunkter er ikke målt (avviket på 5 cm
+  på innsiden i mellombygget er ikke sjekket); web-ifc er en bit på 3,5 MB (392 kB gzip) som lastes når en fil velges.
+
+## Fikserunde 2b, runde 4 (13. okt 2026)
+
+Den sjette gjennomgangen (redigeringskjernen i Node, delte forslag mot den ekte Firestore, iPhone 13 og en 1366 ×
+768-PC) fant 1 blokkerende, 3 store og 12 mindre feil. Alle er rettet i tre parallelle deler (redigeringskjernen, den
+delte lagringen, planen på telefon og PC) og satt sammen her med fase 3. Det som gjenstår, står under «Kjente problemer
+(runde 4)».
+
+### Gjort
+
+- **Et bygg inntil huset flytter aldri huset** (blokkerende; `edit.ts carriesThrough`, `unitAwarePlan`,
+  `blockSizeMove`, `restoreEdgeOnBlock`): før flyttet «Bredde/Dybde» eller et drag av den festede kanten eller et hjørne
+  husets yttervegg, med vegger, vinduer og rom. Nå: «Dybde/Bredde» på et bygg inntil et annet endrer den frie siden, og
+  nektes med «Bygget kan ikke stå oppå et annet bygg» hvis det ville vokse inn i bygget; den festede kanten dratt inn i
+  huset nektes med hintet, et hjørne glir langs veggen (også i forhåndsvisningen); dras kanten bort, løsner bygget, og
+  husets skillevegger strekkes ikke. «Ta tilbake» på en kant av huset skyver et bygg som står inntil, unna i ett, eller
+  nektes med meldingen uten at noe endres. Kjernens sveip: 4 860 endringer på 135 festede bygg endret huset 0 ganger.
+- **«Ta tilbake» i hjørner** (stor; `editActions.ts keptJunctions`, `closeJunctions`, `Wall.carriedBy.from`): en vegg
+  som ble tatt med, går tilbake dit den sto før, ikke til seeden; et hjørne eller en T med en annen flyttet vegg lukkes
+  igjen der linjene krysser; nye vegger uten spøkelse som brukeren flyttet (som dv-stue-n) regnes også som flyttet. D1,
+  D3, D5, E2 og E3 fra gjennomgangen ender med 27 navn, uten `wall-dangling` og uten melding om sammenslåing, med og uten
+  omlasting. Én vegg om gangen: 117 av 117 tilbake nøyaktig til seeden.
+- **Et sammenslått rom husker navnet etter omlasting**: posten i `Variant.mergedRooms` beholdes når rommet bare får ny
+  form, og glemmes bare når rommet deles, eller når stedet den husker nå ligger i et annet rom.
+- **Forslag lagret før runde 3** (uten `carriedBy`) bruker den gamle geometriske regelen for «Ta tilbake» igjen (6 av 6
+  tilfeller tilbake nøyaktig).
+- **Fløyen** tar med `w-wing-w` og døråpningen Stue → Gang når den flyttes eller slettes; bare et bygg fra «Nytt bygg»
+  lar en vegg langs et annet bygg bli igjen.
+- **Møbler på terrassen** som et nytt bygg treffer med veggene (ikke bare midten), skyves ut med meldingen: et vedskjul
+  trykket sør for huset ved x 11 eller 14 skyver Loungesofaen ut.
+- **En forslagslenke (`&p=`) til en annen plass** (stor): banneret gir «Hent … som en kopi hit», «Bytt dit» og «Bli
+  her» («Bytt dit» uthevet etter samme regel som for plass-lenker), og etter «Bytt dit» vises forslaget fra lenken. En
+  kopi fra en forslagslenke regnes som hentet så lenge den er urørt, og som laget her når den er endret på enheten —
+  da tilbys den med ved et senere bytte (gjennomgangens T2: endringene ble liggende igjen i den private plassen).
+- **Tilbudet om å hente forslag** etter «Bytt dit» uthever ingen knapp når plassen du forlater har forslag fra andre,
+  og sier «Den plassen har også forslag fra andre. Henter du det hit, ser ikke familien det der lenger.»; teksten sier
+  «i plassen du byttet fra» i stedet for «denne familielenken».
+- **En fane som er stoppet av en annen fane** blir skrivebeskyttet med en gang (ingen verktøy, ingen «+ Nytt
+  forslag»), og det som ble endret like før byttet, lagres likevel.
+- **En gammel lenke `#f=<forrige>&p=X`** der X alt er i denne plassen, åpner X her uten banner, med en kort melding.
+- **Statusen** sier «Ikke startet – plassen i lenken er tom» (kort: «Ikke startet») mens plassen i lenken ikke er
+  bekreftet, også etter «Lukk» — ikke lenger «Lagret».
+- **«Hva heter du?» avbryter ikke**: etter den første lagringen uten navn kommer et banner («Skriv navnet» / «Hopp
+  over») når ingenting er endret eller valgt på 3 s, og «+ Nytt forslag» i den delte plassen spør om begge navn i ett
+  vindu («Navn på forslaget» og «Hva heter du?»). Et tomt navn spørres ikke om igjen i samme økt.
+- **Biblioteket etter «Nytt bygg»** (stor; `furniturePlacer.ts unitNearMiddle`): et valgt bygg får møbelet bare når
+  midten av planen ligger inni rommet; ellers går det til rommet i midten, uten melding. Havner et møbel i et nytt
+  byggs rom mens et annet rom er i midten, sier meldingen det («Kommode er satt inn i «Vedskjul».»). Førstegangsflyten
+  med vedskjulet mot fløyens nordvegg (18,4, 6,5) og soverommet knepet inn i midten: kommoden havner i Soverom (ny
+  fløy), og «Dupliser» får plass.
+- **Biblioteket i et fullt rom** prøver alle rom i etasjen, nærmeste først, og sier fra: «Ingen plass i rommene i
+  nærheten: Seng 180 er satt inn i «Stue».»; bare når ingen rom har plass, står møbelet i rommet i midten med
+  advarslene.
+- **Rotasjonshåndtaket på telefon** brukes aldri på siden som vender opp på skjermen (der ligger mini-linja); da
+  skjules det, og «Roter» i mini-linja gjør det samme (de 9 møblene gjennomgangen fant).
+- **To fingre gjennom mini-linja**: en knipe eller panorering som starter på mini-linja (eller med én finger på linja og
+  én på planen) går til planen; et enkelt trykk på linja virker som før.
+- **Tester**: `editActions.fix6.test.ts` (24 nye), familietestene (+14), biblioteket, møbellaget og mini-linja; i e2e:
+  `editing.spec.ts` (ab) vedskjul ved (12,8, −0,9) og Dybde 2,0 — huset står stille; (ac) hjørnet D1 — 27 navn, ingen
+  løs vegg; `proposals.spec.ts` forslagslenkens «Bytt dit», kopien som ble endret følger med, den stoppede fanen,
+  den gamle lenken, «Ikke startet», navnebanneret og vinduet med to felt; `phone-editing.spec.ts` vedskjulet mot fløyen
+  og soverommet i midten; `phone-furniture.spec.ts` to fingre gjennom mini-linja og håndtaket som skjules.
+
+### Avgjort i runde 4 (Robin kan endre)
+
+- Et bygg fra «Nytt bygg» som står inntil et annet bygg, endrer alltid den frie siden ved «Bredde/Dybde»; den festede
+  kanten kan ikke dras inn i bygget; «Ta tilbake» på husets kant skyver bygget unna i stedet for å krympe det.
+- En forslagslenke kan også bytte plass («Bytt dit»), med samme uthevingsregel som en plass-lenke.
+- En fane som en annen fane har stoppet, er skrivebeskyttet til den lastes på nytt.
+- «Hva heter du?» er et banner etter 3 s ro (det skyver planen litt ned når det kommer), eller et felt i «Nytt
+  forslag»-vinduet.
+- Et valgt bygg får møbelet fra biblioteket bare når midten av planen ligger inni det; et møbel uten plass i nærheten
+  kan havne i et hvilket som helst rom i etasjen (med melding).
+- Rotasjonshåndtaket skjules på telefon når den eneste ledige siden vender opp; to fingre som starter på mini-linja går
+  til planen.
+
+### Kjente problemer (runde 4)
+
+- «Ta tilbake»: lw-106-top −0,3, så w-106-korr −0,3, så «Ta tilbake» på den ene gir fortsatt `wall-dangling`. I kjernens
+  sveip (560 rekkefølger med flytt, 564 med drag og omlasting) gir 5–6 bare en ny `door-blocked`; w-104-103 og så
+  w-104-diag (begge +0,3) har mistet et navn før tilbaketakingen, og «Ta tilbake» på w-104-103 slår da også sammen
+  «Bad».
+- Møbler som skyves når «Ta tilbake» skyver et bygg unna, nevnes ikke i en melding.
+- En gammel forslagslenke sjekker denne plassens liste bare ved oppstart og når lenken limes inn; kommer forslaget
+  senere, står banneret.
+- To fingre gjennom mini-linja bygger på at `setPointerCapture` tar over en berøring fra en syntetisk `pointerdown`:
+  prøvd i Chromium, ikke i Safari (linja sender ellers bevegelsene videre selv). En panorering med én finger som
+  starter på linja gjør fortsatt ingenting.
+- Når ingen rom i etasjen har plass, prøver biblioteket alle rom: ca. 100 ms på denne PC-en, 3–4 ganger mer på en
+  telefon (sjelden).
+- Ved oppstart på PC med et vedskjul nettopp satt ut tar ikke vedskjulet lenger møbelet fra biblioteket (en Vedstabel
+  går til rommet i midten, uten melding).
 
 ## Fikserunde 2b, runde 3 (13. okt 2026)
 
@@ -116,13 +350,11 @@ delte lagringen, planen på telefon og PC) og satt sammen her. Det som gjenstår
     `opening-outside-host` og to `wall-dangling` (lw-106-top blir en stubb på 0,2 m); det var slik før runden også
     (c861e45). «Ta tilbake» på lw-106-top lar nå w-106-korr stå, så rommene forblir slått sammen til w-106-korr tas
     tilbake.
-  - Forslag lagret før denne runden har ingen `carriedBy` og ingen `Room.unitId`: «Ta tilbake» der tar ikke naboer med
-    tilbake, og et bygg eier det som ligger i det og ikke i et annet bygg.
+  - (Rettet i runde 4: forslag uten `carriedBy` bruker den gamle regelen for «Ta tilbake» igjen.) Forslag lagret før
+    denne runden har ingen `Room.unitId`: et bygg eier det som ligger i det og ikke i et annet bygg.
   - Rotasjonshåndtaket sjekker ikke skillevegger (planen får bare `data.pieces`): fu-spiseplass-8 får håndtaket over
     dv-kjk-e.
-- Biblioteket: på PC ved startzoom (23,5 px/m) taper et bygg som er valgt med vilje og står mer enn ca. 4 m fra
-  midten, for rommet i midten (toasten sier hvor møbelet havnet); et vedskjul inntil et soverom som er zoomet inn
-  midt i planen, regnes fortsatt som nær (ca. 74 px).
+- (Rettet i runde 4: biblioteket bruker et valgt bygg bare når midten av planen ligger inni det.)
 - Delte forslag: `updatedAt` og `lastRevisionAt` kan gå bakover når en lagring uten nett kommer fram etter en nyere
   (bare «sist endret» påvirkes).
 - De andre punktene under «Kjente problemer (runde 2)», «(fikserunde 2b)» og «(fase 2b)» gjelder fortsatt (ytelsen
@@ -585,13 +817,7 @@ skjermbilde, men omrisset ble kastet på veien (den tredje gjennomgangen); det e
 
 ### Neste
 
-1. Robin prøver møblene, Forslag-menyen og familielenken (`npm run dev`, eller etter push på nettsiden) og ser over
-   skjermbildene.
-2. Pushe `main` for å publisere (2a og 2b), og sende familielenken til familien.
-3. Fase 4/5 (rester): eksport til PDF/PNG av plan og 3D, gå-modus i 3D, finpuss av sol-panelet, hjelp til
-   drenering/fall (sluk, takvann), IFC-modellen som overlegg i plan og 3D.
-4. Dra-ytelse: inkrementell vegg- og romavledning (bare den delen av vegg-grafen som endres), så drag av vegger, kanter
-   og enheter blir jevne også på telefon.
+Se «Neste» øverst (fase 2b er pushet og publisert, og fase 3 er gjort).
 
 ### Kjente problemer (fase 2b)
 

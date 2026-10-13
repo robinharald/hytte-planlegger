@@ -33,32 +33,50 @@ src/
                edit.ts (phase 2: every edit rule as `apply…(draft, ctx, …)`, status bookkeeping, reconcileRooms)
                snap.ts (phase 2: snapping and dimension chips)
                furnitureDerive.ts (phase 2b: the furniture stage: level / room / floor, collisions, door swings)
+               plumbing.ts (phase 3: the drainage helper — fixtures, toilet pairs, the suggested stack, runs, distances,
+               the 'drain-far' warnings; memoised per derived model)
   state/       store.ts (zustand + zundo + immer), selection.ts, persistence.ts (UI prefs, links, files, the legacy
                autosave), appStore.ts (the app singleton, bootstrap, family session actions),
                familyStore.ts (+ .local.ts, .firestore.ts, .sync.ts, .fake.ts; phase 2b: the family's proposals),
                firebaseConfig.ts, editActions.ts (phase 2: the edit API and the drag protocol on a store;
-               `useEditActions()`), editStrings.ts (= nb.editor), fixtures/ (a captured phase-1 autosave)
+               `useEditActions()`), editStrings.ts (= nb.editor), fixtures/ (a captured phase-1 autosave);
+               phase 3: plumbingActions.ts (drain stacks on the store, the «Avløp og sluk» toggle, the drain warnings)
   plan2d/      SVG plan: PlanView.tsx and parts; editing: usePlanEditing.ts (gestures, tools), editModel.ts (handles,
                hit tests), editTypes.ts (the plan's side of the edit contract), editFeedback.ts, planSnap.ts,
                layers/EditOverlay.tsx, Legend.tsx, GhostLayer.tsx; phase 2b: layers/FurnitureLayer.tsx (+ FurnitureSymbol.tsx,
                furnitureSymbols.ts, furnitureLayerModel.ts), furniturePlacement.ts (tap / drop placement), furnitureDrop.ts
-               (DOM events between the library and the plan)
+               (DOM events between the library and the plan); phase 3: layers/PlumbingLayer.tsx (stacks, runs,
+               distances), layers/IfcLayer.tsx (the IFC model's outlines)
   view3d/      R3F scene: View3D.tsx, Scene.tsx, coords.ts, materials.ts, Walls.tsx, Roofs.tsx, Floors.tsx,
                Openings.tsx, Outdoor.tsx, Terrain.tsx (+ ground.ts), Trees.tsx, Labels.tsx (+ labelDefs.ts), StructureMeshes.tsx,
                cameras.ts, SunLight.tsx; phase 2: selection3d.ts (click selection tags), sceneParts.ts (group reuse),
-               drop.ts + dropEvent.ts (furniture drop target); phase 2b: Furniture.tsx + furnitureBuilders.ts (models)
+               drop.ts + dropEvent.ts (furniture drop target); phase 2b: Furniture.tsx + furnitureBuilders.ts (models);
+               phase 3: walk.ts (the walk's kinematics, no three.js), walkState.ts (walk session, «Skygger», joystick
+               input, the test probe), WalkControls.tsx (the camera inside the canvas), WalkOverlay.tsx («Gå rundt» /
+               «Avslutt», the joystick), sunPanel.ts (day presets, sunrise / sunset), capture.ts (the canvas for the
+               PNG), IfcOverlay.tsx (the IFC model in 3D)
   ui/          App shell, panels, theme.css, format.ts, components; phase 2: Toolbar, HintLine, Toasts, NumberField,
                PropertiesEditor / PropertiesPanel (+ editors/), BottomSheet, SelectionMiniBar, LibraryPanel,
                FirstRunCard, editorBridge.ts (UiEditActions context, tools, lock helpers), commands.ts, overlay.ts;
                phase 2b: FurnitureLibrary (+ furnitureLibraryModel.ts, libraryDrag.ts, furniturePlacer.ts,
                useFurniturePlacer.ts), properties/FurnitureProps, ProposalsMenu, StatusPill (+ FamilyBanners,
-               NameDialog), ShareDialog, TrashPanel, RevisionsPanel, UpdateToast, InstallCard, familyUi.ts, family.css
+               NameDialog), ShareDialog, TrashPanel, RevisionsPanel, UpdateToast, InstallCard, familyUi.ts, family.css;
+               phase 3: ExportMenu.tsx (+ ExportDialog.tsx, a lazy chunk), PlumbingToggle.tsx + plumbingInfo.ts,
+               IfcPanel.tsx (+ IfcPanelBody.tsx, a lazy chunk)
+  export/      phase 3: paper.ts (paper sizes, sheet layout), sheets.ts (options, sheets per storey), planSheet.tsx (the
+               plan layers at true scale), svgPrint.ts (screen SVG → what svg2pdf draws), titleBlock.ts, schedulePage.ts,
+               planPdf.ts (lazy: jsPDF, svg2pdf.js, react-dom/server), png.ts + pngExport.ts (lazy), deliver.ts (share
+               sheet or download), fileNames.ts, hook.ts (`window.__hytte.lastExport`)
+  ifc/         phase 3: types.ts, transform.ts (the calibration IFC → plan), parse.ts + slice.ts (web-ifc → meshes and
+               plan sections) and loader.ts (web-ifc and its wasm) — both lazy —, cache.ts (IndexedDB), store.ts (the
+               overlay's own store), overlayData.ts, align.ts (+ align.real.test.ts against the real file), testIfc.ts
   i18n/        nb.ts — every user-visible string lives here
   furniture/   catalog.ts (phase 2b: the 50 catalogue entries, presets, stretch ranges, colours, clearances, frame helpers)
 e2e/           Playwright: smoke.spec.ts, editing.spec.ts + furniture.spec.ts + proposals.spec.ts (desktop),
                phone-editing.spec.ts + phone-furniture.spec.ts (iPhone project), offline.spec.ts (pwa project), helpers.ts,
                opt-in real-Firestore specs (family-firestore, phone-family-firestore, family-offline; `E2E_FIRESTORE=1`,
-               firestoreAdmin.ts), screenshots (e2e/screenshots/*.png, committed)
+               firestoreAdmin.ts), phase 3: phase3.spec.ts + phone-phase3.spec.ts, fixtures/test-cabin.ifc (a synthetic
+               IFC, never the architect's), screenshots (e2e/screenshots/*.png, committed)
 docs/          this file, phase2-plan.md, firebase-oppsett.md (the family space, for Robin), kalibrering-ifc.md (IFC facts),
                seed-brief-forslag-d.md (what the seed contains)
 data/geo/      raw Kartverket elevation grids and the IFC element dump (inputs for scripts)
@@ -141,8 +159,11 @@ public/fonts/  self-hosted Barlow + Barlow Semi Condensed (woff2); public/*.png 
   `Wall.carriedBy = { by, a, b }` names the wall whose move carried this one along (a continuation in line, a follower
   at a shared end, a T-junction) and the ends that move gave it (`edit.ts markCarried` in `applyMoveWall` /
   `applyMoveWallEndpoint`; dropped by the wall's own move and when it is back on its ghost). Proposals saved before
-  this have neither: their units own what lies in them and in no other block, and a later "Ta tilbake" carries no
-  neighbour back.
+  this have neither: their units own what lies in them and in no other block, and "Ta tilbake" there falls back to the
+  geometric rules of before (fourth fix round). Since the fourth fix round `carriedBy.from` keeps the wall's ends
+  before that wall's moves carried it (kept over repeated moves), and "Ta tilbake" on the carrier returns it there.
+- **Drain stacks** (phase 3, optional, no schema bump): `Variant.plumbing = { stacks: { id, p, storeyId }[] }`, each a
+  point on a wall's centre line; no stack on a storey = the drainage helper suggests one there (`suggested-<storey>`).
 - **Trees** (fix round after 2a): `Site.trees` are today's trees. A proposal gets its own copy in the optional
   `Variant.trees` on its first tree edit (copy-on-write in `editActions.ts`: add, move, delete, drag, nudge), so the
   site and Forslag D never change. Every reader goes through `treesOf(project, variant)` (geometry/derive.ts) =
@@ -494,11 +515,16 @@ round: while the Møbler tool is active the insets are the ones from before the 
 and the request names the item (`requestPlanCentre(doc, catalogId)` → `PlanCentreDetail.catalogId`, passed by
 `useFurniturePlacer` / `PlacerEnv.planCentre(catalogId)`): when it has no free spot (`tapPlacement`) in the room at the
 centre, the 6 rooms nearest the centre (by label point) are tried before an overlap is allowed. Last fix round
-(`ui/furniturePlacer.ts`): a selected unit gives its room to a library tap only while that room lies within
-`UNIT_NEAR_MIDDLE_PX` = 100 px of the plan's middle on the same storey (`unitNearMiddle`; `PlacerEnv.planMiddle`,
-by default asked through `requestPlanCentre(document)`), else the item goes to the room in the middle, as with nothing
-selected; when the item lands in another room than the one picked or in the middle, `PlacerEnv.toast` (the app's
-toast, `useFurniturePlacer`) says where: `nb.library.placedInToast` «Kommode er satt inn i «Gang».».
+(`ui/furniturePlacer.ts`): a selected unit gives its room to a library tap only while the plan's middle lies inside
+that room's outline on the same storey (`unitNearMiddle`, fourth fix round; the 100 px rule is gone; `PlacerEnv.planMiddle`,
+by default asked through `requestPlanCentre(document)`; without a plan on screen the unit's room is used), else the item
+goes to the room in the middle, as with nothing selected; when the item lands in another room than the one picked or in
+the middle — or in a unit's room while another room is in the middle — `PlacerEnv.toast` (the app's toast,
+`useFurniturePlacer`) says where: `nb.library.placedInToast` «Kommode er satt inn i «Gang».». When neither the room in
+the middle nor its 6 nearest have a free spot, every room of the storey is tried, closest first by outline distance
+(rooms too small by area or diagonal skipped; `freeRoomElsewhere`), with `nb.library.placedFarToast` «Ingen plass i
+rommene i nærheten: Seng 180 er satt inn i «Stue».»; only when no room has space does it stand in the middle room with
+its warnings.
 Editor polish (phase 2b): the drag loop calls `previewDrag` (state/editActions.ts: the snap and the dragged element's
 target outline, no store change, no derive; about 0.1 ms in Node) every animation frame and `updateDrag` at most every
 `updateInterval(last)` = clamp(2 × its last duration, 16, 150) ms, and once more with the last position before
@@ -695,12 +721,25 @@ hold once the link's space has answered (`LinkedFamilyInfo`: «Plassen i lenken 
 du bruker nå har 1.», read through a second store, `watchLinked`). «Bytt dit» (`switchToLinkedFamily`) is the
 highlighted button only when the link's space has proposals made on other devices and the current one has none
 (`family.created` / `…carried-in` tell this device's own); otherwise «Bli her» (`stayInFamily`, the address bar shows
-the current space again). A `&p=` link to another space never switches: it offers «Hent «navn» som en kopi hit»
-(`copyLinkedProposal`: the copy's id is derived from the link, so the same link twice adds one copy, recorded as
-carried in); the other space is not touched. A `storage` listener on `hytte-planlegger:family` notices another tab
-of the device switching: this tab saves what was pending, then stops saving ('family-elsewhere-banner' «Denne enheten
-har byttet delt plass i en annen fane.», pill state `elsewhere` «Ikke lagret – last siden på nytt»), and «Last på
-nytt» (`reloadInCurrentFamily`) reloads into the stored space. «Bytt dit» (only it switches)
+the current space again). A `&p=` link to another space never switches on its own: it offers «Hent «navn» som en kopi
+hit» (`copyLinkedProposal`: the copy's id is derived from the link, so the same link twice adds one copy), «Bytt dit»
+(highlighted by the same rule as the space banner; after it the reload shows the linked proposal) and «Bli her»; the
+other space is not touched by a copy. A copy from a proposal link counts as brought in while untouched and as made here
+once edited on this device, so a later «Bytt dit» offers to bring it along (fourth fix round; copies of the round
+before are recognised by their id). An old link `#f=<previous>&p=X` whose X is already in this space opens it here with
+no banner and a short toast («… fra lenken finnes alt i listen.»). When the space being left has proposals from other
+devices, the carry-over offer highlights neither button and adds «Den plassen har også forslag fra andre. Henter du
+det hit, ser ikke familien det der lenger.». A `storage` listener on `hytte-planlegger:family` notices another tab of
+the device switching: this tab saves what was pending (`ProposalSync.finish()`), then stops saving and becomes
+read-only at once (`ui.readOnly`: no tools, no «+ Nytt forslag», no plan edits; 'family-elsewhere-banner' «Denne
+enheten har byttet delt plass i en annen fane.», pill state `elsewhere` «Ikke lagret – last siden på nytt»), and «Last
+på nytt» (`reloadInCurrentFamily`) reloads into the stored space. While the link's space is unconfirmed (empty, on a
+device without a family) the pill says `notStarted` «Ikke startet – plassen i lenken er tom» (short «Ikke startet»),
+also after «Lukk». «Hva heter du?» never opens as a dialog by itself while someone edits: after the first save without
+a name a banner ('name-banner', «Skriv navnet» / «Hopp over») appears once nothing has been edited or selected for 3 s,
+and «+ Nytt forslag» / «Kopier» in the shared space with the name unknown open one dialog with both fields
+(`ui/Dialogs.tsx promptNewProposal` → `NewProposalDialog`, rendered by `NameDialog`); a name left empty is not asked
+for again in that session. «Bytt dit» (only it switches)
 pushes the old id onto `hytte-planlegger:family.previous` and records it in `…:family.switched-from`; once the new space
 has answered, the proposals this device created in the old one (`…:family.created`, filled by `ProposalSync.onCreated`)
 are offered («Hent forslagene fra den forrige plassen»: `acceptCarryOver` copies them in and puts the old ones in the old
@@ -903,6 +942,24 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   (`reviveRoomRecords` takes a face filter) with the toast `nb.editor.roomsBack` («Rommet «WC» er tilbake.»), and a
   `Variant.mergedRooms` record goes when another edit redraws its face (`MergedRoom.face`). A Vedskjul placed with its
   back against a block gets `slopeTo` high against that wall (also when placed turned so by the user).
+- **Fourth fix round** (the sixth review): edge moves never pass between a template unit and a building that is not one
+  (`edit.ts carriesThrough` in the shift plan, `unitAwarePlan`): Bredde / Dybde of a unit against a building change its
+  free side (`blockSizeMove` picks the side; `BlockEditor` still passes `'max'`) and are refused with
+  `nb.editor.unitOnBlock` when the unit would grow into the building; the attached edge dragged into the house is
+  refused with the hint, a corner drag slides along the wall (`withoutPushesIntoBuildings`, also in the preview); an
+  edge moving away detaches the unit, and the house's partitions are not stretched (a unit's edge takes only its own
+  walls). "Ta tilbake" on an edge of a building pushes a unit standing against it away whole (`restoreEdgePushes`), or
+  is refused with the toast and changes nothing (`restoreEdgeOnBlock`). A carried wall goes back to
+  `Wall.carriedBy.from` (where it stood before the carry), not to its ghost; a corner or T with another moved wall is
+  closed again where the two lines cross (`editActions.ts keptJunctions` / `closeJunctions`); a new wall without a
+  ghost that the user moved counts as moved (`movedNewWalls`), and `carriedBy` is recorded on such walls too. A variant
+  without any `carriedBy` (saved before the fifth review) falls back to the geometric rules of before (`noCarriedBy`).
+  A `Variant.mergedRooms` record is kept while its face is only reshaped; another edit drops it only when it splits the
+  face holding the record's anchor or leaves the anchor in another room's face (`withMergedRooms`; `MergedRoom.face` is
+  now for reference only). A drawn block keeps the walls on an edge shared with another block (the wing takes
+  `w-wing-w` and `o-stue-gang` when moved or deleted); only a unit leaves such walls to the other block. The push-out
+  after a placement also moves terrace items whose footprint reaches into the new unit's walls (the Loungesofa beside
+  a Vedskjul set against the house).
 - **Snapping** (`snap.ts`): grid 0.10 m (0.01 with Alt); wall ends / midpoints, block axis vertices and edges (never
   cladding faces), deck edges and vertices, collinear extensions and perpendiculars (within 6 m of the ends), ortho
   from the start point; polygons (units, blocks) snap axis to axis; furniture back to wall; hot tubs to deck edges.
@@ -949,11 +1006,13 @@ Layout (phase 2a, top bar since 2b): top bar (title, the "Forslag: <navn> ▾" m
 with a "Grunnlag" tag, then the family's proposals with "sist endret av …", "+ Nytt forslag", "Lag en kopi", Papirkurv),
 "+ Nytt forslag" (asks for a name, copies the proposal on screen; the primary button on Forslag D), Gi nytt navn, Slett
 (two steps: "Vil du slette «X»?" → "Er du sikker? …" → into the Papirkurv; not for Forslag D), the status pill
-(`StatusPill.tsx`), Mer (Tidligere versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and "Endre navnet
-ditt" in shared mode), "Send forslaget" (`ShareDialog.tsx`: the family link and the deep link, `navigator.share` on
+(`StatusPill.tsx`), Eksporter (phase 3, `ExportMenu.tsx`: «Eksporter plan som PDF …», «Lagre 3D-bildet som PNG»), Mer
+(Tidligere versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and "Endre navnet ditt" in shared mode), "Send forslaget" (`ShareDialog.tsx`: the family link and the deep link, `navigator.share` on
 phones; locally a `#d=` copy), Hjelp; the conflict / overwritten / too-new banners and the app-update toast belong to
 the top bar too; "Hva heter du?" once per device in shared mode) · left
-column (view tabs Plan/3D/Begge, plan storey tabs, 3D mode + presets, toggles, sun date/time; no cut-height control:
+column (view tabs Plan/3D/Begge, plan storey tabs, 3D mode + presets and «Gå rundt», toggles (with the plan also «Avløp
+og sluk»), the «IFC-modell» panel (closed until opened), «Sol og skygge» (day presets, date, time slider with the
+daylight band, «Skygger»); no cut-height control:
 'Inne' cuts the walls 1.3 m above each floor, 2.3 m with 'Inne i stua'; Vis has «Plassbehov for møbler»; while the
 Møbler tool is active the furniture library (`FurnitureLibrary.tsx`: search ignoring case and æ/ø/å with a few
 synonyms, the categories as an accordion with counts — the selected room's category open first —, each item with
@@ -1000,6 +1059,73 @@ heading is "Slik bruker du planleggeren". The first-run card and the hint
 line on Forslag D say it is the fixed base and that "+ Nytt forslag" makes a copy to change; "Nytt forslag" closes the
 first-run card for good (`firstRun.ts`) and, while the card is open, toasts move above it (`toastLayout.ts`). Theme tokens from the old model (self-hosted Barlow / Barlow Semi Condensed,
 `--accent #4f6b55`, `--new #c8742a`, light + dark). All strings in `i18n/nb.ts`.
+
+## Phase 3: export, walk, sun, drainage, IFC
+
+All four are optional layers on the same data: nothing here changes the project except the drain stacks
+(`Variant.plumbing`). Strings in `nb.export`, `nb.walk`, `nb.sun`, `nb.plumbing`, `nb.ifc`.
+
+- **Start bundle.** jsPDF, svg2pdf.js, react-dom/server, web-ifc and its wasm, the PDF dialog, the PNG code, the IFC
+  panel's body and the IFC parser are lazy chunks (`ExportMenu.tsx` loads `ExportDialog` on first open and
+  `pngExport` when the menu opens; `IfcPanel.tsx` loads `IfcPanelBody` when the panel is opened; `ifc/store.ts`
+  imports `loader.ts` on the first file). They are not precached by the PWA either (`vite.config.ts LAZY_LIBS_*`:
+  about 6 MB most installs never use) but cached on first use (runtime cache `hytte-lazy-libs`, cache first), so a PDF
+  or an IFC works offline once it has been used online. `optimizeDeps.include` pre-bundles them for the dev server
+  (found only at their first dynamic import, Vite would reload the page then).
+- **PDF** (`export/`): `sheets.ts` turns the options (A4 / A3, 1:50 / 1:100, Plan 1 / Hems / Begge, names and areas,
+  dimensions, furniture, colours or black and white) into sheets per storey: orientation automatic, a storey too large
+  for one sheet tiled with 1 cm overlap («Ark 2 av 7 · rad 1, kolonne 2»); Hems uses Plan 1's rectangle so the storeys
+  line up. `planSheet.tsx` renders the plan's own layers with `renderToStaticMarkup` at true scale (1 m = 20 mm at
+  1:50), `svgPrint.ts` rewrites that SVG for svg2pdf, `titleBlock.ts` adds the title block (project, proposal,
+  storey, scale and paper, date, BYA / BRA, north arrow, scale bar, «sist endret av …», the legend), and
+  `schedulePage.ts` the Romskjema per level and the area totals on the last sheet(s). Helvetica (jsPDF needs TTF; only
+  woff2 Barlow is bundled). File `hytta-<forslag>-<dato>.pdf`; on a PC a download, on a touch device whose share sheet
+  takes files «Del …» / «Last ned» (`deliver.ts`). The dialog's choices are remembered per device
+  (`hytte-planlegger:export.pdf`). Defaults A3 1:100 (Forslag D then fits one sheet per storey).
+- **PNG** (`export/pngExport.ts`, `png.ts`, `view3d/capture.ts`): re-renders the current scene at the device pixel
+  ratio (at most 3× and 16 M pixels), adds a caption strip (proposal, «3D · Ute · Oversikt · dato», «Hytteplanlegger»)
+  and saves `hytta-3d-<dato>.png`; synchronous from the tap, so a phone's share sheet opens; with no 3D view shown yet
+  it switches to 3D, waits for a frame and downloads. HTML labels are not in the picture.
+- **Walk** («Gå rundt»; `view3d/walk.ts`, `WalkControls.tsx`, `WalkOverlay.tsx`, `walkState.ts`): eye 1,65 m over the
+  floor, deck, stair tread, step or terrain (eased; ducks under the low loft slab; never under the terrain; not into
+  the lake); walls slide, doors and openings with a low sill let the walker through, windows (the glass bump too),
+  railings, the hot tub, posts and the chimney block; furniture does not. Start: where the user clicked a floor in 3D,
+  else a selected room's label point (both facing the camera's way), else inside the Stue 1,6 m from the glass door
+  facing the terrace. PC: pointer lock (drag to look if refused), W A S D / arrows, Shift runs, Esc or losing the lock
+  ends; walk keys are swallowed (no nudge in the plan). Touch: the joystick bottom left, a drag on the right 60 % of
+  the view looks, «Avslutt» top right. A camera preset or the Plan tab ends the walk; the camera eases back. While
+  walking every storey shows whole and clicks do not select. The session and «Skygger» live in `walkState.ts` (the
+  shadows choice per device), not in the app store.
+- **Sun** (`view3d/sunPanel.ts`, `ui/Controls.tsx`): presets «Midtsommer» (21 June), «Jevndøgn» (20 March),
+  «Midtvinter» (21 December) of the chosen year and «I dag» (today's date and the time now at the cabin); under the
+  time slider the day's daylight band with sunrise / sunset ticks at the cabin («Sola er oppe hele døgnet» / «Sola er
+  under horisonten»); «Skygger» on / off.
+- **Drainage** («Avløp og sluk»; `geometry/plumbing.ts`, `plan2d/layers/PlumbingLayer.tsx`, `state/plumbingActions.ts`,
+  `ui/PlumbingToggle.tsx`, `ui/plumbingInfo.ts`): fixtures that need a drain (`needsDrain` in the catalogue: toilets,
+  showers, basins, washers, floor drains, the water heater); toilets back to back or side by side on one wall are a
+  fine pair («WC og Hovedbad: toalettene står rygg mot rygg på veggen ved x 18,6 – det er fint.»). The suggested stack
+  goes to the largest group of fixtures within 3 m of each other, at the wall point that keeps most of them in reach
+  (toilets × 3, walls with wet rooms on both sides preferred, exterior walls penalised for frost). Toilets are measured
+  along the stack's wall (across, then along: an L), other fixtures in a straight line; fine: a toilet within 1,0 m
+  (`TOILET_REACH_M`), a pair within 2,5 m (`PAIR_REACH_M`), other fixtures within 3,0 m (`FIXTURE_REACH_M`); fixtures in today's wet rooms
+  (a room still mostly existing area whose Room record had a wet type in Forslag D; toilets only in bad / wc) use
+  today's drains: no run, no warning. A fixture too far gets a red run, a line in the Vis section and, while the
+  overlay is on, a `'drain-far'` warning in Advarsler and the toolbar count (`withDrainWarnings`, not from
+  `deriveVariant`; not analysed at all while the overlay is off). Stacks drag along walls (snapping out of openings),
+  a tap gives a × to delete, «Legg til avløpsstamme» stores one; the suggestion comes back on a storey without a
+  stored stack. The stack's hit circle is 12 px (16 on touch) but at most 0,25 m, so the toilets beside it stay
+  selectable zoomed out. The toggle is per device (`hytte-planlegger:plumbing`). No 3D, no falls or pipe sizes.
+- **IFC overlay** («IFC-modell»; `src/ifc`, `IfcLayer.tsx`, `IfcOverlay.tsx`, `IfcPanel.tsx`): the user picks the
+  architect's file (no `accept` filter: iOS greys out .ifc); the loader checks the STEP header, imports web-ifc
+  (single-threaded) and parses merged meshes per kind (wall, window, door, roof, slab, other) and plan sections (Plan 1
+  cut at 0,9 m, Hems at 2,1 m with only the upper IFC storey's elements). The parsed model is cached in IndexedDB
+  (keyed by name and size; the file itself is never stored or uploaded) and comes back after a reload. Transform
+  IFC → plan (`transform.ts`, docs/kalibrering-ifc.md): translate (+4,71, +1,79), no rotation, no mirror, plus the
+  panel's nudge (1 cm steps, ±10 cm). Plan: blue (#1f6fd1) outlines, doors dashed, no pointer events; 3D: semi-
+  transparent meshes with blue edges (walls with doors and windows / roof / slabs), clipped at the cut in «Inne»,
+  outside the scene root (no picking, no labels). Measured against the real file (`align.real.test.ts`, skipped
+  without it): the 10 existing exterior wall pieces within 0,1 cm on both faces. The plan PDF never contains the IFC;
+  the 3D PNG does while it is shown.
 
 ## Component contracts (fixed so modules can be built in parallel)
 
@@ -1088,8 +1214,19 @@ Test hooks the UI must provide: `data-testid` = `view-tab-plan`, `view-tab-3d`, 
 `data-clearance-of`, `data-furniture-rotate`, `data-rotate-hit`, `data-edit-ghost` (+ `data-edit-moving`),
 `data-room-label-hit` (+ `data-label-box`); the editor fields (`room-size-w` / `room-size-d`, `wall-thickness`,
 `opening-corner`, …, a NumberField's `<input>` inside its test id), `ghost-restore`, `name-face-input`, `name-face`;
-and `window.__hytte = { ready: boolean; project: Project; derived: DerivedVariant; selection: Selection | null }` kept
-current (`ready` after the first 3D frame, or right away when only the plan is shown — the default).
+fourth fix round: `new-proposal-dialog`, `new-proposal-name`, `new-proposal-person`, `new-proposal-create`,
+`name-banner`; phase 3: `export-menu`, `export-menu-pdf`, `export-menu-png`, `export-dialog`, `export-paper-A4|A3`,
+`export-scale-50|100`, `export-storeys-ground|loft|both`, `export-labels`, `export-dims`, `export-furniture`,
+`export-colour-new|bw`, `export-summary`, `export-make`, `export-status`, `export-share`, `export-download`,
+`export-error`, `preset-walk`, `walk-start-3d`, `walk-exit`, `walk-joystick`, `toggle-shadows`, `toggle-plumbing`,
+`plumbing-info`, `plumbing-far`, `plumbing-add-stack`, `ifc-panel`, `ifc-file-input`, `ifc-load`, `ifc-file`,
+`ifc-show-plan`, `ifc-show-3d`, `ifc-replace`, `ifc-remove` (and the nudge buttons); plan attributes `data-layer="plumbing"`
+(`data-drain-stack`, `data-drain-run`, `data-drain-far`, …) and `data-layer="ifc"` (`path[data-ifc=wall|window|door]`);
+the 3D canvas's `data-ifc-meshes` (element groups the IFC overlay draws); and `window.__hytte = { ready: boolean;
+project: Project; derived: DerivedVariant; selection: Selection | null; lastExport; walk }` kept current (`ready` after
+the first 3D frame, or right away when only the plan is shown — the default; `lastExport` = `{ kind, bytes, pages,
+fileName, width?, height? }` after a PDF / PNG export; `walk` = `{ session, x, y, feetZ, eyeZ, heading }` while «Gå
+rundt» is on).
 
 ## Geometry API (signatures the modules agree on)
 
@@ -1356,6 +1493,25 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   revision; an edit followed by `visibilitychange` → hidden is written within 0.7 s and survives the context closing), `phone-family-firestore.spec.ts` (no Google scripts or auth iframe on the iPhone) and
   `family-offline.spec.ts` ('pwa': an offline reload keeps «Lagret her – sendes når du er på nett»). Without the
   variable they are skipped.
+- Fourth fix round and phase 3: `editActions.fix6.test.ts` (units against the house: Dybde / Bredde, edge and corner
+  drags, «Ta tilbake» on a house edge with a unit against it; corner restores D1 / D3 / D5, E2 / E3 with and without a
+  reload; merged-room records after a reload; legacy proposals without `carriedBy`; the wing's w-wing-w; the Loungesofa
+  push-out), `appStore.family.test.ts` / `familyStore.sync.test.ts` / `familyBanners.test.tsx` (the proposal-link
+  banner's «Bytt dit», the carry-over text, the stopped tab read-only, the old proposal link, the pill «Ikke startet»,
+  the name banner and the two-field dialog), `furniturePlacer.test.ts` (middle inside the unit, the storey-wide
+  fallback), `FurnitureLayer.test.tsx` (no up-facing handle on touch), `SelectionMiniBar.test.tsx` (two fingers pass
+  through), `export/*.test.ts(x)` (paper, sheets, svgPrint, the real jsPDF + svg2pdf page sizes and the west wall at
+  1:50 / 1:100, title block, PNG caption, the dialog), `walk.test.ts` / `Walk.dom.test.tsx` / `WalkOverlay.dom.test.tsx`
+  / `sunPanel.test.ts` / `controlsWalkSun.test.tsx`, `plumbing.test.ts` / `PlumbingLayer.test.tsx`, `src/ifc/*.test.ts`
+  (parse with the real web-ifc on a synthetic file, transform, cache, store, views). E2E: `phase3.spec.ts` (PDF A3 1:50
+  both storeys: pages and A3 MediaBox read from the file; PNG download; walk W 500 ms at eye height, Esc; «Avløp og
+  sluk» with the «fint» line, the WC toilet in Soverom 1 flagged in Advarsler; the synthetic IFC through the file
+  chooser in plan and 3D, the screenshot with the real file when present), `phone-phase3.spec.ts` (the joystick walks,
+  a drag looks, «Avslutt»; «Eksporter» reachable), `editing.spec.ts` (ab) (Vedskjul at (12,8, −0,9), Dybde 2,0: the
+  house unchanged) and (ac) (corner restore D1), `proposals.spec.ts` (the proposal link's «Bytt dit», the two-field
+  dialog), `phone-editing.spec.ts` (the shed against the wing, the bedroom pinched to the middle),
+  `phone-furniture.spec.ts` (two fingers through the mini-bar; the up-facing handle hidden). Screenshots:
+  export-dialog.png, 3d-walk.png, plan-avlop.png, ifc-overlay.png, phone-walk.png.
 - `npm run build` must pass with zero TypeScript errors; `npm run lint` (oxlint) clean.
 
 ## Rules for contributors (humans and agents)

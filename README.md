@@ -3,7 +3,9 @@
 Nettbasert 2D/3D-planlegger for utvidelsen av hytta ved Merkesvatnet (Hadsel, Vesterålen). Familien bruker den
 til å utvikle «Forslag D»: se planen og huset i 3D (ute og inne, med sol for valgt dato og klokkeslett), følge med på
 romskjema og arealer (BYA, BRA), og lage egne forslag der de flytter vegger, dører, vinduer og bygningsdeler, tegner
-nye vegger, setter nye bygg (vedskjul, bod, badstue, anneks) på terrassen og møblerer rommene.
+nye vegger, setter nye bygg (vedskjul, bod, badstue, anneks) på terrassen og møblerer rommene. Planen kan skrives ut
+som PDF i målestokk, 3D-bildet lagres som PNG, du kan gå rundt i huset i øyehøyde, se hvor avløpene står i forhold til
+avløpsstammen, og legge arkitektens IFC-modell av hytta i dag over planen og 3D.
 
 Appen kjører i nettleseren og virker uten nett (PWA, kan legges på Hjem-skjermen). Forslagene ligger i familiens delte
 plass (Firebase Firestore), så alle med familielenken ser og endrer de samme forslagene på PC og telefon; uten oppsett
@@ -66,13 +68,42 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
 - Trærne og møblene hører til forslaget: å flytte et tre eller et møbel i et forslag endrer ikke Forslag D.
 - Hurtigtaster: Delete, piltastene (1 cm, med Shift 10 cm), R, Ctrl+D, Ctrl+Z / Ctrl+Y og Esc.
 
+## Skriv ut, gå rundt, avløp og IFC (fase 3)
+
+- **Skriv ut planen**: «Eksporter» øverst → «Eksporter plan som PDF …». Velg A3 eller A4, 1:50 eller 1:100, Plan 1,
+  Hems eller begge, om romnavn og arealer, mål og møbler skal være med, og farger («Vis hva som er nytt») eller
+  svart-hvitt. Dialogen sier hvor mange sider det blir. Trykk «Lag PDF»: på PC lastes fila ned
+  (`hytta-<forslag>-<dato>.pdf`), på telefonen kan du dele den (e-post, meldinger, Filer) eller laste den ned. Skriv ut
+  i **faktisk størrelse (100 %)**, ikke «tilpass til siden», så stemmer målestokken (1 m = 2 cm i 1:50). Er planen for
+  stor for arket, deles den på flere ark med 1 cm overlapp. Siste side har romskjemaet og arealene — fint å gi til en
+  håndverker eller arkitekt.
+- **Bilde av 3D**: «Eksporter» → «Lagre 3D-bildet som PNG» lagrer det du ser i 3D akkurat nå, med forslagets navn og
+  dato nederst. På telefonen åpnes delingsmenyen.
+- **Gå rundt**: i 3D, trykk «Gå rundt» (under kameravinklene, eller knappen oppe til høyre i bildet). Du står i stua i
+  øyehøyde (1,65 m) — eller der du sist trykket på et gulv i 3D, eller i rommet du har valgt i planen. På PC: gå med
+  W A S D (eller piltastene), se deg rundt med musa, hold Shift for å løpe, Esc avslutter. På telefonen: gå med spaken
+  nede til venstre, dra i bildet for å se deg rundt, «Avslutt» oppe til høyre. Du går gjennom dører og åpninger og opp
+  og ned trapper, men ikke gjennom vegger og vinduer (møblene stopper deg ikke).
+- **Sol og skygge**: trykk «Midtsommer», «Jevndøgn», «Midtvinter» eller «I dag», og dra i klokkeslettet. Den gule
+  stripa viser når sola er oppe den dagen ved hytta. Slå av «Skygger» hvis 3D går tregt på telefonen.
+- **Avløp og sluk**: slå på «Avløp og sluk» under Vis (med planen). Du ser et forslag til avløpsstamme og stiplede
+  ledninger med avstand fra toaletter, dusjer, servanter og vaskemaskiner. Under bryteren står hva som er fint (i
+  Forslag D: «WC og Hovedbad: toalettene står rygg mot rygg på veggen ved x 18,6 – det er fint.»). Flytter du et
+  toalett langt unna, blir det rødt og kommer under Advarsler med avstanden. I ditt eget forslag kan du dra stammen
+  langs veggene, trykke på den for å slette den, eller trykke «Legg til avløpsstamme».
+- **IFC-modell**: åpne panelet «IFC-modell» (under Vis) og trykk «Last inn IFC-fil», og velg arkitektens fil
+  (`SIBSAS 11453 IB Hytte Merskarvann v01.ifc`). Den legges blått over planen og halvgjennomsiktig i 3D, så du kan se at
+  hytta i dag stemmer. Du kan skru den av og på i plan og 3D, endre synligheten og flytte den 1 cm om gangen. Fila
+  blir på enheten din: den lastes ikke opp og deles ikke med familien. «Fjern» tar den bort igjen.
+
 ## Delte forslag og offline (fase 2b)
 
 - **Familielenken** `…/hytte-planlegger/#f=<familie-id>` er lenken dere sender hverandre: alle som åpner den, ser de
   samme forslagene. «Send forslaget» sender en lenke rett til forslaget som er åpent (`#f=…&p=…`). Oppsettet av
   Firebase står i [docs/firebase-oppsett.md](docs/firebase-oppsett.md) (gjort; reglene i `firestore.rules` er publisert).
 - **Forslag-menyen** (øverst) viser Forslag D først og så familiens forslag med «sist endret av …». «+ Nytt forslag»
-  lager en kopi av forslaget på skjermen. Hver enhet blir spurt én gang «Hva heter du?».
+  lager en kopi av forslaget på skjermen. I den delte plassen spør appen én gang «Hva heter du?» — i samme vindu som
+  navnet på det nye forslaget, eller i en stripe øverst når du har gjort en pause.
 - **Lagring er automatisk.** Statusen øverst sier «Lagret for alle», «Lagrer …», «Lagret her – sendes når du er på
   nett» (uten nett, også etter at appen er lastet på nytt) eller «Kun på denne enheten …» (uten delt plass). Endrer to
   samme forslag samtidig, får den ene valget «Hent endringene» / «Lagre over» (utgaven som ikke vinner, legges under
@@ -82,11 +113,12 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   tilbake. En sletting gjort uten nett tar aldri med seg endringer andre har gjort i mellomtiden: den som endret,
   får beskjed og kan trykke «Hent tilbake». En lenke til en annen delt plass enn den enheten
   bruker, bytter aldri av seg selv: appen sier hva de to plassene har og spør («Bytt dit» / «Bli her»). En lenke til
-  ett forslag i en annen plass gir «Hent «…» som en kopi hit». Bytter enheten plass i en annen fane, sier de andre
-  fanene fra og lagrer ikke mer («Last på nytt»). «Lagre over» sier fra til den andre, og utgaven som ble lagt
+  ett forslag i en annen plass gir «Hent «…» som en kopi hit», «Bytt dit» eller «Bli her». Bytter enheten plass i en
+  annen fane, sier de andre fanene fra, kan ikke endres og lagrer ikke mer («Last på nytt»). «Lagre over» sier fra til den andre, og utgaven som ble lagt
   bort, er merket under Tidligere versjoner. **Tidligere versjoner** (Mer) har inntil 20 automatiske versjoner per forslag. Mer har også «Lagre som fil»,
   «Åpne fil» og «Eksporter JSON».
-- **Uten nett** starter appen fra mellomlageret (service worker), og endringene sendes når nettet er tilbake. På
+- **Uten nett** starter appen fra mellomlageret (service worker), og endringene sendes når nettet er tilbake (PDF og
+  IFC-modellen virker uten nett når de er brukt én gang med nett). På
   iPhone: legg appen på Hjem-skjermen mens familielenken er åpen (kortet «Legg planleggeren på Hjem-skjermen» forklarer
   hvordan). Når en ny versjon av appen er publisert, kommer «Ny versjon av appen er klar. [Oppdater]»; har du appen
   åpen i flere faner, lastes bare den du trykket i på nytt, de andre sier fra.
@@ -163,7 +195,12 @@ npm run dev        # http://localhost:5173
   på huset (hintet, nektet trykk, et anneks dratt mot fløya stopper ved veggen), en bod som forstørres over utebordet,
   «Ta tilbake» på en hemsvegg som ble flyttet med, Dupliser til et naborom eller nektet (PC), et vedskjul trykket
   like utenfor badstuveggen og førstegangsflyten med vedskjulet fortsatt valgt (iPhone), og spørsmålet før bytte av
-  plass, `&p=`-lenken som kopi og fanen som sier fra (forslagene). Prøvene mot den ekte Firestore kjøres bare med `E2E_FIRESTORE=1` (se
+  plass, `&p=`-lenken som kopi og fanen som sier fra (forslagene). Fase 3 og runde 4 la til `e2e/phase3.spec.ts` (PDF
+  i A3 1:50 med begge etasjer — sidene og A3-størrelsen lest fra fila —, PNG, «Gå rundt» med W, «Avløp og sluk» med et
+  toalett flyttet til Soverom 1, og en liten syntetisk IFC-fil fra `e2e/fixtures/` gjennom filvelgeren),
+  `e2e/phone-phase3.spec.ts` (spaken i «Gå rundt», «Eksporter» på telefonen), et vedskjul inntil huset med ny dybde og
+  «Ta tilbake» i et hjørne (PC), og forslagslenkens «Bytt dit» og vinduet med to navn (forslagene). Prøvene mot den
+  ekte Firestore kjøres bare med `E2E_FIRESTORE=1` (se
   [docs/firebase-oppsett.md](docs/firebase-oppsett.md)); ellers hoppes de over. Skjermbildene i `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
   `e2e/playwright-report/` og `e2e/test-results/` (ikke i git).
@@ -174,7 +211,9 @@ npm run dev        # http://localhost:5173
 `npm run build` lager `dist/` med relativ base (`./` i `vite.config.ts`), så samme bygg virker både lokalt og under en
 undermappe på GitHub Pages. Bygget har en service worker (`sw.js`, scope `./`) som mellomlagrer hele appen
 (fonter, ikoner og Firebase-delen også), og et manifest uten `start_url` (Hjem-skjerm-appen åpner adressen den ble lagt
-til fra, med familielenken). Firebase lastes som en egen del bare når den delte plassen brukes.
+til fra, med familielenken). Firebase lastes som en egen del bare når den delte plassen brukes. PDF-bibliotekene
+(jsPDF, svg2pdf.js) og IFC-motoren (web-ifc med wasm, ca. 5 MB) er egne deler som lastes første gang de brukes, og
+mellomlagres da — de lastes ikke ned når appen installeres.
 
 Publiseringen er automatisk: hver push til `main` kjører [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml),
 som kjører enhetstestene, bygger og laster `dist/` opp til GitHub Pages. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
@@ -191,6 +230,9 @@ deretter på `https://<brukernavn>.github.io/hytte-planlegger/`.
 | Forslag uten delt plass | `localStorage` → `hytte-planlegger:proposals` (+ `…:proposal-revisions`) | Når appen kjører uten Firebase (eller ikke får lastet det): samme regler, bare i denne nettleseren. Forslag som ble lagret her mens familiens plass ikke kunne nås, legges inn i den når den kan nås. |
 | Familie-id, navn | `localStorage` → `hytte-planlegger:family`, `…:my-name` | Id-en fra familielenken og navnet fra «Hva heter du?». |
 | Visningsvalg | `localStorage` → `hytte-planlegger:ui` | Aktiv visning, etasje, kamera, brytere (også «Plassbehov for møbler»), soltidspunkt. |
+| Valg i PDF-dialogen, «Avløp og sluk», «Skygger» | `localStorage` → `hytte-planlegger:export.pdf`, `…:plumbing`, `hytte.view3d.shadows` | Per enhet. |
+| Avløpsstammer | I forslaget (`plumbing`) | Følger forslaget til alle, som resten av det. |
+| IFC-modellen | IndexedDB i nettleseren (den tolkede modellen) + `localStorage` → `hytte-planlegger:ifc-overlay` (valgene) | Bare på denne enheten. Selve IFC-fila lagres ikke og lastes aldri opp; «Fjern» sletter modellen. |
 | Lagre som fil / Åpne fil | JSON-fil | Forslaget på skjermen som fil; en fil åpnes som nye forslag. «Eksporter JSON» lagrer hele prosjektet. |
 | Gammel autolagring | `localStorage` → `hytte-planlegger:project.before-2b` | Prosjektet fra fase 1 / 2a, flyttet inn som forslag første gang 2b startet; beholdes som sikkerhetskopi. |
 | Delingslenke | `#d=` i adressen | En kopi av et forslag i selve lenken (fra før 2b). Åpnes som et nytt forslag. |
@@ -209,12 +251,14 @@ src/
                redigeringsregler (edit.ts) og snapping (snap.ts)
   state/       zustand-store med angre/gjør om, utvalg, familiens forslag (familyStore*.ts: lokal og Firestore,
                synkronisering), persistens (visningsvalg, lenker, filer), redigeringshandlingene (editActions.ts)
-  plan2d/      SVG-planen med redigering (bevegelser, verktøy, håndtak)
-  view3d/      3D-scenen (react-three-fiber), klikk for å velge
+  plan2d/      SVG-planen med redigering (bevegelser, verktøy, håndtak), avløpslaget og IFC-omrissene
+  view3d/      3D-scenen (react-three-fiber), klikk for å velge, «Gå rundt», solpanelet, IFC-modellen i 3D
+  export/      PDF av planen (ark, tittelfelt, romskjema) og PNG av 3D-bildet
+  ifc/         lesing av IFC-fila (web-ifc), kalibrering, hurtiglager
   ui/          app-skall, verktøylinje, Egenskaper, paneler, tema, tallformatering
   i18n/        nb.ts – alle tekster i grensesnittet
   furniture/   møbelkatalogen (50 møbler med størrelser, farger, plassbehov, symbol og 3D-modell)
-e2e/           Playwright: røyktest, redigering og møbler på PC og på iPhone, forslag, offline, skjermbilder
+e2e/           Playwright: røyktest, redigering og møbler på PC og på iPhone, forslag, offline, fase 3, skjermbilder
 docs/          arkitektur, fase 2-planen, Firebase-oppsett, IFC-kalibrering, seed-brief
 data/geo/      rå høydedata fra Kartverket og IFC-uttrekket (inndata til scripts/)
 scripts/       build-terrain.mjs
