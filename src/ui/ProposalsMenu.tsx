@@ -11,19 +11,19 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { nb } from '../i18n/nb';
-import { activateProposal, appStore, deleteProposal, familyMode, useAppStore, useFamily } from '../state/appStore';
+import { activateProposal, deleteProposal, familyMode, useAppStore, useFamily } from '../state/appStore';
 import type { Id, Variant } from '../model/types';
 import { selectActiveVariant } from '../state/store';
 import { IconChevronDown, Modal } from './common';
-import { createNewProposal, nextProposalName } from './editorBridge';
+import { promptNewProposal } from './Dialogs';
 import { menuOrder, metaLine, useMinuteClock } from './familyUi';
 
-/** Ask for the name, then copy `fromId` (default: the proposal on screen) and show the copy. */
+/**
+ * Ask for the name, then copy `fromId` (default: the proposal on screen) and show the copy. In the shared space with
+ * this device's name unknown, one dialog asks for both names (`Dialogs.tsx promptNewProposal`).
+ */
 function askNameAndCopy(fromId?: Id): void {
-  const name = window.prompt(nb.prompts.newProposalName, nextProposalName(appStore.getState().project));
-  if (name === null) return;
-  if (fromId && appStore.getState().project.activeVariantId !== fromId) activateProposal(fromId);
-  createNewProposal(name);
+  promptNewProposal(fromId);
 }
 
 export function ProposalsMenu(props: { onOpenTrash: () => void }) {

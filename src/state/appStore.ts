@@ -14,13 +14,20 @@
  *    («Denne lenken går til en annen delt plass. Plassen i lenken har N forslag (…); plassen du bruker nå har M.
  *    [Bytt dit] [Bli her]»). Only «Bytt dit» switches: the old id is remembered (`family.previous`), and once the new
  *    space answers, the proposals this device created in the old one are offered («Hent forslagene fra den forrige
- *    plassen»: copied here, put in the old space's Papirkurv; copies brought in are never offered again). A link to one
- *    proposal in another space (`&p=`) never switches: «Hent «…» som en kopi hit» copies it into this space. On a
- *    device without a family the link's space is used, and stored once it shows proposals, a proposal is made in it,
- *    or the user starts it («Denne plassen er tom. Er lenken hel?» [Begynn her]). When another tab switches this device
- *    to another space (`storage` event), this tab stops saving and asks for a reload. A
+ *    plassen»: copied here, put in the old space's Papirkurv; copies brought in are never offered again; without a
+ *    highlighted button, and saying the family there will not see them any more, when the old space has proposals
+ *    made on other devices). A link to one proposal in another space (`&p=`) offers «Hent «…» som en kopi hit» (a copy
+ *    into this space; it counts as made on this device once it is edited here) and «Bytt dit» (the reload shows that
+ *    proposal there); a link to a proposal that is in this space (an old link to the space it was carried from) just
+ *    shows it. On a device without a family the link's space is used, and stored once it shows proposals, a proposal
+ *    is made in it, or the user starts it («Denne plassen er tom. Er lenken hel?» [Begynn her]; the pill says
+ *    «Ikke startet» meanwhile). When another tab switches this device to another space (`storage` event), this tab
+ *    saves what was edited before, becomes read-only and asks for a reload. A
  *    `#f=` whose id is not whole (cut off) never starts a new family: the stored one is used, or — on a device without
  *    one — the proposals are kept on this device (`noFamily`) until a whole link is opened; a banner says so.
+ *    «Hva heter du?» is never a dialog during editing: «+ Nytt forslag» asks for it with the proposal's name
+ *    (`askNameWithProposal`, ui/Dialogs.tsx `promptNewProposal`); the first save without a name otherwise shows a
+ *    banner once the plan has been left alone a moment (`nameBanner`).
  *  - 'local': the proposals are stored in this browser (familyStore.local.ts) — "Kun på denne enheten".
  * familyStore.sync.ts keeps the store and the family store in step (autosave, live merge, conflict guard); its state
  * (status pill, "sist endret av …", Papirkurv, conflicts) is mirrored into `familyUiStore` (`useFamily`).
@@ -168,6 +175,37 @@ function recordIds(key: string, family: string, add: Id[]): void {
   if (fresh.length === 0) return;
   all[family] = [...ids, ...fresh].slice(-200);
   writeRaw(storage, key, JSON.stringify(all));
+}
+
+function forgetIds(key: string, family: string, remove: Id[]): void {
+  const all = idsByFamily(key);
+  const ids = all[family] ?? [];
+  if (!remove.some((id) => ids.includes(id))) return;
+  all[family] = ids.filter((id) => !remove.includes(id));
+  writeRaw(storage, key, JSON.stringify(all));
+}
+
+/** The id `copyLinkedProposal` gives the copy of proposal `id` of space `from` (the same link twice: the same copy). */
+function linkCopyId(from: string, id: Id): Id {
+  return `${id.slice(0, 60)}-k${fnv36(`${from}|${id}`)}`;
+}
+
+/** A copy made from a `&p=` link to another space (its id is derived from the proposal it copies, `linkCopyId`). */
+function isLinkCopy(v: Variant): boolean {
+  return !!v.basedOnId && v.id.startsWith(`${v.basedOnId.slice(0, 60)}-k`);
+}
+
+/**
+ * This device edited proposal `id` in `family`: a copy fetched from a proposal link (recorded as brought in, so an
+ * untouched copy is never offered to move out) counts as made here from now on — a later «Bytt dit» offers it, so
+ * the edits are not stranded in a space the device leaves. Copies made before this rule are recognised by their id.
+ */
+function countEditedLinkCopy(family: string, id: Id): void {
+  if (!(idsByFamily(FAMILY_KEYS.carriedIn)[family] ?? []).includes(id)) return;
+  const v = appStore.getState().project.variants.find((x) => x.id === id);
+  if (!v || !isLinkCopy(v)) return;
+  forgetIds(FAMILY_KEYS.carriedIn, family, [id]);
+  recordIds(FAMILY_KEYS.createdHere, family, [id]);
 }
 
 /** Proposals this device created in `family` that are not copies brought in from another space. */
@@ -376,8 +414,15 @@ export function useAppStore<T>(selector: (state: AppState) => T): T {
 // ---------------------------------------------------------------------------
 
 export interface FamilyUiState extends SyncState {
-  /** Show "Hva heter du?" (shared mode, the first save on a device without a name). */
+  /** Show the name prompt "Hva heter du?" (asked for: «Endre navnet ditt», the name banner, «+ Nytt forslag»). */
   askName: boolean;
+  /**
+   * The name prompt also asks for the name of a new proposal («+ Nytt forslag» while this device's name is unknown):
+   * one dialog with two fields, then `from` (null: the proposal on screen) is copied.
+   */
+  nameForProposal: { from: Id | null } | null;
+  /** The first save without a name: «Hva heter du?» as a banner (shown once the plan has been left alone a moment). */
+  nameBanner: boolean;
   /**
    * Shared mode, but Firebase could not be loaded: the proposals are kept on this device (the local store) until the
    * family space can be reached; the pill says «Kun på denne enheten (familiens plass kan ikke nås nå)».
@@ -385,8 +430,11 @@ export interface FamilyUiState extends SyncState {
   fallback: boolean;
   /** Shared mode, but a broken `#f=` link on a device without a family: kept here until a whole link is opened. */
   noFamily: boolean;
-  /** After a family switch: the proposals this device created in the previous space, offered to bring along. */
-  carryOver: { from: string; names: string[] } | null;
+  /**
+   * After a family switch: the proposals this device created in the previous space, offered to bring along.
+   * `othersThere`: that space has proposals made on other devices (the family's), so the offer is not highlighted.
+   */
+  carryOver: { from: string; names: string[]; othersThere: boolean } | null;
   /**
    * A `#f=` link (at start-up or pasted into the tab) to another space than this device's: the device stays in its
    * family until the user picks «Bytt dit» (`switchToLinkedFamily`), «Bli her» (`stayInFamily`) or, for a link to one
@@ -395,6 +443,8 @@ export interface FamilyUiState extends SyncState {
   otherFamily: OtherFamilyLink | null;
   /** The start link's space has no proposals and this device has no family yet: «Begynn her» (`startEmptyFamily`). */
   emptyFamily: boolean;
+  /** The start link's space is not this device's family yet (nothing is stored there): the pill is neutral. */
+  unconfirmed: boolean;
   /** Another tab on this device switched to another space: this tab saves nothing until it is reloaded. */
   elsewhere: boolean;
   notices: FamilyNotice[];
@@ -422,11 +472,14 @@ function initialSyncState(): SyncState {
 export const familyUiStore = create<FamilyUiState>()(() => ({
   ...initialSyncState(),
   askName: false,
+  nameForProposal: null,
+  nameBanner: false,
   fallback: false,
   noFamily,
   carryOver: null,
   otherFamily: otherFamilyLink,
   emptyFamily: false,
+  unconfirmed: unconfirmedFamily,
   elsewhere: false,
   notices: [...startFamilyNotices],
 }));
@@ -562,7 +615,7 @@ function confirmFamily(): void {
   if (!unconfirmedFamily || !familyId) return;
   unconfirmedFamily = false;
   writeRaw(storage, FAMILY_KEYS.familyId, familyId);
-  familyUiStore.setState({ emptyFamily: false });
+  familyUiStore.setState({ emptyFamily: false, unconfirmed: false });
   if (firstListWaits && sync) {
     firstListWaits = false;
     runFirstList(sync.lastList());
@@ -574,7 +627,7 @@ export function startEmptyFamily(): void {
   confirmFamily();
 }
 
-/** «Lukk» on that banner: nothing is stored (the question comes again at the next start). */
+/** «Lukk» on that banner: nothing is stored (the question comes again at the next start; the pill stays neutral). */
 export function dismissEmptyFamily(): void {
   familyUiStore.setState({ emptyFamily: false });
 }
@@ -649,7 +702,9 @@ function switchOffer(from: string): Id[] {
  * The device switched to a space it had never used (`FAMILY_KEYS.switchedFrom`): read the previous space and offer
  * the proposals this device created there before the switch (`switchOffer`; never copies it brought in from yet
  * another space) that are still there (not deleted) and not here yet. Nothing to offer once the previous space
- * answered online: the switch is forgotten; offline it is tried again at the next start.
+ * answered online: the switch is forgotten; offline it is tried again at the next start. When the previous space has
+ * proposals made on other devices (the family's space), the offer says the family there will not see them any more
+ * and highlights neither button (`othersThere`).
  */
 function offerCarryOver(here: ProposalList): void {
   const from = readRaw(storage, FAMILY_KEYS.switchedFrom);
@@ -667,8 +722,10 @@ function offerCarryOver(here: ProposalList): void {
   const unsubscribe = store.listProposals((list) => {
     if (carry?.store !== store) return;
     const offered = list.proposals.filter((p) => mine.has(p.id) && !hereIds.has(p.id)).map((p) => p.variant);
+    const ours = madeHere(from);
+    const othersThere = list.proposals.some((p) => !ours.has(p.id));
     carry.offered = offered;
-    familyUiStore.setState({ carryOver: offered.length > 0 ? { from, names: offered.map((v) => v.name) } : null });
+    familyUiStore.setState({ carryOver: offered.length > 0 ? { from, names: offered.map((v) => v.name), othersThere } : null });
   });
   carry = {
     from,
@@ -750,10 +807,30 @@ function updateLinkedInfo(): void {
   });
 }
 
-/** Read the space of the open link to another space (once Firebase is loaded: at the first list, or when it comes). */
+/**
+ * A link to a proposal that is in this space (an old `#f=<previous>&p=X` link whose proposal was carried here, keeping
+ * its id): it is shown here and the banner is closed, as with «Bli her». False when it is not here (yet).
+ */
+function openLinkedHere(): boolean {
+  const other = familyUiStore.getState().otherFamily;
+  const id = other?.proposal;
+  const here = id && sync && family?.mode === 'shared' ? sync.lastList().proposals.find((p) => p.id === id) : undefined;
+  if (!sync || !here) return false;
+  endLinked();
+  familyUiStore.setState({ otherFamily: null });
+  sync.activate(here.id);
+  syncHash();
+  appStore.getState().showToast({ text: nb.family.linkKnown(here.name) });
+  return true;
+}
+
+/**
+ * Read the space of the open link to another space (once Firebase is loaded: at the first list, or when it comes).
+ * A link to a proposal this space has is no question (`openLinkedHere`).
+ */
 function watchLinked(): void {
   const other = familyUiStore.getState().otherFamily;
-  if (!other) {
+  if (!other || openLinkedHere()) {
     endLinked();
     return;
   }
@@ -785,37 +862,38 @@ export function stayInFamily(): void {
 }
 
 /**
- * «Bytt dit»: the device goes to the space of that link (after saving what is pending, a reload). The space left is
- * remembered, and the new space offers the proposals this device created in it (never a link to one proposal: that
- * offers a copy, `copyLinkedProposal`).
+ * «Bytt dit»: the device goes to the space of that link (after saving what is pending, a reload; a link to one
+ * proposal there shows that proposal). The space left is remembered, and the new space offers the proposals this
+ * device created in the one left (`offerCarryOver`).
  */
 export function switchToLinkedFamily(): void {
   const other = familyUiStore.getState().otherFamily;
-  if (!other || other.proposal || !familyId) return;
+  if (!other || !familyId) return;
   rememberPreviousFamily(familyId, { to: other.id, offer: true });
   writeRaw(storage, FAMILY_KEYS.familyId, other.id);
   endLinked();
-  setHash(familyHash(other.id));
+  setHash(familyHash(other.id, other.proposal));
   void flushProposals().finally(reloadPage);
 }
 
 /**
  * «Hent «…» som en kopi hit» on a link to one proposal in another space: a copy is added to this space (its id derived
  * from the link, so the same link twice adds nothing twice) and shown; the other space is not touched. False when the
- * proposal is not known there (yet).
+ * proposal is not known there (yet). The copy counts as brought in until it is edited on this device; from then on
+ * as made here (`countEditedLinkCopy`).
  */
 export function copyLinkedProposal(): boolean {
   const other = familyUiStore.getState().otherFamily;
   const p = other?.proposal && linked?.id === other.id ? linked.list?.proposals.find((x) => x.id === other.proposal) : undefined;
   if (!other || !p || !sync || !familyId) return false;
-  const id = `${p.id.slice(0, 60)}-k${fnv36(`${other.id}|${p.id}`)}`;
+  const id = linkCopyId(other.id, p.id);
   const project = appStore.getState().project;
   const known = project.variants.find((v) => v.id === id);
   let name = known?.name ?? p.name;
   if (!known) {
     const [copy] = nameAgainst([{ ...cleanVariant(p.variant, id), basedOnId: p.id, createdAt: nowISO() }], project.variants.map((v) => v.name));
     name = copy.name;
-    // Brought in from another space: a later switch never offers to move it out of this one.
+    // Brought in from another space: a later switch offers to move it out of this one only once it is edited here.
     recordIds(FAMILY_KEYS.carriedIn, familyId, [id]);
     sync.addVariants([copy]);
   }
@@ -831,16 +909,22 @@ export function copyLinkedProposal(): boolean {
 // Another tab switched this device to another space
 // ---------------------------------------------------------------------------
 
-/** This tab stops saving: what was edited here before is saved (in this space), nothing after. */
+/**
+ * This tab stops saving and becomes read-only until it is reloaded (`ui.readOnly`: the editing tools are gone, the
+ * plan takes no edits): what was edited here before is saved (in this space), nothing after.
+ */
 function stopForOtherTab(): void {
   if (familyUiStore.getState().elsewhere) return;
   endLinked();
   endCarryOver(false);
-  familyUiStore.setState({ elsewhere: true, otherFamily: null, emptyFamily: false });
+  stopNameWait?.();
+  familyUiStore.setState({ elsewhere: true, otherFamily: null, emptyFamily: false, nameBanner: false, askName: false, nameForProposal: null });
   if (connectTimer !== null) clearTimeout(connectTimer);
   connectTimer = null;
-  const s = sync;
-  void (s ? s.flush() : Promise.resolve()).finally(() => s?.stop());
+  const state = appStore.getState();
+  if (state.inTransaction()) state.commitTransaction();
+  state.setUi({ readOnly: true, selection: null, tool: 'select', hint: null });
+  void sync?.finish();
 }
 
 /** «Last på nytt» after another tab switched: reloads in the space this device uses now. */
@@ -859,7 +943,7 @@ function attachSync(store: FamilyStore): void {
     target: hasWindow ? window : null,
     doc: hasWindow && typeof document !== 'undefined' ? document : null,
     storage,
-    onNeedsName: () => familyUiStore.setState({ askName: true }),
+    onNeedsName: askNameWhenIdle,
     onSaved: (id) => {
       if (legacyIds.delete(id)) retireLegacyWhenStored();
       if (store.mode === 'shared' && leftoverIds.delete(id)) clearLeftoversWhenStored();
@@ -869,6 +953,9 @@ function attachSync(store: FamilyStore): void {
       if (fid && !(idsByFamily(FAMILY_KEYS.carriedIn)[fid] ?? []).includes(id)) recordIds(FAMILY_KEYS.createdHere, fid, [id]);
       // A proposal made in the space of a start link: it is this device's family now.
       if (fid) confirmFamily();
+    },
+    onEdited: (id) => {
+      if (store.mode === 'shared' && store.familyId) countEditedLinkCopy(store.familyId, id);
     },
     onFirstList,
   });
@@ -1047,13 +1134,14 @@ export function startPersistence(): () => void {
     if (unconfirmedFamily) {
       unconfirmedFamily = false;
       firstListWaits = false;
-      familyUiStore.setState({ emptyFamily: false });
+      familyUiStore.setState({ emptyFamily: false, unconfirmed: false });
     }
   };
   window.addEventListener('storage', onStorage);
   return () => {
     window.removeEventListener('hashchange', onHash);
     window.removeEventListener('storage', onStorage);
+    stopNameWait?.();
     endLinked();
     unsubscribeActive();
     prefs?.stop();
@@ -1145,15 +1233,76 @@ export async function restoreRevision(id: Id, revisionId: string): Promise<boole
 export function setMyName(name: string): void {
   if (family) family.setMyName(name);
   else names.set(name);
-  familyUiStore.setState({ askName: false });
+  stopNameWait?.();
+  familyUiStore.setState({ askName: false, nameBanner: false });
 }
 
 export function myName(): string | null {
   return family ? family.whoAmI() : names.get();
 }
 
+/** «Endre navnet ditt», «Skriv navnet» on the name banner: the name prompt (asked for, so a dialog is fine). */
 export function askForName(): void {
-  familyUiStore.setState({ askName: true });
+  familyUiStore.setState({ askName: true, nameBanner: false, nameForProposal: null });
+}
+
+/** The two-field prompt was left without a name: not asked again in this session (no banner either). */
+let nameSkipped = false;
+
+/**
+ * Should «+ Nytt forslag» ask for this device's name too (shared mode, the family space in use, no name given or
+ * declined, not skipped in this session)? Then one dialog asks for both (`askNameWithProposal`).
+ */
+export function nameUnknown(): boolean {
+  const s = familyUiStore.getState();
+  return s.mode === 'shared' && !s.fallback && !s.noFamily && !nameSkipped && myName() === null;
+}
+
+/** «+ Nytt forslag» while the name is unknown: the name prompt asks for the proposal's name and this device's name. */
+export function askNameWithProposal(from: Id | null): void {
+  familyUiStore.setState({ askName: true, nameBanner: false, nameForProposal: { from } });
+}
+
+/** The name was left empty in that prompt: no «Hva heter du?» again in this session. */
+export function skipNameForNow(): void {
+  nameSkipped = true;
+  stopNameWait?.();
+  familyUiStore.setState({ nameBanner: false });
+}
+
+/** «Hva heter du?» waits until the plan has been left alone this long (the banner row moves the plan down a little). */
+export const NAME_BANNER_IDLE_MS = 3000;
+/** Stops the wait for a quiet moment (null when not waiting). */
+let stopNameWait: (() => void) | null = null;
+
+/**
+ * The first save without a name (shared mode): «Hva heter du?» never interrupts an edit. A banner (no dialog, it
+ * takes no taps on the plan) is shown once nothing was edited or selected for NAME_BANNER_IDLE_MS and no drag runs.
+ */
+function askNameWhenIdle(): void {
+  if (stopNameWait || nameSkipped || familyUiStore.getState().elsewhere) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  function arm(): void {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(show, NAME_BANNER_IDLE_MS);
+  }
+  function show(): void {
+    if (appStore.getState().inTransaction()) {
+      arm();
+      return;
+    }
+    stopNameWait?.();
+    if (!nameSkipped && myName() === null) familyUiStore.setState({ nameBanner: true });
+  }
+  const unsubscribe = appStore.subscribe((s, prev) => {
+    if (s.project !== prev.project || s.ui.selection !== prev.ui.selection) arm();
+  });
+  stopNameWait = () => {
+    if (timer !== null) clearTimeout(timer);
+    unsubscribe();
+    stopNameWait = null;
+  };
+  arm();
 }
 
 /** The links of "Send forslaget" in shared mode: the family link and the proposal's deep link (null locally). */

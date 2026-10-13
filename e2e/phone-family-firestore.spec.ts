@@ -28,7 +28,8 @@ test.describe('the real family space on an iPhone', () => {
     );
     await page.goto(`/#f=${F}`);
     await page.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: READY_TIMEOUT_MS, polling: 250 });
-    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced', { timeout: 60_000 });
+    // A new device on an empty family's link shows «Ikke startet» until the first proposal is made there.
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', /^(synced|notStarted)$/, { timeout: 60_000 });
     page.once('dialog', (d) => void d.accept('Pappas idé'));
     await page.getByTestId('new-proposal').tap();
     await expect.poll(async () => (await activeVariant(page)).name).toBe('Pappas idé');

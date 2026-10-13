@@ -31,6 +31,15 @@
  *    «Denne enheten har byttet delt plass i en annen fane.», saves nothing more and reloads in the new space;
  *  - a `&p=` link to another space offers «Hent «…» som en kopi hit» and never switches; the same link twice adds one
  *    copy; the other space keeps its proposal.
+ * Fourth fix round:
+ *  - the `&p=` banner offers «Bytt dit» too (highlighted like the space banner): a device in a space of its own takes a
+ *    copy, edits it, then switches through the link; the family's proposal is shown and the edited copy is offered
+ *    and brought along;
+ *  - the tab left open after another tab's switch is read-only (no «+ Nytt forslag», no tools, the plan takes no edit);
+ *  - an old proposal link to the space left whose proposal was carried here opens it here;
+ *  - an empty link's space on a new device: the pill says «Ikke startet»; «Hva heter du?» never opens on its own while
+ *    editing: a banner after a pause (the locked toast's «Nytt forslag»), and «+ Nytt forslag» asks for both names in
+ *    one dialog (ui/Dialogs.tsx `promptNewProposal`).
  *
  * Screenshots: proposals-menu.png (the open menu), share-dialog.png (local "Send forslaget"), family-carry-over.png
  * (the offer after the switch), family-other-space.png (the banner for a link to another space).
@@ -45,6 +54,7 @@ import {
   activeVariant,
   collectPageErrors,
   createNewProposal,
+  dismissToasts,
   dragPlan,
   type HytteWindow,
   loadAndWaitReady,
@@ -363,7 +373,8 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     const F2 = 'e2e-carry-over-family-two-4567';
     await page.goto(`/#f=${F1}`);
     await waitReady(page);
-    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced');
+    // A new device at the link of an empty space: nothing is stored there yet (fourth fix round: never «Lagret»).
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'notStarted');
     page.once('dialog', (d) => void d.accept('Mammas idé'));
     await page.getByTestId('new-proposal').click();
     await expect.poll(async () => (await activeVariant(page)).name).toBe('Mammas idé');
@@ -428,6 +439,14 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     await oldTab.getByTestId('other-family-stay').click();
     await expect(left).toHaveCount(0);
     await expect.poll(() => new URL(oldTab.url()).hash.startsWith(`#f=${F2}`)).toBe(true);
+    // Fourth fix round: the old link to «Mammas idé» in the space left (it was carried here, keeping its id) opens it
+    // here, with no question.
+    await oldTab.goto(`/#f=${F1}&p=${id}`);
+    await waitReady(oldTab);
+    await expect.poll(async () => (await activeVariant(oldTab)).id).toBe(id);
+    await expect(oldTab.getByTestId('toast').filter({ hasText: '«Mammas idé» fra lenken finnes alt i listen.' })).toBeVisible();
+    await expect(oldTab.getByTestId('other-family-banner')).toHaveCount(0);
+    await expect.poll(() => new URL(oldTab.url()).hash).toBe(`#f=${F2}&p=${id}`);
     // Nothing left the family space.
     const inF2 = await fakeDocs(oldTab, `families/${F2}/proposals/`);
     expect(Object.values(inF2).map((d) => d.deletedAt ?? null)).toEqual([null, null]);
@@ -523,10 +542,14 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     await expect(elsewhere).toBeVisible();
     await expect(elsewhere).toContainText('Denne enheten har byttet delt plass i en annen fane.');
     await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'elsewhere');
-    page.once('dialog', (d) => void d.accept('Ny i gammel fane'));
-    await page.getByTestId('new-proposal').click();
-    await expect.poll(async () => (await activeVariant(page)).name).toBe('Ny i gammel fane');
+    // Read-only until it is reloaded (fourth fix round): no «+ Nytt forslag», no tools, a drag only pans.
+    await expect(page.getByTestId('new-proposal')).toHaveCount(0);
+    await expect(page.getByTestId('toolbar')).toHaveCount(0);
+    await expect(page.getByTestId('plan-view')).toHaveAttribute('data-plan-editable', 'false');
+    const tubBefore = (await activeVariant(page)).outdoor.hotTubs[0].centre;
+    await dragPlan(page, [tubBefore[0], tubBefore[1]], [tubBefore[0] - 2, tubBefore[1]]);
     await page.waitForTimeout(2000);
+    expect((await activeVariant(page)).outdoor.hotTubs[0].centre, 'no edit in the stopped tab').toEqual(tubBefore);
     const namesIn = async (f: string) => Object.values(await fakeDocs(page, `families/${f}/proposals/`)).map((d) => d.name);
     expect(await namesIn(FA), 'nothing new in the space left').toEqual(['Pappas plan']);
     expect(await namesIn(FB)).toEqual(['Mammas idé']);
@@ -540,7 +563,7 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     expect([...pageErrors, ...tab2Errors]).toEqual([]);
   });
 
-  test('a link to one proposal in another space offers it as a copy here and never switches; that space keeps it', async ({ page, browser }, testInfo) => {
+  test('a link to one proposal in another space offers it as a copy here (or «Bytt dit»), never switches on its own', async ({ page, browser }, testInfo) => {
     const pageErrors = collectPageErrors(page);
     const FA = 'e2e-proposal-link-family-a-0123';
     const FB = 'e2e-proposal-link-family-b-0123';
@@ -554,11 +577,14 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     await expect(ask).toBeVisible();
     await expect(ask).toHaveAttribute('data-kind', 'proposal');
     await expect(ask).toContainText('Denne lenken går til «Mammas idé» i en annen delt plass.');
-    await expect(ask).toContainText('Plassen du bruker nå, byttes ikke.');
-    await expect(page.getByTestId('other-family-switch')).toHaveCount(0);
+    await expect(ask).toContainText('Plassen i lenken har 1 forslag (Mamma); plassen du bruker nå har 1.');
+    await expect(ask).toContainText('(plassen du bruker nå, byttes ikke) eller bytte dit.');
+    // Fourth fix round: «Bytt dit» too, highlighted as on the space banner (proposals by others there, none here).
+    await expect(ask).toHaveAttribute('data-primary', 'switch');
+    await expect(page.getByTestId('other-family-switch')).toHaveClass(/btn-primary/);
     const copy = page.getByTestId('other-family-copy');
     await expect(copy).toHaveText('Hent «Mammas idé» som en kopi hit');
-    await expect(copy).toHaveClass(/btn-primary/);
+    await expect(copy).not.toHaveClass(/btn-primary/);
     await copy.click();
     await expect(ask).toHaveCount(0);
     await expect(page.getByTestId('toast').filter({ hasText: '«Mammas idé» er hentet som en kopi.' })).toBeVisible();
@@ -579,6 +605,138 @@ test.describe('family links (shared mode, never the real Firestore)', () => {
     await page.getByTestId('other-family-copy').click();
     await expect(page.getByTestId('toast').filter({ hasText: '«Mammas idé» fra lenken finnes alt i listen.' })).toBeVisible();
     expect((await projectOnScreen(page)).variants.map((v) => v.name)).toEqual(['Forslag D', 'Pappas plan', 'Mammas idé']);
+    expect(pageErrors).toEqual([]);
+  });
+
+  /** The hot tub's centre in a fake-space proposal document (the project is JSON text). */
+  const tubOfDoc = (d: Record<string, unknown> | undefined): number[] | null =>
+    typeof d?.project === 'string' ? ((JSON.parse(d.project) as Project).variants[0]?.outdoor.hotTubs[0]?.centre ?? null) : null;
+
+  test('a device in a space of its own joins through a proposal link; the copy it edited comes along (fourth fix round)', async ({ page, browser }, testInfo) => {
+    const pageErrors = collectPageErrors(page);
+    const FB = 'e2e-own-space-family-b-0123456';
+    const mamma = await otherDeviceMade(browser, testInfo, FB, 'Mammas idé');
+    // Pappa opened the plain address first (an old bookmark): a space of his own, empty.
+    await withFakeFamilySpace(page);
+    await page.addInitScript(() => localStorage.setItem('hytte-planlegger:my-name', 'Pappa'));
+    await page.goto('/');
+    await waitReady(page);
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced');
+    const own = await page.evaluate(() => localStorage.getItem('hytte-planlegger:family'));
+    if (!own) throw new Error('no space of its own');
+    await addFakeDocs(page, mamma.docs);
+
+    // Mamma's «Send forslaget» link: proposals by others there, none here, so «Bytt dit» is highlighted. He takes a copy.
+    await page.evaluate(([f, p]) => (window.location.hash = `#f=${f}&p=${p}`), [FB, mamma.id] as const);
+    const ask = page.getByTestId('other-family-banner');
+    await expect(ask).toHaveAttribute('data-primary', 'switch');
+    await expect(ask).toContainText('Plassen i lenken har 1 forslag (Mamma); plassen du bruker nå har ingen.');
+    await page.getByTestId('other-family-copy').click();
+    await expect(ask).toHaveCount(0);
+    const copy = (await activeVariant(page)).id;
+    const copyDoc = `families/${own}/proposals/${copy}`;
+    await dismissToasts(page);
+    // He edits the copy (the hot tub 2 m west); it is saved in his own space.
+    await selectAt(page, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    await dragPlan(page, [21.7, -3.2], [19.7, -3.2]);
+    await expect.poll(async () => (await activeVariant(page)).outdoor.hotTubs[0].centre[0]).toBeLessThan(20.2);
+    const moved = (await activeVariant(page)).outdoor.hotTubs[0].centre;
+    await expect.poll(async () => tubOfDoc((await fakeDocs(page, copyDoc))[copyDoc])).toEqual(moved);
+
+    // The proposal link again, and «Bytt dit»: the family's space, with Mamma's proposal on screen …
+    await page.evaluate(([f, p]) => (window.location.hash = `#f=${f}&p=${p}`), [FB, mamma.id] as const);
+    await expect(ask).toHaveAttribute('data-primary', 'switch');
+    await Promise.all([page.waitForEvent('load'), page.getByTestId('other-family-switch').click()]);
+    await waitReady(page);
+    expect(await page.evaluate(() => localStorage.getItem('hytte-planlegger:family'))).toBe(FB);
+    await expect.poll(async () => (await activeVariant(page)).id).toBe(mamma.id);
+    // … and the edited copy is offered (highlighted: his old space has nobody else's proposals) and brought along.
+    const offer = page.getByTestId('carry-over-banner');
+    await expect(offer).toContainText('«Mammas idé»');
+    await expect(page.getByTestId('carry-over-accept')).toHaveClass(/btn-primary/);
+    await page.getByTestId('carry-over-accept').click();
+    await expect(offer).toHaveCount(0);
+    await expect.poll(async () => (await projectOnScreen(page)).variants.map((v) => v.name)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (delt)']);
+    expect((await projectOnScreen(page)).variants.find((v) => v.id === copy)?.outdoor.hotTubs[0].centre).toEqual(moved);
+    await expect.poll(async () => Object.keys(await fakeDocs(page, `families/${FB}/proposals/`)).filter((k) => !k.includes('/revisions/')).length).toBe(2);
+    await expect.poll(async () => (await fakeDocs(page, copyDoc))[copyDoc]?.deletedAt ?? null, 'in his old space\'s Papirkurv').toBeTruthy();
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('«Hva heter du?» never opens on its own while editing: a banner after a pause; the pill of an empty space (fourth fix round)', async ({ page }) => {
+    const pageErrors = collectPageErrors(page);
+    const F = 'e2e-name-banner-family-0123456';
+    await withFakeFamilySpace(page);
+    // A new device, no name, a link to an empty space: asked first, and the pill is neutral.
+    await page.goto(`/#f=${F}`);
+    await waitReady(page);
+    await expect(page.getByTestId('empty-family-banner')).toBeVisible();
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'notStarted');
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('aria-label', 'Ikke startet – plassen i lenken er tom');
+    // An editing tool on Forslag D: the locked toast; its «Nytt forslag» asks for no name.
+    await page.getByTestId('tool-wall').click({ force: true });
+    await page.getByTestId('toast-new-proposal').click();
+    await expect.poll(async () => (await projectOnScreen(page)).variants.length).toBe(2);
+    const id = (await activeVariant(page)).id;
+    await expect(page.getByTestId('empty-family-banner')).toHaveCount(0);
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced');
+    await dismissToasts(page);
+    // Editing right away: the hot tub dragged twice, 1.5 s apart. No dialog, no banner meanwhile.
+    await selectAt(page, [21.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    await dragPlan(page, [21.7, -3.2], [20.7, -3.2]);
+    await page.waitForTimeout(1500);
+    await dragPlan(page, [20.7, -3.2], [19.7, -3.2]);
+    await page.waitForTimeout(1500);
+    await expect(page.getByTestId('name-dialog')).toHaveCount(0);
+    await expect(page.getByTestId('name-banner')).toHaveCount(0);
+    expect((await activeVariant(page)).outdoor.hotTubs[0].centre[0]).toBeLessThan(20.2);
+    // Left alone: the banner (not a dialog). «Skriv navnet» opens the prompt.
+    const banner = page.getByTestId('name-banner');
+    await expect(banner).toBeVisible({ timeout: 10_000 });
+    await expect(banner).toContainText('Hva heter du?');
+    await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+    await page.getByTestId('name-banner-write').click();
+    await page.getByTestId('name-input').fill('Pappa');
+    await page.getByTestId('name-save').click();
+    await expect(banner).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem('hytte-planlegger:my-name'))).toBe('Pappa');
+    // The next save carries the name.
+    await selectAt(page, [19.7, -3.2], { kind: 'hotTub', id: 'tub-1' });
+    await dragPlan(page, [19.7, -3.2], [19.7, -2.2]);
+    const doc = `families/${F}/proposals/${id}`;
+    await expect.poll(async () => (await fakeDocs(page, doc))[doc]?.updatedBy).toBe('Pappa');
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('«+ Nytt forslag» while the name is unknown asks for both names in one dialog (fourth fix round)', async ({ page }) => {
+    const pageErrors = collectPageErrors(page);
+    const F = 'e2e-name-dialog-family-0123456';
+    await withFakeFamilySpace(page);
+    await page.goto(`/#f=${F}`);
+    await waitReady(page);
+    let native = false;
+    page.once('dialog', (d) => {
+      native = true;
+      void d.dismiss();
+    });
+    await page.getByTestId('new-proposal').click();
+    const dialog = page.getByTestId('new-proposal-dialog');
+    await expect.poll(async () => native || (await dialog.count()) > 0).toBe(true);
+    expect(native, 'the top bar opens the two-field dialog, not the browser prompt').toBe(false);
+    await expect(dialog).toContainText('Navn på forslaget');
+    await expect(dialog).toContainText('Hva heter du?');
+    await page.getByTestId('new-proposal-name').fill('Pappas idé');
+    await page.getByTestId('new-proposal-person').fill('Pappa');
+    await page.getByTestId('new-proposal-create').click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(async () => (await activeVariant(page)).name).toBe('Pappas idé');
+    const id = (await activeVariant(page)).id;
+    const doc = `families/${F}/proposals/${id}`;
+    // The first save already carries the name; nothing asks again.
+    await expect.poll(async () => (await fakeDocs(page, doc))[doc]?.createdBy).toBe('Pappa');
+    await page.waitForTimeout(4500);
+    await expect(page.getByTestId('name-banner')).toHaveCount(0);
+    await expect(page.getByTestId('name-dialog')).toHaveCount(0);
     expect(pageErrors).toEqual([]);
   });
 });
@@ -620,7 +778,8 @@ test.describe('conflicts and undo (final fix round after 2b)', () => {
     const F = 'e2e-conflict-family-0123456789abc';
     await page.goto(`/#f=${F}`);
     await waitReady(page);
-    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced');
+    // A new device at the link of an empty space: nothing is stored there yet (fourth fix round: never «Lagret»).
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'notStarted');
     page.once('dialog', (d) => void d.accept('Felles'));
     await page.getByTestId('new-proposal').click();
     await expect.poll(async () => (await activeVariant(page)).name).toBe('Felles');

@@ -51,14 +51,19 @@ afterEach(() => {
 function device(
   fake: FakeFirestore,
   project: Project = baseProject(),
-  extra: { onNeedsName?: () => void; name?: string; target?: Pick<Window, 'addEventListener' | 'removeEventListener'> } = {},
+  extra: {
+    onNeedsName?: () => void;
+    onEdited?: (id: string) => void;
+    name?: string;
+    target?: Pick<Window, 'addEventListener' | 'removeEventListener'>;
+  } = {},
 ): Device {
   const dev = fake.device();
   const storage = memoryStorage();
   const family = createFirestoreFamilyStore({ adapter: dev.adapter, familyId: FID, storage, context, connectivity: dev.connectivity, retryMs: 20 });
   if (extra.name) family.setMyName(extra.name);
   const store = createAppStore(project);
-  const sync = createProposalSync({ store, family, delayMs: 5, onNeedsName: extra.onNeedsName, retryMs: 10, target: extra.target });
+  const sync = createProposalSync({ store, family, delayMs: 5, onNeedsName: extra.onNeedsName, onEdited: extra.onEdited, retryMs: 10, target: extra.target });
   cleanups.push(() => {
     sync.stop();
     family.dispose();
@@ -937,5 +942,58 @@ describe('last fix round: «Lagre over» tells the other device; switching propo
     mum.store.getState().undo();
     expect(mum.store.getState().project.activeVariantId).toBe(p2);
     expect(variant(mum, p1)?.notes).toBe('flyttet badestampen');
+  });
+});
+
+describe('fourth fix round: own edits are reported; the last save of a page that stops', () => {
+  /** The notes of the stored proposal `id` (the document holds the project as JSON text). */
+  const storedNotes = (fake: FakeFirestore, id: string): string | null => {
+    const d = fake.docs.get(`families/${FID}/proposals/${id}`) as { project?: unknown } | undefined;
+    return typeof d?.project === 'string' ? ((JSON.parse(d.project) as Project).variants[0]?.notes ?? null) : null;
+  };
+
+  it('onEdited: an own edit of a stored proposal, never a new proposal or another device’s change', async () => {
+    const fake = createFakeFirestore();
+    const edited: string[] = [];
+    const me = device(fake, baseProject(), { onEdited: (id) => edited.push(id) });
+    const other = device(fake);
+    await settle();
+    const id = await newProposal(me);
+    expect(edited).toEqual([]);
+    editNotes(me, id, 'endret her');
+    await settle();
+    await me.sync.flush();
+    await settle();
+    expect(edited).toEqual([id]);
+    editNotes(other, id, 'endret der');
+    await settle();
+    await other.sync.flush();
+    await settle();
+    expect(variant(me, id)?.notes).toBe('endret der');
+    expect(edited).toEqual([id]);
+  });
+
+  it('finish() writes what was edited before although the page is read-only by now, then stops', async () => {
+    const fake = createFakeFirestore();
+    const d = device(fake);
+    await settle();
+    const id = await newProposal(d);
+    editNotes(d, id, 'like før');
+    d.store.getState().setUi({ readOnly: true });
+    // A plain flush writes nothing while the page is read-only (a link view) …
+    await d.sync.flush();
+    await settle();
+    expect(storedNotes(fake, id)).not.toBe('like før');
+    // … the last one of a page that stops does.
+    await d.sync.finish();
+    await settle();
+    expect(storedNotes(fake, id)).toBe('like før');
+    // Stopped: nothing later is written.
+    d.store.getState().setUi({ readOnly: false });
+    editNotes(d, id, 'etterpå');
+    await settle();
+    await d.sync.flush();
+    await settle(20);
+    expect(storedNotes(fake, id)).toBe('like før');
   });
 });

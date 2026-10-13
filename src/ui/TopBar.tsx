@@ -6,7 +6,8 @@
  *
  *  - The locked base proposal (Forslag D) shows a "Grunnlag" tag; it cannot be renamed or deleted, and
  *    "+ Nytt forslag" is the primary button there.
- *  - "+ Nytt forslag" asks for a name (default "Mitt forslag", numbered when taken) and copies the proposal on screen.
+ *  - "+ Nytt forslag" asks for a name (default "Mitt forslag", numbered when taken) and copies the proposal on screen;
+ *    in the shared space while this device's name is unknown, one dialog asks for both (Dialogs.tsx promptNewProposal).
  *  - Slett asks twice in a dialog ("Vil du slette «X»?" → "Er du sikker? Forslaget forsvinner for alle. [Slett for
  *    alle]"); the proposal goes to the Papirkurv (30 days), and the toast's Angre brings it back.
  *  - The top bar owns its dialogs (Send forslaget, Papirkurv, Tidligere versjoner, Slett, "Hva heter du?"), the family
@@ -31,7 +32,8 @@ import {
 } from '../state/appStore';
 import { selectActiveVariant } from '../state/store';
 import { IconChevronDown, IconHelp, IconShare } from './common';
-import { createNewProposal, isVariantLocked, nextProposalName } from './editorBridge';
+import { isVariantLocked } from './editorBridge';
+import { promptNewProposal } from './Dialogs';
 import { projectSubtitle } from './labels';
 import { DeleteProposalDialog, ProposalsMenu } from './ProposalsMenu';
 import { RevisionsPanel } from './RevisionsPanel';
@@ -125,10 +127,9 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
   const m = nb.family.more;
   const close = () => setDialog(null);
 
-  const newProposal = () => {
-    const name = window.prompt(nb.prompts.newProposalName, nextProposalName(project));
-    if (name !== null) createNewProposal(name);
-  };
+  // The proposal's name (and, in the shared space while this device's name is unknown, «Hva heter du?» in the same
+  // dialog): Dialogs.tsx `promptNewProposal`.
+  const newProposal = () => promptNewProposal();
   const rename = () => {
     const name = window.prompt(nb.prompts.renameVariant, active.name);
     if (name !== null) appStore.getState().renameVariant(active.id, name);

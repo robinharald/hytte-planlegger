@@ -12,11 +12,13 @@
  *    «Denne plassen er tom. Er lenken hel?» [Begynn her]).
  *  - Last fix round, scenario H (old tabs): tab 1 at R makes «Mammas idé»; tab 2 opens the family link F, which asks
  *    first («Bytt dit»), then brings it along. Tab 1, still open, says «Denne enheten har byttet delt plass i en annen
- *    fane» and saves nothing more (a proposal made there never reaches R). Tab 1 reloaded at R is no switch — the
- *    device stays in F, nothing is offered or moved, and another device opening F sees both proposals.
+ *    fane», is read-only (fourth fix round) and saves nothing more. Tab 1 reloaded at #f=R&p=<«Mammas idé»> is no
+ *    switch — the device stays in F and shows «Mammas idé» there (carried with its id; fourth fix round), nothing is
+ *    offered or moved, and another device opening F sees both proposals.
  *  - Last fix round, scenario J (a proposal link to a private space): Pappa's device uses F («Pappas plan»); Mamma's
- *    private space R has «Mammas idé», and she sends `#f=R&p=<id>`. Pappa opens it in a new tab: no switch, nothing
- *    offered to move out of F; «Hent «Mammas idé» som en kopi hit» adds a copy in F, and R keeps its proposal.
+ *    private space R has «Mammas idé», and she sends `#f=R&p=<id>`. Pappa opens it in a new tab: no switch on its own
+ *    («Bytt dit» is offered, highlighted), nothing offered to move out of F; «Hent «Mammas idé» som en kopi hit» adds
+ *    a copy in F, and R keeps its proposal.
  *  - Final fix round, «Lagre over» within 5 minutes of the last revision: B holds a drag while A moves the hot tub and
  *    saves; B lets go (a conflict) and chooses «Lagre over». The server has B's version, A's is a revision (savedBy
  *    Test A); A is told («… ble lagret over av Test B …») and finds it under Tidligere versjoner, tagged «din» and
@@ -37,7 +39,10 @@ interface Device {
   errors: string[];
 }
 
-/** A device in the shared mode with its own storage, named `name`, opened at `#f=<family><extra>`; waits for «Lagret for alle». */
+/**
+ * A device in the shared mode with its own storage, named `name`, opened at `#f=<family><extra>`; waits for «Lagret for
+ * alle» (or «Ikke startet» when the family is still empty).
+ */
 async function device(browser: Browser, testInfo: TestInfo, family: string, name: string, opts: { extra?: string; autosave?: string } = {}): Promise<Device> {
   const context = await browser.newContext({ baseURL: testInfo.project.use.baseURL, viewport: { width: 1400, height: 900 } });
   await context.addInitScript(
@@ -53,7 +58,8 @@ async function device(browser: Browser, testInfo: TestInfo, family: string, name
   const errors = collectPageErrors(page);
   await page.goto(`/#f=${family}${opts.extra ?? ''}`);
   await page.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: READY_TIMEOUT_MS, polling: 250 });
-  await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced', { timeout: 60_000 });
+  // «Ikke startet» (fourth fix round) while the family is empty and not stored on this device yet.
+  await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', /^(synced|notStarted)$/, { timeout: 60_000 });
   return { context, page, errors };
 }
 
@@ -177,12 +183,12 @@ test.describe('the real family space (Firestore), throwaway e2e- families', () =
     await expect.poll(async () => (await proposalDocs(F)).map((d) => d.data.name), { timeout: 30_000 }).toEqual(['Mammas idé']);
     expect(await tab2.evaluate(() => localStorage.getItem('hytte-planlegger:family'))).toBe(F);
 
-    // Tab 1, still open at R: told, and it saves nothing more (the reviewer's «Ny i gammel fane» landed in R).
+    // Tab 1, still open at R: told, and it saves nothing more (the reviewer's «Ny i gammel fane» landed in R). Fourth
+    // fix round: it is read-only until reloaded (no «+ Nytt forslag», the plan takes no edit).
     await expect(A.page.getByTestId('family-elsewhere-banner')).toBeVisible({ timeout: 15_000 });
     await expect(A.page.getByTestId('status-pill')).toHaveAttribute('data-state', 'elsewhere');
-    A.page.once('dialog', (d) => void d.accept('Ny i gammel fane'));
-    await A.page.getByTestId('new-proposal').click();
-    await expect.poll(async () => (await activeVariant(A.page)).name).toBe('Ny i gammel fane');
+    await expect(A.page.getByTestId('new-proposal')).toHaveCount(0);
+    await expect(A.page.getByTestId('plan-view')).toHaveAttribute('data-plan-editable', 'false');
     await A.page.waitForTimeout(3000);
     expect((await proposalDocs(R)).map((d) => d.data.name), 'nothing new in the space left').toEqual(['Mammas idé']);
     expect((await proposalDocs(F)).map((d) => d.data.name)).toEqual(['Mammas idé']);
@@ -191,25 +197,19 @@ test.describe('the real family space (Firestore), throwaway e2e- families', () =
     await tab2.getByTestId('new-proposal').click();
     await expect.poll(async () => (await proposalDocs(F)).map((d) => d.data.name).sort(), { timeout: 30_000 }).toEqual(['Mammas idé', 'Ny idé i familien']);
 
-    // Tab 1 is reloaded (its address is still #f=R&p=<«Mammas idé»>): no switch, no offer, the banner asks. The proposal
-    // it names is in R's Papirkurv now, so there is nothing to copy: only «Bli her».
+    // Tab 1 is reloaded (its address is still #f=R&p=<«Mammas idé»>): no switch, no offer. Fourth fix round: the
+    // proposal it names was carried into F with its id, so it is shown here, with no question.
     expect(new URL(A.page.url()).hash).toBe(`#f=${R}&p=${mammas}`);
     await A.page.reload();
     await A.page.waitForFunction(() => (window as HytteWindow).__hytte?.ready === true, undefined, { timeout: READY_TIMEOUT_MS, polling: 250 });
-    const old = A.page.getByTestId('other-family-banner');
-    await expect(old).toBeVisible({ timeout: 30_000 });
-    await expect(old).toHaveAttribute('data-kind', 'proposal');
-    await expect(old).toContainText('Forslaget i lenken finnes ikke i den plassen.', { timeout: 30_000 });
-    await expect(A.page.getByTestId('other-family-copy')).toHaveCount(0);
-    await expect(A.page.getByTestId('other-family-switch')).toHaveCount(0);
     await expect(A.page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced', { timeout: 60_000 });
+    await expect.poll(async () => (await activeVariant(A.page)).id, { timeout: 30_000 }).toBe(mammas);
     await expect.poll(async () => (await projectOnScreen(A.page)).variants.map((v) => v.name).sort(), { timeout: 30_000 }).toEqual(['Forslag D', 'Mammas idé', 'Ny idé i familien']);
+    await expect(A.page.getByTestId('other-family-banner')).toHaveCount(0);
+    await expect.poll(() => new URL(A.page.url()).hash).toBe(`#f=${F}&p=${mammas}`);
     await A.page.waitForTimeout(3000);
     await expect(A.page.getByTestId('carry-over-banner')).toHaveCount(0);
     expect(await A.page.evaluate(() => localStorage.getItem('hytte-planlegger:family')), 'the stored family is unchanged').toBe(F);
-    // «Bli her»: the address bar shows the family space again.
-    await A.page.getByTestId('other-family-stay').click();
-    await expect.poll(() => new URL(A.page.url()).hash.startsWith(`#f=${F}`)).toBe(true);
 
     // Nothing left the family space: another device opening F sees both; R has only «Mammas idé» in its Papirkurv.
     const other = await device(browser, testInfo, F, 'Test B');
@@ -246,7 +246,9 @@ test.describe('the real family space (Firestore), throwaway e2e- families', () =
     const ask = tab.getByTestId('other-family-banner');
     await expect(ask).toHaveAttribute('data-kind', 'proposal', { timeout: 30_000 });
     await expect(ask).toContainText('Denne lenken går til «Mammas idé» i en annen delt plass.', { timeout: 30_000 });
-    await expect(tab.getByTestId('other-family-switch')).toHaveCount(0);
+    // Fourth fix round: «Bytt dit» is offered too (highlighted: R has Mamma's proposal, F only this device's), but
+    // nothing changes until the user picks it.
+    await expect(ask).toHaveAttribute('data-primary', 'switch', { timeout: 30_000 });
     await tab.waitForTimeout(2000);
     await expect(tab.getByTestId('carry-over-banner')).toHaveCount(0);
     expect(await tab.evaluate(() => localStorage.getItem('hytte-planlegger:family'))).toBe(F);

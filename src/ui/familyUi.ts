@@ -21,6 +21,8 @@ export type PillState = keyof typeof nb.family.pill;
  * comes first: that proposal's edits are not saved until the user picks «Hent endringene» or «Lagre over».
  * `pending` also counts writes queued before this page was loaded, so an offline reload never says «Lagret for alle».
  * `elsewhere` (another tab switched this device to another space; this tab saves nothing) wins over everything.
+ * `unconfirmed` (shared mode: the start link's space is not this device's yet, so nothing is stored there; it is
+ * empty, «Denne plassen er tom. Er lenken hel?») is neutral: never «Lagret».
  */
 export function pillState(
   s: Pick<SyncState, 'mode' | 'phase' | 'saving' | 'pending' | 'online' | 'failed'> & {
@@ -28,6 +30,7 @@ export function pillState(
     conflicts?: SyncState['conflicts'];
     noFamily?: boolean;
     elsewhere?: boolean;
+    unconfirmed?: boolean;
   },
 ): PillState {
   if (s.elsewhere) return 'elsewhere';
@@ -36,6 +39,7 @@ export function pillState(
   if (s.failed) return 'failed';
   if (s.phase === 'error') return 'error';
   if (s.phase === 'connecting') return 'connecting';
+  if (s.unconfirmed) return 'notStarted';
   if (s.pending > 0 && !s.online) return 'pending';
   if (s.saving || s.pending > 0) return 'saving';
   return 'synced';

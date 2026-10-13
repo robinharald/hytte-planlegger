@@ -114,6 +114,11 @@ export interface ProposalSync {
   addVariants(variants: Variant[], activate?: Id, opts?: { at?: string }): void;
   /** The list the family store reported last. */
   lastList(): ProposalList;
+  /**
+   * The last save of a page that stops saving (another tab switched this device's family space): the edits made so
+   * far are written even when the page is read-only by now (`ui.readOnly`), then the sync stops. Nothing later is.
+   */
+  finish(): Promise<void>;
   stop(): void;
 }
 
@@ -140,6 +145,8 @@ export interface ProposalSyncOptions {
   onSaved?: (id: Id) => void;
   /** After this device saved a NEW proposal into the store (not a restore or an overwrite). */
   onCreated?: (id: Id) => void;
+  /** After this device saved its own edits of a proposal the store already had (not a new one, not a restore). */
+  onEdited?: (id: Id) => void;
   /** After a list was merged for the first time. */
   onFirstList?: (list: ProposalList) => void;
   /** Retry delay after a failed write (ms; doubles up to a minute). */
@@ -220,6 +227,8 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
   let chain: Promise<void> = Promise.resolve();
   let askedName = false;
   let stopped = false;
+  /** `finish()` runs: its flush writes even though the page is read-only. */
+  let finishing = false;
   let state: SyncState = computeState();
 
   function computeState(): SyncState {
@@ -484,6 +493,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
       removedHere.delete(v.id);
       if (failed.size === 0) retryDelay = baseRetry;
       if (!k && r.proposal.createdAt === r.proposal.updatedAt) opts.onCreated?.(v.id);
+      if (k) opts.onEdited?.(v.id);
       opts.onSaved?.(v.id);
       return;
     }
@@ -521,7 +531,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
     timer = null;
     if (!listSeen || stopped) return;
     const s = store.getState();
-    if (s.ui.readOnly) return;
+    if (s.ui.readOnly && !finishing) return;
     // A drag in progress: its in-between states are never written (others would see a half-finished move).
     if (s.inTransaction()) {
       schedule(250);
@@ -694,6 +704,7 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
         if (r.status === 'saved') {
           ownVersions.add(id, r.proposal.updatedAt);
           known.set(id, { remote: r.proposal, local: v });
+          opts.onEdited?.(id);
         }
         else {
           failed.add(id);
@@ -751,19 +762,31 @@ export function createProposalSync(opts: ProposalSyncOptions): ProposalSync {
 
     isOwnVersion: (id, at) => ownVersions.has(id, at),
 
-    stop() {
-      stopped = true;
-      for (const t of [timer, deferTimer, retryTimer]) if (t !== null) clearTimeout(t);
-      timer = deferTimer = retryTimer = null;
-      unsubscribeStore();
-      unsubscribeList();
-      unsubscribeStatus();
-      unsubscribeWriteErrors();
-      unsubscribeHistory();
-      opts.target?.removeEventListener('pagehide', onLeave);
-      opts.target?.removeEventListener('beforeunload', onLeave);
-      opts.doc?.removeEventListener('visibilitychange', onVisibility);
-      listeners.clear();
+    async finish() {
+      finishing = true;
+      try {
+        await flush();
+      } finally {
+        finishing = false;
+        stopAll();
+      }
     },
+
+    stop: () => stopAll(),
   };
+
+  function stopAll(): void {
+    stopped = true;
+    for (const t of [timer, deferTimer, retryTimer]) if (t !== null) clearTimeout(t);
+    timer = deferTimer = retryTimer = null;
+    unsubscribeStore();
+    unsubscribeList();
+    unsubscribeStatus();
+    unsubscribeWriteErrors();
+    unsubscribeHistory();
+    opts.target?.removeEventListener('pagehide', onLeave);
+    opts.target?.removeEventListener('beforeunload', onLeave);
+    opts.doc?.removeEventListener('visibilitychange', onVisibility);
+    listeners.clear();
+  }
 }

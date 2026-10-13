@@ -57,6 +57,8 @@ const PILL = {
   noFamily: 'Kun på denne enheten (familielenken er ikke hel)',
   /** Another tab on this device switched to another family space: this tab saves nothing until it is reloaded. */
   elsewhere: 'Ikke lagret – last siden på nytt',
+  /** Shared mode: the start link's space is empty and not this device's yet («Begynn her» or a new proposal starts it). */
+  notStarted: 'Ikke startet – plassen i lenken er tom',
 } as const;
 
 const MONTHS = ['jan.', 'feb.', 'mars', 'apr.', 'mai', 'juni', 'juli', 'aug.', 'sep.', 'okt.', 'nov.', 'des.'] as const;
@@ -891,6 +893,7 @@ export const nb = {
       conflict: 'Ikke lagret',
       noFamily: 'Kun her',
       elsewhere: 'Ikke lagret',
+      notStarted: 'Ikke startet',
     } satisfies Record<keyof typeof PILL, string>,
     pillTitle: {
       local: 'Forslagene lagres automatisk i denne nettleseren. Trykk «Send forslaget» for å dele en kopi som lenke.',
@@ -908,7 +911,9 @@ export const nb = {
       noFamily:
         'Lenken til familiens plass var ikke hel, så appen vet ikke hvilken plass den skal bruke. Forslagene lagres på denne enheten til du åpner hele familielenken; da flyttes de inn i familiens plass.',
       elsewhere:
-        'Denne enheten bruker en annen delt plass nå (den ble byttet i en annen fane). Det du endrer i denne fanen, lagres ikke før du laster siden på nytt.',
+        'Denne enheten bruker en annen delt plass nå (den ble byttet i en annen fane). Denne fanen kan ikke endres og lagrer ingenting før du laster siden på nytt.',
+      notStarted:
+        'Plassen i lenken er tom, og denne enheten har ikke tatt den i bruk. Ingenting er lagret der ennå. Trykk «Begynn her» eller lag et forslag for å begynne.',
     } satisfies Record<keyof typeof PILL, string>,
     conflict: (name: string, by: string, at: string) => `«${name}» ble endret av ${by} ${at}.`,
     conflictDeleted: (name: string, by: string, at: string) => `«${name}» ble slettet av ${by} ${at}.`,
@@ -942,10 +947,15 @@ export const nb = {
     carryOver: {
       text: (names: readonly string[]) =>
         names.length === 1
-          ? `Du laget «${names[0]}» i en annen delt plass på denne enheten før du åpnet denne familielenken.`
-          : `Du laget ${names.length} forslag i en annen delt plass på denne enheten før du åpnet denne familielenken: ${names.map((n) => `«${n}»`).join(', ')}.`,
+          ? `Du laget «${names[0]}» på denne enheten i plassen du byttet fra.`
+          : `Du laget ${names.length} forslag på denne enheten i plassen du byttet fra: ${names.map((n) => `«${n}»`).join(', ')}.`,
       hint: (n: number) =>
         n === 1 ? 'Det legges til her, og i den forrige plassen havner det i Papirkurv.' : 'De legges til her, og i den forrige plassen havner de i Papirkurv.',
+      /** The space left has proposals made on other devices (the family's): offered without a highlighted button. */
+      othersThere: (n: number) =>
+        n === 1
+          ? 'Den plassen har også forslag fra andre. Henter du det hit, ser ikke familien det der lenger.'
+          : 'Den plassen har også forslag fra andre. Henter du dem hit, ser ikke familien dem der lenger.',
       accept: (n: number) => (n === 1 ? 'Hent forslaget fra den forrige plassen' : 'Hent forslagene fra den forrige plassen'),
       decline: 'Nei takk',
       done: (n: number) => (n === 1 ? 'Forslaget er hentet fra den forrige plassen.' : `${n} forslag er hentet fra den forrige plassen.`),
@@ -967,7 +977,7 @@ export const nb = {
       stay: 'Bli her',
       proposalText: (name: string | null) =>
         name ? `Denne lenken går til «${name}» i en annen delt plass.` : 'Denne lenken går til et forslag i en annen delt plass.',
-      proposalHint: 'Du kan hente det som en kopi hit. Plassen du bruker nå, byttes ikke.',
+      proposalHint: 'Du kan hente det som en kopi hit (plassen du bruker nå, byttes ikke) eller bytte dit.',
       proposalMissing: 'Forslaget i lenken finnes ikke i den plassen.',
       copy: (name: string) => `Hent «${name}» som en kopi hit`,
       copied: (name: string) => `«${name}» er hentet som en kopi.`,
@@ -981,7 +991,7 @@ export const nb = {
     /** Another tab on this device switched to another family space. */
     elsewhere: {
       text: 'Denne enheten har byttet delt plass i en annen fane.',
-      hint: 'Det du endrer i denne fanen, lagres ikke.',
+      hint: 'Denne fanen kan ikke endres før den er lastet på nytt.',
       reload: 'Last på nytt',
     },
     linkImported: (name: string) => `«${name}» fra lenken er lagt til som et nytt forslag.`,
@@ -998,6 +1008,16 @@ export const nb = {
       placeholder: 'For eksempel Mamma',
       save: 'Lagre',
       skip: 'Hopp over',
+      /** The first save without a name: a banner once the plan has been left alone (never a dialog while editing). */
+      bannerHint: 'Navnet vises ved forslagene du endrer, for eksempel «sist endret av Mamma».',
+      bannerWrite: 'Skriv navnet',
+      /** «+ Nytt forslag» while the name is unknown: one dialog asks for both. */
+      newHeading: 'Nytt forslag',
+      proposalLabel: 'Navn på forslaget',
+      personLabel: 'Hva heter du?',
+      personHint: 'Vises ved forslagene du endrer, for eksempel «sist endret av Mamma». Kan stå tomt.',
+      create: 'Lag forslaget',
+      cancel: 'Avbryt',
     },
     delete: {
       heading: 'Slett forslag',

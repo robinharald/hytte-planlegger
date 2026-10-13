@@ -13,6 +13,12 @@
  *    without one, the proposals stay on this device until a whole link is opened (then they move into the family);
  *  - the one-time move of an old autosave shows the proposal it had on screen and keeps its own time; a real
  *    phase-1 plain-visit autosave brings nothing into the family space.
+ * Fourth fix round (the sixth review): a proposal link offers «Bytt dit» too, and a copy taken from one and edited
+ * here comes along after the switch; the offer to bring proposals along is not highlighted when the space left has
+ * proposals made on other devices; a tab stopped by another tab's switch is read-only at once (what was edited just
+ * before is still saved); an old proposal link whose proposal was carried here opens it here; the pill is neutral
+ * while the link's empty space is not started; «Hva heter du?» is a banner once the plan was left alone, never a
+ * dialog while editing.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createForslagD, SEED_VARIANT_ID } from '../model/seed/forslagD';
@@ -128,7 +134,9 @@ describe('family link (shared mode)', () => {
     expect(m.familyId).toBe(F1);
     m = await switchThere(m);
     expect(m.familyId).toBe(F2);
-    await vi.waitFor(() => expect(m.familyUiStore.getState().carryOver).toEqual({ from: F1, names: ['Mammas idé'] }), { timeout: 4000 });
+    await vi.waitFor(() => expect(m.familyUiStore.getState().carryOver).toEqual({ from: F1, names: ['Mammas idé'], othersThere: false }), {
+      timeout: 4000,
+    });
     expect(await m.acceptCarryOver()).toBe(1);
     expect(names(m)).toEqual(['Forslag D', 'Mammas idé']);
     expect(m.familyUiStore.getState().carryOver).toBeNull();
@@ -307,6 +315,26 @@ describe('final fix round: links to a space this device left, carried-in copies,
     m.declineCarryOver();
   });
 
+  it('r4: an old proposal link to the space left, whose proposal was carried here, shows it here (no question)', async () => {
+    const { mammas, ny } = await switchedToF2();
+    // The old tab's address (#f=F1&p=<«Mammas idé»>) reloaded: the proposal is here (carried with its id).
+    const m = await load(`#f=${F1}&p=${mammas}`);
+    expect(m.familyId).toBe(F2);
+    await vi.waitFor(() => expect(m.appStore.getState().project.activeVariantId).toBe(mammas));
+    expect(m.familyUiStore.getState().otherFamily).toBeNull();
+    expect(window.location.hash).toBe(`#f=${F2}&p=${mammas}`);
+    expect(m.appStore.getState().toasts.map((t) => t.text)).toContain('«Mammas idé» fra lenken finnes alt i listen.');
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F2);
+    // The same link pasted into the open tab while another proposal is shown: shown here as well.
+    expect(m.activateProposal(ny)).toBe(true);
+    window.location.hash = `#f=${F1}&p=${mammas}`;
+    await vi.waitFor(() => expect(m.appStore.getState().project.activeVariantId).toBe(mammas));
+    expect(m.familyUiStore.getState().otherFamily).toBeNull();
+    await settleMs();
+    expect(m.familyUiStore.getState().carryOver).toBeNull();
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F2);
+  });
+
   it('6: a family link with a full stop after it opens the family (no broken-link banner)', async () => {
     const m = await load(`#f=${F2}.`);
     expect(m.familyId).toBe(F2);
@@ -359,7 +387,7 @@ describe('last fix round: links to another space ask first; a proposal link copi
     expect(window.location.hash).toBe(`#f=${F2}`);
   });
 
-  it('b: a link to one proposal in another space never switches; «Hent … som en kopi hit» copies it here', async () => {
+  it('b: a link to one proposal in another space never switches on its own; «Hent … som en kopi hit» copies it here', async () => {
     localStorage.setItem(FAMILY_KEYS.familyId, F1);
     let m = await load(`#f=${F1}`);
     const plan = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Pappas plan');
@@ -370,8 +398,8 @@ describe('last fix round: links to another space ask first; a proposal link copi
     expect(m.familyId).toBe(F1);
     await vi.waitFor(() => expect(m.familyUiStore.getState().otherFamily?.info?.proposalName).toBe('Mammas idé'));
     expect(m.familyUiStore.getState().otherFamily?.proposal).toBe(x);
-    // Never a switch from a proposal link, and nothing offered to move out of F1.
-    m.switchToLinkedFamily();
+    // Never a switch until the user picks one (the banner offers «Bytt dit» too), and nothing offered to move out of F1.
+    expect(m.familyUiStore.getState().otherFamily?.info).toMatchObject({ others: true, hereOthers: false });
     expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F1);
     await settle();
     expect(m.familyUiStore.getState().carryOver).toBeNull();
@@ -438,4 +466,162 @@ describe('last fix round: links to another space ask first; a proposal link copi
     await vi.waitFor(() => expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F2));
     expect(m.familyUiStore.getState().emptyFamily).toBe(false);
   });
+});
+
+describe('fourth fix round: proposal links switch too, edited copies come along, stopped tabs, the pill, the name', () => {
+  /** A space of this device's own (opened from the plain address once). */
+  const P = 'e2e-private-space-abcdefghijklm';
+  /** 32 characters, like a generated family id. */
+  const G = 'e2e-generated-r4-0123456789abcde';
+  /** The hot tub's centre in the stored proposal `id` of `family` (the document holds the project as JSON text). */
+  const tubIn = (family: string, id: string): number[] | null => {
+    const d = firebase.fake.docs.get(docPath(family, id)) as { project?: unknown } | undefined;
+    if (typeof d?.project !== 'string') return null;
+    return (JSON.parse(d.project) as { variants: { outdoor: { hotTubs: { centre: number[] }[] } }[] }).variants[0]?.outdoor.hotTubs[0]?.centre ?? null;
+  };
+  const moveTub = (m: AppStoreModule, id: string, to: [number, number]) =>
+    m.appStore.getState().updateVariant(id, (v) => {
+      v.outdoor.hotTubs[0].centre = to;
+    });
+  const json = (key: string) => JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, string[]>;
+
+  it('1: a device in a space of its own joins through a proposal link; the copy it edited there comes along', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, P);
+    const [x] = await othersMake(F2, ['Mammas idé']);
+    let m = await load(`#f=${F2}&p=${x}`);
+    expect(m.familyId).toBe(P);
+    // Proposals by others there, none here: the banner highlights «Bytt dit» (StatusPill.tsx); the copy is offered too.
+    await vi.waitFor(() =>
+      expect(m.familyUiStore.getState().otherFamily?.info).toMatchObject({ proposalName: 'Mammas idé', others: true, hereOthers: false, hereCount: 0 }),
+    );
+    expect(m.copyLinkedProposal()).toBe(true);
+    const copy = m.appStore.getState().project.activeVariantId;
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(P)).toEqual([docPath(P, copy)]));
+    // Untouched, the copy counts as brought in; edited on this device, as made here.
+    expect(json(FAMILY_KEYS.carriedIn)[P]).toEqual([copy]);
+    moveTub(m, copy, [19.7, -3.2]);
+    await m.flushProposals();
+    await vi.waitFor(() => expect(tubIn(P, copy)).toEqual([19.7, -3.2]));
+    expect(json(FAMILY_KEYS.createdHere)[P]).toEqual([copy]);
+    expect(json(FAMILY_KEYS.carriedIn)[P]).toEqual([]);
+
+    // The proposal link again: «Bytt dit» on it goes to the family's space and shows that proposal there.
+    window.location.hash = `#f=${F2}&p=${x}`;
+    await vi.waitFor(() => expect(m.familyUiStore.getState().otherFamily?.info).toMatchObject({ others: true, hereOthers: false, hereCount: 1 }));
+    m.switchToLinkedFamily();
+    expect(localStorage.getItem(FAMILY_KEYS.familyId)).toBe(F2);
+    expect(window.location.hash).toBe(`#f=${F2}&p=${x}`);
+    await m.flushProposals();
+    m = await load(`#f=${F2}&p=${x}`);
+    expect(m.familyUiStore.getState().otherFamily).toBeNull();
+    await vi.waitFor(() => expect(m.appStore.getState().project.activeVariantId).toBe(x));
+    // The edited copy is offered (highlighted: the space left has no proposals by others) and brought along.
+    await vi.waitFor(() => expect(m.familyUiStore.getState().carryOver).toEqual({ from: P, names: ['Mammas idé'], othersThere: false }), { timeout: 4000 });
+    expect(await m.acceptCarryOver()).toBe(1);
+    expect(names(m)).toEqual(['Forslag D', 'Mammas idé', 'Mammas idé (delt)']);
+    expect(m.appStore.getState().project.variants.find((v) => v.id === copy)?.outdoor.hotTubs[0].centre).toEqual([19.7, -3.2]);
+    await vi.waitFor(() => expect(proposalDocs(F2).sort()).toEqual([docPath(F2, x), docPath(F2, copy)].sort()));
+    expect(tubIn(F2, x)).toEqual([21.7, -3.2]);
+    await vi.waitFor(() => expect(firebase.fake.docs.get(docPath(P, copy))?.deletedAt).toEqual(expect.any(String)));
+  });
+
+  it('2: «Bytt dit» away from a space with proposals made on other devices: the offer says so (not highlighted)', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    await othersMake(F1, ['Mammas plan']);
+    let m = await load(`#f=${F1}`);
+    m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Pappas plan');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F1)).toHaveLength(2));
+    // A link to an empty space: «Bli her» is the highlighted button, but the user picks «Bytt dit».
+    m = await load(`#f=${F2}`);
+    await vi.waitFor(() => expect(m.familyUiStore.getState().otherFamily?.info).toMatchObject({ count: 0, hereCount: 2, hereOthers: true }));
+    m = await switchThere(m);
+    await vi.waitFor(() => expect(m.familyUiStore.getState().carryOver).toEqual({ from: F1, names: ['Pappas plan'], othersThere: true }), { timeout: 4000 });
+    m.declineCarryOver();
+    expect(proposalDocs(F1).map((k) => firebase.fake.docs.get(k)?.deletedAt ?? null)).toEqual([null, null]);
+  });
+
+  it('3: a tab stopped by another tab is read-only at once; the edit made just before is still saved', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const m = await load(`#f=${F1}`);
+    const id = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Før byttet');
+    if (!id) throw new Error('duplicate');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F1)).toEqual([docPath(F1, id)]));
+    m.appStore.getState().select({ kind: 'hotTub', id: 'tub-1' });
+    // An edit within the 1 s debounce, then the other tab switches the device to F2.
+    moveTub(m, id, [19.7, -3.2]);
+    localStorage.setItem(FAMILY_KEYS.familyId, F2);
+    window.dispatchEvent(new StorageEvent('storage', { key: FAMILY_KEYS.familyId, oldValue: F1, newValue: F2 }));
+    expect(m.appStore.getState().ui).toMatchObject({ readOnly: true, selection: null, tool: 'select' });
+    expect(pillState(m.familyUiStore.getState())).toBe('elsewhere');
+    await vi.waitFor(() => expect(tubIn(F1, id)).toEqual([19.7, -3.2]));
+    // Nothing more: no new proposal, no edit.
+    expect(m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Ny i gammel fane')).toBeNull();
+    moveTub(m, id, [18.7, -3.2]);
+    expect(m.appStore.getState().project.variants.find((v) => v.id === id)?.outdoor.hotTubs[0].centre).toEqual([19.7, -3.2]);
+    const written = firebase.fake.writes;
+    await m.flushProposals();
+    await settle(1200);
+    expect(firebase.fake.writes).toBe(written);
+    expect(proposalDocs(F1)).toEqual([docPath(F1, id)]);
+  });
+
+  it('5: a link to an empty space on a device without a family: the pill is neutral until the space is started', async () => {
+    const m = await load(`#f=${G}`);
+    await vi.waitFor(() => expect(m.familyUiStore.getState().emptyFamily).toBe(true));
+    expect(m.familyUiStore.getState().unconfirmed).toBe(true);
+    expect(pillState(m.familyUiStore.getState())).toBe('notStarted');
+    // «Lukk» on the question: still not started.
+    m.dismissEmptyFamily();
+    expect(pillState(m.familyUiStore.getState())).toBe('notStarted');
+    m.startEmptyFamily();
+    expect(m.familyUiStore.getState().unconfirmed).toBe(false);
+    expect(pillState(m.familyUiStore.getState())).toBe('synced');
+    // A space with proposals is this device's at once: never «Ikke startet».
+    localStorage.clear();
+    await othersMake(F2, ['Mammas idé']);
+    const m2 = await load(`#f=${F2}`);
+    await vi.waitFor(() => expect(m2.familyUiStore.getState().unconfirmed).toBe(false));
+    expect(pillState(m2.familyUiStore.getState())).toBe('synced');
+  });
+
+  it('6: the first save without a name opens no dialog: a banner once nothing was edited for a moment', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const m = await load(`#f=${F1}`);
+    expect(m.nameUnknown()).toBe(true);
+    const id = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Uten navn');
+    if (!id) throw new Error('duplicate');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F1)).toEqual([docPath(F1, id)]));
+    expect(m.familyUiStore.getState()).toMatchObject({ askName: false, nameBanner: false });
+    // Still editing: the wait starts again with every edit.
+    await settle(m.NAME_BANNER_IDLE_MS - 1000);
+    moveTub(m, id, [19.7, -3.2]);
+    await settle(1500);
+    expect(m.familyUiStore.getState().nameBanner).toBe(false);
+    await vi.waitFor(() => expect(m.familyUiStore.getState().nameBanner).toBe(true), { timeout: m.NAME_BANNER_IDLE_MS + 1000 });
+    expect(m.familyUiStore.getState().askName).toBe(false);
+    // «Skriv navnet» opens the prompt (asked for); a name closes it all.
+    m.askForName();
+    expect(m.familyUiStore.getState()).toMatchObject({ askName: true, nameBanner: false });
+    m.setMyName('Pappa');
+    expect(m.familyUiStore.getState()).toMatchObject({ askName: false, nameBanner: false });
+    expect(m.nameUnknown()).toBe(false);
+  }, 15_000);
+
+  it('6: «+ Nytt forslag» asks for both names in one prompt; left empty, the name is not asked again this session', async () => {
+    localStorage.setItem(FAMILY_KEYS.familyId, F1);
+    const m = await load(`#f=${F1}`);
+    m.askNameWithProposal(null);
+    expect(m.familyUiStore.getState()).toMatchObject({ askName: true, nameForProposal: { from: null } });
+    m.skipNameForNow();
+    expect(m.nameUnknown()).toBe(false);
+    const id = m.appStore.getState().duplicateVariant(SEED_VARIANT_ID, 'Uten navn');
+    await m.flushProposals();
+    await vi.waitFor(() => expect(proposalDocs(F1)).toEqual([docPath(F1, id!)]));
+    await settle(m.NAME_BANNER_IDLE_MS + 300);
+    expect(m.familyUiStore.getState().nameBanner).toBe(false);
+  }, 15_000);
 });

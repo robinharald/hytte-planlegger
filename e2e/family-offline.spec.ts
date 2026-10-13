@@ -31,7 +31,8 @@ test.describe('the real family space offline (production build)', () => {
     );
     await page.goto(`./#f=${F}`);
     await waitReady(page);
-    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'synced', { timeout: 60_000 });
+    // A new device at the link of the (empty) family: «Ikke startet» until the first proposal (fourth fix round).
+    await expect(page.getByTestId('status-pill')).toHaveAttribute('data-state', 'notStarted', { timeout: 60_000 });
     page.once('dialog', (d) => void d.accept('Uten nett'));
     await page.getByTestId('new-proposal').click();
     await expect.poll(async () => (await activeVariant(page)).name).toBe('Uten nett');
