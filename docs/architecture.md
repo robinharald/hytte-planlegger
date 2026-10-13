@@ -718,7 +718,11 @@ in; 'empty-family-banner'). On a device WITH a family, a link to any other space
 start-up (an old tab, a bookmark, a session-restored tab, a new link) or pasted into the tab: the device stays, nothing
 is stored, and the banner 'other-family-banner' («Denne lenken går til en annen delt plass.») says what both spaces
 hold once the link's space has answered (`LinkedFamilyInfo`: «Plassen i lenken har 3 forslag (Pappa, Mamma); plassen
-du bruker nå har 1.», read through a second store, `watchLinked`). «Bytt dit» (`switchToLinkedFamily`) is the
+du bruker nå har 1.», read through a second store, `watchLinked`). Until then — and also when only this device's cache
+has answered with an empty list (a slow or blocked connection; `updateLinkedInfo` ignores it, fix round 3 after phase
+3) — `info` stays null: the banner says «Henter plassen i lenken …» (`nb.family.otherFamily.loading`) and no button is
+highlighted (`data-primary="none"`). A non-empty list from the cache sets `LinkedFamilyInfo.fromCache`: its counts are
+shown, but «finnes ikke» and the highlighted «Bli her» need a list the server has confirmed. «Bytt dit» (`switchToLinkedFamily`) is the
 highlighted button only when the link's space has proposals made on other devices and the current one has none
 (`family.created` / `…carried-in` tell this device's own); otherwise «Bli her» (`stayInFamily`, the address bar shows
 the current space again). A `&p=` link to another space never switches on its own: it offers «Hent «navn» som en kopi
@@ -746,7 +750,11 @@ navnet» / «Hopp over»; `StatusPill.tsx NameCard`, rendered by `FamilyBanners`
 centre on a PC above the first-run card, just under the toolbar on a phone, z-index under menus, dialogs and toasts, so
 nothing moves when it comes — once nothing is selected and there has been no edit, selection or pointer / wheel /
 touch / gesture / key input for 3 s (`askNameWhenIdle`; a hovering mouse does not count); it steps aside while a toast
-shows or something is selected. «+ Nytt forslag» / «Kopier» in the shared space with the name unknown open one dialog
+shows, and a selection while it is shown takes it away and starts the same 3 s wait again (`hideNameOnSelect`, fix
+round 3 after phase 3: before, it came back the instant the selection was let go). On a phone its top is measured
+again whenever the toolbar may have moved (`toastLayout.ts watchToolbarMoves`: scroll, resize, and a ResizeObserver on
+`.app`, `.topbar`, the headline, `.toolbar-wrap` and the hint line — a banner whose facts arrived late used to push the
+toolbar under the card). «+ Nytt forslag» / «Kopier» in the shared space with the name unknown open one dialog
 with both fields (`ui/Dialogs.tsx promptNewProposal` → `NewProposalDialog`, rendered by `NameDialog`); a name left
 empty is not asked for again until the app is opened next time; «Hopp over» never asks again. «Bytt dit» (only it switches)
 pushes the old id onto `hytte-planlegger:family.previous` and records it in `…:family.switched-from`; once the new space
@@ -986,6 +994,20 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   Dybde that make a unit narrower than its own opening narrow the opening to edge − 2 × post (post = min(0,1 m, edge /
   4)) and centre it (`edit.ts fitUnitOpenings`, toast `nb.editor.unitOpeningsNarrowed` with Angre); dragging the
   unit's edge does not.
+- **Fix round 3 after phase 3** (the eighth review): `carriesThrough` carries an edge shift only between two buildings
+  that are not template units — never to or from a unit — so a unit snapped against another unit is never squeezed by
+  it (before, Bredde 3 m of one Vedskjul shrank the one beside it to 1 m, merged its room away at 3,8 m and left its open
+  front outside its wall). `unitEdgeAttached` counts an edge against another unit as attached, so Bredde / Dybde change
+  the free side (refused only when both sides are blocked) and an attached edge pushed into the neighbour is refused;
+  `withoutPushesIntoBuildings` / `unitAwarePlan` return the neighbour's `unitId`, so the toast and the drag hint say
+  «Vedskjul 2» står inntil veggen – flytt det først. `restoreEdgeOnBlock` returns `false | { unitId?: Id }`: the unit
+  that cannot be pushed away (`restoreEdgePushes` → `stuck`) or the one in the edge plan's way; `restoreGhost` then
+  toasts `nb.editor.restoreUnitInTheWay` («Ta tilbake går ikke: «Vedskjul» står i veien – flytt det først.»), or
+  `unitOnBlock` when no unit is known. `fitUnitOpenings(draft, blockId, base)` acts only on edges whose length changed:
+  the template's own opening (the open front on the front edge, the door; `templateOpeningWidth`) is centred, and one
+  that filled its old edge grows back towards the template's width when the edge gets longer, up to edge − 2 × post
+  (`fitWidth`, so there is no jump at the template's own width); anything wider is narrowed (toast); an opening the user
+  made narrower keeps its width, and openings the user added only narrow.
 - **Snapping** (`snap.ts`): grid 0.10 m (0.01 with Alt); wall ends / midpoints, block axis vertices and edges (never
   cladding faces), deck edges and vertices, collinear extensions and perpendiculars (within 6 m of the ends), ortho
   from the start point; polygons (units, blocks) snap axis to axis; furniture back to wall; hot tubs to deck edges.
@@ -1023,8 +1045,9 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   (`NameLookup` kinds in nb.ts). A warning toast is bound to the undo step like the undo toasts (any later step closes
   it, `toastRegistry.markShowsWarnings`), closes as soon as none of its warnings is left (`warningToasts.ts
   retireResolved`, on every derive outside a drag), and a newer one replaces it: one at a time. On phones the toast
-  stack sits 8 px below the tool row and the hint line (`toastLayout.ts phoneToastTop(toolbarBottom())`, updated on
-  scroll and resize; the CSS default at the top of the screen when the tool row is scrolled away).
+  stack sits 8 px below the tool row and the hint line (`toastLayout.ts phoneToastTop(toolbarBottom())`, updated by
+  `watchToolbarMoves`: scroll, resize and size changes of what is above the tool row; the CSS default at the top of the
+  screen when the tool row is scrolled away).
 
 ## UI (`ui/`)
 
@@ -1033,8 +1056,8 @@ with a "Grunnlag" tag, then the family's proposals with "sist endret av …", "+
 "+ Nytt forslag" (asks for a name, copies the proposal on screen; the primary button on Forslag D), Gi nytt navn, Slett
 (two steps: "Vil du slette «X»?" → "Er du sikker? …" → into the Papirkurv; not for Forslag D), the status pill
 (`StatusPill.tsx`), Eksporter (phase 3, `ExportMenu.tsx`: «Eksporter plan som PDF …», «Lagre 3D-bildet som PNG»), Mer
-(Tidligere versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and "Endre navnet ditt" in shared mode), "Send forslaget" (`ShareDialog.tsx`: the family link and the deep link, `navigator.share` on
-phones; locally a `#d=` copy), Hjelp; the conflict / overwritten / too-new banners and the app-update toast belong to
+(Tidligere versjoner, Papirkurv, Lagre som fil, Åpne fil, Eksporter JSON, and "Endre navnet ditt" in shared mode), "Send forslaget" (`ShareDialog.tsx`, a lazy chunk loaded on first open: the family link and the deep link,
+`navigator.share` on phones; locally a `#d=` copy), Hjelp; the conflict / overwritten / too-new banners and the app-update toast belong to
 the top bar too; "Hva heter du?" once per device in shared mode) · left
 column (view tabs Plan/3D/Begge, plan storey tabs, 3D mode + presets and «Gå rundt», toggles (with the plan also «Avløp
 og sluk»), the «IFC-modell» panel (closed until opened), «Sol og skygge» (day presets, date, time slider with the
@@ -1105,8 +1128,12 @@ All four are optional layers on the same data: nothing here changes the project 
   (a failed chunk / wasm download, or `navigator.onLine === false`) makes the PDF dialog and the IFC panel say
   `nb.export.offlineFirstUse` («Første gang trenger dette nett – koble til og prøv igjen; etterpå virker det uten
   nett.») instead of the raw error or «IFC-fila kunne ikke leses» (the loader's reason `'offline'`). The drainage layer
-  (`PlumbingLayer.tsx`) is a lazy chunk too, loaded when «Avløp og sluk» is first switched on (precached). The start
-  bundle is 1 083 kB (328 kB gzip), not larger than before the round. `optimizeDeps.include` pre-bundles the libraries
+  (`PlumbingLayer.tsx`) is a lazy chunk too, loaded when «Avløp og sluk» is first switched on (precached), and so is
+  «Send forslaget» (`ShareDialog.tsx`, fix round 3 after phase 3, precached). The `hytte-lazy-libs` route matches with
+  `matchOptions: { ignoreVary: true }`: the page stores those files itself, and with a server that sends `Vary: Origin`
+  (`vite preview`) the module script's request never matched them offline (safe: the names carry a content hash;
+  `e2e/lazy-offline.spec.ts`). The start bundle (the entry script and its modulepreloads, gzip -9) is 1 081 kB (327 kB
+  gzip), against 1 083 kB (327 kB) before fix round 3 after phase 3, measured the same way. `optimizeDeps.include` pre-bundles the libraries
   for the dev server (found only at their first dynamic import, Vite would reload the page then).
 - **PDF** (`export/`): `sheets.ts` turns the options (A4 / A3, 1:50 / 1:100, Plan 1 / Hems / Begge, names and areas,
   dimensions, furniture, colours or black and white) into sheets per storey: orientation automatic, a storey too large
@@ -1140,10 +1167,15 @@ All four are optional layers on the same data: nothing here changes the project 
   terrace; Playwright can set `window.__hytteWalkFrom = { x, y, heading }` for the next walk (WalkControls.tsx
   `takeTestWalkStart`; nothing in the app sets it). PC: pointer lock (drag to look if refused), W A S D / arrows,
   Shift runs, P saves a PNG and walks on, Esc or losing the lock ends the walk with the camera left where the walker
-  stood (`keepWalkerView`: the orbit target 4 m ahead; the orbit controls' 'start' event cancels the rig's easing back);
+  stood (`keepWalkerView`: the orbit target 4 m ahead; the orbit controls' 'start' event cancels the rig's easing back;
+  until the camera moves again the walk's field of view stays and `walkState.viewKept` shows no camera preset pressed,
+  then the orbit's field of view comes back; a new walk drops the watch);
   walk keys are swallowed (no nudge in the plan). Touch: the joystick bottom left, a drag on the right 60 % of the view
   looks, «Avslutt» top right with the camera button stacked under it. «Avslutt», a camera preset or the Plan tab end
-  the walk with the camera easing back. While walking every storey shows whole and clicks do not select. The session
+  the walk with the camera easing back. Every tap on a preset goes to it, also the one already chosen
+  (`walkState.requestPreset()` bumps `presetRequest`, which the camera rig's preset effect lists; fix round 3 after
+  phase 3: after Esc the pressed preset did nothing). Playwright reads the camera through `window.__hytteCamera()`
+  (position, orbit target, field of view; Scene.tsx, nothing in the app uses it). While walking every storey shows whole and clicks do not select. The session
   and «Skygger» live in `walkState.ts` (the shadows choice per device), not in the app store.
 - **Sun** (`view3d/sunPanel.ts`, `ui/Controls.tsx`): presets «Midtsommer» (21 June), «Jevndøgn» (20 March),
   «Midtvinter» (21 December) of the chosen year and «I dag» (today's date and the time now at the cabin); under the
@@ -1165,7 +1197,8 @@ All four are optional layers on the same data: nothing here changes the project 
   `deriveVariant`; not analysed at all while the overlay is off). Stacks drag along walls (snapping out of openings),
   a tap gives a × to delete, «Legg til avløpsstamme» stores one; the suggestion comes back on a storey without a
   stored stack. The stack's hit circle is 12 px (16 on touch) but at most 0,25 m, so the toilets beside it stay
-  selectable zoomed out. On touch it works like furniture: a finger on a stack that is not picked is the plan's (a
+  selectable; on touch an unpicked stack's target is never smaller than the drawn stack (10 px, so it can be picked at
+  the starting zoom, where 0,25 m is under 3 px): max(10 px, min(16 px, 0,25 m)). On touch it works like furniture: a finger on a stack that is not picked is the plan's (a
   drag pans, a second finger pinches; a tap picks it and also clears the plan's selection), and only the picked stack
   drags (with the larger target). A picked suggestion explains itself in the plan's hint line (`onHint`,
   `nb.plumbing.suggestedNote`), not in the plan. The toggle is per device (`hytte-planlegger:plumbing`). No 3D, no
@@ -1590,6 +1623,24 @@ export const GEOMETRY_FALLBACK: string;                                    // 'g
   and its buttons inside an iPhone 13's 390 px; «Mammas idé (Pappa)»); `family-firestore.spec.ts` (opt-in: a new device
   with firestore.googleapis.com aborted for 15 s is never told the space is empty, then shows the link's proposal with
   «Lagret for alle»).
+- Fix round 3 after phase 3: `editActions.fix8.test.ts` (two Vedskjul snapped side by side: Bredde 3 / 3,8 / 5 leave
+  the neighbour byte-identical with no merge and no `opening-outside-host`; an edge pushed into it is refused naming
+  it, also in the drag hint; a third unit makes Bredde refuse on both sides, also after a reload; Bredde 1,5 then 2
+  gives the open front back [1, 1,8] centred; 1,75 / 1,8 / 1,81 give smooth widths; a user width stays; the refused
+  restore names the unit in both cases), `controlsPresets.test.tsx` and `Walk.dom.test.tsx` (no preset pressed after
+  Esc; a tap on the current preset runs it again; the walk's field of view kept until the view is left),
+  `PlumbingLayer.test.tsx` (10 px at the starting zoom, the 0,25 m cap at 60 px/m), `appStore.family.test.ts` (the
+  linked space unreachable: no info; an old non-empty cache: `fromCache`; a server-confirmed empty space; the name card
+  hidden by a selection and back only after 3 s), `familyBanners.test.tsx` («Henter plassen i lenken …» with nothing
+  highlighted; the card follows a toolbar that moves), `app.test.tsx` / `proposalsUi.test.tsx` (the share dialog
+  appears once its lazy chunk is in). E2E: `walk-preset.spec.ts` (walk, W, Esc: nothing pressed; «Oversikt» brings back
+  the overview's position, target and field of view), `lazy-offline.spec.ts` (pwa project: online load, the warm-up
+  key and the cached files, offline reload, a PDF and the synthetic IFC), `proposals.spec.ts` (iPhone 13: the name card
+  shown, then a proposal-link hash whose space answers 1 s late, `window.__e2eWatchDelayMs`: the card stays clear of the
+  toolbar and the hint line and a tap reaches Vegg), `editing.spec.ts` (ae) now expects «Vedskjul 2» in the refusal,
+  `phone-phase3.spec.ts` reads both button boxes in one frame after the scroll has stopped, `family-firestore.spec.ts`
+  (opt-in: a device with a space opens a link to another space with Firestore blocked for 15 s: never «ingen
+  forslag», then the real counts).
 - `npm run build` must pass with zero TypeScript errors; `npm run lint` (oxlint) clean.
 
 ## Rules for contributors (humans and agents)

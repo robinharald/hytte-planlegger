@@ -83,7 +83,7 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
 - **Gå rundt**: i 3D, trykk «Gå rundt» (under kameravinklene, eller knappen oppe til høyre i bildet). Du står i stua i
   øyehøyde (1,65 m) — eller der du sist trykket på et gulv i 3D, eller i rommet du har valgt i planen. På PC: gå med
   W A S D (eller piltastene), se deg rundt med musa, hold Shift for å løpe, P lagrer bildet, Esc avslutter (kameraet
-  blir stående der du sto, så du kan lagre bildet fra «Eksporter»). På telefonen: gå med spaken nede til venstre, dra i
+  blir stående der du sto, så du kan lagre bildet fra «Eksporter»; en kameravinkel tar deg tilbake). På telefonen: gå med spaken nede til venstre, dra i
   bildet for å se deg rundt, «Avslutt» oppe til høyre. Du går gjennom dører og åpninger og opp og ned trapper, men ikke
   gjennom vegger, vinduer, terrassens kledning ned mot bakken eller grunnmuren (møblene stopper deg ikke).
 - **Sol og skygge**: trykk «Midtsommer», «Jevndøgn», «Midtvinter» eller «I dag», og dra i klokkeslettet. Den gule
@@ -124,8 +124,8 @@ Detaljene (koordinatsystemer, konvensjoner, pipeline, kontrakter mellom modulene
   «Åpne fil» og «Eksporter JSON».
 - **Uten nett** starter appen fra mellomlageret (service worker), og endringene sendes når nettet er tilbake. PDF og
   IFC-modellen virker uten nett når bibliotekene deres er hentet én gang med nett: appen henter dem selv i bakgrunnen
-  noen sekunder etter at den er åpnet med nett (ikke med «Spar data»); er de ikke hentet, sier appen «Første gang
-  trenger dette nett – koble til og prøv igjen; etterpå virker det uten nett.». På
+  noen sekunder etter at den er åpnet med nett (ikke med «Spar data»), ellers første gang de brukes; er de ikke
+  hentet, sier appen «Første gang trenger dette nett – koble til og prøv igjen; etterpå virker det uten nett.». På
   iPhone: legg appen på Hjem-skjermen mens familielenken er åpen (kortet «Legg planleggeren på Hjem-skjermen» forklarer
   hvordan). Når en ny versjon av appen er publisert, kommer «Ny versjon av appen er klar. [Oppdater]»; har du appen
   åpen i flere faner, lastes bare den du trykket i på nytt, de andre sier fra.
@@ -211,7 +211,10 @@ npm run dev        # http://localhost:5173
   «Ta tilbake» som holder veggene rette og et nektet «Ta tilbake» som ikke endrer noe (PC), «Gå rundt» fra sør som
   stopper ved terrassens kledning og P som lagrer bildet, en PDF av et forslag med emoji i navnet (teksten lest fra
   fila), navnekortet som ikke flytter verktøylinja, avløpsstammen på telefonen (drag flytter planen, trykk og så drag
-  flytter stammen), forslagsbanneret på 390 px og en ny enhet med treg forbindelse mot den ekte Firestore. Prøvene mot den
+  flytter stammen), forslagsbanneret på 390 px og en ny enhet med treg forbindelse mot den ekte Firestore. Fikserunde 4 la til
+  «Oversikt» etter Esc i «Gå rundt» (PC), PDF og IFC uten nett i produksjonsbygget (`e2e/lazy-offline.spec.ts`),
+  navnekortet som holder seg under verktøylinja når et banner vokser (iPhone 13), «Vedskjul 2» i et nektet «Ta tilbake»
+  (PC) og en lenke til en annen plass med blokkert forbindelse mot den ekte Firestore. Prøvene mot den
   ekte Firestore kjøres bare med `E2E_FIRESTORE=1` (se
   [docs/firebase-oppsett.md](docs/firebase-oppsett.md)); ellers hoppes de over. Skjermbildene i `e2e/screenshots/`
   sjekkes inn, slik at en diff viser hva som endret seg visuelt. Rapport og spor fra feilede kjøringer havner i
@@ -222,10 +225,12 @@ npm run dev        # http://localhost:5173
 
 `npm run build` lager `dist/` med relativ base (`./` i `vite.config.ts`), så samme bygg virker både lokalt og under en
 undermappe på GitHub Pages. Bygget har en service worker (`sw.js`, scope `./`) som mellomlagrer alt unntatt
-PDF/IFC-bibliotekene, som lastes ved første bruk (fonter, ikoner og Firebase-delen er med), og et manifest uten
+PDF/IFC-bibliotekene når appen installeres (fonter, ikoner og Firebase-delen er med), og et manifest uten
 `start_url` (Hjem-skjerm-appen åpner adressen den ble lagt til fra, med familielenken). Firebase lastes som en egen del
-bare når den delte plassen brukes. PDF-bibliotekene (jsPDF, svg2pdf.js) og IFC-motoren (web-ifc med wasm, ca. 5 MB) er
-egne deler som lastes første gang de brukes, og mellomlagres da — de lastes ikke ned når appen installeres.
+bare når den delte plassen brukes. PDF-bibliotekene (jsPDF, svg2pdf.js) og IFC-motoren (web-ifc med wasm) er egne
+deler, ca. 6 MB i alt, som ikke mellomlagres ved installasjonen: appen henter dem selv inn i mellomlageret
+`hytte-lazy-libs` i bakgrunnen noen sekunder etter at den er åpnet med nett (ikke med «Spar data»; én gang per versjon,
+`src/export/warmLazy.ts`), eller første gang de brukes.
 
 Publiseringen er automatisk: hver push til `main` kjører [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml),
 som kjører enhetstestene, bygger og laster `dist/` opp til GitHub Pages. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)

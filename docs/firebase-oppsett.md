@@ -70,7 +70,9 @@ adressen uten lenke, får sin egen, tomme plass.
   forslag som er laget på andre enheter («Bytt dit» bare når plassen i lenken har slike og plassen du bruker nå ikke
   har det; ellers «Bli her»). Ingenting lagres eller tilbys før du har valgt. «Bli her» lar alt være og viser plassen du
   bruker nå i adressefeltet igjen; så lenge du ikke har svart, står lenken i adressefeltet, og spørsmålet kommer igjen
-  hvis fanen lastes på nytt. Har plassen i lenken ingen forslag, står det «… har ingen forslag (er lenken hel?)».
+  hvis fanen lastes på nytt. Har plassen i lenken ingen forslag, står det «… har ingen forslag (er lenken hel?)». Før
+  plassen i lenken har svart (treg eller ingen forbindelse), står det «Henter plassen i lenken …», og ingen knapp er
+  uthevet; «ingen forslag» og «finnes ikke» sier appen bare når plassen selv har svart.
 - **Bytt dit** bytter plass (siden lastes på nytt). Den gamle id-en huskes på enheten (`hytte-planlegger:family.previous`),
   og når den nye plassen har svart, tilbyr appen «Hent forslagene fra den forrige plassen» («Hent forslaget …» når det er
   ett) for forslagene som ble laget **på denne enheten** i den gamle plassen før byttet (enheten husker hvilke,
@@ -100,7 +102,7 @@ adressen uten lenke, får sin egen, tomme plass.
   ikke mer før appen åpnes neste gang). Lagres noe uten navn på en annen måte (f.eks. «Nytt forslag» i meldingen om at
   Forslag D er låst), kommer spørsmålet som et kort der meldingene vises (nederst på PC, under verktøylinja på telefon;
   det skyver ingenting) med **Skriv navnet** og **Hopp over**, når ingenting er valgt og planen ikke er endret eller
-  rørt på 3 sekunder. Appen spør til navnet er skrevet eller «Hopp over» er valgt; «Hopp over» spør aldri igjen. Navnet
+  rørt på 3 sekunder (velger du noe mens kortet vises, går det bort og venter 3 nye sekunder). Appen spør til navnet er skrevet eller «Hopp over» er valgt; «Hopp over» spør aldri igjen. Navnet
   kan endres under Mer → «Endre navnet ditt».
 - Hentes et forslag med fra den forrige plassen, og plassen du bytter til alt har et med samme navn, får det navnet
   til enheten etter seg («Mammas idé (Pappa)», uten navn «Mammas idé (kopi)»).

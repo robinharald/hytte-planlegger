@@ -2,7 +2,8 @@
 
 Oppdatert 2026-10-13 (fase 2b integrert: møbler, delte forslag i Firestore, offline/PWA og finpuss av redigeringen;
 fikserunde 2b etter den tredje gjennomgangen, runde 2 etter den fjerde, runde 3 etter den femte, runde 4 etter den
-sjette; fase 3: eksport, gå-modus, sol, avløp og IFC-modellen; fikserunde 3 etter den sjuende gjennomgangen).
+sjette; fase 3: eksport, gå-modus, sol, avløp og IFC-modellen; fikserunde 3 etter den sjuende gjennomgangen og
+fikserunde 4 etter den åttende).
 Integratoren holder denne fila oppdatert: gjort / neste / kjente problemer.
 
 Faser:
@@ -20,12 +21,119 @@ Det som faktisk gjenstår (alt annet i oppdraget er gjort):
 1. **Prøve på en ekte iPhone** (pappas): alt er prøvd i Chromium på PC og med iPhone 13-emulering, ikke i Safari.
    Særlig: delingsmenyen for PDF og PNG, spaken, dra-for-å-se og kameraknappen i «Gå rundt», to fingre som starter på
    mini-linja, å velge en .ifc-fil fra Filer, hvor «Hva heter du?»-kortet havner, og at verktøyraden fortsatt er tegnet
-   når et banner kommer over en plan som er knepet inn (se «Kjente problemer (fikserunde 3)»).
+   når et banner kommer over en plan som er knepet inn (se «Kjente problemer (fikserunde 4)»). Og uten nett: åpne den
+   installerte appen med nett, vent ca. 15 s, slå på flymodus, lag så en PDF og last .ifc-fila.
 2. **Dra-ytelse**: inkrementell vegg- og romavledning (bare den delen av vegg-grafen som endres), så drag av vegger,
    kanter og bygg blir jevne også på telefon (70–90 ms per oppdatering på PC, 360–670 ms med 4 × tregere CPU).
 3. Små rester (se «Kjente problemer» under): «Ta tilbake» i hjørner etter 4–6 flytt, Barlow i PDF-en (trenger en
    TTF-utgave), 3D-etikettene i PNG-bildet, møbler og lukkede dører i «Gå rundt», terrengfoten til trinnene fra
    terrassen (`geometry/outdoor.ts`), avløp i 3D.
+
+## Fikserunde 4 (fase 3) (13. okt 2026)
+
+Den åttende gjennomgangen (redigeringskjernen i Node på den ekte seeden, delte forslag mot den ekte Firestore på PC og
+iPhone 13, funksjonene på iPhone 13 og en 1366 × 768-PC, også mot et produksjonsbygg) fant ingen blokkerende, 3 store
+og 8 mindre feil. Alle er rettet i to parallelle deler (redigeringskjernen og funksjonene; den delte lagringen og
+brukerflaten) og satt sammen her. «Ta tilbake» i hjørner etter 4–6 flytt er fortsatt ikke løst (se «Kjente problemer
+(fikserunde 4)»).
+
+### Gjort
+
+- **Et nytt bygg inntil et annet klemmer det ikke** (stor; `edit.ts carriesThrough`, `unitEdgeAttached`): Bredde eller
+  en kant på det ene vedskjulet flyttet før med seg det som sto inntil, uten melding. Bredde 3,0 gjorde naboen 1,0 m
+  bred med åpningen utenfor veggen, 3,8 gjorde den 0,2 m og slo sammen rommene, og 4,0 eller 5,0 nådde aldri bredden.
+  Nå flytter et bygg aldri et annet bygg. Bredde/Dybde endrer den frie siden og når bredden du skrev. En kant som
+  skyves inn i naboen, nektes med «Vedskjul 2» står inntil veggen – flytt det først (også hintet under drag). Står det
+  bygg på begge sider, nektes Bredde med samme melding. Feilen var eldre enn fikserunde 3, men kom fram nå som et nytt
+  vedskjul fester seg inntil det første på telefonen.
+- **Et nektet «Ta tilbake» på husets kant sier hvilket bygg som står i veien**: «Ta tilbake går ikke: «Vedskjul 2» står
+  i veien – flytt det først.» (før: «Bygget kan ikke stå oppå et annet bygg.»). Det er bygget inntil kanten som ikke
+  kan skyves unna, eller bygget der kanten skal tilbake.
+- **Åpningen i et nytt bygg følger Bredde/Dybde begge veier** (`edit.ts fitUnitOpenings`): den står midt på veggen, og
+  blir veggen lengre igjen, vokser den tilbake mot malens bredde. Bredde 1,5 og så 2,0 gir vedskjulet den samme 1,8 m
+  åpne fronten det ble plassert med. Det står alltid en stolpe på 0,1 m i hver ende, så bredden gjør ikke noe sprang
+  rundt malens bredde (1,75 / 1,8 / 1,81 m). En åpning du selv har gjort smalere, beholder bredden sin.
+- **En kameravinkel virker etter Esc i «Gå rundt»** (stor; `walkState.ts viewKept` / `presetRequest`, `Controls.tsx`,
+  `Scene.tsx`, `WalkControls.tsx`): etter Esc vises ingen kameravinkel som valgt, og et trykk på en vinkel flytter
+  kameraet dit, også på den som var valgt før. Før skjedde ingenting med den uthevede «Oversikt». Bildet etter Esc
+  beholder synsvinkelen fra gåturen til kameraet flyttes (før ble det zoomet inn, også i PNG-bildet).
+- **En lenke til en annen plass med treg eller blokkert forbindelse** (stor; `appStore.ts updateLinkedInfo`,
+  `StatusPill.tsx`): en enhet som alt har en plass og åpner en lenke til en annen, fikk «Plassen i lenken har ingen
+  forslag (er lenken hel?)», «Forslaget i lenken finnes ikke» og «Bli her» uthevet når Firestore ikke svarte. Da ble
+  enhetens tomme mellomlager lest som svar. Nå står det «Henter plassen i lenken …» og ingen knapp er uthevet. «ingen
+  forslag» og «finnes ikke» kommer bare når plassen selv har svart. Et eldre mellomlager med forslag viser tallene, men
+  sier aldri «finnes ikke». Prøvd mot den ekte Firestore med firestore.googleapis.com blokkert i 15 s.
+- **«Hva heter du?» havner ikke over verktøyraden på telefon** (`toastLayout.ts watchToolbarMoves`): kortet og
+  meldingene måles på nytt også når noe over verktøyraden endrer høyde. Det kan være et forslagsbanner som får tallene
+  sine litt etter, et banner til, eller Nøkkeltall som brytes annerledes. Før kunne kortet bli liggende over hele
+  verktøyraden og hintlinja.
+- **«Hva heter du?» etter et valg**: velger du noe mens kortet vises, går det bort og kommer først tilbake etter 3 s
+  uten at noe skjer. Før kom det i samme øyeblikk som valget ble sluppet, der neste trykk på telefonen ofte havner.
+- **PDF og IFC uten nett også når serveren sender `Vary: Origin`** (`vite.config.ts`: `ignoreVary` på
+  `hytte-lazy-libs`): filene som ble hentet i bakgrunnen, ble ikke funnet uten nett i `vite preview`. GitHub Pages
+  sender `Vary: Accept-Encoding`, så den publiserte appen virket. Nå er det likt overalt, og en e2e-test prøver det.
+- **Avløpsstammen kan velges på telefon ved startzoom**: trykkflaten er aldri mindre enn stammen slik den er tegnet
+  (10 px), ellers høyst 0,25 m. Før var den 2,9 px ved startzoom.
+- **e2e**: spaken i `phone-phase3.spec.ts` leser «Avslutt» og kameraknappen i samme bilde, etter at rullingen har
+  stoppet (feilet 6 av 9 ganger).
+- **Dokumentasjon**: README («Bygg og publisering», «Uten nett») og kommentaren i `vite.config.ts` sier at PDF- og
+  IFC-bibliotekene ikke mellomlagres når appen installeres. Appen henter dem i bakgrunnen noen sekunder etter en
+  oppstart med nett (ikke med «Spar data»), ellers første gang de brukes.
+- **Integrasjonen**: `nb.editor.restoreUnitInTheWay` og `nb.family.otherFamily.loading` ligger i `nb.ts` (den
+  midlertidige `editCoreStrings.ts` er borte). Meldingene på telefon følger verktøyraden med `watchToolbarMoves`, som
+  kortet. **Startpakken er ikke større**: «Send forslaget» (`ShareDialog.tsx`) er nå en egen liten bit som lastes
+  første gang den åpnes (service workeren mellomlagrer den). JavaScript ved oppstart er 1 081,3 kB (327,2 kB gzip) mot
+  1 082,7 kB (327,4 kB) før runden, målt likt (inngangsskriptet og modulepreload-filene i `index.html`, gzip -9).
+- **Tester**: `npm test` 2042 tester i 129 filer, alle grønne (5 hoppet over: de som trenger arkitektens IFC-fil).
+  `npm run typecheck`, `npm run lint`, `npm run build` og `npx tsc --noEmit -p e2e/tsconfig.json` er rene. `npm run
+  e2e`: 99 av 99 grønne i tre prosjekter (PC, iPhone, `pwa`), 10 hoppet over (de mot den ekte Firestore). De sju
+  skjermbildene som ble skrevet på nytt, er sett over: bare små forskjeller i tegningen, så de innsjekkede er beholdt.
+  Mot den ekte Firestore (`E2E_FIRESTORE=1`, engangsfamilier `e2e-…`, slettet etterpå med 0 dokumenter igjen): 10 av
+  10 grønne. Spaken i `phone-phase3.spec.ts` og `walk-preset.spec.ts`: 5 av 5 hver med `--repeat-each=5`. Nytt i
+  Vitest: `editActions.fix8.test.ts` (to vedskjul inntil hverandre, åpningen som vokser tilbake, «Ta tilbake» som
+  nevner bygget), `controlsPresets.test.tsx`, og nye tilfeller i `Walk.dom.test.tsx`, `PlumbingLayer.test.tsx`,
+  `appStore.family.test.ts` og `familyBanners.test.tsx`; `app.test.tsx` og `proposalsUi.test.tsx` venter på at
+  «Send forslaget» er lastet. Nytt i e2e (kortet på iPhone, lenken mot den ekte Firestore og `lazy-offline.spec.ts` er
+  kjørt uten rettingen og feiler da):
+  - PC (`walk-preset.spec.ts`): gå, W, Esc — ingen kameravinkel er valgt; «Oversikt» gir tilbake oversiktens plass,
+    mål og synsvinkel;
+  - PC (`editing.spec.ts` (ae)): det nektede «Ta tilbake» nevner «Vedskjul 2»;
+  - iPhone 13 (`proposals.spec.ts`): kortet vises, så en forslagslenke der plassen svarer 1 s senere — kortet holder
+    seg under verktøyraden og hintlinja, og et trykk på Vegg treffer Vegg;
+  - `pwa` (`lazy-offline.spec.ts`): én oppstart med nett, så uten nett: en PDF og den syntetiske IFC-fila virker;
+  - ekte Firestore (`family-firestore.spec.ts`): en enhet med plass åpner en lenke til en annen plass mens Firestore
+    er blokkert i 15 s — aldri «ingen forslag» eller «finnes ikke», så de riktige tallene.
+
+### Avgjort i fikserunde 4 (Robin kan endre)
+
+- Et nytt bygg inntil et annet nytt bygg behandles som et bygg inntil huset: det ene flytter aldri det andre.
+  Bredde/Dybde endrer den frie siden; med bygg på begge sider nektes endringen med meldingen (bygget kunne også skjøvet
+  naboen unna).
+- Bredde/Dybde setter byggets egen åpning (åpen front, dør) midt på veggen hver gang veggen endrer lengde, og en åpning
+  som fylte veggen, vokser tilbake mot malens bredde. En åpning du har gjort smalere selv, beholder bredden.
+- Esc i «Gå rundt» beholder gåturens synsvinkel til kameraet flyttes, og ingen kameravinkel vises som valgt så lenge.
+- Forslagsbanneret uthever ingen knapp før plassen i lenken har svart (før: «Bli her»).
+- «Send forslaget» lastes som en egen bit første gang (for å holde startpakken nede).
+
+### Kjente problemer (fikserunde 4)
+
+- «Ta tilbake» i hjørner etter 4–6 flytt: som i fikserunde 3. Sveipet har 6 rekkefølger som slår sammen et rom; Angre
+  virker, og rommet kan få navnet igjen.
+- Telefon: i Chromiums iPhone-emulering kan verktøyraden og hintlinja stå blanke etter en knipezoom når noe over planen
+  endrer høyde. Bannerne (tom plass, forslagslenke, konflikt) skyver fortsatt planen ned; kortet og meldingene følger
+  nå verktøyraden. Mens «Hva heter du?» vises, ligger det over de øverste ca. 95 px av planen på telefon. Må sjekkes på
+  pappas iPhone.
+- Helt uten nett sier forslagsbanneret «Henter plassen i lenken …» til nettet er tilbake (ingen egen «uten nett»-tekst
+  der). Et eldre mellomlager kan vise gamle tall til plassen svarer.
+- Én gang (ikke gjenskapt) nådde Mammas første lagring i produksjonsbygget ikke serveren på 30 s i gjennomgangen; de
+  8 neste første lagringene tok 1,4–1,8 s.
+- PDF og IFC uten nett er prøvd i produksjonsbygget (`vite preview` og en server med GitHub Pages' hoder), ikke i en
+  installert app på iPhone (se «Neste»).
+- En vegg som ble strukket av en annen veggs flytting, har spøkelset sitt oppå seg (som i fikserunde 3).
+- Dra-ytelse som før: 70–90 ms per oppdatering på PC, 360–670 ms med 4 × tregere CPU.
+- Forhåndshentingen bruker ca. 6 MB data én gang per versjon på enheter med nett (ikke med «Spar data»).
+- Det som står under «Kjente problemer (fikserunde 3)», «(fase 3)» og «(runde 4)», gjelder ellers fortsatt; ingenting
+  er prøvd i Safari.
 
 ## Fikserunde 3 (fase 3) (13. okt 2026)
 
@@ -84,8 +192,9 @@ tegningen på telefon etter en layoutendring står under «Kjente problemer (fik
   sier «Gå rundt». Esc lar kameraet stå der du sto, så «Eksporter» → «Lagre 3D-bildet som PNG» lagrer det også;
   «Avslutt», en kameravinkel og Plan-fanen glir tilbake som før.
 - **Avløpsstammen på telefon** virker som møblene: et trykk velger den, bare den valgte kan dras, og et drag som
-  starter på en stamme som ikke er valgt, flytter planen (før flyttet og lagret det stammen). Trykkflaten er høyst
-  0,25 m, så toalettene ved siden av kan trykkes på. Forklaringen «Stammen er et forslag …» står i hintlinja, ikke i
+  starter på en stamme som ikke er valgt, flytter planen (før flyttet og lagret det stammen). Trykkflaten er aldri
+  mindre enn stammen slik den er tegnet (10 px), ellers høyst 0,25 m, så toalettene ved siden av kan trykkes på når
+  planen er zoomet inn. Forklaringen «Stammen er et forslag …» står i hintlinja, ikke i
   planen (der ble den kuttet på telefon).
 - **e2e**: spaken i `phone-phase3.spec.ts` måles først når 3D-bildet har sluttet å rulle (feilet av og til).
 - **Integrasjonen**: tekstene ligger i `nb.ts` (`nb.editor.unitInTheWay`, `unitOpeningsNarrowed`,
@@ -127,9 +236,10 @@ tegningen på telefon etter en layoutendring står under «Kjente problemer (fik
 - Reserveregelen for «Ta tilbake» i forslag uten `carriedBy` er fjernet, ikke gjort smartere: ingen publisert forslag
   er eldre enn `carriedBy`.
 - Husets kant eller hjørne som et bygg står inntil, kan ikke flyttes utover, og meldingen sier hvilket bygg det er (det
-  kunne også skjøvet bygget unna, som «Ta tilbake» gjør).
+  kunne også skjøvet bygget unna, som «Ta tilbake» gjør). Fikserunde 4: det samme gjelder et bygg inntil et annet bygg.
 - Bredde/Dybde gjør byggets egen åpning smalere; et drag av byggets kant gjør det ikke (da kommer advarselen som før).
-- Esc i «Gå rundt» lar kameraet stå der du sto; «Avslutt», en kameravinkel og Plan-fanen glir tilbake.
+- Esc i «Gå rundt» lar kameraet stå der du sto; «Avslutt», en kameravinkel og Plan-fanen glir tilbake. Fikserunde 4:
+  bildet beholder gåturens synsvinkel til kameraet flyttes, og en kameravinkel virker også når den var valgt før.
 - Terrassens kledning stopper deg i «Gå rundt»: fra en terrassekant uten rekkverk mer enn ca. 0,65 m over terrenget
   kan du ikke gå ned.
 - PDF-bibliotekene og IFC-leseren hentes i bakgrunnen (ca. 6 MB én gang per versjon; ikke med «Spar data»).
