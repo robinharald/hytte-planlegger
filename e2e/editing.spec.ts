@@ -1129,4 +1129,69 @@ test.describe('editing a proposal (desktop, final fix round after 2b)', () => {
     // The carrier keeps the user's move: exactly as it was before the restore.
     expect(await wall('w-106-korr')).toEqual(korr);
   });
+  // ---- Fourth fix round (sixth review) ----------------------------------------------------------------------------
+
+  /** As dragWallY, along plan x (a wall along plan y). */
+  const dragWallX = async (page: Page, id: string, dx: number): Promise<number> => {
+    const w = await derivedLine(page, id);
+    const at = await clearPointOn(page, id, w.a, w.b);
+    await selectAt(page, at, { kind: 'wall', id });
+    const x0 = (await activeVariant(page)).walls.find((x) => x.id === id)?.a[0] ?? NaN;
+    await dragPlan(page, at, [at[0] + dx, at[1]]);
+    await expect.poll(async () => Math.abs(((await activeVariant(page)).walls.find((x) => x.id === id)?.a[0] ?? x0) - x0), id).toBeGreaterThan(0.15);
+    await page.keyboard.press('Escape');
+    return (await activeVariant(page)).walls.find((x) => x.id === id)?.a[0] ?? NaN;
+  };
+
+  test('(ab) a Vedskjul against the main house, Dybde 2,0 in Egenskaper: the shed grows south, the house stays', async ({ page }) => {
+    await freshProposal(page);
+    const v0 = await activeVariant(page);
+    const houseWallIds = new Set(v0.walls.map((w) => w.id));
+    const houseWalls = (v: Variant) => JSON.stringify(v.walls.filter((w) => houseWallIds.has(w.id)));
+    const houseOpeningIds = new Set(v0.openings.map((o) => o.id));
+    const houseOpenings = (v: Variant) => JSON.stringify(v.openings.filter((o) => houseOpeningIds.has(o.id)));
+    const id = await placeShed(page, [12.8, -0.9]);
+    const v1 = await activeVariant(page);
+    const box0 = bbox(blockPolygon(v1, id));
+    expect(box0.y1, 'against the house').toBeCloseTo(0, 2);
+    expect(blockPolygon(v1, 'blk-main')).toEqual(blockPolygon(v0, 'blk-main'));
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id });
+    const depth = page.getByTestId('block-depth').locator('input');
+    await expect(depth).toHaveValue(/^1,5/);
+    await depth.fill('2,0');
+    await depth.press('Enter');
+    await expect.poll(async () => bbox(blockPolygon(await activeVariant(page), id)).y0).toBeCloseTo(box0.y1 - 2, 2);
+    const v2 = await activeVariant(page);
+    expect(bbox(blockPolygon(v2, id)).y1, 'still against the house').toBeCloseTo(0, 2);
+    expect(blockPolygon(v2, 'blk-main'), 'the house did not move').toEqual(blockPolygon(v0, 'blk-main'));
+    expect(blockPolygon(v2, 'blk-glass')).toEqual(blockPolygon(v0, 'blk-glass'));
+    expect(houseWalls(v2), "the house's walls did not move").toBe(houseWalls(v0));
+    expect(houseOpenings(v2), "the house's doors and windows did not move").toBe(houseOpenings(v0));
+  });
+
+  test('(ac) w-peis-w 0.3 m west, w-peis-n 0.3 m north, «Ta tilbake» on w-peis-w: the corner closes, every room keeps its name', async ({ page }) => {
+    await freshProposal(page);
+    const named = async () => (await derivedRooms(page)).filter((r) => r.name).length;
+    const kinds = () => page.evaluate(() => ((window as HytteWindow).__hytte?.derived?.warnings ?? []).map((w) => w.kind));
+    const n0 = await named();
+    expect(n0).toBe(27);
+    await zoomAt(page, [7.6, 2.7], 6);
+    const x = await dragWallX(page, 'w-peis-w', -0.3);
+    expect(x, 'w-peis-w moved west').toBeCloseTo(6.67, 1);
+    const y = await dragWallY(page, 'w-peis-n', 0.3);
+    expect(y, 'w-peis-n moved north').toBeCloseTo(3.4, 1);
+    expect(await named()).toBe(n0);
+    await dismissToasts(page);
+
+    const g = await derivedLine(page, 'w-peis-w/ghost');
+    await selectAt(page, await clearPointOn(page, 'w-peis-w/ghost', g.a, g.b), { kind: 'ghost', id: 'w-peis-w/ghost' });
+    await page.getByTestId('ghost-restore').click();
+    await expect.poll(async () => (await activeVariant(page)).walls.find((w) => w.id === 'w-peis-w')?.a[0]).toBeCloseTo(6.97, 2);
+    // The user's w-peis-n stays, and the restored wall reaches it: no loose wall, no merged rooms.
+    const v = await activeVariant(page);
+    expect(v.walls.find((w) => w.id === 'w-peis-n')?.a[1]).toBeCloseTo(y, 2);
+    expect(await named(), 'every room keeps its name').toBe(n0);
+    expect(await kinds()).not.toContain('wall-dangling');
+    await expect(page.locator('[data-testid=toast]').filter({ hasText: 'er nå ett rom' })).toHaveCount(0);
+  });
 });

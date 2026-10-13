@@ -19,6 +19,10 @@ export interface HytteHook {
   project: Project;
   derived: DerivedVariant;
   selection: { kind: string; id: string; levelId?: string } | null;
+  /** Phase 3: the last PDF / PNG export (src/export/hook.ts). */
+  lastExport: { kind: 'pdf' | 'png'; bytes: number; pages: number; fileName: string; width?: number; height?: number } | null;
+  /** Phase 3: the walker while «Gå rundt» is on (src/view3d/walkState.ts `walkProbe`): plan x / y, feet and eye height (m). */
+  walk: { session: number; x: number; y: number; feetZ: number; eyeZ: number; heading: number } | null;
 }
 export type HytteWindow = Window & { __hytte?: Partial<HytteHook> };
 
