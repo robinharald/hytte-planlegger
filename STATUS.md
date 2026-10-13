@@ -29,6 +29,25 @@ Det som faktisk gjenstår (alt annet i oppdraget er gjort):
    TTF-utgave), 3D-etikettene i PNG-bildet, møbler og lukkede dører i «Gå rundt», terrengfoten til trinnene fra
    terrassen (`geometry/outdoor.ts`), avløp i 3D.
 
+## Etter fikserunde 4: romtype (13. okt 2026)
+
+Robin: «når jeg endrer romtype, vises ikke den nye typen» (på et nytt bygg). Typen ble alltid lagret (også etter
+flytting, Roter 90°, Angre/Gjør om og ny innlasting), men planen, Egenskaper og Romskjema viser rommets **navn**, og
+navnet kom fra malen: en Bod satt til Soverom het fortsatt «Bod 2» overalt.
+
+### Gjort
+
+- **Et navn som bare sier typen, følger typen** (`edit.ts typeOnlyName`, `applySetRoomProps`): «Bod 2», «Vedskjul»,
+  «Anneks», «Rom», «Stue», «Soverom 1» o.l. blir den nye typens navn (med nummer om navnet finnes: «Bad 2»). Et navn du
+  har skrevet selv («Korridor (nedre)», «Kontor», «Verksted»), blir stående. Ett angresteg.
+- Tester: `editActions.fix8.test.ts` (Vedskjul, Bod, Anneks, «Gi navn»-rom, rom i seeden) og e2e (af).
+
+### Kjente problemer (romtype)
+
+- Det finnes ingen romtype «Kontor» (bare som navn med typen «Annet»).
+- Et nytt bygg kan stå over trappa fra terrassen (f.eks. en Bod på sørkanten); da velger et trykk i rommet trappa.
+  Rommet kan velges i Romskjema.
+
 ## Fikserunde 4 (fase 3) (13. okt 2026)
 
 Den åttende gjennomgangen (redigeringskjernen i Node på den ekte seeden, delte forslag mot den ekte Firestore på PC og

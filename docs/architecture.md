@@ -886,6 +886,9 @@ The contract is docs/phase2-plan.md §1 and §3; the file headers hold the detai
   the UI selects). An anchor on a face boundary (or within 1 cm of it) counts as outside, so a divider moved onto it
   sends it to the face's label point. Whole-block moves and rotations hand the carried rooms to reconcile
   (`EditContext.carried`), which shifts their previous polygons the same way before matching.
+  `setRoomProps` with a new `type` also renames a room whose name only says the old type or its unit template's room
+  («Bod 2», «Vedskjul», «Stue»; `edit.ts typeOnlyName`) to the new type's word (made unique), since the label,
+  Egenskaper and Romskjema show the name; a name the user wrote, or one given in the same patch, is kept.
 - **Drag protocol** (plan → actions): `beginDrag(selection, p, handle?)` → session (null: nothing to drag, then the
   plan pans), `updateDrag(session, p, modifiers)` → `{ indicators, chips, ghost, hint? }` (`hint`: a wall drag cut back
   or refused because an end cannot follow — `wallMoveFraction`, the same clamp as `applyMoveWall`, also applied to the

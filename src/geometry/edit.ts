@@ -3912,11 +3912,24 @@ export function applyNameFace(draft: Variant, derived: DerivedVariant, faceId: I
 
 export interface RoomPatch {
   name?: string;
+  /** A name that only says the old type (`typeOnlyName`) follows the new type unless `name` is given too. */
   type?: RoomType;
   /** null = back to the type's default. */
   floorMaterial?: FloorMaterial | null;
   /** '' removes the note. */
   note?: string;
+}
+
+/**
+ * A room name that only says what kind of room it is: the word of its type or of its unit template's room («Bod»,
+ * «Vedskjul», «Rom»), alone or numbered («Bod 2», «Soverom 1»). Such a name follows a type change (the plan label,
+ * Egenskaper and Romskjema show the name, not the type: a placed Bod set to Soverom still read «Bod 2» everywhere);
+ * a name the user wrote («Korridor (nedre)», «Ved», «Kontor») is kept.
+ */
+function typeOnlyName(draft: Variant, r: Room): boolean {
+  const unit = r.unitId !== undefined ? draft.blocks.find((b) => b.id === r.unitId) : undefined;
+  const words = [nb.roomTypes[r.type], unitTemplate(unit?.template)?.roomName];
+  return words.some((w) => w !== undefined && (r.name === w || (r.name.startsWith(`${w} `) && /^\d+$/.test(r.name.slice(w.length + 1)))));
 }
 
 export function applySetRoomProps(draft: Variant, roomId: Id, patch: RoomPatch): boolean {
@@ -3928,7 +3941,9 @@ export function applySetRoomProps(draft: Variant, roomId: Id, patch: RoomPatch):
     changed = true;
   }
   if (patch.type !== undefined && patch.type !== r.type) {
+    const rename = patch.name === undefined && typeOnlyName(draft, r);
     r.type = patch.type;
+    if (rename) r.name = uniqueName(nb.roomTypes[patch.type], draft.rooms.filter((x) => x.id !== r.id).map((x) => x.name));
     changed = true;
   }
   if (patch.floorMaterial !== undefined) {

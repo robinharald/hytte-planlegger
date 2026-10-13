@@ -5,7 +5,12 @@
  *  2. Bredde / Dybde centres the unit's own opening and lets it grow back towards the template's width (no jump near
  *     it: a post stays at each end) — only while it is still where the template put it (fix round 4: a door the user
  *     moved, or one the user added, keeps its place);
- *  3. a refused «Ta tilbake» on a house edge names the unit in the way.
+ *  3. a refused «Ta tilbake» on a house edge names the unit in the way;
+ *  4. a room's Type (owner's report: «changing room type doesn't show») — the record always took it, but the plan
+ *     label, Egenskaper and Romskjema show the NAME, so a placed Bod set to Soverom still read «Bod 2» everywhere. A
+ *     name that only says the old type or the unit's template («Bod 2», «Vedskjul», «Stue») now follows the new type;
+ *     a name the user wrote stays. Type, name and note hold through moving / turning the unit, a wall move
+ *     (reconcileRooms), undo / redo and a JSON round trip.
  */
 import { describe, expect, it } from 'vitest';
 import type { DerivedVariant } from '../model/derived';
@@ -358,5 +363,99 @@ describe('a refused «Ta tilbake» on a house edge names the unit in the way', (
     expect(A.restoreGhost(s, 'blk-main/v-main-sw/ghost')).toBe(false);
     expect(toastTexts(s)).toEqual([`${EDIT_STRINGS.restoreUnitInTheWay('Vedskjul')}.`]);
     expect(J(s.getState().project)).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// 4. A room's Type shows (it follows into a name that only said the old type)
+// ---------------------------------------------------------------------------------------------------------------
+
+describe("a room's Type: kept through edits, and a name that only said the old type follows it", () => {
+  /** The record of the one room of unit `id`, as derived (what the label, Egenskaper and Romskjema show). */
+  const unitRoom = (s: Store, id: string) => {
+    const rooms = D(s).rooms.filter((r) => r.blockId === id);
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].room, 'the unit room is named').toBeDefined();
+    return rooms[0].room!;
+  };
+  const shown = (s: Store, roomId: string) => {
+    const r = D(s).rooms.find((x) => x.room?.id === roomId)?.room;
+    return r ? { name: r.name, type: r.type, note: r.note } : null;
+  };
+
+  const cases = [
+    { template: 'vedskjul', before: { name: 'Vedskjul', type: 'bod' }, to: 'teknisk', after: 'Teknisk rom' },
+    { template: 'bod', before: { name: 'Bod 2', type: 'bod' }, to: 'soverom', after: 'Soverom' },
+    { template: 'anneks', before: { name: 'Anneks', type: 'soverom' }, to: 'bad', after: 'Bad 2' },
+  ] as const;
+
+  for (const c of cases) {
+    it(`${c.template}: Type ${c.to} shows as «${c.after}» and holds through move, turn, undo / redo and a reload`, () => {
+      let s = proposal();
+      const id = tapped(s, c.template, [18.4, 9]);
+      const room = unitRoom(s, id);
+      expect({ name: room.name, type: room.type }).toEqual(c.before);
+      const steps = undoSteps(s);
+      expect(A.setRoomProps(s, room.id, { type: c.to })).toBe(true);
+      expect(undoSteps(s), 'one undo step').toBe(steps + 1);
+      const want = { name: c.after, type: c.to, note: undefined };
+      expect(shown(s, room.id)).toEqual(want);
+      expect(V(s).rooms.find((r) => r.id === room.id)).toMatchObject({ name: c.after, type: c.to, unitId: id });
+      // A note on top, then the unit moved and turned: the same record keeps all of it.
+      expect(A.setRoomProps(s, room.id, { note: 'Ved og verktøy' })).toBe(true);
+      const kept = { ...want, note: 'Ved og verktøy' };
+      expect(A.moveBlock(s, id, [0.5, 0])).toBe(true);
+      expect(shown(s, room.id)).toEqual(kept);
+      expect(A.rotateBlock(s, id, 90)).toBe(true);
+      expect(shown(s, room.id)).toEqual(kept);
+      expect(unitRoom(s, id).id).toBe(room.id);
+      // Undo back to before the type change, then redo it all.
+      for (let i = 0; i < 4; i++) s.getState().undo();
+      expect(shown(s, room.id)).toEqual({ ...c.before, note: undefined });
+      for (let i = 0; i < 4; i++) s.getState().redo();
+      expect(shown(s, room.id)).toEqual(kept);
+      // A JSON round trip (as a reload or another device).
+      s = reload(s);
+      expect(shown(s, room.id)).toEqual(kept);
+      expect(warnings(s)).not.toContain('generic');
+    });
+  }
+
+  it('a name the user wrote stays; a name given with the type wins; a unit room renamed keeps its name', () => {
+    const s = proposal();
+    const id = tapped(s, 'bod', [18.4, 9]);
+    const room = unitRoom(s, id);
+    expect(A.setRoomProps(s, room.id, { name: 'Verksted' })).toBe(true);
+    expect(A.setRoomProps(s, room.id, { type: 'teknisk' })).toBe(true);
+    expect(shown(s, room.id)).toMatchObject({ name: 'Verksted', type: 'teknisk' });
+    expect(A.moveBlock(s, id, [0, 0.5])).toBe(true);
+    expect(reload(s).getState().project).toEqual(s.getState().project);
+    expect(shown(reload(s), room.id)).toMatchObject({ name: 'Verksted', type: 'teknisk' });
+    expect(A.setRoomProps(s, room.id, { name: 'Gjestehus', type: 'soverom' })).toBe(true);
+    expect(shown(s, room.id)).toMatchObject({ name: 'Gjestehus', type: 'soverom' });
+    // Seed rooms: «Korridor (nedre)» is a name, «Stue» only says the type (the plan already has a «Spiseplass»).
+    expect(A.setRoomProps(s, 'room-korr-nedre', { type: 'bod' })).toBe(true);
+    expect(shown(s, 'room-korr-nedre')).toMatchObject({ name: 'Korridor (nedre)', type: 'bod' });
+    expect(A.setRoomProps(s, 'room-stue', { type: 'spiseplass' })).toBe(true);
+    expect(shown(s, 'room-stue')).toMatchObject({ name: 'Spiseplass 2', type: 'spiseplass' });
+    expect(named(s)).toHaveLength(new Set(named(s)).size);
+  });
+
+  it('a «Gi navn» room keeps its Type and name when the partition that made it moves (reconcileRooms)', () => {
+    const s = proposal();
+    const wallId = A.addWall(s, [19.2, 3.4], [19.2, 6.2]) as string;
+    const face = D(s).rooms.find((r) => !r.room);
+    const id = A.nameFace(s, face?.id as string, 'Kontor', { type: 'annet' }) as string;
+    const roomId = D(s).rooms.find((r) => r.id === id)?.room?.id as string;
+    expect(A.setRoomProps(s, roomId, { type: 'soverom' })).toBe(true);
+    expect(shown(s, roomId)).toMatchObject({ name: 'Kontor', type: 'soverom' });
+    expect(A.moveWall(s, wallId, [-0.3, 0])).toBe(true);
+    expect(shown(s, roomId)).toMatchObject({ name: 'Kontor', type: 'soverom' });
+    expect(shown(s, 'room-sov-ny')).toMatchObject({ name: 'Soverom (ny fløy)', type: 'soverom' });
+    expect(shown(reload(s), roomId)).toMatchObject({ name: 'Kontor', type: 'soverom' });
+    // One named «Soverom» (only the type's word) follows a later type change.
+    expect(A.setRoomProps(s, roomId, { name: 'Soverom' })).toBe(true);
+    expect(A.setRoomProps(s, roomId, { type: 'bad' })).toBe(true);
+    expect(shown(s, roomId)).toMatchObject({ name: 'Bad 2', type: 'bad' });
   });
 });

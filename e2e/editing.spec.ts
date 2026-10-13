@@ -58,6 +58,9 @@
  *      tilbake» on the edge is refused with the toast naming the one in the way («Ta tilbake går ikke: «Vedskjul 2»
  *      står i veien – flytt det først.») and changes nothing — the shed against the edge is not pushed, no undo step
  *      (before: the shed was pushed off the house although the toast said no).
+ * Owner's report («changing room type doesn't show»):
+ *  (af) a Bod on the terrace, its room's Romtype set to Soverom: the select, the plan label and the Romskjema row say
+ *      «Soverom» (before: the type was stored but the room still read «Bod 2» everywhere), also after a reload.
  * No state may produce a 'generic' warning (a failed derive or a geometry fallback).
  *
  * Screenshots (e2e/screenshots/): plan-editing.png (the deck selected: vertex and "+" handles), plan-unit-on-deck.png,
@@ -1288,5 +1291,44 @@ test.describe('editing a proposal (desktop, final fix round after 2b)', () => {
     await page.getByTestId('undo').click();
     await expect.poll(async () => (await activeVariant(page)).blocks.some((b) => b.id === other)).toBe(false);
     expect(bbox(blockPolygon(await activeVariant(page), shed)).y1, 'the first shed is where it was').toBeCloseTo(0.5, 2);
+  });
+
+  test("(af) a Bod's room set to Romtype Soverom reads «Soverom» in Egenskaper, the plan and Romskjema, also after a reload", async ({ page }) => {
+    await freshProposal(page);
+    const nb = (await activeVariant(page)).blocks.length;
+    await hoverUnit(page, 'bod', [12.8, -5.4]);
+    const [px, py] = await planToClient(page, [12.8, -5.4]);
+    await page.mouse.click(px, py);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(nb + 1);
+    const bod = (await activeVariant(page)).blocks[nb];
+    const room = (await activeVariant(page)).rooms.find((r) => r.unitId === bod.id);
+    expect(room).toMatchObject({ name: 'Bod 2', type: 'bod' });
+    await dismissToasts(page);
+    const schedule = page.getByTestId('room-schedule');
+    /** The Romskjema row whose Rom cell is exactly `name`. */
+    const row = (name: string) => schedule.locator('tr.row').filter({ has: page.locator('td:first-child', { hasText: new RegExp(`^${name}$`) }) });
+    const pick = async (name: string) => {
+      await row(name).click();
+      await expect.poll(() => selection(page)).toMatchObject({ kind: 'room', id: room!.id });
+    };
+    await pick('Bod 2');
+    const type = page.getByTestId('room-type').locator('select');
+    await expect(type).toHaveValue('bod');
+    await type.selectOption('soverom');
+    const shows = async () => {
+      await expect(type).toHaveValue('soverom');
+      await expect(page.getByTestId('room-name').locator('input')).toHaveValue('Soverom');
+      await expect(page.locator(`[data-testid=plan-view] [data-room-label="${room!.id}"]`).first()).toContainText('Soverom');
+      await expect(row('Soverom')).toHaveCount(1);
+      await expect(row('Soverom').locator('td.block')).toHaveText('Bod');
+      await expect(row('Bod 2')).toHaveCount(0);
+    };
+    await shows();
+    expect((await activeVariant(page)).rooms.find((r) => r.id === room!.id)).toMatchObject({ name: 'Soverom', type: 'soverom', unitId: bod.id });
+    await page.reload();
+    await loadAndWaitReady(page);
+    expect((await activeVariant(page)).rooms.find((r) => r.id === room!.id)).toMatchObject({ name: 'Soverom', type: 'soverom', unitId: bod.id });
+    await pick('Soverom');
+    await shows();
   });
 });
