@@ -6,7 +6,7 @@
  *  2. «Ta tilbake» on one of two walls meeting at a corner or a T, both moved by the user, keeps the corner closed, and
  *     a wall the restored wall's move carried goes back to where the user had put it (`Wall.carriedBy.from`);
  *  3. a merged-away room record survives an edit that only reshapes its face, also across a reload;
- *  4. a proposal saved without any `Wall.carriedBy` falls back to the geometric rules of before;
+ *  4. (the fallback for a proposal without any `Wall.carriedBy` is gone again: editActions.fix7.test.ts);
  *  5. moving or deleting the wing takes its own wall w-wing-w (and its opening) along;
  *  6. a unit placed beside terrace furniture whose footprint reaches into its walls pushes it out.
  */
@@ -312,7 +312,7 @@ describe('«Ta tilbake» on one of two walls meeting at a corner or T, both move
     for (const id of ['w-peis-w', 'w-peis-n', 'w-korr-stue']) expect(J(wall(s, id)), id).toBe(seedWall(id));
   });
 
-  it('corner and T sweep: no merge or dangling wall that «only the other wall moved» does not have', () => {
+  it('corner and T sweep: no merge or dangling wall that «only the other wall moved» does not have, and no wall turned', () => {
     const live = SEED.walls.filter((w) => w.status !== 'removed');
     const near = (p: Vec2, w: Wall) => {
       const d: Vec2 = [w.b[0] - w.a[0], w.b[1] - w.a[1]];
@@ -332,6 +332,19 @@ describe('«Ta tilbake» on one of two walls meeting at a corner or T, both move
     }
     expect(pairs.length).toBeGreaterThan(30);
     const stateOf = (s: Store) => ({ names: new Set(named(s)), warns: new Set(warnings(s)) });
+    // Walls running as in the seed (every move here is across the wall, so none should turn; final morning round: the
+    // fallback for proposals without `carriedBy` slanted the user's own walls on «Ta tilbake»).
+    const seedDir = new Map(live.map((w) => [w.id, normalOf(w)]));
+    const straight = (s: Store) =>
+      new Set(
+        V(s)
+          .walls.filter((w) => w.status !== 'removed' && seedDir.has(w.id))
+          .filter((w) => {
+            const [n, n0] = [normalOf(w), seedDir.get(w.id)!];
+            return Math.abs(n[0] * n0[1] - n[1] * n0[0]) < 1e-6;
+          })
+          .map((w) => w.id),
+      );
     const onlyMoved = new Map<string, ReturnType<typeof stateOf>>();
     const broken: string[] = [];
     for (const [p, q] of pairs) {
@@ -350,11 +363,15 @@ describe('«Ta tilbake» on one of two walls meeting at a corner or T, both move
           onlyMoved.set(key, stateOf(r));
         }
         const ref = onlyMoved.get(key)!;
+        const wasStraight = straight(s);
         A.restoreGhost(s, `${first.id}/ghost`);
         const after = stateOf(s);
+        const isStraight = straight(s);
         const lost = [...before.names].filter((n) => !after.names.has(n) && ref.names.has(n));
         const dangling = after.warns.has('wall-dangling') && !before.warns.has('wall-dangling') && !ref.warns.has('wall-dangling');
-        if (lost.length > 0 || dangling) broken.push(`${first.id} +0,3, ${second.id} −0,3, Ta tilbake on ${first.id}: ${J(lost)}${dangling ? ' wall-dangling' : ''}`);
+        const turned = [...wasStraight].filter((id) => !isStraight.has(id) && V(s).walls.some((w) => w.id === id));
+        if (lost.length > 0 || dangling || turned.length > 0)
+          broken.push(`${first.id} +0,3, ${second.id} −0,3, Ta tilbake on ${first.id}: ${J(lost)}${dangling ? ' wall-dangling' : ''}${turned.length > 0 ? ` turned ${J(turned)}` : ''}`);
       }
     }
     expect(broken).toEqual([]);
@@ -388,36 +405,8 @@ describe('a merged-away room record survives an edit that only reshapes its face
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-// 4. Proposals saved without any Wall.carriedBy
+// 4. (Proposals without any Wall.carriedBy: the geometric fallback is gone again — editActions.fix7.test.ts.)
 // ---------------------------------------------------------------------------------------------------------------
-
-describe('a proposal saved without any Wall.carriedBy (before the fifth review) restores as before', () => {
-  const stripped = (s: Store): Store => {
-    const p = JSON.parse(J(s.getState().project)) as Project;
-    for (const v of p.variants) for (const w of v.walls) delete w.carriedBy;
-    return createAppStore(migrateProject(p));
-  };
-
-  it('the review\'s single-wall cases come back exactly, neighbours and continuations included', () => {
-    for (const [id, k] of [
-      ['w-peis-w', 0.3],
-      ['w-mellom-boder', 0.3],
-      ['w-106-korr', 0.3],
-      ['w-106-korr', -0.3],
-      ['w-103-korr', -0.3],
-      ['dv-kjk-w', 0.3],
-    ] as const) {
-      const s0 = proposal();
-      expect(moveAcross(s0, id, k), id).toBe(true);
-      expect(V(s0).walls.some((w) => w.carriedBy), id).toBe(true);
-      const s = stripped(s0);
-      expect(V(s).walls.some((w) => w.carriedBy), id).toBe(false);
-      expect(A.restoreGhost(s, `${id}/ghost`), id).toBe(true);
-      expect(J(V(s).walls), `${id} ${k}`).toBe(J(SEED.walls));
-      expect(named(s), id).toHaveLength(27);
-    }
-  });
-});
 
 // ---------------------------------------------------------------------------------------------------------------
 // 5. The wing takes its own walls along

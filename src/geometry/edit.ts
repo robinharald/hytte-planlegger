@@ -523,7 +523,7 @@ export function healGhosts(draft: Variant): void {
   if (draft.ghosts && draft.ghosts.length > 0) {
     const healed: Id[] = [];
     let junctions: Map<Id, EdgeJunction[][]> | null = null;
-    draft.ghosts = draft.ghosts.filter((g) => {
+    const kept = draft.ghosts.filter((g) => {
       const ref = parseEdgeGhostId(g.id);
       if (!ref) return true;
       const block = draft.blocks.find((b) => b.id === ref.blockId);
@@ -545,6 +545,8 @@ export function healGhosts(draft: Variant): void {
       healed.push(g.id);
       return false;
     });
+    // Only when one healed: a new array for nothing made every refused edit an undo step (final morning round).
+    if (kept.length !== draft.ghosts.length) draft.ghosts = kept;
     for (const id of healed) dropGhostHost(draft, id);
     if (draft.ghosts.length === 0) delete draft.ghosts;
   }
@@ -1745,9 +1747,11 @@ export function applyRestoreEdgeGhost(draft: Variant, ctx: EditContext, id: Id):
     const pushes = restoreEdgePushes(ctx, move);
     if (pushes === null) return false;
     const pushed = new Set(pushes.map((p) => p.blockId));
-    for (const p of pushes) applyMoveBlock(draft, ctx, p.blockId, p.delta);
+    // The edge's own plan first, before anything moves: a refusal leaves the draft untouched (final morning round: a
+    // second unit in the edge's path refused the restore after the first had been pushed away and committed).
     const plan = edgePlan(pushed.size > 0 ? withoutBlocks(ctx, pushed) : ctx, move.blockId, move.edgeId, move.delta);
     if (plan?.onBlock) return false;
+    for (const p of pushes) applyMoveBlock(draft, ctx, p.blockId, p.delta);
     if (plan) applyUnitPolygons(draft, ctx, plan.polys);
   }
   healGhosts(draft);
@@ -2185,6 +2189,22 @@ interface BlockEditPlan {
   k: number;
   /** Cut back (or refused, k 0) because a template unit would end up on another block. */
   onBlock: boolean;
+  /** With `onBlock`: a template unit that is not edited itself and stands in the way (`unitInTheWay`). */
+  unitId?: Id;
+}
+
+/**
+ * A template unit that does not change itself and that a changed block of `polys` would now stand on where the base
+ * had them apart: the unit in the way of a house edge or corner (final morning round: the toast names it). Undefined
+ * when the unit stopped is the edited one.
+ */
+function unitInTheWay(ctx: EditContext, polys: ReadonlyMap<Id, Vec2[]>): Id | undefined {
+  const pieces = (b: Block, now: boolean) => convexPieces((now ? polys.get(b.id) : undefined) ?? b.polygon.map((x) => x.p));
+  const blocking = (u: Block) =>
+    ctx.base.blocks.some(
+      (o) => o.id !== u.id && polys.has(o.id) && maxDepth(pieces(u, true), pieces(o, true)) > UNIT_OVERLAP_TOL && maxDepth(pieces(u, false), pieces(o, false)) <= UNIT_OVERLAP_TOL,
+    );
+  return ctx.base.blocks.find((u) => u.template !== undefined && !polys.has(u.id) && blocking(u))?.id;
 }
 
 /**
@@ -2221,7 +2241,10 @@ function unitClampedPlan(ctx: EditContext, build: (k: number) => Map<Id, Vec2[]>
     if (valid(p) && !unitsOnBlocks(ctx, p, 1e-10)) lo = m;
     else hi = m;
   }
-  return lo * size > SAME ? { polys: build(lo), k: lo, onBlock: true } : { polys: new Map(), k: 0, onBlock: true };
+  const unitId = unitInTheWay(ctx, polys);
+  const plan: BlockEditPlan = lo * size > SAME ? { polys: build(lo), k: lo, onBlock: true } : { polys: new Map(), k: 0, onBlock: true };
+  if (unitId !== undefined) plan.unitId = unitId;
+  return plan;
 }
 
 /**
@@ -2419,12 +2442,14 @@ export function applyMoveBlockEdge(draft: Variant, ctx: EditContext, blockId: Id
 
 /**
  * How much of an edge move `applyMoveBlockEdge` applies (last fix round, fifth review): `k` the fraction, `onBlock`
- * when it was cut back (or refused, k 0) because a template unit would end up on another block. The drag preview
- * draws the same clamp and shows the hint.
+ * when it was cut back (or refused, k 0) because a template unit would end up on another block, `unitId` the unit in
+ * the way when it is not the edited block (`unitInTheWay`: a house edge a shed stands against). The drag preview draws
+ * the same clamp and shows the hint.
  */
-export function blockEdgeMoveClamp(ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): { k: number; onBlock: boolean } {
+export function blockEdgeMoveClamp(ctx: EditContext, blockId: Id, edgeId: Id, delta: Vec2): { k: number; onBlock: boolean; unitId?: Id } {
   const plan = edgePlan(ctx, blockId, edgeId, delta);
-  return plan ? { k: plan.k, onBlock: plan.onBlock } : { k: 1, onBlock: false };
+  if (!plan) return { k: 1, onBlock: false };
+  return plan.unitId !== undefined ? { k: plan.k, onBlock: plan.onBlock, unitId: plan.unitId } : { k: plan.k, onBlock: plan.onBlock };
 }
 
 /** The plan of `applyMoveBlockVertex` (null: nothing to move). */
@@ -2479,12 +2504,14 @@ export function applyMoveBlockVertex(draft: Variant, ctx: EditContext, blockId: 
  * As `blockEdgeMoveClamp`, for `applyMoveBlockVertex`; `point`: where the corner goes when it moves (a unit's corner
  * dragged into the building it stands against slides along its wall: last fix round, sixth review).
  */
-export function blockVertexMoveClamp(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): { k: number; onBlock: boolean; point?: Vec2 } {
+export function blockVertexMoveClamp(ctx: EditContext, blockId: Id, vertexId: Id, p: Vec2): { k: number; onBlock: boolean; point?: Vec2; unitId?: Id } {
   const plan = vertexPlan(ctx, blockId, vertexId, p);
   if (!plan) return { k: 1, onBlock: false };
   const i = ctx.base.blocks.find((b) => b.id === blockId)?.polygon.findIndex((v) => v.id === vertexId) ?? -1;
   const q = i >= 0 ? plan.polys.get(blockId)?.[i] : undefined;
-  return q ? { k: plan.k, onBlock: plan.onBlock, point: copy(q) } : { k: plan.k, onBlock: plan.onBlock };
+  const out: { k: number; onBlock: boolean; point?: Vec2; unitId?: Id } = q ? { k: plan.k, onBlock: plan.onBlock, point: copy(q) } : { k: plan.k, onBlock: plan.onBlock };
+  if (plan.unitId !== undefined) out.unitId = plan.unitId;
+  return out;
 }
 
 /**
@@ -3337,6 +3364,29 @@ export function blockSizeMove(ctx: EditContext, blockId: Id, axis: 'w' | 'd', va
 export function applySetBlockSize(draft: Variant, ctx: EditContext, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): boolean {
   const m = blockSizeMove(ctx, blockId, axis, value, side);
   return m !== null && applyMoveBlockEdge(draft, ctx, blockId, m.edgeId, m.delta);
+}
+
+/**
+ * After Bredde / Dybde of a template unit: its own openings that are now wider than their edge are made narrower to
+ * fit it, centred on it, with posts at the ends like an open front (`openFrontOpening`; at most a quarter of the edge
+ * each) — final morning round: a Vedskjul narrowed from 3 m to 1,5 m kept its 1,8 m open front, outside its wall
+ * (`opening-outside-host`). One that still fits was already slid onto the edge (`keepEdgeOpenings`). Returns the ids
+ * of the openings it narrowed (the caller toasts).
+ */
+export function fitUnitOpenings(draft: Variant, blockId: Id): Id[] {
+  const block = draft.blocks.find((b) => b.id === blockId);
+  if (!block || block.template === undefined) return [];
+  const out: Id[] = [];
+  for (const o of draft.openings) {
+    if (o.status === 'removed' || o.host.kind !== 'blockEdge' || o.host.blockId !== blockId) continue;
+    const line = hostLine(draft, o.host);
+    if (!line || o.width <= line.length + TINY) continue;
+    const post = Math.min(0.1, line.length / 4);
+    o.width = clean(line.length - 2 * post);
+    o.offset = clean(line.length / 2);
+    out.push(o.id);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

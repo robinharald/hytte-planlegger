@@ -1344,6 +1344,14 @@ export const nb = {
      * toast.
      */
     unitOnBlock: 'Bygget kan ikke stå oppå et annet bygg',
+    /**
+     * A house edge or corner that cannot move outward because a unit from Nytt bygg stands against it (the move is
+     * refused, nothing changes). No full stop: it is also the drag hint; the toast adds one.
+     */
+    unitInTheWay: (unit: string) => `«${unit}» står inntil veggen – flytt det først`,
+    /** Bredde / Dybde made a unit's own openings narrower so they fit its walls (toast with [Angre]). */
+    unitOpeningsNarrowed: (unit: string, count: number) =>
+      count === 1 ? `Åpningen i «${unit}» er gjort smalere, så den får plass i veggen.` : `Åpningene i «${unit}» er gjort smalere, så de får plass i veggene.`,
     /** «Ta tilbake» gave merged-away rooms their own face back: "Rommet «WC» er tilbake." */
     roomsBack: (names: readonly string[]) => {
       const q = names.map((n) => `«${n}»`);

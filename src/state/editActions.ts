@@ -68,10 +68,16 @@
  * Last fix round, sixth review: a carried wall goes back to where it stood before the restored wall's moves carried it
  * (`Wall.carriedBy.from`), not to its ghost; a corner or T-junction the restored wall had with another moved wall is
  * closed again where the lines cross (`keptJunctions` / `closeJunctions`); a moved new wall without a ghost counts as
- * moved (`movedNewWalls`); a variant without any `carriedBy` falls back to the geometric rules of before
- * (`noCarriedBy`). A merged-room record goes only when its face is split or its anchor lies in another room's face.
- * Bredde / Dybde of a unit against a building change its free side; «Ta tilbake» on a house edge pushes a unit against
- * it away or is refused with the toast `unitOnBlock` (geometry/edit.ts `restoreEdgeOnBlock`).
+ * moved (`movedNewWalls`). A merged-room record goes only when its face is split or its anchor lies in another room's
+ * face. Bredde / Dybde of a unit against a building change its free side; «Ta tilbake» on a house edge pushes a unit
+ * against it away or is refused with the toast `unitOnBlock` (geometry/edit.ts `restoreEdgeOnBlock`).
+ *
+ * Final morning round: no geometric fallback for a variant without any `carriedBy` (it fired in today's proposals
+ * whenever nothing happened to be carried, and slanted the user's own walls; wall editing went live with `carriedBy`
+ * already written, so no published proposal needs it). A merged-room record is dropped by a split only when two or
+ * more of the new pieces are substantial (`substantialPiece`), not for a sliver. A house edge that cannot move because
+ * a unit stands against it names the unit (`unitInTheWayToast`). Bredde / Dybde that narrows a unit narrows its own
+ * openings to fit the new wall, with a toast (geometry/edit.ts `fitUnitOpenings`).
  */
 import { current, isDraft, produce } from 'immer';
 import { useMemo } from 'react';
@@ -119,6 +125,7 @@ import {
   blockSizeMove,
   blockVertexMoveClamp,
   deckOfEdge,
+  fitUnitOpenings,
   ghostRef,
   healGhosts,
   hostLine,
@@ -333,13 +340,28 @@ const boxesMeet = (a: { min: Vec2; max: Vec2 }, b: { min: Vec2; max: Vec2 }): bo
 /** How many merged-away rooms a variant keeps (`Variant.mergedRooms`), newest first. */
 const MERGED_ROOMS_KEPT = 40;
 
+/** A piece of a split face counts when it holds at least this much of the old face (m²) … */
+const SPLIT_PIECE_MIN_AREA = 0.5;
+/** … or this share of it. */
+const SPLIT_PIECE_MIN_SHARE = 0.15;
+
+/**
+ * Whether a new face holding `overlap` m² of an old face of `oldArea` m² is a real piece of a split of it (final
+ * morning round): at least SPLIT_PIECE_MIN_AREA or SPLIT_PIECE_MIN_SHARE of it, or with another named room's anchor in
+ * it (`named`). A sliver a wall move leaves (w-103-102 0,2 east: 0,39 m² of «Kjøkken» with «Vindfang» merged in) is not.
+ */
+function substantialPiece(overlap: number, oldArea: number, named: boolean): boolean {
+  return named || overlap >= SPLIT_PIECE_MIN_AREA || overlap >= SPLIT_PIECE_MIN_SHARE * oldArea;
+}
+
 /**
  * The rooms a merge removed are kept on the variant with the anchors of the rooms of their storey alive with them
  * before the edit (`Variant.mergedRooms`, final fix round after 2b), so "Ta tilbake" can give a merged-away name its
  * face back also after a reload, when the undo history is gone (`roomsFromHistory` covers the session). Rooms that are
  * back are dropped from the list; at most MERGED_ROOMS_KEPT are kept. An edit other than a restore (`prune`; `baseDerived`
  * the model before it, `derived` after it) drops a record only when it splits the face that holds the record's anchor
- * (two or more faces now lie mostly in it, and the storey has more faces than before) or leaves the anchor in the face
+ * (two or more substantial faces now lie mostly in it — `substantialPiece` —, and the storey has more faces than
+ * before) or leaves the anchor in the face
  * of another room that is still there — not when it only reshapes that face (last fix round, sixth review: moving a
  * wall of the merged room dropped the record, so the name was lost after a reload; the revival only into faces the
  * restore changed already keeps an old name out of unrelated faces).
@@ -357,9 +379,12 @@ function withMergedRooms(v: Variant, before: Variant, merges: readonly RoomMerge
     if (!f0) return false;
     const after = facesOn(derived, f0.storeyId);
     if (after.length > facesOn(baseDerived, f0.storeyId).length) {
+      const a0 = area(f0.facePolygon);
       const inside = after.filter((g) => {
         const a = area(g.facePolygon);
-        return a > 1e-6 && boxesMeet(g.bbox, f0.bbox) && overlapArea(g.facePolygon, f0.facePolygon) >= 0.5 * a;
+        if (!(a > 1e-6) || !boxesMeet(g.bbox, f0.bbox)) return false;
+        const ov = overlapArea(g.facePolygon, f0.facePolygon);
+        return ov >= 0.5 * a && substantialPiece(ov, a0, roomIn(v, g) !== undefined);
       });
       if (inside.length >= 2) return true;
     }
@@ -602,7 +627,8 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       }
       // A unit against the edge is pushed away with it, or the restore is refused (last fix round, sixth review).
       onBlock = restoreEdgeOnBlock(ctx, id);
-      return applyRestoreEdgeGhost(d, ctx, id);
+      // Refused before anything changes (final morning round: the unit against the edge was pushed away regardless).
+      return !onBlock && applyRestoreEdgeGhost(d, ctx, id);
     },
     { revive: () => roomTombstones(store, v), from },
   );
@@ -628,18 +654,17 @@ const NEIGHBOUR_REACH = 0.05;
  * cm beside it — neither coincident nor on it: w-104-103 after w-103-korr −0.2, w-104-diag after w-105-diag +0.2.)
  * Each goes to where it stood before `live`'s moves carried it (`Wall.carriedBy.from`), else to its ghost's end
  * (last fix round, sixth review: w-103-korr, moved by the user and then shortened by w-103-102's move, went back to
- * the seed). In a variant without any `carriedBy` (saved before the fifth review) every moved wall counts, as then.
+ * the seed).
  */
 function neighbourEnds(v: Variant, live: Wall, g: Wall): NeighbourEnd[] {
   const out: NeighbourEnd[] = [];
-  const legacy = noCarriedBy(v);
   for (const w of v.walls) {
     // Only walls the forward move of `live` carried and that still stand where it left them (final fix round, fourth
     // review: w-103-korr, moved by itself onto w-vf-korr's line, was turned by «Ta tilbake» on w-vf-korr).
-    if (w.id === live.id || w.status === 'removed' || (!legacy && !carriedBy(w, live.id))) continue;
+    if (w.id === live.id || w.status === 'removed' || !carriedBy(w, live.id)) continue;
     const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
     if (!wg) continue;
-    const from = legacy ? undefined : w.carriedBy?.from;
+    const from = w.carriedBy?.from;
     for (const end of ['a', 'b'] as const) {
       const to = from ? from[end] : wg[end];
       if (dist(w[end], to) < 1e-9) continue;
@@ -649,16 +674,6 @@ function neighbourEnds(v: Variant, live: Wall, g: Wall): NeighbourEnd[] {
     }
   }
   return out;
-}
-
-/**
- * A variant whose walls hold no `Wall.carriedBy` (a proposal saved before the fifth review, or nothing carried yet):
- * "Ta tilbake" there falls back to the geometric rules of before (last fix round, sixth review) — every moved wall
- * whose ghost meets the restored wall's ghost may be carried back, and a continuation in line goes back when it was
- * moved across exactly as far.
- */
-function noCarriedBy(v: Variant): boolean {
-  return !v.walls.some((w) => w.carriedBy !== undefined);
 }
 
 /**
@@ -762,8 +777,6 @@ function carriedBy(w: Wall, byId: Id): boolean {
  * not the wall whose move carried `live` (last fix round, fifth review).
  */
 function notCarriedBy(v: Variant, live: Wall): Set<Id> {
-  // Without any `carriedBy` (saved before the fifth review) nothing tells them apart: none, as then (`noCarriedBy`).
-  if (noCarriedBy(v)) return new Set();
   const ghosts = new Set(v.walls.filter((w) => w.status === 'removed').map((w) => w.id));
   return new Set(v.walls.filter((w) => w.id !== live.id && w.status === 'new' && ghosts.has(`${w.id}/ghost`) && !carriedBy(w, live.id)).map((w) => w.id));
 }
@@ -775,16 +788,12 @@ function notCarriedBy(v: Variant, live: Wall): Set<Id> {
  * back (an endpoint drag back would turn them) and then moves each back whole (`bringBackCarried`). Only walls that
  * `live`'s move carried and that still stand where it left them (`Wall.carriedBy`, last fix round, fifth review: also
  * after a reload; a wall in line that the user moved in a step of its own — also on another floor — stays where they
- * put it, and so does the wall whose move carried `live`). In a variant without any `carriedBy` (`noCarriedBy`): those
- * moved across exactly as far as `live`, as before the fifth review.
+ * put it, and so does the wall whose move carried `live`).
  */
 function carriedSideways(v: Variant, live: Wall, g: Wall): Id[] {
   const out: Id[] = [];
-  const legacy = noCarriedBy(v);
-  const ng = leftNormal(unit(sub(g.b, g.a)));
-  const liveAcross = dot(sub(live.a, g.a), ng);
   for (const w of v.walls) {
-    if (w.id === live.id || w.status !== 'new' || (!legacy && !carriedBy(w, live.id))) continue;
+    if (w.id === live.id || w.status !== 'new' || !carriedBy(w, live.id)) continue;
     const wg = v.walls.find((x) => x.id === `${w.id}/ghost` && x.status === 'removed');
     const e = wg ? (['a', 'b'] as const).find((k) => dist(wg.a, g[k]) <= COINCIDE_M || dist(wg.b, g[k]) <= COINCIDE_M) : undefined;
     if (!wg || !e) continue;
@@ -796,7 +805,6 @@ function carriedSideways(v: Variant, live: Wall, g: Wall): Id[] {
     const n = leftNormal(unit(ug));
     const across = dot(sub(w.a, wg.a), n);
     if (Math.abs(across) <= 1e-9) continue;
-    if (legacy && Math.abs(dot(sub(w.a, wg.a), ng) - liveAcross) > 1e-6) continue;
     out.push(w.id);
   }
   return out;
@@ -931,11 +939,10 @@ function keptJunctions(v: Variant, live: Wall, g: Wall, movedNew: ReadonlyMap<Id
  * New walls without a ghost (in the base proposal already, such as the divider dv-stue-n) that the user moved: their
  * place in the locked base proposal `reference` (Forslag D) differs, and no move of `live` left them where they are;
  * each with that place. "Ta tilbake" on `live` treats them as moved walls with a ghost (last fix round, sixth review).
- * None in a variant without any `carriedBy` (`noCarriedBy`).
  */
 function movedNewWalls(v: Variant, reference: Variant | undefined, live: Wall): Map<Id, Wall> {
   const out = new Map<Id, Wall>();
-  if (!reference || reference.id === v.id || noCarriedBy(v)) return out;
+  if (!reference || reference.id === v.id) return out;
   const ghosts = new Set(v.walls.filter((w) => w.status === 'removed').map((w) => w.id));
   for (const w of v.walls) {
     if (w.id === live.id || w.status !== 'new' || ghosts.has(`${w.id}/ghost`) || carriedBy(w, live.id)) continue;
@@ -1069,27 +1076,44 @@ function setWallEnds(d: Variant, site: Site, ends: ReadonlyMap<Id, { a?: Vec2; b
 // Blocks
 // ---------------------------------------------------------------------------
 
-/** "Bygget kan ikke stå oppå et annet bygg." (no Angre): a unit edit refused or stopped against another building. */
-function unitOnBlockToast(store: EditStore): void {
-  store.getState().showToast({ text: `${EDIT_STRINGS.unitOnBlock}.` });
+/**
+ * "Bygget kan ikke stå oppå et annet bygg." (no Angre): a unit edit refused or stopped against another building; or
+ * `text` (`onBlockText`).
+ */
+function unitOnBlockToast(store: EditStore, text: string = EDIT_STRINGS.unitOnBlock): void {
+  store.getState().showToast({ text: `${text}.` });
+}
+
+/**
+ * The hint / toast text for a block edit stopped by a unit (`blockEdgeMoveClamp`, `blockVertexMoveClamp`): a house edge
+ * or corner that cannot move at all because a unit stands against it names the unit and what to do (final morning
+ * round: «Vedskjul» står inntil veggen – flytt det først); otherwise EDIT_STRINGS.unitOnBlock.
+ */
+function onBlockText(base: Variant, clamp: { k: number; unitId?: Id }): string {
+  const unit = clamp.k === 0 && clamp.unitId !== undefined ? base.blocks.find((b) => b.id === clamp.unitId) : undefined;
+  return unit ? EDIT_STRINGS.unitInTheWay(unit.name) : EDIT_STRINGS.unitOnBlock;
 }
 
 /**
  * Move a block edge. Where a template unit would end up on another building the edge stops against it, or the move is
- * refused, with the toast (last fix round, fifth review; geometry/edit.ts `blockEdgeMoveClamp`); terrace furniture a
- * unit's edge now covers is pushed out of it, with the `placeUnit` toast.
+ * refused, with the toast (last fix round, fifth review; geometry/edit.ts `blockEdgeMoveClamp`; a house edge a unit
+ * stands against names the unit: `onBlockText`); terrace furniture a unit's edge now covers is pushed out of it, with
+ * the `placeUnit` toast.
  */
 export function moveBlockEdge(store: EditStore, blockId: Id, edgeId: Id, delta: Vec2, opts: { transaction?: string } = {}): boolean {
   let onBlock = false;
+  let text: string = EDIT_STRINGS.unitOnBlock;
   const r = run(
     store,
     (d, ctx) => {
-      onBlock = blockEdgeMoveClamp(ctx, blockId, edgeId, delta).onBlock;
+      const clamp = blockEdgeMoveClamp(ctx, blockId, edgeId, delta);
+      onBlock = clamp.onBlock;
+      text = onBlockText(ctx.base, clamp);
       return applyMoveBlockEdge(d, ctx, blockId, edgeId, delta);
     },
     opts,
   );
-  if (onBlock) unitOnBlockToast(store);
+  if (onBlock) unitOnBlockToast(store, text);
   if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
   return changed(r);
 }
@@ -1097,15 +1121,18 @@ export function moveBlockEdge(store: EditStore, blockId: Id, edgeId: Id, delta: 
 /** Move a block corner; as `moveBlockEdge` for a unit that would end up on another building and for terrace furniture. */
 export function moveBlockVertex(store: EditStore, blockId: Id, vertexId: Id, p: Vec2, opts: { transaction?: string } = {}): boolean {
   let onBlock = false;
+  let text: string = EDIT_STRINGS.unitOnBlock;
   const r = run(
     store,
     (d, ctx) => {
-      onBlock = blockVertexMoveClamp(ctx, blockId, vertexId, p).onBlock;
+      const clamp = blockVertexMoveClamp(ctx, blockId, vertexId, p);
+      onBlock = clamp.onBlock;
+      text = onBlockText(ctx.base, clamp);
       return applyMoveBlockVertex(d, ctx, blockId, vertexId, p);
     },
     opts,
   );
-  if (onBlock) unitOnBlockToast(store);
+  if (onBlock) unitOnBlockToast(store, text);
   if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
   return changed(r);
 }
@@ -1231,17 +1258,29 @@ export function setBlockProps(store: EditStore, blockId: Id, patch: BlockPatch):
  * Bredde / Dybde of a block: moves the east / north edge (`side` 'max', default) or the west / south one. A unit grown
  * over terrace furniture pushes it out, with the `placeUnit` toast (last fix round, fifth review). A unit standing
  * against a building with that edge changes on its free side instead and never moves the building; growing into one
- * is refused with the toast `unitOnBlock` (geometry/edit.ts `blockSizeMove`; last fix round, sixth review).
+ * is refused with the toast `unitOnBlock` (geometry/edit.ts `blockSizeMove`; last fix round, sixth review). A unit made
+ * narrower than its own opening narrows that opening to fit, with a toast (geometry/edit.ts `fitUnitOpenings`).
  */
 export function setBlockSize(store: EditStore, blockId: Id, axis: 'w' | 'd', value: number, side: 'min' | 'max' = 'max'): boolean {
   let onBlock = false;
+  let text: string = EDIT_STRINGS.unitOnBlock;
+  let narrowed: Id[] = [];
   const r = run(store, (d, ctx) => {
     const m = blockSizeMove(ctx, blockId, axis, value, side);
-    onBlock = m !== null && blockEdgeMoveClamp(ctx, blockId, m.edgeId, m.delta).onBlock;
-    return applySetBlockSize(d, ctx, blockId, axis, value, side);
+    const clamp = m !== null ? blockEdgeMoveClamp(ctx, blockId, m.edgeId, m.delta) : null;
+    onBlock = clamp?.onBlock === true;
+    if (clamp) text = onBlockText(ctx.base, clamp);
+    const ok = applySetBlockSize(d, ctx, blockId, axis, value, side);
+    // A unit made narrower: its own openings narrower too, to fit its walls (final morning round).
+    if (ok) narrowed = fitUnitOpenings(d, blockId);
+    return ok;
   });
-  if (onBlock) unitOnBlockToast(store);
+  if (onBlock) unitOnBlockToast(store, text);
   if (r?.result === true) pushedToast(store, r.variant, blockId, r.pushed);
+  if (r?.result === true && narrowed.length > 0) {
+    const name = r.variant.blocks.find((b) => b.id === blockId)?.name ?? '';
+    store.getState().showToast({ text: EDIT_STRINGS.unitOpeningsNarrowed(name, narrowed.length), undo: true });
+  }
   return changed(r);
 }
 
@@ -2547,7 +2586,7 @@ function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers)
       const clamp = blockEdgeMoveClamp({ base, derived: session.baseDerived }, block.id, session.targetId, shift);
       const shown = clamp.onBlock ? scale(shift, clamp.k) : shift;
       const [na, nb] = [add(a, shown), add(b, shown)];
-      const hint = clamp.onBlock ? { hint: EDIT_STRINGS.unitOnBlock } : {};
+      const hint = clamp.onBlock ? { hint: onBlockText(base, clamp) } : {};
       return {
         feedback: { indicators: sres.indicators, chips: edgeChips(session, ctx, block.id, inner, sign, na, nb), ghost: [[copy(a), copy(b)]], ...hint },
         target: [[na, nb]],
@@ -2571,7 +2610,7 @@ function dragPlan(session: DragSession, pointer: Vec2, modifiers: DragModifiers)
       const clamp = blockVertexMoveClamp({ base, derived: session.baseDerived }, block.id, v.id, sres.point);
       // A corner pushed into the building a unit stands against slides along its wall (last fix round, sixth review).
       const shown = clamp.onBlock ? (clamp.point ?? add(v.p, scale(sub(sres.point, v.p), clamp.k))) : sres.point;
-      const hint = clamp.onBlock ? { hint: EDIT_STRINGS.unitOnBlock } : {};
+      const hint = clamp.onBlock ? { hint: onBlockText(base, clamp) } : {};
       // Gable / mono blocks keep their rectangle (geometry/edit.ts keepsRectangle): both adjacent edges move.
       return {
         feedback: { indicators: sres.indicators, chips: [], ghost: [pts.map(copy)], ...hint },
