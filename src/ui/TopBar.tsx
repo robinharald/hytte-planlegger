@@ -15,10 +15,13 @@
  *    banners (conflict guard, …) as a full-width row, and the app-update toast; Hjelp is App's (`onOpen('help')`).
  *  - Edit actions are hidden while read-only; the proposal list stays (viewing another proposal is not an edit).
  *
+ * The «Send forslaget» dialog is a lazy chunk loaded when it is first opened (fix round 3 after phase 3: keeps the start
+ * bundle from growing).
+ *
  * Narrow screens (< 600 px): Send forslaget and Hjelp stay in the title row as icon buttons (the label is kept for
  * screen readers); the status pill shows a short text.
  */
-import { useEffect, useId, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react';
 import { nb } from '../i18n/nb';
 import {
   appStore,
@@ -38,12 +41,14 @@ import { promptNewProposal } from './Dialogs';
 import { projectSubtitle } from './labels';
 import { DeleteProposalDialog, ProposalsMenu } from './ProposalsMenu';
 import { RevisionsPanel } from './RevisionsPanel';
-import { ShareDialog } from './ShareDialog';
 import { FamilyBanners, NameDialog, StatusPill } from './StatusPill';
 import { TrashPanel } from './TrashPanel';
 import { UpdateToast } from './UpdateToast';
 import { ExportMenu } from './ExportMenu';
 import './family.css';
+
+/** «Send forslaget» is a lazy chunk (precached by the service worker), so the start bundle stays small. */
+const ShareDialog = lazy(() => import('./ShareDialog').then((m) => ({ default: m.ShareDialog })));
 
 /** Dialogs the app shell renders for the top bar (Hjelp). */
 export type DialogKind = 'help';
@@ -237,7 +242,11 @@ export function TopBar(props: { onOpen: (d: DialogKind) => void }) {
 
       <FamilyBanners onShowRevisions={() => setDialog('revisions')} />
 
-      {dialog === 'share' && <ShareDialog onClose={close} />}
+      {dialog === 'share' && (
+        <Suspense fallback={null}>
+          <ShareDialog onClose={close} />
+        </Suspense>
+      )}
       {dialog === 'trash' && <TrashPanel onClose={close} />}
       {dialog === 'revisions' && <RevisionsPanel onClose={close} />}
       {dialog === 'delete' && !locked && <DeleteProposalDialog proposal={active} onClose={close} />}

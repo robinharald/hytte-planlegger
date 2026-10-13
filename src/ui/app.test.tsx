@@ -57,9 +57,17 @@ describe('App shell (plan only)', () => {
     expect(appStore.getState().ui.selection).toBeNull();
   });
 
-  it('share dialog shows a #d= link and its size', () => {
+  it('share dialog shows a #d= link and its size', async () => {
     const shareButton = byTestId('open-share');
     act(() => shareButton?.click());
+    // A lazy chunk (TopBar.tsx): it shows once loaded.
+    await vi.waitFor(
+      async () => {
+        await act(async () => {});
+        expect(byTestId('share-dialog')).not.toBeNull();
+      },
+      { timeout: 10_000 },
+    );
     const dialog = byTestId('share-dialog');
     const link = dialog?.querySelector('textarea')?.value ?? '';
     expect(link).toContain('#d=');

@@ -196,10 +196,17 @@ describe('top bar', () => {
     act(() => appStore.getState().setUi({ readOnly: false }));
   });
 
-  it('"Send forslaget" opens the dialog; the name prompt shows while asked', () => {
+  it('"Send forslaget" opens the dialog; the name prompt shows while asked', async () => {
     render(<TopBar onOpen={() => {}} />);
     click(byTestId('open-share'));
-    expect(byTestId('share-dialog')).not.toBeNull();
+    // A lazy chunk (TopBar.tsx): it shows once loaded.
+    await vi.waitFor(
+      async () => {
+        await act(async () => {});
+        expect(byTestId('share-dialog')).not.toBeNull();
+      },
+      { timeout: 10_000 },
+    );
     act(() => familyUiStore.setState({ askName: true }));
     expect(byTestId('name-dialog')).toBeNull(); // not over another dialog
     act(() => void document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
