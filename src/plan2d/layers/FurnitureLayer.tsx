@@ -27,10 +27,11 @@
  *    item (`items`) and no wall (`walls`) and whose stem crosses no wall (so an item backed onto a wall never gets its
  *    handle in the next room), else one that covers only a rug, else one that only grazes another item, the least
  *    overlap first. A dining chair at the table gets it on its back, away from the table. On touch an edge facing up
- *    on the screen comes after the rug (the phone's mini-bar floats just above the selection and would cover the
- *    handle there), but before a grazed item. Last fix round: a side that meets a wall (circle or stem) or whose
- *    handle middle stands on a solid item is never used; with no side left the handle is not drawn (before: the
- *    front, through a wall or onto the table) — «Roter 90°» in the mini-bar and Egenskaper remains.
+ *    on the screen is never used (sixth review: the phone's mini-bar floats just above the selection and covered
+ *    three quarters of the handle there, so a tap on it hit Roter or Egenskaper). Last fix round: a side that meets a
+ *    wall (circle or stem) or whose handle middle stands on a solid item is never used; with no side left the handle
+ *    is not drawn (before: the front, through a wall or onto the table) — «Roter 90°» in the mini-bar and Egenskaper
+ *    remains.
  *  - Hit area: the drawn circle only, and a press on it ALWAYS turns the item (final fix round; before, a press where
  *    the handle stood on another item, a rug, a wall or a room's name went through to the plan, so the handle did
  *    nothing for most seed items). On touch (`coarse`) its radius is at most ROTATE_HANDLE_MAX_M in plan metres;
@@ -294,11 +295,11 @@ function circleDepth(c: Vec2, r: number, poly: readonly Vec2[]): number {
  * Which side the rotate handle of `item` stands on (see the header), or null when it is not drawn: the first of
  * front, back, left, right whose circle (with its 2 px border) meets no other item and no live wall, and whose stem
  * crosses no live wall (integration: a kommode backed onto Soverom's wall got its handle in Gang); else one that meets
- * only flat items (rugs); on touch (`coarse`) else the first facing up on the screen (under the mini-bar); else one
- * that only grazes a solid item (its middle off it). Among sides of the same kind the least overlap wins. Last fix
- * round: a side whose circle or stem meets a live wall, or whose middle stands on a solid item, is never used, and
- * when that leaves no side the handle is hidden (before: the front, through a wall or on the table; «Roter 90°» in
- * the mini-bar and Egenskaper remains).
+ * only flat items (rugs); else one that only grazes a solid item (its middle off it). Among sides of the same kind
+ * the least overlap wins. Last fix round: a side whose circle or stem meets a live wall, or whose middle stands on a
+ * solid item, is never used, and when that leaves no side the handle is hidden (before: the front, through a wall or
+ * on the table; «Roter 90°» in the mini-bar and Egenskaper remains). Sixth review: on touch (`coarse`) a side facing
+ * up on the screen is never used either (the mini-bar above the selection covers it).
  */
 function handleSide(item: DerivedFurniture, scale: number, handleR: number, items: readonly DerivedFurniture[] = [], walls: readonly DerivedWall[] = [], coarse = false): { n: Vec2; fromFrontDeg: number } | null {
   const size = item.item.size ?? { w: 1, d: 1, h: 1 };
@@ -313,8 +314,8 @@ function handleSide(item: DerivedFurniture, scale: number, handleR: number, item
     const r = h.r + 1 / s;
     if (solid.some((w) => circleMeets(h.centre, r, w.footprint) || stemCrosses(h.edge, h.centre, w.footprint))) continue;
     // Facing up on the screen (plan +y): on touch the mini-bar above the selection covers it.
-    const up = coarse && h.centre[1] - h.edge[1] > 0.5 * Math.hypot(h.centre[0] - h.edge[0], h.centre[1] - h.edge[1]);
-    let kind = up ? 1.5 : 0;
+    if (coarse && h.centre[1] - h.edge[1] > 0.5 * Math.hypot(h.centre[0] - h.edge[0], h.centre[1] - h.edge[1])) continue;
+    let kind = 0;
     let depth = 0;
     let onSolid = false;
     for (const f of others) {

@@ -6,12 +6,16 @@
  *  - tap in the library: in the selected room — a selected room, the room of a selected item, or the room of a
  *    selected one-room unit (a placed Bod or Badstue) — else at the middle of the visible plan (its room if it is in
  *    one; the plan answers through plan2d/furnitureDrop.ts `requestPlanCentre`; without a shown plan the middle of
- *    the building), pushed to the nearest free wall (`tapPlacement`). Last fix round: a selected unit gives its room
- *    only while that room is on screen near the plan's middle (within UNIT_NEAR_MIDDLE_PX, `unitNearMiddle`) — Nytt
- *    bygg leaves the new shed selected, and a bedroom zoomed into the middle afterwards got its furniture in the shed.
- *    When the item lands in another room than the one picked (the selection's) or, without one, the one in the
- *    middle of the plan (a full room gives way to a neighbour), the toast says where («Kommode er satt inn i
- *    «Gang».», `env.toast`);
+ *    the building), pushed to the nearest free wall (`tapPlacement`). A selected unit gives its room only while the
+ *    plan's middle lies inside that room (`unitNearMiddle`; sixth review: before, within 100 px of it was enough, and
+ *    a Vedskjul set against the bedroom wing, still selected after Nytt bygg, got the Kommode meant for the bedroom
+ *    zoomed into the middle); otherwise the room in the middle, as with nothing selected. When the item lands in
+ *    another room than the one picked (the selection's) or, without one, the one in the middle of the plan (a full
+ *    room gives way to a neighbour), and whenever it lands in a unit's room while another room is in the middle, the
+ *    toast says where («Kommode er satt inn i «Gang».», `env.toast`). When neither the room in the middle nor the
+ *    rooms nearest to it (the plan tries those) have a free spot, the closest room of the storey with one takes it
+ *    and the toast says so (`nb.library.placedFarToast`); only when no room of the storey has one does the
+ *    item stand in the middle room with its warnings;
  *  - drop at a plan point (the plan's `onDropFurniture`, the 3D view's drop with the floor it hit): `dropPlacement`,
  *    with the plan's snap reach (12 px, 24 px on touch, at the plan's zoom; at most 0.25 m).
  * The item gets the catalogue's default preset (`size` + `sizeVariant`), the placement's turn and the room's level,
@@ -26,7 +30,7 @@ import { catalogItem } from '../furniture/catalog';
 import { distancePointSegment, pointInPolygon } from '../geometry/polygon';
 import { requestPlanCentre } from '../plan2d/furnitureDrop';
 import { catalogPlacementSpec, dropPlacement, roomAt, tapPlacement } from '../plan2d/furniturePlacement';
-import type { FurniturePlacement } from '../plan2d/furniturePlacement';
+import type { FurniturePlacement, PlacementSpec } from '../plan2d/furniturePlacement';
 import { SNAP_RADIUS_COARSE_PX, SNAP_RADIUS_PX } from '../plan2d/editModel';
 import { LINE_SNAP_MAX_M } from '../geometry/snap';
 import type { Selection } from '../state/selection';
@@ -71,9 +75,6 @@ export interface PlanMiddle {
   scale?: number | null;
 }
 
-/** A selected unit's room takes a library tap only while it lies this close (screen px) to the plan's middle. */
-export const UNIT_NEAR_MIDDLE_PX = 100;
-
 /** The shown plan's middle, asked through the DOM (furnitureDrop.ts); null without a document or a shown plan. */
 function domPlanMiddle(): PlanMiddle | null {
   if (typeof document === 'undefined') return null;
@@ -82,19 +83,41 @@ function domPlanMiddle(): PlanMiddle | null {
 }
 
 /**
- * Is the (unit's) room on screen near the plan's middle: on the plan's storey, and its outline within
- * UNIT_NEAR_MIDDLE_PX of the middle (the middle inside it, without a zoom)? True when no plan is shown.
+ * Does a selected unit's room take a library tap: the plan's middle lies inside the room's outline, on the plan's
+ * storey (sixth review: no longer within 100 px of it, see the header)? True when no plan is shown.
  */
 export function unitNearMiddle(room: DerivedRoom, middle: PlanMiddle | null): boolean {
   if (!middle) return true;
   if (middle.storeyId && middle.storeyId !== room.storeyId) return false;
-  const poly = room.polygon;
-  const away = pointInPolygon(middle.centre, poly) ? 0 : Math.min(...poly.map((q, i) => distancePointSegment(middle.centre, q, poly[(i + 1) % poly.length])));
-  const scale = middle.scale ?? 0;
-  return scale > 0 ? away * scale <= UNIT_NEAR_MIDDLE_PX : away === 0;
+  return room.polygon.length >= 3 && pointInPolygon(middle.centre, room.polygon);
 }
 
 const sameRoom = (a: DerivedRoom | null, b: DerivedRoom | null) => !!a && !!b && a.id === b.id && a.levelId === b.levelId;
+
+/** Is `room` the room of a placed "Nytt bygg" unit (a new block from a template, e.g. a Vedskjul)? */
+function isUnitRoom(derived: DerivedVariant, room: DerivedRoom): boolean {
+  const block = room.blockId ? derived.blocks.find((b) => b.block.id === room.blockId) : undefined;
+  return !!block && !!block.block.isNew && !!block.block.template;
+}
+
+/**
+ * The closest room of the storey to `from` (by its outline) other than `skip` where `spec` has a free spot, with that
+ * spot; null when no room has one (see the header). Rooms too small for the item (area or diagonal) are skipped.
+ */
+function freeRoomElsewhere(derived: DerivedVariant, storeyId: Id, spec: PlacementSpec, from: Vec2, skip: DerivedRoom | null): { placement: FurniturePlacement; room: DerivedRoom } | null {
+  const { w, d } = spec.size;
+  const away = (r: DerivedRoom) => (pointInPolygon(from, r.polygon) ? 0 : Math.min(...r.polygon.map((q, i) => distancePointSegment(from, q, r.polygon[(i + 1) % r.polygon.length]))));
+  const roomy = (r: DerivedRoom) => r.area + 1e-6 >= w * d && Math.hypot(r.bbox.max[0] - r.bbox.min[0], r.bbox.max[1] - r.bbox.min[1]) + 1e-6 >= Math.max(w, d);
+  const rooms = derived.rooms
+    .filter((r) => r.storeyId === storeyId && r.polygon.length >= 3 && !sameRoom(r, skip) && roomy(r))
+    .map((r) => ({ r, d: away(r) }))
+    .sort((a, b) => a.d - b.d);
+  for (const { r } of rooms) {
+    const placement = tapPlacement(derived, storeyId, spec, r.labelPoint, r);
+    if (placement.free) return { placement, room: r };
+  }
+  return null;
+}
 
 export interface Placed {
   id: Id;
@@ -151,7 +174,7 @@ export function placeFurniture(env: PlacerEnv, catalogId: string, how: PlaceHow)
     // The plan's middle (no item asked): for a selected unit, and for the toast.
     let middle: PlanMiddle | null | undefined;
     const middleOf = () => (middle === undefined ? (middle = (env.planMiddle ?? domPlanMiddle)()) : middle);
-    // A selected unit gives its room only while it is on screen near the middle (see the header).
+    // A selected unit gives its room only while the plan's middle lies in it (see the header).
     if (room && env.selection?.kind === 'block' && !unitNearMiddle(room, middleOf())) room = null;
     const picked = room;
     const plan = room ? null : env.planCentre(catalogId);
@@ -159,10 +182,28 @@ export function placeFurniture(env: PlacerEnv, catalogId: string, how: PlaceHow)
     const at = room ? room.labelPoint : (plan?.centre ?? boundsCentre(derived));
     placement = tapPlacement(derived, storeyId, spec, at, room);
     if (!room && placement.roomId) room = derived.rooms.find((r) => r.id === placement.roomId && r.levelId === placement.levelId) ?? null;
-    // Not the room picked, or (without one) the room in the middle of the plan: say where it went.
-    const m = picked ? null : middleOf();
-    const expected = picked ?? (m ? roomAt(derived, m.storeyId ?? storeyId, m.centre) : null);
-    if (env.toast && room && !sameRoom(room, expected)) placedNote = nb.library.placedInToast(catalogItem(catalogId)?.name ?? catalogId, room.room?.name?.trim() || null);
+    // No free spot in the room in the middle nor in the ones nearest to it: the closest room of the storey with one.
+    let far = false;
+    if (!picked && !placement.free) {
+      const other = freeRoomElsewhere(derived, storeyId, spec, at, room);
+      if (other) {
+        placement = other.placement;
+        room = other.room;
+        far = true;
+      }
+    }
+    // Not the room picked, or (without one) the room in the middle of the plan, or a unit's room while another room
+    // is in the middle: say where it went.
+    const unit = !!room && isUnitRoom(derived, room);
+    const m = picked && !unit ? null : middleOf();
+    const middleRoom = m ? roomAt(derived, m.storeyId ?? storeyId, m.centre) : null;
+    const expected = picked ?? middleRoom;
+    const elsewhere = !sameRoom(room, expected) || (unit && !!middleRoom && !sameRoom(room, middleRoom));
+    if (env.toast && room && (far || elsewhere)) {
+      const item = catalogItem(catalogId)?.name ?? catalogId;
+      const name = room.room?.name?.trim() || null;
+      placedNote = far ? nb.library.placedFarToast(item, name) : nb.library.placedInToast(item, name);
+    }
   }
   const opts: AddFurnitureOpts = { size: { ...spec.size }, rotationDeg: placement.rotationDeg };
   if (spec.sizeVariant) opts.sizeVariant = spec.sizeVariant;

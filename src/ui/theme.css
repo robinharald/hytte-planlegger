@@ -1146,6 +1146,18 @@ abbr[title] {
     white-space: nowrap;
   }
 }
+/* With the warnings badge the history group is wider: Angre / Gjør om as icons up to a wider column (at 1400 × 900 the
+   tool row otherwise scrolled and cut «Mål» to «Mä»). The badge keeps its count. */
+@container (max-width: 800px) {
+  .toolbar:has(.tool-warnings) .toolbar-history .tool span:not(.tool-count) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+}
 
 .hint-line {
   display: flex;

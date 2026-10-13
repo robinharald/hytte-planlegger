@@ -32,7 +32,10 @@
  *    bygg → Vedskjul tapped where the door's Slett stood (the shed, no warning, the door kept), Soverom (ny fløy)
  *    zoomed in and furnished from the library (Kommode in that room, free; last fix round: in the real order, with
  *    the new shed still selected — a phone has no Escape key), Dupliser (the copy free), Send — and the link opened
- *    on another device brings the proposal with all of it.
+ *    on another device brings the proposal with all of it;
+ *  - sixth review: the same flow with the Vedskjul tapped at (18.4, 6.5), against the wing's north wall right above the
+ *    bedroom, and still selected: Soverom (ny fløy) pinched to the middle of the plan, «Kommode» lands in the bedroom,
+ *    free, with no toast about the shed (before: in the shed, under its mini-bar, and Dupliser refused).
  * Screenshots: phone-edit.png (the dragged wall selected, handles and the mini-bar), phone-sheet.png (the sheet),
  * phone-tools.png (the tool row), phone-toast.png (the delete toast below the tool row), phone-first-flow.png (the
  * duplicated chest of drawers in Soverom (ny fløy), Egenskaper open).
@@ -699,6 +702,71 @@ test.describe('the first-time flow on an iPhone (final fix round)', () => {
     } finally {
       await fresh.close();
     }
+    await assertNoGenericWarnings(page);
+    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+  });
+});
+
+test.describe('the first-time flow on an iPhone with the shed against the wing (sixth review)', () => {
+  test('a Vedskjul against the wing\'s north wall stays selected; the bedroom pinched to the middle gets the Kommode', async ({ page }) => {
+    const pageErrors = collectPageErrors(page);
+    await skipFirstRun(page);
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    expect(await planScale(page), 'the starting zoom').toBeLessThan(16);
+    const n = (await activeVariant(page)).blocks.length;
+
+    // Nytt bygg → Vedskjul tapped at (18.4, 6.5): it attaches to the wing's north wall (y 6.2), right above the bedroom.
+    await page.getByTestId('tool-unit').tap();
+    await page.getByTestId('unit-vedskjul').tap();
+    await tapPlan(page, [18.4, 6.5]);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(n + 1);
+    const shed = (await activeVariant(page)).blocks[n];
+    expect(shed).toMatchObject({ template: 'vedskjul' });
+    const b = bbox(shed.polygon.map((q) => q.p));
+    expect(b.y0, 'against the wing').toBeCloseTo(6.2, 2);
+    expect(b.x0).toBeLessThan(18.4);
+    expect(b.x1).toBeGreaterThan(18.4);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: shed.id });
+    await dismissToasts(page);
+
+    // Two fingers zoom into Soverom (ny fløy) and bring its middle to the middle of the plan; the shed stays selected.
+    const mid: Vec2 = [18.35, 4.75];
+    await pinch(cdp, await planToClient(page, mid), 20, 70);
+    await expect.poll(() => planScale(page)).toBeGreaterThan(30);
+    const box = await page.getByTestId('plan-view').boundingBox();
+    const vp = page.viewportSize();
+    if (!box || !vp) throw new Error('no plan box');
+    const top = Math.max(box.y, 0);
+    const bottom = Math.min(box.y + box.height, vp.height);
+    await touchDrag(cdp, await planToClient(page, mid), [box.x + box.width / 2, (top + bottom) / 2], 12);
+    await page.getByTestId('hint-line').tap();
+    await page.waitForTimeout(100);
+    expect(await selection(page), 'the shed is still selected').toMatchObject({ kind: 'block', id: shed.id });
+
+    // Møbler → Kommode: in the bedroom on screen, free; no toast about the shed.
+    const n0 = (await activeVariant(page)).furniture.length;
+    await page.getByTestId('tool-furniture').tap();
+    const library = page.getByTestId('furniture-library-sheet');
+    await expect(library).toBeVisible();
+    await library.getByTestId('furniture-search').fill('kommode');
+    await library.getByTestId('furniture-item-kommode').tap();
+    await expect.poll(async () => (await activeVariant(page)).furniture.length).toBe(n0 + 1);
+    const kommode = (await activeVariant(page)).furniture[n0];
+    const placed = (await page.evaluate(() => (window as HytteWindow).__hytte?.derived?.furniture ?? [])).find((f) => f.id === kommode.id);
+    expect(placed?.roomId, `the kommode at ${kommode.position.map((v) => v.toFixed(2)).join(', ')}`).toBe('room-sov-ny');
+    expect(placed?.collisions).toEqual([]);
+    expect((await page.locator('[data-testid=toast]').allTextContents()).join(' ')).not.toContain('Vedskjul');
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: kommode.id });
+
+    // Dupliser has room for a copy (before, in the shed: «Ingen ledig plass til en kopi.»).
+    const sheet = page.getByTestId('properties-sheet');
+    await expect(async () => {
+      if ((await sheet.count()) === 0) await page.getByTestId('mini-properties').tap();
+      await expect(sheet).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 15_000 });
+    await sheet.getByTestId('furniture-duplicate').tap();
+    await expect.poll(async () => (await activeVariant(page)).furniture.length).toBe(n0 + 2);
     await assertNoGenericWarnings(page);
     expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
   });

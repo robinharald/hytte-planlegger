@@ -26,6 +26,12 @@
  *  - zoomed into Soverom (ny fløy) with nothing selected, «Kommode» from the library lands there, free;
  *  - zoomed in on Spiseplass, a dining chair at the table has its handle on its back and a tap on it turns the chair
  *    90° (before: the press went to the table).
+ * Sixth review:
+ *  - with a Vedskjul east of the wing selected (its mini-bar over the bedroom), one finger on the mini-bar and one on
+ *    the plan, and then two fingers on the bar, zoom the plan; nothing of the bar is pressed, and a lone tap on its
+ *    Egenskaper still opens the sheet (before: the pinch did nothing);
+ *  - zoomed in on Leseskrok, the armchair whose only free side faces up has no rotate handle (the mini-bar floats
+ *    there; before, three quarters of the handle lay under it), and Roter in the mini-bar turns it.
  * Screenshot: phone-library.png (the library sheet), phone-rotate-handle.png (zoomed in, the bed's handle).
  */
 import { expect, test, type CDPSession, type Page } from '@playwright/test';
@@ -591,5 +597,100 @@ test.describe('fix round after 2b on an iPhone', () => {
     expect(d?.roomId, `the kommode at ${item.position.map((v) => v.toFixed(2)).join(', ')}`).toBe('room-sov-ny');
     expect(d?.collisions).toEqual([]);
     expect(d?.blocksDoors).toEqual([]);
+  });
+});
+
+test.describe('sixth review on an iPhone', () => {
+  let pageErrors: string[] = [];
+  test.beforeEach(async ({ page }) => {
+    pageErrors = collectPageErrors(page);
+    await skipFirstRun(page);
+  });
+  test.afterEach(async ({ page }) => {
+    await assertNoGenericWarnings(page);
+    expect(pageErrors, `uncaught errors in the page:\n${pageErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('two fingers that start on the mini-bar zoom the plan; a lone tap on it still works', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    const n = (await activeVariant(page)).blocks.length;
+    // The review's spot: a Vedskjul east of the wing next to Gang (x 20.8–22.8, y 2.3–3.8), selected after Nytt bygg.
+    await page.getByTestId('tool-unit').tap();
+    await page.getByTestId('unit-vedskjul').tap();
+    await tapPlan(page, [21.8, 3.05]);
+    await expect.poll(async () => (await activeVariant(page)).blocks.length).toBe(n + 1);
+    const shed = (await activeVariant(page)).blocks[n];
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'block', id: shed.id });
+    await dismissToasts(page);
+    const bar = page.getByTestId('mini-bar');
+    await expect(bar).toBeVisible();
+    /** A point on the bar straight above the shed (the bar is wider than the shed and kept on screen). */
+    const onBar = async (): Promise<Vec2> => {
+      const b = await bar.boundingBox();
+      if (!b) throw new Error('no mini-bar');
+      const c = await planToClient(page, [21.8, 3.05]);
+      return [Math.min(b.x + b.width - 16, Math.max(b.x + 16, c[0])), b.y + b.height / 2];
+    };
+    const outline = JSON.stringify(shed.polygon);
+
+    // One finger on the bar, then one on the plan 90 px below it; they move apart (around the shed: it stays in view).
+    const s0 = await planScale(page);
+    const a = await onBar();
+    const b: Vec2 = [a[0], a[1] + 90];
+    expect(await onPlan(page, b), 'the second finger is on the plan').toBe(true);
+    expect(await page.evaluate(([x, y]) => !document.elementFromPoint(x, y)?.closest('[data-testid=mini-bar]'), b), 'and not on the bar').toBe(true);
+    const A = (d: number) => ({ x: a[0], y: a[1] - d, id: 1 });
+    const B = (d: number) => ({ x: b[0], y: b[1] + d, id: 2 });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [A(0)] });
+    await page.waitForTimeout(40);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [A(0), B(0)] });
+    for (let i = 1; i <= 10; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [A(4 * i), B(4 * i)] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect.poll(() => planScale(page), 'one finger on the bar, one on the plan').toBeGreaterThan(s0 * 1.3);
+
+    // Both fingers on the bar, 10 px either side of a point above the shed, moving apart.
+    await page.waitForTimeout(500);
+    await expect(bar).toBeVisible();
+    const s1 = await planScale(page);
+    await pinch(cdp, await onBar(), 10, 30);
+    await expect.poll(() => planScale(page), 'both fingers on the bar').toBeGreaterThan(s1 * 2);
+
+    // Nothing of the bar was pressed: the shed is there, unturned and selected, and no sheet opened.
+    expect((await activeVariant(page)).blocks.length).toBe(n + 1);
+    expect(JSON.stringify((await activeVariant(page)).blocks[n].polygon)).toBe(outline);
+    expect(await selection(page)).toMatchObject({ kind: 'block', id: shed.id });
+    await expect(page.getByTestId('properties-sheet')).toHaveCount(0);
+    // A lone tap on Egenskaper still opens the sheet.
+    await page.waitForTimeout(500);
+    await expect(bar).toBeVisible();
+    const sheet = page.getByTestId('properties-sheet');
+    await expect(async () => {
+      if ((await sheet.count()) === 0) await page.getByTestId('mini-properties').tap();
+      await expect(sheet).toBeVisible({ timeout: 2000 });
+    }).toPass({ timeout: 15_000 });
+  });
+
+  test('zoomed in on Leseskrok, the armchair whose free side faces up has no rotate handle; Roter in the mini-bar turns it', async ({ page }) => {
+    await phoneProposal(page);
+    const cdp = await touchSession(page);
+    const ID = 'fu-leseskrok-1';
+    expect((await activeVariant(page)).furniture.find((f) => f.id === ID)).toMatchObject({ position: [6.1, -1.44], rotationDeg: 180 });
+    await pinch(cdp, await planToClient(page, [6.1, -1.44]), 20, 70);
+    await expect.poll(() => planScale(page)).toBeGreaterThan(34);
+    await page.getByTestId('hint-line').tap();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => selection(page)).toBeNull();
+    const at = await pointHitting(page, (await derivedFurniture(page)).find((f) => f.id === ID)!.footprint as Vec2[], `[data-furniture-id="${ID}"]`);
+    expect(at, 'a point of the armchair on screen').not.toBeNull();
+    await page.touchscreen.tap(at![0], at![1]);
+    await expect.poll(async () => (await selection(page))?.kind ?? 'none').not.toBe('none');
+    if ((await selection(page))?.id !== ID) await page.touchscreen.tap(at![0], at![1]);
+    await expect.poll(() => selection(page)).toMatchObject({ kind: 'furniture', id: ID });
+    // Its walls and neighbours leave only the side facing up, where the mini-bar floats: no handle (before: under the bar).
+    await expect(page.getByTestId('mini-bar')).toBeVisible();
+    expect(await rotateHandle(page, ID), 'no handle under the mini-bar').toBeNull();
+    await page.getByTestId('mini-rotate').tap();
+    await expect.poll(async () => (await activeVariant(page)).furniture.find((f) => f.id === ID)?.rotationDeg).not.toBe(180);
   });
 });

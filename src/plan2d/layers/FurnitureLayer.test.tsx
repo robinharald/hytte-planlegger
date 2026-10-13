@@ -312,13 +312,37 @@ describe('FurnitureRotateHandle', () => {
     expect(side([rugFront])).toBe(180);
     expect(side([rugFront, back, left, right])).toBe(0);
     expect(side([front, back, box('f-rug-l', [1.25 - 13 / 40, 3], true), right])).toBe(-90);
-    // On touch an edge facing up on the screen (+y: the bed's back here) comes after the free ones and a rug — the
-    // phone's mini-bar floats right above the selection — but before a covered one.
+    // On touch an edge facing up on the screen (+y: the bed's back here) is never used — the phone's mini-bar floats
+    // right above the selection (sixth review: before, it came after the free sides and a rug, under the bar).
     const touch = (items: DerivedFurniture[]) => sideOf(items, [], true);
     expect(touch([front])).toBe(-90);
-    expect(touch([front, left, right])).toBe(180);
+    expect(touch([front, left, right])).toBeNull();
+    expect(sideOf([front, left, right], [], false)).toBe(180);
     expect(touch([front, box('f-rug-l', [1.25 - 13 / 40, 3], true), right])).toBe(-90);
     expect(touch([])).toBe(0);
+  });
+
+  it('on touch no seed item at 40 px/m has its handle on the side facing up (sixth review: under the mini-bar)', () => {
+    const data = planLayerData(deriveForState(createAppStore(createForslagD()).getState()), 'ground');
+    let drawn = 0;
+    for (const f of data.furniture) {
+      if (f.footprint.length < 3) continue;
+      act(() =>
+        root.render(
+          <svg>
+            <FurnitureRotateHandle item={f} scale={40} handleR={14} coarse items={data.furniture} walls={data.pieces} clientToPlan={() => null} onRotate={vi.fn()} />
+          </svg>,
+        ),
+      );
+      const c = container.querySelector(`[data-rotate-hit="${f.id}"]`);
+      if (!c) continue;
+      drawn++;
+      const dx = Number(c.getAttribute('cx')) - f.item.position[0];
+      const dy = Number(c.getAttribute('cy')) - f.item.position[1];
+      expect(dy, f.id).toBeLessThanOrEqual(0.5 * Math.hypot(dx, dy));
+    }
+    // Before, 9 of the 42 drawn sat on the side facing up (fu-bad-2, fu-leseskrok-1, fu-wc-1, …); now they are hidden.
+    expect(drawn).toBeGreaterThan(25);
   });
 
   it('no free side (last fix round): an item only grazed beats a wall, the least overlap wins; walls or items under every handle hide it', () => {

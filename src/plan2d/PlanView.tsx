@@ -574,7 +574,7 @@ export const PlanView = forwardRef<PlanViewHandle, PlanViewProps>(function PlanV
     const fresh = selection?.kind === 'furniture' && !!knownFurniture.current && !knownFurniture.current.has(selection.id);
     const insets = cb.current.viewportInsets ?? (fresh ? NO_INSETS : undefined);
     // A selected unit is not panned into view while the Møbler library is open: a library tap places into the room the
-    // user is looking at unless the unit is near the plan's middle (ui/furniturePlacer.ts `unitNearMiddle`), and this pan
+    // user is looking at unless the plan's middle lies in the unit (ui/furniturePlacer.ts `unitNearMiddle`), and this pan
     // moved that middle (integration of the last fix round: in the phone's first-time flow the shed, still selected
     // after Nytt bygg, was pulled above the opening sheet and the Kommode went to Spiseplass instead of the bedroom).
     const libraryOverUnit = cb.current.tool === 'furniture' && selection?.kind === 'block';

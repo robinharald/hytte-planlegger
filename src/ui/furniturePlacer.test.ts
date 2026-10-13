@@ -2,12 +2,15 @@
  * Placing a library item (furniturePlacer.ts) on the real Forslag D model with mock actions: the selected room (a
  * room, an item's room, a placed unit's room), else the plan's centre, the catalogue's default preset and the
  * placement's turn and level passed to addFurniture, the new item selected; drops (plan point, 3D floor level); a
- * refusal places and selects nothing.
+ * refusal places and selects nothing. Sixth review: a selected unit's room only with the plan's middle inside it (a
+ * Vedskjul against the bedroom wing no longer takes the bedroom's Kommode); a toast whenever an item lands in a unit's
+ * room while another room is in the middle; with no free spot in or near the room in the middle, the closest room of
+ * the storey with one (Seng 180 with Gang, Do or Bad in the middle goes to Stue, with the toast).
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { DerivedVariant } from '../model/derived';
 import type { Vec2 } from '../model/types';
-import { insideRoom } from '../plan2d/furniturePlacement';
+import { insideRoom, roomAt } from '../plan2d/furniturePlacement';
 import type { Selection } from '../state/selection';
 import { dropReach, placeFurniture, roomForSelection, unitNearMiddle } from './furniturePlacer';
 import type { PlacerEnv, PlanMiddle } from './furniturePlacer';
@@ -114,7 +117,7 @@ describe('drops', () => {
   });
 });
 
-describe('last fix round: a selected unit only while it is near the middle; a toast when the item lands elsewhere', () => {
+describe('a selected unit only while the middle is in it; a toast when the item lands elsewhere', () => {
   // The first-time flow: Nytt bygg → Vedskjul on the deck at (14, 9.35) leaves the new shed selected.
   const store = createAppStore(createForslagD());
   store.getState().duplicateVariant('forslag-d', 'Mitt forslag');
@@ -138,29 +141,35 @@ describe('last fix round: a selected unit only while it is near the middle; a to
     expect(toast).not.toHaveBeenCalled();
   });
 
-  it('the shed near the middle (the whole plan at the starting zoom, or zoomed onto it), or no plan shown: the shed’s room', () => {
-    // At 11.6 px/m the shed's room is about 60 px from the middle of the building.
-    for (const middle of [{ centre: [11.5, 3.8] as Vec2, storeyId: 'ground', scale: 11.6 }, { centre: shedRoom.labelPoint, storeyId: 'ground', scale: 60 }, null]) {
+  it('the plan\'s middle in the shed (zoomed onto it), or no plan shown: the shed\'s room; the whole plan at the starting zoom: the room in the middle', () => {
+    for (const middle of [{ centre: shedRoom.labelPoint, storeyId: 'ground', scale: 60 }, { centre: shedRoom.labelPoint, storeyId: 'ground', scale: 11.6 }, null]) {
       const { e, planCentre, toast } = shedEnv(middle);
       const r = placeFurniture(e, 'vedstabel', { kind: 'tap' });
       expect(r!.room?.id, JSON.stringify(middle)).toBe(shedRoom.id);
       expect(planCentre).not.toHaveBeenCalled();
       expect(toast).not.toHaveBeenCalled();
     }
-    expect(unitNearMiddle(shedRoom, { centre: [11.5, 3.8], storeyId: 'ground', scale: 11.6 })).toBe(true);
-    expect(unitNearMiddle(shedRoom, { centre: [11.5, 3.8], storeyId: 'ground', scale: 40 })).toBe(false);
+    // Sixth review: at 11.6 px/m the shed's room is about 60 px from the building's middle, no longer enough.
+    const whole = { centre: [11.5, 3.8] as Vec2, storeyId: 'ground', scale: 11.6 };
+    const { e, planCentre, toast } = shedEnv(whole);
+    const r = placeFurniture(e, 'kommode', { kind: 'tap' });
+    expect(planCentre).toHaveBeenCalledWith('kommode');
+    expect(r!.room?.id).toBe(roomAt(withShed, 'ground', whole.centre)?.id);
+    expect(toast).not.toHaveBeenCalled();
+    expect(unitNearMiddle(shedRoom, whole)).toBe(false);
+    expect(unitNearMiddle(shedRoom, { centre: shedRoom.labelPoint, storeyId: 'ground', scale: 5 })).toBe(true);
     expect(unitNearMiddle(shedRoom, { centre: shedRoom.labelPoint, storeyId: 'loft', scale: 40 })).toBe(false);
   });
 
   it('nothing selected: a toast when the item goes to another room than the one in the middle (a full room gives way), none when it stays', () => {
     const hovedbad: Vec2 = [19.7, 0.3];
-    const gang = room('room-gang');
-    // The middle is in Hovedbad, but the plan answers with Gang (its room for the item when Hovedbad is full).
+    const gang = room('room-sov-ny');
+    // The middle is in Hovedbad, but the plan answers with Soverom (ny fløy) (its room for the item when Hovedbad is full).
     const toast = vi.fn();
     const { e } = env({ planMiddle: () => ({ centre: hovedbad, storeyId: 'ground', scale: 40 }), planCentre: () => ({ centre: gang.labelPoint, storeyId: 'ground' }), toast });
     const r = placeFurniture(e, 'kommode', { kind: 'tap' });
-    expect(r!.room?.id).toBe('room-gang');
-    expect(toast).toHaveBeenCalledWith('Kommode er satt inn i «Gang».');
+    expect(r!.room?.id).toBe('room-sov-ny');
+    expect(toast).toHaveBeenCalledWith('Kommode er satt inn i «Soverom (ny fløy)».');
     // The room in the middle itself: no toast.
     const quiet = vi.fn();
     placeFurniture(env({ planMiddle: () => ({ centre: hovedbad, storeyId: 'ground', scale: 40 }), toast: quiet }).e, 'servant', { kind: 'tap' });
@@ -172,5 +181,78 @@ describe('last fix round: a selected unit only while it is near the middle; a to
     placeFurniture(env({ addFurniture: () => null, planMiddle: () => ({ centre: hovedbad, storeyId: 'ground', scale: 40 }), planCentre: () => ({ centre: gang.labelPoint, storeyId: 'ground' }), toast: quiet }).e, 'kommode', { kind: 'tap' });
     expect(quiet).not.toHaveBeenCalled();
     expect(nb.library.placedInToast('Kommode', null)).toBe('Kommode er satt inn i et rom uten navn.');
+  });
+});
+
+describe('sixth review: a shed against the bedroom wing; the far fallback', () => {
+  // The review's spot: a Vedskjul against the wing's north wall (y 6.2), x 17.4–19.4, still selected after Nytt bygg.
+  const store = createAppStore(createForslagD());
+  store.getState().duplicateVariant('forslag-d', 'Mitt forslag');
+  const shedId = placeUnit(store, 'vedskjul', [18.4, 6.95]) as string;
+  const full = deriveForState(store.getState());
+  const shedRoom = full.rooms.find((r) => r.blockId === shedId)!;
+  const BEDROOM_MIDDLE: Vec2 = [18.35, 4.75];
+  const placer = (over: Partial<PlacerEnv>) => {
+    const toast = vi.fn();
+    const planCentre = vi.fn((_catalogId: string): { centre: Vec2; storeyId?: string | null } | null => ({ centre: BEDROOM_MIDDLE, storeyId: 'ground' }));
+    const e: PlacerEnv = { derived: full, storeyId: 'ground', selection: { kind: 'block', id: shedId }, addFurniture: () => 'f-new', select: vi.fn(), planCentre, toast, ...over };
+    return { e, toast, planCentre };
+  };
+
+  it('the shed is against the wing, 1.4 m from the bedroom', () => {
+    expect(shedRoom).toBeDefined();
+    expect(Math.min(...shedRoom.polygon.map((q) => q[1]))).toBeLessThan(6.5);
+    expect(roomAt(full, 'ground', BEDROOM_MIDDLE)?.id).toBe('room-sov-ny');
+  });
+
+  it('the bedroom pinched to the middle at 20–55 px/m: the Kommode goes to Soverom (ny fløy), free, without a toast', () => {
+    for (const scale of [20, 30, 40, 55]) {
+      const { e, toast } = placer({ planMiddle: () => ({ centre: BEDROOM_MIDDLE, storeyId: 'ground', scale }) });
+      const r = placeFurniture(e, 'kommode', { kind: 'tap' });
+      expect(r!.room?.id, `${scale} px/m`).toBe('room-sov-ny');
+      expect(r!.placement.free, `${scale} px/m`).toBe(true);
+      expect(toast, `${scale} px/m`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('the middle in the shed: the shed\'s room, no toast; an item selected in the shed with the bedroom in the middle: the shed\'s room, with the toast', () => {
+    const inShed = placer({ planMiddle: () => ({ centre: shedRoom.labelPoint, storeyId: 'ground', scale: 40 }) });
+    expect(placeFurniture(inShed.e, 'vedstabel', { kind: 'tap' })!.room?.id).toBe(shedRoom.id);
+    expect(inShed.toast).not.toHaveBeenCalled();
+    // A Vedstabel standing in the shed is selected (its room is the shed's); the bedroom is in the middle.
+    const withItem: DerivedVariant = {
+      ...full,
+      furniture: [...full.furniture, { ...full.furniture[0], id: 'f-stack', roomId: shedRoom.id, levelId: shedRoom.levelId }],
+    };
+    const picked = placer({ derived: withItem, selection: { kind: 'furniture', id: 'f-stack' }, planMiddle: () => ({ centre: BEDROOM_MIDDLE, storeyId: 'ground', scale: 40 }) });
+    const r = placeFurniture(picked.e, 'vedstabel', { kind: 'tap' });
+    expect(r!.room?.id).toBe(shedRoom.id);
+    expect(picked.toast).toHaveBeenCalledWith(nb.library.placedInToast('Vedstabel', shedRoom.room?.name ?? null));
+    expect(picked.toast.mock.calls[0][0]).toBe('Vedstabel er satt inn i «Vedskjul».');
+  });
+
+  it('Seng 180 with Gang, Do or Bad in the middle (none of the nearest rooms has space): the closest room of the storey with space, with the toast', () => {
+    const toastText = nb.library.placedFarToast('Seng 180', 'Stue');
+    expect(toastText).toBe('Ingen plass i rommene i nærheten: Seng 180 er satt inn i «Stue».');
+    for (const id of ['room-gang', 'room-do', 'room-bad']) {
+      const mid = seed.derived.rooms.find((r) => r.id === id)!.labelPoint;
+      // The plan answers with the middle itself when neither it nor its 6 nearest rooms have a free spot (PlanView.tsx).
+      const { e, toast } = placer({ derived: seed.derived, selection: null, planCentre: () => ({ centre: mid, storeyId: 'ground' }), planMiddle: () => ({ centre: mid, storeyId: 'ground', scale: 46 }) });
+      const r = placeFurniture(e, 'seng-180', { kind: 'tap' });
+      expect(r!.placement.free, id).toBe(true);
+      expect(r!.room?.id, id).toBe('room-stue');
+      expect(insideRoom(r!.placement.footprint, room('room-stue')), id).toBe(true);
+      expect(toast, id).toHaveBeenCalledWith(toastText);
+    }
+  });
+
+  it('no room of the storey has space: the item stands in the middle room with its warnings, no far toast', () => {
+    const tight: DerivedVariant = { ...seed.derived, rooms: seed.derived.rooms.filter((r) => ['room-gang', 'room-do', 'room-bad', 'room-wc'].includes(r.id)) };
+    const mid = room('room-gang').labelPoint;
+    const { e, toast } = placer({ derived: tight, selection: null, planCentre: () => ({ centre: mid, storeyId: 'ground' }), planMiddle: () => ({ centre: mid, storeyId: 'ground', scale: 46 }) });
+    const r = placeFurniture(e, 'seng-180', { kind: 'tap' });
+    expect(r!.placement.free).toBe(false);
+    expect(r!.room?.id).toBe('room-gang');
+    expect(toast).not.toHaveBeenCalled();
   });
 });

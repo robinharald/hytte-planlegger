@@ -337,6 +337,14 @@ export const nb = {
      */
     placedInToast: (item: string, room: string | null) =>
       room ? `${item} er satt inn i «${room}».` : `${item} er satt inn i et rom uten navn.`,
+    /**
+     * Toast after a library tap whose item had no free spot in the room in the middle of the plan nor in the rooms
+     * nearest to it, and went to the closest room of the storey that has one (ui/furniturePlacer.ts
+     * `freeRoomElsewhere`): «Ingen plass i rommene i nærheten: Seng 180 er satt inn i «Stue».»; `room` null: a room
+     * without a name.
+     */
+    placedFarToast: (item: string, room: string | null) =>
+      room ? `Ingen plass i rommene i nærheten: ${item} er satt inn i «${room}».` : `Ingen plass i rommene i nærheten: ${item} er satt inn i et rom uten navn.`,
   },
 
   toasts: {
