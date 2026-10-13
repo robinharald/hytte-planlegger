@@ -55,8 +55,9 @@
  *      tilbake» on dv-leseskrok: w-106-stue stays straight with its end on the restored line (before: the fallback for
  *      proposals without `carriedBy` slanted it, with no toast);
  *  (ae) the main house's south edge 0.5 m north, a Vedskjul against it and another in the way of the old edge: «Ta
- *      tilbake» on the edge is refused with the toast and changes nothing — the shed against the edge is not pushed,
- *      no undo step (before: the shed was pushed off the house although the toast said no).
+ *      tilbake» on the edge is refused with the toast naming the one in the way («Ta tilbake går ikke: «Vedskjul 2»
+ *      står i veien – flytt det først.») and changes nothing — the shed against the edge is not pushed, no undo step
+ *      (before: the shed was pushed off the house although the toast said no).
  * No state may produce a 'generic' warning (a failed derive or a geometry fallback).
  *
  * Screenshots (e2e/screenshots/): plan-editing.png (the deck selected: vertex and "+" handles), plan-unit-on-deck.png,
@@ -1249,7 +1250,8 @@ test.describe('editing a proposal (desktop, final fix round after 2b)', () => {
 
   test('(ae) a refused «Ta tilbake» on the house edge (a shed in the way) changes nothing', async ({ page }) => {
     await freshProposal(page);
-    const ON_BLOCK = 'Bygget kan ikke stå oppå et annet bygg.';
+    // The toast names the shed in the way (fix round 3 after phase 3; before: «Bygget kan ikke stå oppå et annet bygg.»).
+    const REFUSED = 'Ta tilbake går ikke: «Vedskjul 2» står i veien – flytt det først.';
     // The main house's south edge 0.5 m north (the Soverom side, clear of the glass bump).
     await selectAt(page, [2.5, 0], { kind: 'wall', id: /^blk-main\// });
     await dragPlan(page, [2.5, 0], [2.5, 0.5]);
@@ -1277,7 +1279,7 @@ test.describe('editing a proposal (desktop, final fix round after 2b)', () => {
     const line = await derivedLine(page, ghost!.id);
     await selectAt(page, await clearPointOn(page, ghost!.id, line.a, line.b), { kind: 'ghost', id: ghost!.id });
     await page.getByTestId('ghost-restore').click();
-    await expect(page.locator('[data-testid=toast]').filter({ hasText: ON_BLOCK })).toHaveCount(1);
+    await expect(page.locator('[data-testid=toast]').filter({ hasText: REFUSED })).toHaveCount(1);
     await page.waitForTimeout(300);
     expect(JSON.stringify(await activeVariant(page)), 'nothing changed: the shed against the edge was not pushed').toBe(before);
     expect(bbox(blockPolygon(await activeVariant(page), shed)).y1).toBeCloseTo(0.5, 2);

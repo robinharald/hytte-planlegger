@@ -215,7 +215,8 @@ describe('a unit standing against the house never moves it', () => {
     tapped(s, 'bod', [6, -4]);
     const before = J(V(s));
     expect(A.restoreGhost(s, 'blk-glass/v-glass-sw/ghost')).toBe(false);
-    expect(toastTexts(s)).toContain(ON_BLOCK);
+    // The shed that cannot go is named (fix round 3 after phase 3; before: the general ON_BLOCK).
+    expect(toastTexts(s)).toContain(`${EDIT_STRINGS.restoreUnitInTheWay('Vedskjul')}.`);
     expect(J(V(s))).toBe(before);
   });
 });

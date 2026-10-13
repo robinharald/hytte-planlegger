@@ -168,7 +168,8 @@ describe('a refused «Ta tilbake» on a house edge changes nothing', () => {
       const before = J(s.getState().project);
       const steps = undoSteps(s);
       expect(A.restoreGhost(s, 'blk-main/v-main-sw/ghost')).toBe(false);
-      expect(toastTexts(s)).toEqual([ON_BLOCK]);
+      // The second shed, in the old edge's way, is named (fix round 3 after phase 3; before: the general ON_BLOCK).
+      expect(toastTexts(s)).toEqual([`${EDIT_STRINGS.restoreUnitInTheWay('Vedskjul 2')}.`]);
       // Before: the first shed was pushed 0,5 m off the house and that was saved as an undo step.
       expect(J(s.getState().project)).toBe(before);
       expect(undoSteps(s)).toBe(steps);

@@ -1362,6 +1362,11 @@ export const nb = {
      * refused, nothing changes). No full stop: it is also the drag hint; the toast adds one.
      */
     unitInTheWay: (unit: string) => `«${unit}» står inntil veggen – flytt det først`,
+    /**
+     * «Ta tilbake» on a house edge refused because a unit from Nytt bygg is in the way: the unit against the edge that
+     * cannot be pushed away, or one in the edge plan's way. No full stop: the toast adds one.
+     */
+    restoreUnitInTheWay: (unit: string) => `Ta tilbake går ikke: «${unit}» står i veien – flytt det først`,
     /** Bredde / Dybde made a unit's own openings narrower so they fit its walls (toast with [Angre]). */
     unitOpeningsNarrowed: (unit: string, count: number) =>
       count === 1 ? `Åpningen i «${unit}» er gjort smalere, så den får plass i veggen.` : `Åpningene i «${unit}» er gjort smalere, så de får plass i veggene.`,

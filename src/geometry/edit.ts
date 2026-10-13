@@ -85,9 +85,10 @@
  * Block edits (§3.4, §3.5). Edges move along their outward normal. Gable / mono blocks keep their shape: a corner
  * drag moves both adjacent edges (each by the pointer's component along its normal); only flat-roof blocks get free
  * vertex drags. Every junction (DerivedBlock.junctions) carries the partner block's coincident edge along by the same
- * vector (and so on through the partner's junctions on that edge) — never between a template unit and a building that
- * is not one (`carriesThrough`, last fix round, sixth review: a unit's edge moves only itself, and an attached edge of
- * a unit pushed into its building stays). New polygons are validated (area ≥ 0.25 m², not
+ * vector (and so on through the partner's junctions on that edge) — never to or from a template unit
+ * (`carriesThrough`, last fix round, sixth review, and fix round 3 after phase 3 for two units side by side: a unit's
+ * edge moves only itself, and an attached edge of a unit pushed into its neighbour stays, the toast naming another
+ * unit there). New polygons are validated (area ≥ 0.25 m², not
  * self-intersecting, same orientation); a move that breaks one is scaled back to the largest valid fraction. Then,
  * generically for every changed edge: openings keep their plan position (projected on the new edge, clamped); stored
  * walls collinear with a moved edge (both ends within 1 cm of the old segment) are carried along (with their
@@ -171,6 +172,7 @@ import type {
 } from '../model/types';
 import { furnitureSizeFallback } from '../model/migrate';
 import { cardinalOf, quarterTurns, unitFootprint, unitTemplate } from '../model/unitTemplates';
+import type { UnitTemplate } from '../model/unitTemplates';
 import {
   area,
   bbox,
@@ -1744,8 +1746,8 @@ export function applyRestoreEdgeGhost(draft: Variant, ctx: EditContext, id: Id):
   if (move) {
     // Units standing against the edge on the side it goes back to are pushed away first (they are never dragged along:
     // `carriesThrough`); a unit that is still in the way refuses the restore (last fix round, sixth review).
-    const pushes = restoreEdgePushes(ctx, move);
-    if (pushes === null) return false;
+    const { pushes, stuck } = restoreEdgePushes(ctx, move);
+    if (stuck !== undefined) return false;
     const pushed = new Set(pushes.map((p) => p.blockId));
     // The edge's own plan first, before anything moves: a refusal leaves the draft untouched (final morning round: a
     // second unit in the edge's path refused the restore after the first had been pushed away and committed).
@@ -1813,14 +1815,15 @@ function withoutBlocks(ctx: EditContext, ids: ReadonlySet<Id>): EditContext {
 
 /**
  * The template units a restore's edge move (`restoreEdgeMove`, junction partners included) would push into, each with
- * the move that keeps it against the edge — they stand against an edge that goes outward; null when one of them cannot
- * go that far without standing on another building (`unitMoveFraction`): the restore is refused (last fix round, sixth
- * review: «Ta tilbake» on the glass bump's south edge shrank the shed placed against it from 2 m to 1 m).
+ * the move that keeps it against the edge — they stand against an edge that goes outward; `stuck`: one of them that
+ * cannot go that far without standing on another building (`unitMoveFraction`), and `pushes` empty: the restore is
+ * refused (last fix round, sixth review: «Ta tilbake» on the glass bump's south edge shrank the shed placed against it
+ * from 2 m to 1 m).
  */
-function restoreEdgePushes(ctx: EditContext, move: EdgeMove): { blockId: Id; delta: Vec2 }[] | null {
+function restoreEdgePushes(ctx: EditContext, move: EdgeMove): { pushes: { blockId: Id; delta: Vec2 }[]; stuck?: Id } {
   const block = ctx.base.blocks.find((b) => b.id === move.blockId);
   const i = block ? block.polygon.findIndex((x) => x.id === move.edgeId) : -1;
-  if (!block || i < 0) return [];
+  if (!block || i < 0) return { pushes: [] };
   const shift = dot(move.delta, outwardNormal(block.polygon.map((v) => v.p), i));
   const out: { blockId: Id; delta: Vec2 }[] = [];
   for (const [blockId, m] of propagateShifts(ctx, [{ blockId: move.blockId, edgeIndex: i, shift }])) {
@@ -1840,24 +1843,27 @@ function restoreEdgePushes(ctx: EditContext, move: EdgeMove): { blockId: Id; del
   }
   for (const p of out) {
     const u = ctx.base.blocks.find((x) => x.id === p.blockId);
-    if (!u || unitMoveFraction(ctx.base, u.polygon.map((v) => v.p), p.delta, u) < 1) return null;
+    if (!u || unitMoveFraction(ctx.base, u.polygon.map((v) => v.p), p.delta, u) < 1) return { pushes: [], stuck: p.blockId };
   }
-  return out;
+  return { pushes: out };
 }
 
 /**
  * Whether "Ta tilbake" on edge ghost `id` is refused because a unit stands in the way (one that cannot be pushed away
- * along the edge's move, or one the edge would reach without standing against it): the caller toasts `unitOnBlock`.
+ * along the edge's move, or one the edge would reach without standing against it): false when it is not, else the
+ * unit in the way when it is known (`unitId`; fix round 3 after phase 3: the caller's toast names it, else the
+ * general `unitOnBlock`).
  */
-export function restoreEdgeOnBlock(ctx: EditContext, id: Id): boolean {
+export function restoreEdgeOnBlock(ctx: EditContext, id: Id): false | { unitId?: Id } {
   const ref = ghostRef(ctx.base, id);
   if (!ref || ref.type !== 'blockEdge') return false;
   const move = restoreEdgeMove(ctx, ref);
   if (!move) return false;
-  const pushes = restoreEdgePushes(ctx, move);
-  if (pushes === null) return true;
+  const { pushes, stuck } = restoreEdgePushes(ctx, move);
+  if (stuck !== undefined) return { unitId: stuck };
   const plan = edgePlan(pushes.length > 0 ? withoutBlocks(ctx, new Set(pushes.map((p) => p.blockId))) : ctx, move.blockId, move.edgeId, move.delta);
-  return plan?.onBlock === true;
+  if (plan?.onBlock !== true) return false;
+  return plan.unitId !== undefined ? { unitId: plan.unitId } : {};
 }
 
 /**
@@ -2093,16 +2099,18 @@ export function keepsRectangle(block: Block): boolean {
 type ShiftMap = Map<Id, Map<number, number>>;
 
 /**
- * Whether an edge shift of block `fromId` is carried through a junction to block `toId`: never between a template unit
- * and a building that is not one (last fix round, sixth review: a shed against the house moved the house's outer wall
- * when its Dybde changed, and «Ta tilbake» on a house edge shrank the shed). Such an edit moves only its own block's
- * edge; one that would push it into the other building is cut back by `unitClampedPlan` (a unit's attached edge does
- * not move outward at all: `withoutPushesIntoBuildings`), and one away from it leaves the two apart.
+ * Whether an edge shift of block `fromId` is carried through a junction to block `toId`: only between buildings that
+ * are not template units — never between a unit and the house (last fix round, sixth review: a shed against the house
+ * moved the house's outer wall when its Dybde changed, and «Ta tilbake» on a house edge shrank the shed), nor between
+ * two units (fix round 3 after phase 3: Bredde of a shed squeezed the shed snapped against it, merging its room away).
+ * Such an edit moves only its own block's edge; one that would push it into the other building is cut back by
+ * `unitClampedPlan` (a unit's attached edge does not move outward at all: `withoutPushesIntoBuildings`), and one away
+ * from it leaves the two apart.
  */
 function carriesThrough(ctx: EditContext, fromId: Id, toId: Id): boolean {
   const from = ctx.base.blocks.find((b) => b.id === fromId);
   const to = ctx.base.blocks.find((b) => b.id === toId);
-  return (from?.template !== undefined) === (to?.template !== undefined);
+  return from?.template === undefined && to?.template === undefined;
 }
 
 /** Edge shifts (along the outward normal) carried through the junctions to partner edges (`carriesThrough`). */
@@ -2129,8 +2137,9 @@ function propagateShifts(ctx: EditContext, starts: { blockId: Id; edgeIndex: num
 }
 
 /**
- * Whether edge `edgeIndex` of template unit `blockId` stands against a building that is not a unit (a junction with it
- * in `ctx.derived`): the edge a unit placed against the house shares with it.
+ * Whether edge `edgeIndex` of template unit `blockId` stands against another building — the house or another unit (a
+ * junction with it in `ctx.derived`, `carriesThrough`): the edge a unit placed against the house, or snapped against
+ * another unit, shares with it.
  */
 export function unitEdgeAttached(ctx: EditContext, blockId: Id, edgeIndex: number): boolean {
   const db = ctx.derived.blocks.find((b) => b.block.id === blockId);
@@ -2140,22 +2149,37 @@ export function unitEdgeAttached(ctx: EditContext, blockId: Id, edgeIndex: numbe
 
 type EdgeShift = { blockId: Id; edgeIndex: number; shift: number };
 
+/** Another template unit that edge `edgeIndex` of block `blockId` stands against (a junction in `ctx.derived`). */
+function unitAgainst(ctx: EditContext, blockId: Id, edgeIndex: number): Id | undefined {
+  const db = ctx.derived.blocks.find((b) => b.block.id === blockId);
+  const j = db?.junctions.find((x) => x.edgeIndex === edgeIndex && x.otherBlockId !== blockId && ctx.base.blocks.some((b) => b.id === x.otherBlockId && b.template !== undefined));
+  return j?.otherBlockId;
+}
+
 /**
  * The edge shifts of an edge / corner edit without those that would push a unit's attached edge (`unitEdgeAttached`)
  * outward into the building it stands against (last fix round, sixth review): a corner dragged into the house slides
- * along its wall, an attached edge dragged into it stays. `dropped`: one was left out (hint / toast).
+ * along its wall, an attached edge dragged into it stays. `dropped`: one was left out (hint / toast); `unitId`: the
+ * other unit such an edge stands against (fix round 3 after phase 3: the toast names it).
  */
-function withoutPushesIntoBuildings(ctx: EditContext, starts: EdgeShift[]): { kept: EdgeShift[]; dropped: boolean } {
-  const kept = starts.filter((s) => !(s.shift > TINY && unitEdgeAttached(ctx, s.blockId, s.edgeIndex)));
-  return { kept, dropped: kept.length < starts.length };
+function withoutPushesIntoBuildings(ctx: EditContext, starts: EdgeShift[]): { kept: EdgeShift[]; dropped: boolean; unitId?: Id } {
+  const kept: EdgeShift[] = [];
+  let unitId: Id | undefined;
+  for (const s of starts) {
+    if (s.shift > TINY && unitEdgeAttached(ctx, s.blockId, s.edgeIndex)) unitId ??= unitAgainst(ctx, s.blockId, s.edgeIndex);
+    else kept.push(s);
+  }
+  const dropped = kept.length < starts.length;
+  return unitId !== undefined ? { kept, dropped, unitId } : { kept, dropped };
 }
 
 /** `shiftsPlan` of the edge shifts `starts`, without the pushes into a building a unit stands against. */
 function unitAwarePlan(ctx: EditContext, starts: EdgeShift[]): BlockEditPlan {
-  const { kept, dropped } = withoutPushesIntoBuildings(ctx, starts);
-  if (!kept.some((s) => Math.abs(s.shift) >= TINY)) return { polys: new Map(), k: 0, onBlock: true };
+  const { kept, dropped, unitId } = withoutPushesIntoBuildings(ctx, starts);
+  const named = (plan: BlockEditPlan): BlockEditPlan => (unitId !== undefined && plan.unitId === undefined ? { ...plan, unitId } : plan);
+  if (!kept.some((s) => Math.abs(s.shift) >= TINY)) return named({ polys: new Map(), k: 0, onBlock: true });
   const plan = shiftsPlan(ctx, propagateShifts(ctx, kept));
-  return dropped ? { ...plan, onBlock: true } : plan;
+  return dropped ? named({ ...plan, onBlock: true }) : plan;
 }
 
 /** Polygon with edges shifted along their outward normals (vertices = intersections of the shifted lines). */
@@ -3366,25 +3390,53 @@ export function applySetBlockSize(draft: Variant, ctx: EditContext, blockId: Id,
   return m !== null && applyMoveBlockEdge(draft, ctx, blockId, m.edgeId, m.delta);
 }
 
+/** The widest opening an edge of `length` takes: posts at both ends like an open front (`openFrontOpening`). */
+function fitWidth(length: number): number {
+  return Math.max(0.1, length - 2 * Math.min(0.1, length / 4));
+}
+
 /**
- * After Bredde / Dybde of a template unit: its own openings that are now wider than their edge are made narrower to
- * fit it, centred on it, with posts at the ends like an open front (`openFrontOpening`; at most a quarter of the edge
- * each) — final morning round: a Vedskjul narrowed from 3 m to 1,5 m kept its 1,8 m open front, outside its wall
- * (`opening-outside-host`). One that still fits was already slid onto the edge (`keepEdgeOpenings`). Returns the ids
+ * The template's width of opening `o` of a unit made from template `t` (its open front on the front edge, or its
+ * door), else null (an opening the user added).
+ */
+function templateOpeningWidth(t: UnitTemplate | undefined, block: Block, o: Opening): number | null {
+  if (!t || o.host.kind !== 'blockEdge') return null;
+  if (t.openFront && o.type === 'opening' && o.fullHeight === true && o.host.edgeId === block.templateFrontEdgeId) return fitWidth(t.w);
+  return t.door && o.type === t.door.type ? t.door.width : null;
+}
+
+/**
+ * After Bredde / Dybde of a template unit (`base`: the variant before): on every edge whose length changed, its own
+ * openings that no longer fit (wider than the edge less a post at each end, `fitWidth`) are made narrower, centred —
+ * final morning round: a Vedskjul narrowed from 3 m to 1,5 m kept its 1,8 m open front, outside its wall
+ * (`opening-outside-host`). The template's own opening (the open front, the door) is centred on its edge on every
+ * such change, and one that filled its edge grows back towards the template's width when the edge gets longer (fix
+ * round 3 after phase 3: Bredde 1,5 then 2 m left the 1,3 m front off-centre; with the posts there is no jump at the
+ * template's own width). Others that still fit were already slid onto the edge (`keepEdgeOpenings`). Returns the ids
  * of the openings it narrowed (the caller toasts).
  */
-export function fitUnitOpenings(draft: Variant, blockId: Id): Id[] {
+export function fitUnitOpenings(draft: Variant, blockId: Id, base: Variant): Id[] {
   const block = draft.blocks.find((b) => b.id === blockId);
   if (!block || block.template === undefined) return [];
+  const t = unitTemplate(block.template);
   const out: Id[] = [];
   for (const o of draft.openings) {
     if (o.status === 'removed' || o.host.kind !== 'blockEdge' || o.host.blockId !== blockId) continue;
     const line = hostLine(draft, o.host);
-    if (!line || o.width <= line.length + TINY) continue;
-    const post = Math.min(0.1, line.length / 4);
-    o.width = clean(line.length - 2 * post);
+    if (!line) continue;
+    const L0 = base.openings.some((x) => x.id === o.id) ? (hostLine(base, o.host)?.length ?? line.length) : line.length;
+    if (Math.abs(line.length - L0) <= 1e-6) continue;
+    const fit = fitWidth(line.length);
+    const own = templateOpeningWidth(t, block, o);
+    let width = o.width;
+    // It filled its edge before (as placed, or narrowed to fit): it grows back with a longer edge.
+    if (own !== null && line.length > L0 && width < own && width >= fitWidth(L0) - 1e-6) width = Math.min(own, fit);
+    const narrowed = width > fit + TINY;
+    if (narrowed) width = fit;
+    if (own === null && !narrowed) continue;
+    o.width = clean(width);
     o.offset = clean(line.length / 2);
-    out.push(o.id);
+    if (narrowed) out.push(o.id);
   }
   return out;
 }

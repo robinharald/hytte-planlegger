@@ -78,6 +78,12 @@
  * more of the new pieces are substantial (`substantialPiece`), not for a sliver. A house edge that cannot move because
  * a unit stands against it names the unit (`unitInTheWayToast`). Bredde / Dybde that narrows a unit narrows its own
  * openings to fit the new wall, with a toast (geometry/edit.ts `fitUnitOpenings`).
+ *
+ * Fix round 3 after phase 3: a unit snapped against another unit is treated like one against the house — an edit of
+ * one never moves the other (geometry/edit.ts `carriesThrough`); Bredde / Dybde changes the free side, and an edge
+ * pushed into the neighbour is refused with the toast naming it. Bredde / Dybde centres the unit's own opening and lets
+ * it grow back towards the template's width. A refused «Ta tilbake» on a house edge names the unit in the way
+ * (`EDIT_STRINGS.restoreUnitInTheWay`).
  */
 import { current, isDraft, produce } from 'immer';
 import { useMemo } from 'react';
@@ -530,7 +536,7 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
     if (hostId && hostId !== id && v.walls.some((w) => w.id === hostId && w.status === 'removed')) return restoreGhost(store, hostId);
   }
   let parallelSame = false;
-  let onBlock = false;
+  let onBlock: false | { unitId?: Id } = false;
   let from: RunOpts['from'];
   let neighbours: NeighbourEnd[] = [];
   let carried: Id[] = [];
@@ -628,11 +634,18 @@ export function restoreGhost(store: EditStore, id: Id): boolean {
       // A unit against the edge is pushed away with it, or the restore is refused (last fix round, sixth review).
       onBlock = restoreEdgeOnBlock(ctx, id);
       // Refused before anything changes (final morning round: the unit against the edge was pushed away regardless).
-      return !onBlock && applyRestoreEdgeGhost(d, ctx, id);
+      return onBlock === false && applyRestoreEdgeGhost(d, ctx, id);
     },
     { revive: () => roomTombstones(store, v), from },
   );
-  if (onBlock) unitOnBlockToast(store);
+  // The toast names the unit in the way when it is known (fix round 3 after phase 3). (Set in the recipe: TypeScript
+  // would narrow it to `false` here.)
+  const blocked = onBlock as false | { unitId?: Id };
+  if (blocked) {
+    const unitId = blocked.unitId;
+    const unit = unitId !== undefined ? v.blocks.find((b) => b.id === unitId) : undefined;
+    unitOnBlockToast(store, unit ? EDIT_STRINGS.restoreUnitInTheWay(unit.name) : EDIT_STRINGS.unitOnBlock);
+  }
   return changed(r);
 }
 
@@ -1271,8 +1284,9 @@ export function setBlockSize(store: EditStore, blockId: Id, axis: 'w' | 'd', val
     onBlock = clamp?.onBlock === true;
     if (clamp) text = onBlockText(ctx.base, clamp);
     const ok = applySetBlockSize(d, ctx, blockId, axis, value, side);
-    // A unit made narrower: its own openings narrower too, to fit its walls (final morning round).
-    if (ok) narrowed = fitUnitOpenings(d, blockId);
+    // A unit made narrower: its own openings narrower too, to fit its walls (final morning round); its template
+    // opening centred, and back towards its own width when the unit grows again (fix round 3 after phase 3).
+    if (ok) narrowed = fitUnitOpenings(d, blockId, ctx.base);
     return ok;
   });
   if (onBlock) unitOnBlockToast(store, text);
