@@ -1449,6 +1449,11 @@ export const nb = {
     download: 'Last ned',
     downloadTitle: 'Lagre PDF-en på denne enheten',
     failed: (message: string) => `Klarte ikke å lage PDF-en: ${message}`,
+    /**
+     * A lazy library (the PDF code, the IFC reader) has never been downloaded on this device and there is no network
+     * (export/offline.ts `offlineFirstUse`; the PDF dialog and the IFC panel).
+     */
+    offlineFirstUse: 'Første gang trenger dette nett – koble til og prøv igjen; etterpå virker det uten nett.',
 
     // ---- title block --------------------------------------------------------------------------------------------
     tbProject: 'Prosjekt',

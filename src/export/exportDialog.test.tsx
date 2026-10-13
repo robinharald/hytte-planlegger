@@ -18,6 +18,7 @@ const downloadBlob = vi.fn((_blob: Blob, _name: string) => 'downloaded' as const
 vi.mock('./deliver', () => ({ downloadBlob, canShareFile: () => false, coarsePointer: () => false, deliverFile: vi.fn() }));
 
 const { ExportMenu } = await import('../ui/ExportMenu');
+const { nb } = await import('../i18n/nb');
 const { lastExport } = await import('./hook');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -103,5 +104,24 @@ describe('Eksporter menu', () => {
     });
     expect(byTestId('export-error')?.textContent).toBe('Klarte ikke å lage PDF-en: tom');
     expect(downloadBlob).not.toHaveBeenCalled();
+  });
+
+  it('says that the first PDF needs the network when the PDF code cannot be downloaded or the device is offline', async () => {
+    click('export-menu-pdf');
+    await settle(() => byTestId('export-dialog') !== null);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    buildPlanPdf.mockRejectedValueOnce(new TypeError('Failed to fetch dynamically imported module: http://localhost:5542/hytte-planlegger/assets/planPdf-lKPLFHRQ.js'));
+    await act(async () => {
+      byTestId('export-make')?.click();
+    });
+    expect(byTestId('export-error')?.textContent).toBe(nb.export.offlineFirstUse);
+    // any failure while the browser says it is offline
+    const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    buildPlanPdf.mockRejectedValueOnce(new Error('noe annet'));
+    await act(async () => {
+      byTestId('export-make')?.click();
+    });
+    expect(byTestId('export-error')?.textContent).toBe(nb.export.offlineFirstUse);
+    onLine.mockRestore();
   });
 });

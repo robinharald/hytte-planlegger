@@ -8,6 +8,7 @@
  * three views when it mounts) brings the last model back after a reload without the file.
  */
 import { useStore } from 'zustand';
+import { offlineFirstUse } from '../export/offline';
 import { nb } from '../i18n/nb';
 import { createStore } from 'zustand/vanilla';
 import type { StoreApi } from 'zustand/vanilla';
@@ -101,13 +102,16 @@ function readPrefs(storage: KeyValue | null): IfcPrefs {
   }
 }
 
-function errorText(e: unknown): string {
+/** The panel's text for a failed load (exported for the tests). */
+export function errorText(e: unknown): string {
   // loader.ts IfcLoadError (by name: the loader module is loaded lazily).
   if (e instanceof Error && e.name === 'IfcLoadError') {
     const reason = (e as Error & { reason?: IfcLoadErrorReason }).reason;
+    if (reason === 'offline') return nb.export.offlineFirstUse;
     return reason === 'not-ifc' ? nb.ifc.notIfc : reason === 'empty' ? nb.ifc.empty : nb.ifc.failed;
   }
-  return nb.ifc.failed;
+  // The loader chunk itself could not be fetched (never used on this device, no network): the file is fine.
+  return offlineFirstUse(e) ? nb.export.offlineFirstUse : nb.ifc.failed;
 }
 
 export interface IfcOverlayStore extends StoreApi<IfcState> {

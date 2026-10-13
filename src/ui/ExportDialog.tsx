@@ -15,6 +15,7 @@
 import { useMemo, useState } from 'react';
 import { canShareFile, coarsePointer, deliverFile, downloadBlob } from '../export/deliver';
 import { publishLastExport } from '../export/hook';
+import { offlineFirstUse } from '../export/offline';
 import { drawingArea, pageSize } from '../export/paper';
 import type { PaperSize, PrintScale } from '../export/paper';
 import { scheduleBodies } from '../export/schedulePage';
@@ -62,7 +63,7 @@ type Status =
   | { kind: 'idle' }
   | { kind: 'busy' }
   | { kind: 'done'; blob: Blob; fileName: string; pages: number; share: boolean }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; text: string };
 
 interface SegOption<T> {
   value: T;
@@ -133,7 +134,8 @@ export function ExportDialog(props: { onClose: () => void }) {
       setStatus({ kind: 'done', blob: r.blob, fileName: r.fileName, pages: r.pages, share });
     } catch (e) {
       console.error('PDF export failed', e);
-      setStatus({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
+      // The PDF code is downloaded on first use (not precached): offline before that, say so instead of the raw error.
+      setStatus({ kind: 'error', text: offlineFirstUse(e) ? nb.export.offlineFirstUse : S.failed(e instanceof Error ? e.message : String(e)) });
     }
   };
 
@@ -190,7 +192,7 @@ export function ExportDialog(props: { onClose: () => void }) {
         )}
         {status.kind === 'error' && (
           <p className="banner warn" role="alert" data-testid="export-error">
-            {S.failed(status.message)}
+            {status.text}
           </p>
         )}
         <div className="modal-actions">

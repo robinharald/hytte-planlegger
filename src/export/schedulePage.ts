@@ -1,8 +1,9 @@
 /**
  * The last sheet(s) of the PDF: the room schedule (Romskjema, ui/schedule.ts `buildSchedule`: one group per level with
  * its sum, rows sorted by name) and the area totals (BYA with buildings / decks, BRA per level, axis area, rooms net)
- * as a table, in the drawing area of a portrait sheet (paper.ts `drawingArea`). A schedule longer than one sheet
- * continues on the next one, with the column heads repeated and «(fortsatt)» after the heading.
+ * as a table, in the drawing area of a portrait sheet (paper.ts `drawingArea`), 3 mm in from the frame on either
+ * side; names go through svgPrint.ts `pdfSafeText` (the PDF's Helvetica prints WinAnsi only). A schedule longer than
+ * one sheet continues on the next one, with the column heads repeated and «(fortsatt)» after the heading.
  *
  * Returned as SVG markup in sheet millimetres (y down); `data-schedule-*` attributes mark rows for the tests.
  */
@@ -13,6 +14,7 @@ import { formatM2, formatNumber } from '../ui/format';
 import { buildSchedule, sortByLevelElevation } from '../ui/schedule';
 import type { ScheduleRow } from '../ui/schedule';
 import type { MmRect } from './paper';
+import { pdfSafeText } from './svgPrint';
 import { esc, fitText, textWidthMm } from './titleBlock';
 
 const S = nb.export;
@@ -59,7 +61,8 @@ type Item =
 const n2 = (v: number) => String(Math.round(v * 100) / 100);
 
 function t(x: number, y: number, s: string, size: number, o: { bold?: boolean; fill?: string; anchor?: 'end' | 'middle'; max?: number; attr?: string } = {}): string {
-  const text = o.max !== undefined ? fitText(s, o.max, size, o.bold) : s;
+  const safe = pdfSafeText(s);
+  const text = o.max !== undefined ? fitText(safe, o.max, size, o.bold) : safe;
   return `<text x="${n2(x)}" y="${n2(y)}" font-size="${size}"${o.bold ? ' font-weight="bold"' : ''} fill="${o.fill ?? INK}"${o.anchor ? ` text-anchor="${o.anchor}"` : ''}${o.attr ?? ''}>${esc(text)}</text>`;
 }
 
@@ -185,8 +188,12 @@ function drawItem(it: Item, c: ScheduleColumns, x: number, y: number): string {
   }
 }
 
-/** The schedule as one SVG body per sheet, laid out in `area` (sheet mm). */
-export function scheduleBodies(derived: DerivedVariant, area: MmRect): string[] {
+/** Space (mm) between the frame and the schedule's text on the left and on the right. */
+export const SCHEDULE_INSET_MM = 3;
+
+/** The schedule as one SVG body per sheet, laid out in `drawing` (the sheet's drawing area, mm) inside the inset. */
+export function scheduleBodies(derived: DerivedVariant, drawing: MmRect): string[] {
+  const area: MmRect = { ...drawing, x: drawing.x + SCHEDULE_INSET_MM, w: drawing.w - 2 * SCHEDULE_INSET_MM };
   const c = scheduleColumns(area.w);
   const all = items(derived, area.w);
   const pages: string[] = [];

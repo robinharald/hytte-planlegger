@@ -9,7 +9,8 @@
  *  4. the north arrow (Site.planNorthBearing, the same direction as in the app's plan) and a scale bar.
  *
  * Returned as SVG markup in sheet millimetres (y down), with `data-tb-*` attributes on the fields so tests can read
- * them. Text is fitted to its cell (shortened with "…") with a Helvetica-like width estimate.
+ * them. Text is made printable (svgPrint.ts `pdfSafeText`) and fitted to its cell (shortened with "…") with a
+ * Helvetica-like width estimate.
  */
 import { textWidthPx } from '../plan2d/labelLayout';
 import { nb } from '../i18n/nb';
@@ -17,6 +18,7 @@ import { COLORS } from '../plan2d/style';
 import { REMOVED_FILL_OPACITY } from '../plan2d/drawing';
 import { northOnScreen } from '../plan2d/svg';
 import type { MmRect } from './paper';
+import { pdfSafeText } from './svgPrint';
 
 const S = nb.export;
 
@@ -70,7 +72,9 @@ export function fitText(text: string, maxMm: number, fontMm: number, bold = fals
 const n2 = (v: number) => String(Math.round(v * 100) / 100);
 
 function text(x: number, y: number, s: string, size: number, opts: { bold?: boolean; fill?: string; anchor?: 'start' | 'middle' | 'end'; field?: string; max?: number } = {}): string {
-  const t = opts.max !== undefined ? fitText(s, opts.max, size, opts.bold) : s;
+  // What the PDF's Helvetica (WinAnsi) can print: names typed by the family may hold emoji, arrows, ≈ or Ł.
+  const safe = pdfSafeText(s);
+  const t = opts.max !== undefined ? fitText(safe, opts.max, size, opts.bold) : safe;
   const field = opts.field ? ` data-tb-${opts.field}="${esc(s)}"` : '';
   const anchor = opts.anchor && opts.anchor !== 'start' ? ` text-anchor="${opts.anchor}"` : '';
   return `<text x="${n2(x)}" y="${n2(y)}" font-size="${size}"${opts.bold ? ' font-weight="bold"' : ''} fill="${opts.fill ?? INK}"${anchor}${field}>${esc(t)}</text>`;

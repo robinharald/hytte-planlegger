@@ -1,15 +1,17 @@
 /**
  * Loads an IFC file the user picked: the device cache first (cache.ts, keyed by name + size), else web-ifc — imported
  * lazily (its ~6 MB API and 1.6 MB wasm are never in the app's start-up chunk) with the wasm URL from Vite
- * (`web-ifc/web-ifc.wasm?url`, emitted as a hashed asset and precached by the PWA, vite.config.ts) and single-threaded
+ * (`web-ifc/web-ifc.wasm?url`; cached on first use, not precached: vite.config.ts LAZY_LIBS_*) and single-threaded
  * (GitHub Pages is not cross-origin isolated). The parsed model is cached; the file itself is not kept.
  */
+import { offlineFirstUse } from '../export/offline';
 import { ifcCacheKey, readCachedIfc, writeCachedIfc } from './cache';
 import { parseIfcModel } from './parse';
 import type { WebIfcApi, WebIfcModule } from './parse';
 import type { ParsedIfc } from './types';
 
-export type IfcLoadErrorReason = 'not-ifc' | 'failed' | 'empty';
+/** 'offline': web-ifc or its wasm could not be downloaded (never used on this device, no network); the file is fine. */
+export type IfcLoadErrorReason = 'not-ifc' | 'failed' | 'empty' | 'offline';
 
 export class IfcLoadError extends Error {
   readonly reason: IfcLoadErrorReason;
@@ -63,9 +65,14 @@ export async function loadIfcFile(file: IfcFileLike, deps: { parse?: (bytes: Uin
   try {
     model = deps.parse
       ? await deps.parse(bytes)
-      : await webIfc().then(({ mod, api }) => parseIfcModel(mod, api, bytes, { name: file.name, size: file.size }));
+      : await webIfc().then(
+          ({ mod, api }) => parseIfcModel(mod, api, bytes, { name: file.name, size: file.size }),
+          (e: unknown) => {
+            throw new IfcLoadError(offlineFirstUse(e) ? 'offline' : 'failed', e);
+          },
+        );
   } catch (e) {
-    throw new IfcLoadError('failed', e);
+    throw e instanceof IfcLoadError ? e : new IfcLoadError('failed', e);
   }
   if (model.meshes.length === 0) throw new IfcLoadError('empty');
   await writeCachedIfc(model);

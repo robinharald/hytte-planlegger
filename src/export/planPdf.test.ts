@@ -4,6 +4,7 @@
  * sheets and their sizes, a known wall at the right millimetres at 1:50 and 1:100 (read back from the generated SVG
  * through its transforms), the title block, the options, and the real PDF through jsPDF + svg2pdf.js.
  */
+import { produce } from 'immer';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { deriveVariant } from '../geometry/derive';
 import { createForslagD } from '../model/seed/forslagD';
@@ -176,6 +177,36 @@ describe('PDF sheets for Forslag D', () => {
     expect(svg).not.toMatch(/font-weight="[0-9]/);
   });
 
+  it('prints only what the PDF font has: emoji, arrows and Ł in names are replaced in the title block and schedule', () => {
+    const renamed = produce(project.variants[0], (v) => {
+      v.rooms.find((r) => r.name === 'Stue')!.name = 'Bad → vask 🛁';
+      v.rooms.find((r) => r.name === 'Kjøkken')!.name = 'Sovesal Łukasz';
+    });
+    const named: PdfInput = { ...input, derived: deriveVariant(renamed, project.site, terrainJson as unknown as TerrainAsset), proposal: 'Pappas idé 👍 ≈ ny', author: 'Pappa 🙂' };
+    const pages = pdfPages(named, opts({ storeys: 'ground' }));
+    const printable = (t: string) => [...t].every((ch) => ch.charCodeAt(0) <= 0xff || '–—…‘’“”•€™‚„†‡ˆ‰Š‹ŒŽšœžŸ'.includes(ch));
+    for (const page of pages) {
+      const root = parse(page);
+      for (const el of root.querySelectorAll('[data-title-block] text, [data-schedule-page] text')) expect(printable(el.textContent ?? ''), el.textContent ?? '').toBe(true);
+    }
+    const tb = [...parse(pages[0]).querySelectorAll('[data-title-block] text')].map((e) => e.textContent);
+    expect(tb).toContain('Pappas idé ? ~ ny');
+    expect(tb).toContain('Hytteplanlegger · sist endret av Pappa ?');
+    const sched = [...parse(pages[pages.length - 1]).querySelectorAll('[data-schedule-row] text')].map((e) => e.textContent);
+    expect(sched).toContain('Bad -> vask ?');
+    expect(sched).toContain('Sovesal ?ukasz');
+  });
+
+  it('keeps the schedule text 3 mm in from the frame', () => {
+    const pages = pdfPages(input, opts({ storeys: 'ground' }));
+    const sched = parse(pages[pages.length - 1]);
+    const xs = [...sched.querySelectorAll('[data-schedule-page] text')].filter((e) => e.getAttribute('text-anchor') === null).map((e) => Number(e.getAttribute('x')));
+    expect(xs.length).toBeGreaterThan(10);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(PAGE_MARGIN_MM + 3 - 1e-9);
+    const rights = [...sched.querySelectorAll('[data-schedule-page] line')].map((e) => Number(e.getAttribute('x2')));
+    expect(Math.max(...rights)).toBeLessThanOrEqual(pages[pages.length - 1].size.w - PAGE_MARGIN_MM - 3 + 1e-9);
+  });
+
   it('names the file after the proposal and the day', () => {
     expect(pdfFileName('Mitt forslag (Mamma)', new Date(2026, 9, 3))).toBe('hytta-mitt-forslag-mamma-2026-10-03.pdf');
     expect(pdfFileName('Bod på østsiden – ærlig', new Date(2026, 0, 31))).toBe('hytta-bod-pa-ostsiden-aerlig-2026-01-31.pdf');
@@ -207,6 +238,17 @@ describe('PDF through jsPDF and svg2pdf.js', () => {
       [0, 0, 1191, 842],
       [0, 0, 842, 1191],
     ]);
+  }, 30000);
+
+  it('writes a printable title into the metadata of the PDF', async () => {
+    const pages = pdfPages(input, opts({ storeys: 'ground' })).filter((p) => p.kind === 'schedule');
+    const r = await renderPdf(pages, { title: 'Hytta ved Merkesvatnet – Pappas idé 👍' });
+    const text = new TextDecoder('latin1').decode(new Uint8Array(r.bytes));
+    // jsPDF writes it as UTF-16BE (þÿ, then two bytes per character): a surrogate pair (an emoji) would read «Ø=…»
+    const title = (/\/Title \(([^)]*)\)/.exec(text)?.[1] ?? '').replace(/ /g, '');
+    expect(title).toContain('Pappas id');
+    expect(title.endsWith('?')).toBe(true);
+    expect(text).not.toContain('Ø=');
   }, 30000);
 
   it('makes A4 sheets for A4', async () => {

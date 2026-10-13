@@ -23,6 +23,7 @@ import { scheduleBodies } from './schedulePage';
 import { planRectOf, storeyName, storeySheets } from './sheets';
 import type { PdfOptions, PlanStorey } from './sheets';
 import { pdfFileName } from './fileNames';
+import { pdfSafeText } from './svgPrint';
 import { titleBlockSvg } from './titleBlock';
 import type { TitleBlockFields } from './titleBlock';
 
@@ -148,7 +149,7 @@ export async function renderPdf(pages: readonly PdfPage[], meta: { title: string
   const [{ jsPDF }, { svg2pdf }] = await Promise.all([import('jspdf'), import('svg2pdf.js/dist/svg2pdf.es.min.js')]);
   const first = pages[0];
   const doc = new jsPDF({ unit: 'mm', format: first.paper.toLowerCase(), orientation: first.orientation, compress: true });
-  doc.setProperties({ title: meta.title, subject: meta.subject ?? '', creator: S.tbMadeWith });
+  doc.setProperties({ title: pdfSafeText(meta.title), subject: pdfSafeText(meta.subject ?? ''), creator: S.tbMadeWith });
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i];
     if (i > 0) doc.addPage(p.paper.toLowerCase(), p.orientation);
