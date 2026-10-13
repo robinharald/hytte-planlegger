@@ -88,7 +88,7 @@ describe('Forslag D rotated and perturbed', () => {
       const d = deriveVariant(rotatedSeed(deg), site, null);
       expect(d.rooms.filter((r) => r.room).length, `${deg}°`).toBe(27);
     }
-  });
+  }, 60_000); // 45 full derives: about 6 s on a GitHub runner, over vitest's default 5 s
 
   it('blk-main vertex 0 moved to (0.071, 0.043) derives and finds every room', () => {
     const v = createForslagD().variants[0];
