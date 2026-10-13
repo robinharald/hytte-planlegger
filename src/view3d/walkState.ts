@@ -5,6 +5,11 @@
  *  - `walk`: the walk session id while walking (`startWalk`), else null. `stopWalk({ toPreset })` ends it: the
  *    orbit camera then goes back to where it was, or (`toPreset`, a preset button was pressed) to the chosen preset.
  *  - `locked`: the mouse pointer is locked to the 3D view (desktop walking; the hint line text depends on it).
+ *  - `viewKept`: the camera still shows the view of a walk ended with Esc (WalkControls `keepWalkerView`), so no
+ *    camera preset is shown pressed; cleared when the camera moves again (a drag, a preset) or a walk starts.
+ *  - `presetRequest`: bumped by every tap on a camera preset (`requestPreset`), so the camera rig (Scene.tsx) goes to
+ *    the preset also when it is the one already chosen (fix round 3 after phase 3: after Esc, or after orbiting away,
+ *    the pressed preset did nothing).
  *  - `shadows`: the sun casts shadows in 3D (on by default; remembered per device in localStorage, guarded).
  *  - `walkInput` (not reactive): the on-screen joystick's vector and the 3D view's `invalidate`, so the joystick
  *    (a DOM element over the canvas) can drive the render loop (frameloop 'demand').
@@ -23,6 +28,8 @@ export interface View3dLocalState {
   returnToPreset: boolean;
   locked: boolean;
   shadows: boolean;
+  viewKept: boolean;
+  presetRequest: number;
 }
 
 const SHADOWS_KEY = 'hytte.view3d.shadows';
@@ -35,7 +42,7 @@ function readShadows(): boolean {
   }
 }
 
-let state: View3dLocalState = { walk: null, returnToPreset: false, locked: false, shadows: readShadows() };
+let state: View3dLocalState = { walk: null, returnToPreset: false, locked: false, shadows: readShadows(), viewKept: false, presetRequest: 0 };
 let sessions = 0;
 const listeners = new Set<() => void>();
 
@@ -64,7 +71,7 @@ export function useView3dLocal<T>(select: (s: View3dLocalState) => T): T {
 
 export function startWalk(): void {
   sessions += 1;
-  set({ walk: sessions, returnToPreset: false, locked: false });
+  set({ walk: sessions, returnToPreset: false, locked: false, viewKept: false });
 }
 
 export function stopWalk(opts: { toPreset?: boolean } = {}): void {
@@ -80,6 +87,16 @@ export function toggleWalk(): void {
 
 export function setPointerLocked(locked: boolean): void {
   set({ locked });
+}
+
+/** WalkControls: the walker's view is kept after Esc (true), or the camera left it (false). */
+export function setViewKept(on: boolean): void {
+  set({ viewKept: on });
+}
+
+/** A tap on a camera preset (ui/Controls.tsx): the camera rig goes to the chosen preset, also the current one. */
+export function requestPreset(): void {
+  set({ presetRequest: state.presetRequest + 1, viewKept: false });
 }
 
 export function setShadows(on: boolean): void {
@@ -169,7 +186,7 @@ export function pickFor(sel: { kind: string; id: string } | null): PickRecord | 
 
 /** Test helper: back to the initial state. */
 export function resetView3dLocal(): void {
-  state = { walk: null, returnToPreset: false, locked: false, shadows: true };
+  state = { walk: null, returnToPreset: false, locked: false, shadows: true, viewKept: false, presetRequest: 0 };
   lastPick = null;
   probe = null;
   clearWalkInput();

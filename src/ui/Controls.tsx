@@ -28,7 +28,7 @@ import { formatDegrees, minutesToTime, timeToMinutes } from './format';
 import { useSun } from './hooks';
 import { activeSunPreset, daylightStops, SLIDER_MAX, SUN_PRESET_KEYS, sunDay, sunPresetPatch, sunTicks } from '../view3d/sunPanel';
 import type { SunPresetKey } from '../view3d/sunPanel';
-import { setShadows, stopWalk, toggleWalk, useView3dLocal } from '../view3d/walkState';
+import { requestPreset, setShadows, stopWalk, toggleWalk, useView3dLocal } from '../view3d/walkState';
 
 const setUi = (patch: Partial<UiState>) => appStore.getState().setUi(patch);
 const T = nb.toggles.titles;
@@ -213,6 +213,8 @@ export function Controls(props: { isPhone: boolean }) {
   const setStorey = (p: PlanStorey) => setUi({ planStorey: p, activeStoreyId: p });
   const open = !props.isPhone;
   const walking = useView3dLocal((s) => s.walk !== null);
+  /** A walk ended with Esc left the camera where the walker stood: no preset is shown pressed. */
+  const viewKept = useView3dLocal((s) => s.viewKept);
 
   return (
     <aside className="controls">
@@ -259,12 +261,15 @@ export function Controls(props: { isPhone: boolean }) {
               <button
                 key={key}
                 type="button"
-                aria-pressed={!walking && ui.preset === key}
+                aria-pressed={!walking && !viewKept && ui.preset === key}
                 data-testid={`preset-${key}`}
                 title={nb.mode3d.presetTitles[key]}
                 onClick={() => {
+                  // Every tap goes to the preset, also the one already chosen (after Esc kept a walk's view, or
+                  // after orbiting away): walkState `requestPreset`.
                   stopWalk({ toPreset: true });
                   setUi({ preset: key });
+                  requestPreset();
                 }}
               >
                 {nb.mode3d.presetNames[key]}

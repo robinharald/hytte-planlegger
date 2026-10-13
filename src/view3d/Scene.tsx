@@ -27,6 +27,10 @@
  * orbit camera's place and, when the walk ends, eases back to it (or to the preset when one was chosen meanwhile,
  * walkState `returnToPreset`). A 3D click records its plan point (walkState `recordPick`) so a walk entered with
  * that selection starts there. `shadows` (default on) lets the sun cast shadows.
+ *
+ * Every tap on a camera preset goes to it, also the one already chosen (walkState `presetRequest`, fix round 3 after
+ * phase 3: after Esc kept a walk's view the pressed preset did nothing). Playwright reads the camera through
+ * `window.__hytteCamera()` (position, orbit target, field of view; nothing in the app uses it).
  */
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
@@ -59,7 +63,7 @@ import type { FloorPickContext } from './selection3d';
 import { StructureMeshes } from './StructureMeshes';
 import { fromWorld } from './coords';
 import { WalkControls } from './WalkControls';
-import { recordPick, view3dLocal } from './walkState';
+import { recordPick, useView3dLocal, view3dLocal } from './walkState';
 import { SunLight } from './SunLight';
 import { Terrain } from './Terrain';
 import { Trees } from './Trees';
@@ -290,6 +294,8 @@ function CameraRig({ preset, bounds, onPlaced, walking }: { preset: CameraPreset
   const walkingRef = useRef(walking);
   /** The orbit camera's place when a walk began (the preset at that time too). */
   const beforeWalk = useRef<{ position: Vector3; target: Vector3; preset: CameraPreset } | null>(null);
+  /** Bumped by every tap on a preset (walkState `requestPreset`): the preset effect runs again for the same preset. */
+  const presetRequest = useView3dLocal((s) => s.presetRequest);
   useLayoutEffect(() => {
     boundsRef.current = bounds;
     aspectRef.current = aspect;
@@ -297,8 +303,8 @@ function CameraRig({ preset, bounds, onPlaced, walking }: { preset: CameraPreset
     walkingRef.current = walking;
   }, [bounds, aspect, preset, walking]);
 
-  // Jump on the first frame with controls, animate on later preset changes. Bounds changes (edits) never move
-  // the camera. While walking the preset waits for the walk to end.
+  // Jump on the first frame with controls, animate on later preset changes and on every tap on a preset
+  // (`presetRequest`). Bounds changes (edits) never move the camera. While walking the preset waits for the walk to end.
   useEffect(() => {
     if (!controls) return;
     if (walkingRef.current) {
@@ -322,7 +328,18 @@ function CameraRig({ preset, bounds, onPlaced, walking }: { preset: CameraPreset
       tween.current = { p0: camera.position.clone(), t0: controls.target.clone(), p1: v.position, t1: v.target, start: performance.now() };
     }
     invalidate();
-  }, [preset, controls, camera, invalidate, onPlaced]);
+  }, [preset, presetRequest, controls, camera, invalidate, onPlaced]);
+
+  // Playwright: the camera as `window.__hytteCamera()` (e2e/walk-preset.spec.ts).
+  useEffect(() => {
+    if (!controls) return;
+    const g = globalThis as { __hytteCamera?: () => { position: number[]; target: number[]; fov: number } };
+    const probe = () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: (camera as { fov?: number }).fov ?? 0 });
+    g.__hytteCamera = probe;
+    return () => {
+      if (g.__hytteCamera === probe) delete g.__hytteCamera;
+    };
+  }, [controls, camera]);
 
   // A walk keeps the orbit camera's place (before WalkControls moves the camera: this rig comes first in the
   // scene) and eases back to it afterwards, or to the preset when one was chosen meanwhile (walkState

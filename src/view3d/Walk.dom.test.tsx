@@ -18,7 +18,7 @@ import { fromWorld } from './coords';
 import { Scene } from './Scene';
 import type { SceneProps } from './Scene';
 import { WALK_EYE_HEIGHT } from './walk';
-import { recordPick, resetView3dLocal, startWalk, stopWalk, view3dLocal } from './walkState';
+import { recordPick, requestPreset, resetView3dLocal, startWalk, stopWalk, view3dLocal } from './walkState';
 
 const savePng3d = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../export/pngExport', () => ({ savePng3d }));
@@ -199,9 +199,11 @@ describe('walk mode (Scene + WalkControls)', () => {
     m.state().camera.getWorldDirection(after);
     expect(after.angleTo(looking)).toBeLessThan(0.05);
     expect(controlsOf(m).target.distanceTo(walker)).toBeCloseTo(4, 6);
-    expect((m.state().camera as PerspectiveCamera).fov).toBe(42);
+    // …with the walk's field of view until the camera moves again (fix round 3 after phase 3: it narrowed to 42 at once)
+    expect((m.state().camera as PerspectiveCamera).fov).toBeGreaterThan(42);
     expect(controlsOf(m).enabled).toBe(true);
     expect(walkViewKept()).toBe(true);
+    expect(view3dLocal.getState().viewKept).toBe(true);
     // keys are left alone again
     expect(key('keydown', 'KeyW', 'w').defaultPrevented).toBe(false);
   });
@@ -224,6 +226,64 @@ describe('walk mode (Scene + WalkControls)', () => {
     } finally {
       window.matchMedia = reduce;
     }
+  });
+
+  it('after Esc a tap on the preset already chosen goes back to it, with the orbit field of view (fix round 3)', async () => {
+    const m = await mount(props());
+    await frames(2);
+    const overview = m.state().camera.position.clone();
+    startWalk();
+    await m.rerender(props({ walk: view3dLocal.getState().walk }));
+    await frames(1);
+    const walkFov = (m.state().camera as PerspectiveCamera).fov;
+    expect(walkFov).toBeGreaterThan(42);
+    key('keydown', 'Escape', 'Escape');
+    await m.rerender(props({ walk: null }));
+    await frames(3);
+    const walker = m.state().camera.position.clone();
+    expect(walker.distanceTo(overview)).toBeGreaterThan(5);
+    expect((m.state().camera as PerspectiveCamera).fov).toBe(walkFov);
+    expect(view3dLocal.getState().viewKept).toBe(true);
+    // «Oversikt» tapped (Controls.tsx): the walk is over already and the preset does not change — before, nothing
+    // happened; the request makes the rig go there.
+    await act(async () => {
+      stopWalk({ toPreset: true });
+      requestPreset();
+    });
+    await m.rerender(props({ walk: null }));
+    await frames(3);
+    expect(m.state().camera.position.distanceTo(overview)).toBeLessThan(1e-6);
+    expect((m.state().camera as PerspectiveCamera).fov).toBe(42);
+    expect(view3dLocal.getState().viewKept).toBe(false);
+    expect(walkViewKept()).toBe(false);
+    // A new walk and «Avslutt» still bring the orbit's field of view back.
+    startWalk();
+    await m.rerender(props({ walk: view3dLocal.getState().walk }));
+    await frames(1);
+    stopWalk();
+    await m.rerender(props({ walk: null }));
+    await frames(1);
+    expect((m.state().camera as PerspectiveCamera).fov).toBe(42);
+  });
+
+  it('a second walk started from a kept view ends with the orbit field of view, not the walk\'s', async () => {
+    const m = await mount(props());
+    await frames(2);
+    startWalk();
+    await m.rerender(props({ walk: view3dLocal.getState().walk }));
+    await frames(1);
+    key('keydown', 'Escape', 'Escape');
+    await m.rerender(props({ walk: null }));
+    await frames(2);
+    expect((m.state().camera as PerspectiveCamera).fov).toBeGreaterThan(42);
+    startWalk();
+    await m.rerender(props({ walk: view3dLocal.getState().walk }));
+    await frames(1);
+    expect(view3dLocal.getState().viewKept).toBe(false);
+    stopWalk(); // «Avslutt»
+    await m.rerender(props({ walk: null }));
+    await frames(2);
+    expect((m.state().camera as PerspectiveCamera).fov).toBe(42);
   });
 
   it('«Avslutt» brings the orbit camera back; P saves a picture and walks on', async () => {

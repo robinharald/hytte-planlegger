@@ -10,7 +10,8 @@
  *    plan's arrow-key nudge and the other shortcuts stay quiet); P saves the view as a PNG and walks on
  *    (export/walkView.ts `saveWalkPhoto`); Esc, or losing the pointer lock (the browser's own Esc), ends the walk
  *    with the camera left where the walker stood (`keepWalkerView`: the menu's «Lagre 3D-bildet som PNG» then saves
- *    that view); keys while the 3D pane is hidden end it too;
+ *    that view, with the walk's field of view until the camera moves again; walkState `viewKept`: no camera preset is
+ *    shown pressed meanwhile); keys while the 3D pane is hidden end it too;
  *  - touch: the joystick (WalkOverlay, via `walkInput`) moves, a drag that starts on the right 60 % of the canvas
  *    looks;
  *  - every frame with input (or an eye still easing) steps the walker and asks for the next frame (frameloop
@@ -31,7 +32,7 @@ import { fromWorld, toWorld } from './coords';
 import { flatGroundZ, groundZFn } from './ground';
 import * as W from './walk';
 import type { WalkPose } from './walk';
-import { pickFor, publishWalkProbe, setPointerLocked, stopWalk, walkInput } from './walkState';
+import { pickFor, publishWalkProbe, setPointerLocked, setViewKept, stopWalk, walkInput } from './walkState';
 
 export interface WalkControlsProps {
   /** Walk session id while walking, else null. */
@@ -78,9 +79,11 @@ const KEEP_MIN_DOWN = 0.02;
  * After a walk ended with Esc: the camera stays where the walker stood, looking the same way (a little down at
  * least), with the orbit target straight ahead. The camera rig (Scene.tsx) has just started easing back; the
  * controls' 'start' event is its «the user took the camera» (it cancels the easing). Until the camera moves again
- * the PNG caption names the view «Gå rundt» (export/walkView.ts).
+ * (a drag, a camera preset: the controls' 'change') the PNG caption names the view «Gå rundt» (export/walkView.ts), no
+ * preset is shown pressed (walkState `viewKept`), and the walk's field of view stays; then `onLeave` (the orbit's field
+ * of view back). Returns a function that drops the watch without `onLeave` (a new walk).
  */
-function keepWalkerView(camera: Camera, controls: OrbitLike, at: { position: Vector3; quaternion: Quaternion }): void {
+function keepWalkerView(camera: Camera, controls: OrbitLike, at: { position: Vector3; quaternion: Quaternion }, onLeave: () => void): () => void {
   controls.dispatchEvent({ type: 'start' });
   camera.position.copy(at.position);
   camera.quaternion.copy(at.quaternion);
@@ -90,11 +93,16 @@ function keepWalkerView(camera: Camera, controls: OrbitLike, at: { position: Vec
   controls.update();
   camera.updateMatrixWorld();
   setWalkViewKept(true);
+  setViewKept(true);
+  const detach = () => controls.removeEventListener('change', moved);
   const moved = () => {
+    detach();
     setWalkViewKept(false);
-    controls.removeEventListener('change', moved);
+    setViewKept(false);
+    onLeave();
   };
   controls.addEventListener('change', moved);
+  return detach;
 }
 
 /** Puts a camera at a walk pose (and tells the test probe, walkState.ts `publishWalkProbe`). */
@@ -138,6 +146,10 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
   const latest = useRef({ world, derived, selection, aspect: width / Math.max(1, height) });
   /** The walker's camera when Esc ended the walk (kept there afterwards, `keepWalkerView`). */
   const keep = useRef<{ position: Vector3; quaternion: Quaternion } | null>(null);
+  /** The orbit camera's field of view while a walk, or the view an Esc kept, has the walk's. */
+  const orbitFov = useRef<number | null>(null);
+  /** Drops the watch of a kept view (`keepWalkerView`), while one is kept. */
+  const dropKept = useRef<(() => void) | null>(null);
   useLayoutEffect(() => {
     latest.current = { world, derived, selection, aspect: width / Math.max(1, height) };
   }, [world, derived, selection, width, height]);
@@ -156,8 +168,11 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
     pose.current = start;
     keep.current = null;
     setWalkViewKept(false);
+    dropKept.current?.();
+    dropKept.current = null;
     stepping.current = false;
-    const fov = camera.fov;
+    // a view kept after Esc still has the walk's field of view: the orbit's is the one saved then
+    orbitFov.current ??= camera.fov;
     setFov(camera, W.walkFov(aspect));
     applyWalkPose(camera, start, session);
     invalidate();
@@ -165,22 +180,48 @@ export function WalkControls({ session, derived, site, terrain, selection, coars
       publishWalkProbe(null);
       pose.current = null;
       pressed.clear();
-      setFov(camera, fov);
+      // After Esc the kept view keeps the walk's field of view until it is left (the effect below).
+      if (!keep.current && orbitFov.current !== null) {
+        setFov(camera, orbitFov.current);
+        orbitFov.current = null;
+      }
       invalidate();
     };
   }, [session, get, invalidate]);
 
-  // A walk ended with Esc: after the camera rig has started easing back (its layout effect), keep the walker's view.
+  // A walk ended with Esc: after the camera rig has started easing back (its layout effect), keep the walker's view;
+  // the orbit's field of view comes back when the camera leaves it (fix round 3 after phase 3: it narrowed at once,
+  // so the kept view and its PNG were more zoomed in than what the walker saw).
   useEffect(() => {
     if (session !== null) return;
     const at = keep.current;
     keep.current = null;
+    if (!at) return;
     const { camera, controls } = get();
-    if (at && controls) {
-      keepWalkerView(camera, controls as unknown as OrbitLike, at);
+    const orbitView = () => {
+      if (orbitFov.current !== null) setFov(camera as PerspectiveCamera, orbitFov.current);
+      orbitFov.current = null;
       invalidate();
+    };
+    if (!controls) {
+      orbitView();
+      return;
     }
+    dropKept.current = keepWalkerView(camera, controls as unknown as OrbitLike, at, () => {
+      dropKept.current = null;
+      orbitView();
+    });
+    invalidate();
   }, [session, get, invalidate]);
+
+  // Unmounted while a view is kept: no watch left on the controls.
+  useEffect(
+    () => () => {
+      dropKept.current?.();
+      dropKept.current = null;
+    },
+    [],
+  );
 
   // The viewport changes shape while walking: keep about 80° across.
   useEffect(() => {
